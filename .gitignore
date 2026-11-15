@@ -1,4 +1,5 @@
 .build/
+.env
 Luma.app/
 .DS_Store
 *.xcuserstate

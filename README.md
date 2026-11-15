@@ -7,6 +7,12 @@
 - 技术栈：Swift 5.9（SwiftPM）、SwiftUI、AppKit、Core Image、AVFoundation、SQLite（系统 `libsqlite3`）
 - 第三方依赖：无
 
+## 下载
+
+- 发布产物：[Luma-1.0.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v1.0.0/Luma-1.0.0-macOS.zip)（macOS 14+，ad-hoc 签名，未做 Apple 公证）
+- 全部版本：[Releases](https://github.com/houshanren/luma/releases)
+- 从源码构建：`./build.sh`（见下文）
+
 ## 功能
 
 ### 图库

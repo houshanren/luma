@@ -143,6 +143,12 @@
       <h2><span class="chapter-no">02</span>开始使用</h2>
       <p class="lead">拾光没有安装器，也没有后台服务。构建产出一份 <code>Luma.app</code>，双击即可运行；所有数据都写在你选择的图库里。</p>
 
+      <h3>下载现成版本</h3>
+      <p>不想自己编译，可以直接下载发布产物：<a href="https://github.com/houshanren/luma/releases/download/v1.0.0/Luma-1.0.0-macOS.zip">Luma-1.0.0-macOS.zip</a>（约 5 MB）。解压后把 <code>Luma.app</code> 拖进「应用程序」即可。</p>
+      <p>产物为 ad-hoc 签名、未做 Apple 公证，首次打开如提示“无法验证开发者”，请右键点击 <code>Luma.app</code> → 「打开」，或执行：</p>
+      <div class="code-block"><pre><code>xattr -dr com.apple.quarantine /Applications/Luma.app</code></pre></div>
+      <p>全部版本与源码见 GitHub：<a href="https://github.com/houshanren/luma/releases" target="_blank" rel="noopener">Releases</a> · <a href="https://github.com/houshanren/luma" target="_blank" rel="noopener">仓库</a>。</p>
+
       <h3>系统要求</h3>
       <table class="doc-table">
         <tbody>

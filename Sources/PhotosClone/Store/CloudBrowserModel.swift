@@ -20,4 +20,16 @@ final class CloudBrowserModel: ObservableObject {
     @Published var wizardInitialFlow: CloudWizardFlow?
     @Published var nameRequest: CloudNameRequest?
     @Published var busyText: String?
+
+    // MARK: 浏览范围与端侧识别
+
+    /// 当前网盘列表的范围（全部 / 视频 / 截屏 / 场景 / 包含文字…）。
+    @Published var scope: CloudScope = .all
+    /// 端侧识别结果：只保存在内存，切换网盘或换库时清空。
+    @Published var analysis: [UUID: PhotoAnalysis] = [:]
+    @Published var isAnalyzing = false
+    @Published var analysisProgress = 0.0
+    /// 当前识别结果属于哪个挂载；与打开中的挂载不一致时先清空再识别。
+    var insightMountID: UUID?
+    var analysisTask: Task<Void, Never>?
 }

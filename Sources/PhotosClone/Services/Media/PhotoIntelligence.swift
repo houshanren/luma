@@ -20,7 +20,11 @@ enum PhotoIntelligence {
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return nil
         }
+        return analyze(cgImage: cgImage)
+    }
 
+    /// 直接分析一张已解码的图像（网络存储按需取缩略图后复用这条路径）。
+    static func analyze(cgImage: CGImage) -> Result? {
         let classify = VNClassifyImageRequest()
         let recognize = VNRecognizeTextRequest()
         recognize.recognitionLevel = .accurate

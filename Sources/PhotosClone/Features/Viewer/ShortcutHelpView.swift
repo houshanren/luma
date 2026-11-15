@@ -8,6 +8,7 @@ struct ShortcutHelpView: View {
     private let gridShortcuts: [(String, String)] = [
         ("← → ↑ ↓", "移动选择"),
         ("空格 / 回车", "打开所选"),
+        ("⌘[", "返回上一级（相簿 / 文件夹）"),
         ("⌘A", "全选"),
         ("⌘C", "复制文件"),
         ("⌘V", "粘贴"),

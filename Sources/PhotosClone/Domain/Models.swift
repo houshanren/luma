@@ -131,6 +131,103 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     var tags: [String] { keywords ?? [] }
 }
 
+/// 媒体类型总览里的分类：标题、图标、匹配规则与对应的侧边栏范围。
+enum MediaTypeKey: String, CaseIterable, Identifiable {
+    case videos, selfies, livePhotos, portraits, panoramas, slowMotion, screenshots, screenRecordings, animated, raws
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .videos: return "视频"
+        case .selfies: return "自拍"
+        case .livePhotos: return "实况照片"
+        case .portraits: return "人像"
+        case .panoramas: return "全景照片"
+        case .slowMotion: return "慢动作"
+        case .screenshots: return "截屏"
+        case .screenRecordings: return "录屏"
+        case .animated: return "动图"
+        case .raws: return "RAW"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .videos: return "video"
+        case .selfies: return "person.crop.circle"
+        case .livePhotos: return "livephoto"
+        case .portraits: return "person.crop.rectangle"
+        case .panoramas: return "pano"
+        case .slowMotion: return "slowmo"
+        case .screenshots: return "camera.viewfinder"
+        case .screenRecordings: return "record.circle"
+        case .animated: return "photo.on.rectangle.angled"
+        case .raws: return "camera.aperture"
+        }
+    }
+
+    /// 只有官方「照片」图库才会提供的分类，本地图库不展示。
+    var isSystemOnly: Bool {
+        switch self {
+        case .portraits, .slowMotion, .screenRecordings: return true
+        default: return false
+        }
+    }
+
+    static var localCases: [MediaTypeKey] { allCases.filter { !$0.isSystemOnly } }
+
+    func matches(_ photo: PhotoItem) -> Bool {
+        switch self {
+        case .videos: return photo.isVideo
+        case .selfies: return !photo.isVideo && photo.kind == .selfie
+        case .livePhotos: return photo.isLivePhoto
+        case .portraits: return !photo.isVideo && photo.isPortraitCapture
+        case .panoramas: return photo.kind == .panorama
+        case .slowMotion: return photo.isSlowMotion
+        case .screenshots: return photo.kind == .screenshot
+        case .screenRecordings: return photo.isScreenRecording
+        case .animated: return photo.isAnimated || photo.isAnimatedFile
+        case .raws: return photo.isRAWFile
+        }
+    }
+
+    func item(system: Bool) -> SidebarItem {
+        if system {
+            switch self {
+            case .videos: return .systemVideos
+            case .selfies: return .systemSelfies
+            case .livePhotos: return .systemLivePhotos
+            case .portraits: return .systemPortraits
+            case .panoramas: return .systemPanoramas
+            case .slowMotion: return .systemSlowMotion
+            case .screenshots: return .systemScreenshots
+            case .screenRecordings: return .systemScreenRecordings
+            case .animated: return .systemAnimated
+            case .raws: return .systemRAW
+            }
+        }
+        switch self {
+        case .videos: return .videos
+        case .selfies: return .selfies
+        case .livePhotos: return .livePhotos
+        case .panoramas: return .panoramas
+        case .screenshots: return .screenshots
+        case .animated: return .animated
+        case .raws: return .raws
+        case .portraits: return .people
+        case .slowMotion: return .videos
+        case .screenRecordings: return .videos
+        }
+    }
+}
+
+/// 媒体类型总览用的汇总：数量与封面各一次遍历算完。
+struct MediaTypeSummary {
+    var counts: [MediaTypeKey: Int] = [:]
+    var covers: [MediaTypeKey: PhotoItem] = [:]
+}
+
 struct KeywordOption: Identifiable {
     let name: String
     let count: Int
@@ -172,6 +269,12 @@ enum SidebarItem: Hashable {
     case screenshots
     case hidden
     case allAlbums
+    /// 媒体类型总览（侧边栏「媒体类型」分区头点击进入）。
+    case mediaTypes
+    /// 场景总览（侧边栏「场景」分区头点击进入）。
+    case scenes
+    /// 更多项目总览（侧边栏「更多项目」分区头点击进入）。
+    case moreItems
     case album(UUID)
     case smartAlbum(UUID)
     case folder(UUID)
@@ -192,6 +295,18 @@ enum SidebarItem: Hashable {
     case revisit
     case trash
     case systemLibrary
+    /// 系统图库自己的精选集（只读汇总卡片）。
+    case systemCollections
+    /// 系统图库根层相簿（侧边栏「相簿」分区头点击进入）。
+    case systemAlbums
+    /// 系统图库媒体类型总览。
+    case systemMediaTypes
+    /// 系统图库更多项目总览。
+    case systemMoreItems
+    /// 已连接的系统图库列表总览（侧边栏「系统图库」分区头点击进入）。
+    case systemLibraries
+    /// 网络存储列表总览（侧边栏「网络存储」分区头点击进入）。
+    case cloudStorages
     case systemAlbum(Int64)
     case systemFolder(Int64)
     case systemFavorites
@@ -199,7 +314,6 @@ enum SidebarItem: Hashable {
     case systemScreenshots
     case systemHidden
     case systemTrash
-    case systemSharedAlbums
     case systemPortraits
     case systemSelfies
     case systemLivePhotos
@@ -223,13 +337,15 @@ enum SidebarItem: Hashable {
     /// 是否属于只读的系统「照片」图库范围。
     var isSystemScope: Bool {
         switch self {
-        case .systemLibrary, .systemAlbum, .systemFolder, .systemFavorites, .systemVideos,
-             .systemScreenshots, .systemHidden, .systemTrash, .systemSharedAlbums,
+        case .systemLibrary, .systemCollections, .systemAlbum, .systemFolder,
+             .systemFavorites, .systemVideos,
+             .systemScreenshots, .systemHidden, .systemTrash,
              .systemPortraits, .systemSelfies, .systemLivePhotos, .systemPanoramas,
              .systemSlowMotion, .systemScreenRecordings, .systemAnimated, .systemRAW,
              .systemEdited, .systemRecentlyViewed, .systemDuplicates, .systemHandwriting,
              .systemIllustrations, .systemRecentlySaved, .systemImports, .systemMap,
-             .systemPlaces, .systemPeople:
+             .systemPlaces, .systemPeople, .systemAlbums, .systemMediaTypes,
+             .systemMoreItems:
             return true
         default:
             return false

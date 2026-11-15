@@ -3,6 +3,7 @@ import AppKit
 
 @main
 struct PhotosCloneApp: App {
+    @NSApplicationDelegateAdaptor(LumaAppDelegate.self) private var appDelegate
     @StateObject private var store = LibraryStore()
     @StateObject private var settings = AppSettings.shared
 
@@ -31,7 +32,8 @@ struct PhotosCloneApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("拾光") {
+        // 单窗口：不再允许新建第二个主窗口；关掉主窗口即退出（见 LumaAppDelegate）。
+        Window("拾光", id: "main") {
             RootView()
                 .environmentObject(store)
                 .environmentObject(settings)
@@ -121,6 +123,14 @@ struct PhotosCloneApp: App {
                 .disabled(store.visibleCount == 0)
             }
             CommandMenu("照片") {
+                Button(store.navigationParent.map { "返回「\($0.title)」" } ?? "返回上一级") {
+                    store.navigateUp()
+                }
+                .keyboardShortcut("[", modifiers: [.command])
+                .disabled(store.navigationParent == nil)
+
+                Divider()
+
                 Button("打开所选") {
                     if let id = store.commandTargetIDs.first {
                         store.openViewer(id)
@@ -390,5 +400,25 @@ struct PhotosCloneApp: App {
                 .environmentObject(store.viewerModel)
                 .environmentObject(store.cloudModel)
         }
+    }
+}
+
+// MARK: - 应用生命周期
+
+/// 拾光只保留一个实例、一个主窗口：关掉窗口就是退出应用。
+final class LumaAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    /// 重复启动（如再次 `open Luma.app`）时激活已有实例并退出，不产生第二份进程。
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let current = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != current }
+        guard let existing = others.first else { return }
+        existing.activate(options: [.activateAllWindows])
+        NSApp.terminate(nil)
     }
 }

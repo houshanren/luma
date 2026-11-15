@@ -42,6 +42,11 @@ struct SettingsView: View {
         .tint(settings.accentColor)
         .accentColor(settings.accentColor)
         .onAppear(perform: refreshCacheSize)
+        .onChange(of: settings.systemLibraryMaxAssets) { _, _ in
+            // 调整载入上限后按新上限重扫，否则会继续显示旧的截断结果。
+            guard store.isSystemScope, store.systemLibraryPath != nil else { return }
+            store.reloadSystemLibrary()
+        }
     }
 
     // MARK: 通用
@@ -145,9 +150,12 @@ struct SettingsView: View {
                     Text("最近 5 万项").tag(50_000)
                     Text("最近 10 万项").tag(100_000)
                     Text("最近 20 万项").tag(200_000)
+                    Text("最近 50 万项").tag(500_000)
+                    Text("最近 100 万项").tag(1_000_000)
+                    Text("最近 150 万项").tag(1_500_000)
                     Text("不限制（大图库不推荐）").tag(0)
                 }
-                Text("仅对当前图库连接的系统「照片」图库生效，设置随当前图库保存。只读接入，按拍摄日期从新到旧载入；索引缓存在图库内，之后打开无需重新扫描。")
+                Text("仅对当前图库连接的系统「照片」图库生效，设置随当前图库保存。只读接入，按拍摄日期从新到旧载入；调整上限后会按新上限重新扫描。载入 50 万项以上会占用较多内存，请按实际需要选择。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

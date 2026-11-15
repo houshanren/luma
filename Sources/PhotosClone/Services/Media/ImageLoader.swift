@@ -248,6 +248,38 @@ enum ImageLoader {
         }
     }
 
+    /// 打开相簿 / 文件夹后预热前若干张快速缩略图：
+    /// 解码一次并写入本地快速层文件与内存缓存，首屏与后续滚动直接命中，不必逐张等外部磁盘。
+    /// 返回的任务可在切换相簿时取消。
+    @discardableResult
+    static func prewarmQuickThumbnails(for photos: [PhotoItem],
+                                       concurrency: Int = 3) -> Task<Void, Never> {
+        let targets = photos
+        return Task.detached(priority: .utility) {
+            guard !targets.isEmpty else { return }
+            await withTaskGroup(of: Void.self) { group in
+                var next = 0
+                func addWorker() {
+                    guard next < targets.count else { return }
+                    let photo = targets[next]
+                    next += 1
+                    group.addTask {
+                        guard !Task.isCancelled else { return }
+                        _ = gridThumbnail(for: photo, maxPixel: CGFloat(gridQuickPixel))
+                    }
+                }
+                for _ in 0..<max(1, concurrency) { addWorker() }
+                while await group.next() != nil {
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        return
+                    }
+                    addWorker()
+                }
+            }
+        }
+    }
+
     /// 仅查内存中的网格缩略图，作为连翻时的即时占位图（不触发磁盘读取）。
     static func cachedPreview(for photo: PhotoItem) -> NSImage? {
         for bucket in gridPixelBuckets.reversed() {

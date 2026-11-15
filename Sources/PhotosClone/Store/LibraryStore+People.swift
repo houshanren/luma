@@ -291,33 +291,117 @@ extension LibraryStore {
 
     // MARK: - Duplicates
 
-    /// 本地图库中按「文件大小 + 像素尺寸」聚合的疑似重复组。
-    var duplicateGroups: [[PhotoItem]] {
-        var buckets: [String: [PhotoItem]] = [:]
-        for photo in photos where photo.deletedAt == nil && !photo.isHidden {
-            guard photo.fileSize > 0, photo.pixelWidth > 0, photo.pixelHeight > 0 else { continue }
-            let key = "\(photo.fileSize)-\(photo.pixelWidth)x\(photo.pixelHeight)"
-            buckets[key, default: []].append(photo)
-        }
-        return buckets.values
-            .filter { $0.count > 1 }
-            .map { $0.sorted { $0.addedAt > $1.addedAt } }
-            .sorted { lhs, rhs in
-                if lhs.count != rhs.count { return lhs.count > rhs.count }
-                return (lhs.first?.addedAt ?? .distantPast) > (rhs.first?.addedAt ?? .distantPast)
+    /// 本地图库中按「文件大小 + 像素尺寸」聚合的重复组（含建议保留项与理由）。
+    /// 结果按内容版本缓存，避免侧边栏与重复页反复遍历、排序整库。
+    var duplicateGroups: [DuplicateGroup] {
+        let key = "\(contentRevision)"
+        if duplicateGroupsCacheKey == key { return duplicateGroupsCache }
+        var membership: [UUID: Int] = [:]
+        for album in albums {
+            for id in album.photoIDs {
+                membership[id, default: 0] += 1
             }
+        }
+        let groups = DuplicateDetector.groups(from: photos, albumMembership: membership)
+        duplicateGroupsCacheKey = key
+        duplicateGroupsCache = groups
+        return groups
     }
 
+    /// 多余的副本张数（每个重复组只保留一张）。
     var duplicateCount: Int {
-        duplicateGroups.reduce(0) { $0 + $1.count - 1 }
+        duplicateGroups.reduce(0) { $0 + $1.photos.count - 1 }
     }
 
-    /// 合并重复组：保留指定照片，其余移入最近删除（30 天内可恢复）。
-    func mergeDuplicateGroup(_ group: [PhotoItem], keeping keepID: UUID) {
-        let removeIDs = Set(group.map(\.id)).subtracting([keepID])
-        guard !removeIDs.isEmpty else { return }
-        delete(removeIDs)
-        showToast("已合并重复项目，保留 1 张")
+    /// 合并一组重复项目：保留 `keepID`，把其余副本的收藏、关键词、标题、地点与相簿关系汇总过来，
+    /// 再将这些副本移入最近删除（30 天内可恢复）。返回被移入最近删除的张数。
+    @discardableResult
+    func mergeDuplicateGroup(_ group: DuplicateGroup, keeping keepID: UUID) -> Int {
+        let removed = applyDuplicateMerge(group.photos, keeping: keepID)
+        guard removed > 0 else { return 0 }
+        save()
+        showToast("已合并 \(removed + 1) 个项目，保留 1 个版本")
+        return removed
+    }
+
+    /// 一键合并全部重复组：每组保留推荐版本，只落盘一次。返回（组数，移入最近删除的张数）。
+    @discardableResult
+    func mergeAllDuplicateGroups() -> (groups: Int, removed: Int) {
+        guard !isReadOnlyScope else { return (0, 0) }
+        var mergedGroups = 0
+        var removed = 0
+        for group in duplicateGroups {
+            let count = applyDuplicateMerge(group.photos, keeping: group.keepID)
+            if count > 0 {
+                mergedGroups += 1
+                removed += count
+            }
+        }
+        guard removed > 0 else { return (0, 0) }
+        save()
+        showToast("已合并 \(mergedGroups) 组重复项目，\(removed) 个副本移入最近删除")
+        return (mergedGroups, removed)
+    }
+
+    /// 在内存中完成合并（不落盘），供单组与批量合并共用。
+    private func applyDuplicateMerge(_ members: [PhotoItem], keeping keepID: UUID) -> Int {
+        guard !isReadOnlyScope,
+              let keepIndex = photos.firstIndex(where: { $0.id == keepID }) else { return 0 }
+        let removeIDs = Set(members.map(\.id)).subtracting([keepID])
+        guard !removeIDs.isEmpty else { return 0 }
+
+        var kept = photos[keepIndex]
+        var keywords = Set(kept.keywords ?? [])
+        for other in members where removeIDs.contains(other.id) {
+            kept.isFavorite = kept.isFavorite || other.isFavorite
+            keywords.formUnion(other.keywords ?? [])
+            if (kept.title ?? "").isEmpty, let title = other.title, !title.isEmpty {
+                kept.title = title
+            }
+            if kept.capturedAt > other.capturedAt {
+                kept.capturedAt = other.capturedAt
+            }
+            if let viewed = other.viewedAt, viewed > (kept.viewedAt ?? .distantPast) {
+                kept.viewedAt = viewed
+            }
+            if kept.latitude == nil, let latitude = other.latitude, let longitude = other.longitude {
+                kept.latitude = latitude
+                kept.longitude = longitude
+            }
+            if kept.placeCountry == nil { kept.placeCountry = other.placeCountry }
+            if kept.placeProvince == nil { kept.placeProvince = other.placeProvince }
+            if kept.placeCity == nil { kept.placeCity = other.placeCity }
+            if kept.placeDistrict == nil { kept.placeDistrict = other.placeDistrict }
+            if kept.placePOI == nil { kept.placePOI = other.placePOI }
+        }
+        if !keywords.isEmpty {
+            kept.keywords = Array(keywords).sorted()
+        }
+        photos[keepIndex] = kept
+
+        let now = Date()
+        for index in photos.indices where removeIDs.contains(photos[index].id) {
+            photos[index].deletedAt = now
+        }
+
+        // 相簿关系汇总：保留项补进副本所在的相簿，并修正被删副本占用的封面。
+        for index in albums.indices {
+            let containedRemoved = albums[index].photoIDs.contains { removeIDs.contains($0) }
+            albums[index].photoIDs.removeAll { removeIDs.contains($0) }
+            if containedRemoved, !albums[index].photoIDs.contains(keepID) {
+                albums[index].photoIDs.insert(keepID, at: 0)
+            }
+            if let cover = albums[index].coverPhotoID, removeIDs.contains(cover) {
+                albums[index].coverPhotoID = keepID
+            }
+        }
+
+        if let viewerID, removeIDs.contains(viewerID) {
+            self.viewerID = nil
+        }
+        selection.removeAll()
+        duplicateGroupsCacheKey = nil
+        return removeIDs.count
     }
 
     /// 照片缺少地名时，用系统逆地理编码补齐（结果写入本地缓存）。

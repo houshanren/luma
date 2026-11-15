@@ -66,6 +66,8 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Store/LibraryStore+Health.swift` | 图库体检扫描、相似连拍分组、模糊与大视频统计、「值得重看」 | 视图绘制、直接解码原图 |
 | `Domain/SceneTags.swift` | 场景目录 `SceneCatalog`、`PhotoAnalysis`、中文检索词表 | Vision/IO、视图状态 |
 | `Domain/LibraryHealth.swift` | 图库体检结果模型（模糊项、相似组、大视频） | 扫描逻辑、IO |
+| `Domain/Duplicates.swift` | 重复组模型与检测 / 推荐保留算法（纯计算） | IO、视图状态、数据库 |
+| `Features/Gallery/DuplicatesView.swift` | 重复项目页（本地合并 / 系统图库隐藏与拷贝、总览统计、分组卡片、建议保留标注、确认） | 重复检测算法、SQL、路径拼接 |
 | `Services/Media/PhotoIntelligence.swift` | Vision 分类 / OCR / 特征向量提取与归一化 | 业务规则、UI、数据库写入 |
 | `Services/Media/PhotoQuality.swift` | 缩略图清晰度评估（拉普拉斯方差） | 缓存策略、业务规则 |
 | `Services/Media/PhotoBeauty.swift` | 缩略图 256×256 采样亮度/色彩/清晰度，调用 `BeautyAdvisor` 出建议 | 阈值与业务规则（放 LumaCore）、UI |
@@ -83,10 +85,13 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Store/LibraryStore+AITools.swift` | 工具执行与写操作确认；只调用现有 Store 方法 | 绕过 `save()`、直接写 SQLite |
 | `Features/AI/AIAssistantView.swift` | 智能助手面板（对话、照片引用、检索建议） | 网络与持久化细节 |
 | `Features/Organize/LibraryHealthView.swift` | 图库体检页（指标、卡片、相似组预览、清理入口） | 扫描算法、路径拼接 |
-| `Features/Maps/FootprintPlaybackView.swift` | 足迹回放覆盖层（地图折线、进度与调速） | 轨迹数据生成规则（放 Store） |
+| `Features/Maps/FootprintPlaybackView.swift` | 足迹回放覆盖层：逐段运镜、逐帧光点、胶片质感 HUD 与控制台 | 站点聚类与镜头参数（放 `LumaCore/FootprintPlanner`） |
+| `Domain/CloudInsight.swift` | 网盘分类范围 `CloudScope`、分类计数与按文件名的截屏识别 | IO、Vision、视图状态 |
+| `Store/LibraryStore+CloudInsight.swift` | 网盘分类筛选、端侧识别编排与计数缓存 | 视图绘制、SQL |
+| `Features/Sidebar/CloudMountDetailView.swift` | 打开中网盘的「媒体类型 / 场景 / 更多项目」入口与各自的收起状态 | 网络请求、筛选算法 |
 | `Domain/PhotoQuery.swift` | 可下推的范围/筛选/排序描述与 `SidebarItem` 映射 | SQL、IO |
 | `Services/Library/MetadataStore+Query.swift` | `PhotoQuery` → SQL：count / page / index / neighbor / 索引提示 | UI、业务规则 |
-| `Sources/LumaCore/` | 无 UI 依赖的纯算法：网格布局、缩略图档位、美化建议（`BeautyAdvisor`） | 任何 AppKit/SwiftUI/模型 IO |
+| `Sources/LumaCore/` | 无 UI 依赖的纯算法：网格布局、缩略图档位、美化建议（`BeautyAdvisor`）、足迹回放编排（`FootprintPlanner`） | 任何 AppKit/SwiftUI/模型 IO |
 | `Services/Library/LibraryPaths.swift` | 图库与系统路径的唯一入口 | 业务规则、UI |
 | `Services/Import/ImportService.swift` | 导入、缩略图生成、预览缩略图 | 业务规则（由 Store 决定） |
 | `Services/Media/ImageLoader.swift` | 缩略图/显示图解码与内存缓存 | 视图状态 |
@@ -117,7 +122,9 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 端侧智能分析结果写在 `asset_analysis` 表（`asset_id` 主键 + `labels` / `text` / `feature` BLOB / `updated_at`），只允许经 `MetadataStore.saveAnalysis(_:)` / `removeAnalysis(_:)` 写入；内存里的 `analysisIndex` 只保留标签与文字，特征向量按需从数据库读，禁止把向量塞进 `PhotoItem`。删除照片时必须同步 `removeAnalysis(_:)` 与 `analysisIndex` 过滤。
 - 「最近查看」写在 `assets.viewed_at`，由 `LibraryStore.recordView(_:)` → `MetadataStore.setViewedAt(_:date:)` 单行更新（不要为一次打开触发全量 `save()`）；系统图库的 `viewedAt` 只来自 `Photos.sqlite`，不写回。
 - 「值得重看」「图库体检」都是**派生视图**：扫描结果放在 `healthReport`（内存），不新增数据库表；判定阈值集中在 `LibraryHealthTuning`，不要散落到视图里。
+- 「重复项目」同样是派生视图：分组与推荐保留项由 `Domain/Duplicates.swift` 纯计算，结果按 `contentRevision` 缓存到 `duplicateGroups`，不落库。合并必须走 `LibraryStore.mergeDuplicateGroup` / `mergeAllDuplicateGroups`：保留一个版本、汇总收藏 / 关键词 / 标题 / 地点 / 相簿关系（含相簿封面），其余副本移入最近删除（可恢复）；批量合并只 `save()` 一次，禁止在视图层直接改 `photos` 或逐组调用 `delete`。系统图库复用同一视图（`.systemDuplicates`），分组来自 `systemDuplicateGroups`（补充官方 `isDuplicateItem` 标记），但官方库只读：只能经 `hideSystemDuplicateCopies` / `hideAllSystemDuplicateCopies` 写 `asset_overlays` 隐藏副本、`importSystemDuplicateKeep` 拷贝到拾光，或引导到「照片」中合并，禁止在系统图库删除或编辑 Apple 的照片。
 - 「智能美化」同样是派生视图：推荐分组放在 `beautyReport`（内存），不落库，换库时由 `resetBeautyState()` 清空；阈值与调整量集中在 `LumaCore/BeautyAdvisor`，App 侧 `PhotoBeauty` 只负责采样。
+- 网盘分类浏览同样是**派生视图**：范围枚举与计数模型在 `Domain/CloudInsight.swift`，筛选在 `LibraryStore+CloudInsight`，端侧识别结果放在 `CloudBrowserModel.analysis`（内存），不写数据库、不写网盘；切换挂载、断开连接或换库时必须调用 `resetCloudInsight()`。网盘没有 EXIF，媒体类型只能按扩展名/文件名推断（截屏走 `CloudMediaNaming.looksLikeScreenshot`），不要假装能拿到相机元数据。
 - 智能美化只生成渲染副本（与编辑器同一条 `commit` 管线：`resources/renders/` + `editRecipe` + `editVersion` + `ImageLoader.invalidate`），绝不覆盖原图；已编辑照片从原图重建编辑点后再叠加建议，不能丢弃用户已有调整。
 
 ### 智能助手（AI）
@@ -162,14 +169,18 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 切换图库必须经过 `LibraryPaths.switchContainer(to:migratingLocalData:)`，它会处理目录结构与数据迁移；不要手工搬文件。
 - 打开任意图库（含官方「照片」图库）都以该图库为准：`activateLibrary(_:)` 统一走 `switchLibraryContainer(_:)`，展示该库自己的内容，元数据写入该库自己的 `database/PhotosClone.sqlite`（官方库中与 `Photos.sqlite` 并列）。打开图库时传 `migratingLocalData: false`，不把上一个库的内容搬进新库；只有建库引导的「迁入旧库」才迁移。侧边栏「系统图库」的 `connectSystemLibrary(_:)` 仍是只读浏览，不切换当前图库。
 - 图库选择记录：`UserDefaults["settings.recentLibraries"]`（最多 10 个），由 `rememberLibrary(_:)` 维护；当前图库以 `Application Support/PhotosClone/ContainerPath.txt` 为真源。
-- 侧边栏固定三个分区：**拾光**（本地图库范围）/ **系统图库**（`store.systemLibraries`，可保存多个连接，同一时间只有一个处于连接/展开状态，只读）/ **网络存储**（`store.cloudMounts`）。当当前图库就是官方「照片」图库时（`isNativeContainer`），主侧边栏直接展示该库自己的结构（共享 / 媒体类型 / 更多项目 / 所有项目 / 相簿），不再渲染「拾光」「系统图库」两个分区；此时它自己的连接不再需要出现在系统图库列表里（`loadSystemLibraries()` 会剔除当前容器自身）。系统图库的连接列表与该连接状态都是 **per-library** 数据：写在当前图库自己的 `MetadataStore.settings`（`system_libraries` / `system_library_path`），切换图库时必须重新 `loadSystemLibraries()`；`UserDefaults["settings.systemLibraries"]` 只作为旧版全局列表的一次性迁入来源。连接用 `registerSystemLibrary(_:)`（追加或更新），断开用 `removeSystemLibrary(_:)`。网络存储的 `cloud_mounts`、云端收藏 `cloud_favorites` 同样写在图库自己的 settings 里。
+- 侧边栏固定三个分区：**拾光**（本地图库范围）/ **系统图库**（`store.systemLibraries`，可保存多个连接，同一时间只有一个处于连接/展开状态，只读）/ **网络存储**（`store.cloudMounts`）。当当前图库就是官方「照片」图库时（`isNativeContainer`），主侧边栏直接展示该库自己的结构（图库 / 精选集 / 媒体类型 / 更多项目 / 相簿），不再渲染「拾光」「系统图库」两个分区；此时它自己的连接不再需要出现在系统图库列表里（`loadSystemLibraries()` 会剔除当前容器自身）。系统图库的连接列表与该连接状态都是 **per-library** 数据：写在当前图库自己的 `MetadataStore.settings`（`system_libraries` / `system_library_path`），切换图库时必须重新 `loadSystemLibraries()`；`UserDefaults["settings.systemLibraries"]` 只作为旧版全局列表的一次性迁入来源。连接用 `registerSystemLibrary(_:)`（追加或更新），断开用 `removeSystemLibrary(_:)`。网络存储的 `cloud_mounts`、云端收藏 `cloud_favorites` 同样写在图库自己的 settings 里。
 - 切换 / 新建图库必须走 `reloadPerLibraryState()`：它会重读图库级设置、视图状态、系统图库连接、网盘挂载与收藏；切换前先调用 `resetCloudStateForLibrarySwitch()` 清空上一个图库的挂载与目录缓存，否则旧挂载会被当成新库的连接写回新库。
 - 每个图库只管理自己的数据：照片与元数据、系统图库连接、网盘挂载与收藏、库级设置（视图状态 / 导入选项 / 最近删除保留期 / 系统图库载入上限 / 网格元数据显示）全部写在该图库内。新图库必须以空连接、默认设置启动；只有旧版全局设置会在升级时一次性迁入当时打开的图库。
-- 系统「照片」图库的扫描结果（索引与元数据，不含原图）缓存在当前图库的 `resources/system-cache/`，缩略图缓存在 `resources/system-thumbs/`，签名取 `Photos.sqlite` 的大小 + 修改时间；缓存命中直接展示，签名变化才后台重扫。超大图库按 `settings.system.maxAssets`（随图库保存）从新到旧截断载入（0 = 不限制），`SystemLibrarySnapshot.totalAssetCount` 保留真实总数用于提示；禁止为系统图库复制原图，拷贝出口仍走 `importSystem*`。
+- 系统「照片」图库的扫描结果（索引与元数据，不含原图）缓存在当前图库的 `resources/system-cache/`，缩略图缓存在 `resources/system-thumbs/`，签名取 `Photos.sqlite` 的大小 + 修改时间，并记录生成快照时的载入上限（`settings.system.maxAssets`）；签名变化或载入上限与当前设置不一致时必须重扫，不得把旧上限的快照当成最新缓存。超大图库按 `settings.system.maxAssets`（随图库保存）从新到旧截断载入（0 = 不限制），`SystemLibrarySnapshot.totalAssetCount` 保留真实总数用于提示；禁止为系统图库复制原图，拷贝出口仍走 `importSystem*`。
 - 系统图库缩略图必须**优先读官方 `resources/derivatives`**（照片 `_1_105_c.jpeg`、视频 `_1_102_o.jpeg` 封面帧，路径由 `LibraryPaths.systemDerivativePath` 推导，扫描时记录到 `systemThumbnailPath`），只有文件缺失时才从原图 / 视频现场生成到 `system-thumbs/`；生成必须经过 `ImageLoader` 的并发门控（3 路）与同文件去重，禁止为网格滚动同时解码几十张原图。
+- 打开相簿 / 文件夹时由 `LibraryStore.navigate(to:)` 触发 `prewarmOpenedCollection`：用 `ImageLoader.prewarmQuickThumbnails` 预热前 300 张的快速层缩略图（3 路并发，解码后写入本地 quick 缓存），让首屏与回看直接命中；切换范围取消上一次预热，换库时在 `reloadPerLibraryState()` 取消。预热只做快速层，禁止扩充到整本相簿或抢占可见格子的解码优先级。
 - 系统图库的相簿 / 文件夹分组缓存键是 `systemStructureRevision`（只随相簿、文件夹变化），不是 `contentRevision`；侧边栏计数统一走 `systemSidebarCounts` 的一次遍历缓存。禁止在扫描过程中按每批照片重建相簿分桶或对每个计数各扫一遍全库。
 - 十万级以上的系统图库「所有照片」网格在视图层按 1200 张渐进渲染（`systemRenderLimit`，滚动到底追加），避免 SwiftUI 对整库做 diff；本地大图库仍走 SQL 分页窗口。
 - 系统图库侧边栏的相簿与文件夹按 `ZGENERICALBUM.Z_PK`（`sortIndex`）排序并混排，与官方「照片」一致；不要改回按名称排序。打开系统图库默认 `grouping == .all`、`sortKey == .capturedAt` 降序。
+- 官方相簿内部沿用 `Photos.sqlite` 关联表（`Z_<n>ASSETS`，按 `Z_FOK_3ASSETS` 排序）保存的显示顺序，包含官方的手动拖拽顺序；`sortKey == .capturedAt` 时不得再按拍摄日期重排相簿，改选其它排序字段时才由拾光排序。
+- 侧边栏的文件夹（本地 `.folder` 与系统 `.systemFolder`）进入后只展示**下一层**的子文件夹与相簿卡片，不得把整个子树的照片直接铺开；系统文件夹用 `SystemFolderOverviewView`（只读，封面取子层第一个有内容的相簿）。
+- 侧边栏一级分区标题（「相簿」「媒体类型」「场景」「更多项目」）可点击打开右侧二级总览：范围是 `.allAlbums` / `.systemAlbums` / `.mediaTypes` / `.systemMediaTypes` / `.scenes` / `.moreItems` / `.systemMoreItems`；「系统图库」「网络存储」分区标题分别对应 `.systemLibraries` / `.cloudStorages`，展示已连接图库与已接入存储的卡片。这些总览范围在 `photos(for:)` 返回空数组、`isGridScope` 必须排除，只渲染卡片墙视图（`AlbumsOverviewView` / `SystemFolderOverviewView` / `MediaTypesOverviewView` / `ScenesOverviewView` / `MoreItemsOverviewView` / `SystemLibrariesOverviewView` / `CloudStoragesOverviewView`）；卡片墙的数量与封面只能读 `store.mediaTypeSummary` / `store.sceneSummary` 的汇总缓存，禁止在视图里遍历整库。
 - 侧边栏相簿与文件夹默认收起（只记录用户展开过的 `expandedFolders` / `expandedSystemFolders`），不要改成默认展开——系统图库可能有上万个相簿。
 
 ---
@@ -209,6 +220,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - `store.isTimelineScope`（仅 `.library` / `.systemLibrary`）才允许「年 / 月 / 所有照片」分段与总览卡片。
 - 照片显示形式由 `store.thumbnailAspect`（`ThumbnailAspect`：正方形 / 完整宽高比 / 瀑布流 / 列表）决定，本地图库、系统图库与网盘共用同一设置；新增形式必须同时接入 `GalleryView.sectionGrid` 与 `CloudBrowserView` 的网格分支。
 - 非时间轴范围 `store.sections` 必须返回单段（无年/月分段、无段头），保证相簿与文件夹是普通网格。
+- 相簿 / 文件夹链路的上一级由 `LibraryStore.navigationParent` 统一给出，工具栏左侧显示「返回上一级」按钮，菜单「照片 › 返回上一级」与 `⌘[` 复用同一个方法（`navigateUp()`）；不要在视图里各自拼父级判断。
 - 年总览：每年一张拼图卡片（最多 4 张照片），点击 `openMonths(of:)`；月总览：按月分段、按天卡片，点击 `openAllPhotos(at:)` 定位。大图库改用 `store.yearBuckets` / `store.monthGroups`（SQL 分区，最多 4 张样本 + 真实总数），不要为了总览遍历全部照片。
 - 网格尺寸只能由 `store.thumbSize`（`LibraryStore.thumbSizeRange` = 56…360，`didSet` 已夹紧）与容器宽度推导；不要写死像素。
 - 卡片圆角用 `settings.cardRadius`，小封面用 `settings.smallCoverRadius`；悬停用 `settings.hoverLift` 与 `settings.motion.hover`；页面级动画用 `settings.motion.layout/overlay`。`RoundedRectangle` 统一 `.continuous`。
@@ -243,9 +255,14 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 网盘凭据禁止写入 `UserDefaults`、日志或 `CloudMount`。
 - 网络请求失败必须转为用户可读中文错误（`WebDAVError` / `CloudOAuthError`），不要直接抛英文 `NSError` 文案。
 - 网盘目录缓存以 `mountID + path` 为键；退出网盘或切换目录时不要泄漏 `Task`。
-- 网络存储网格必须使用 `store.cloudVisiblePhotos`（已统一处理搜索、筛选、排序并缓存），不要直接遍历 `cloudPhotos` 生成可见列表；`CloudBrowserModel.revision` 参与缓存失效。
+- 网络存储网格必须使用 `store.cloudVisiblePhotos`（已统一处理范围、搜索、筛选、排序并缓存），不要直接遍历 `cloudPhotos` 生成可见列表；`CloudBrowserModel.revision` 参与缓存失效。打开网盘时侧边栏要展开该挂载的「媒体类型 / 场景 / 更多项目」：范围由 `CloudScope` 表示，行高亮比较的是 `cloudModel.scope` 而不是 `sidebarItem`（`sidebarItem` 始终是 `.cloudMount(id)`）；`cloudVisiblePhotos` 与 `visibleStateKey` 的缓存键必须包含 `String(describing: cloudModel.scope)` 与 `cloudModel.analysis.count`，否则切换范围后网格不刷新。
+- 网盘侧边栏的分区收起状态必须放在 `CloudMountDetailView` **自己的 `@State`** 里，挂载行的展开箭头用 `SidebarView.collapsedCloudMounts`（每个网盘独立，`cloudMountRow` 的箭头与名称是两个并排按钮，不能把 Button 套进 Button）。把收起状态放到外层 `@State` + `ForEach` 闭包里曾出现「点了收起条目还在」的问题，不要改回去。
+- 网盘场景 / 图内文字识别：只允许经 `LibraryStore.analyzeCloudContent()` 触发，逐张用 `cloudThumbnail(for:)` 取缩略图后调用 `PhotoIntelligence.analyze(cgImage:)`，每次最多 120 张、可取消；结果只写 `CloudBrowserModel.analysis`，搜索与信息面板通过 `LibraryStore+Intelligence` 的回退读取，禁止写入 `asset_analysis` 或网盘。
 - 云照片的「收藏」只写入当前图库的 `MetadataStore.settings`（`cloud_favorites`，键为 `mountID|path`），不得写回 NAS 或网盘；`makeCloudPhoto` 创建时叠加收藏状态，切换收藏后要同步当前列表与 `cloudDirectoryCache`。系统图库 / 只读网盘的写操作（改名、删除、隐藏、相册、编辑）仍禁止。
 - SMB 走 `SMBClient`：用系统 `NetFSMountURLSync` 挂载（`mountpath` 传 `nil`，由系统挂到 `/Volumes/<共享名>`），再用 `getmntinfo`（`resolvedMount(host:share:)`）找到实际挂载点后以 `FileManager` 读目录/文件；**不要把挂载点指定到应用私有目录**（普通用户无权限，NetFS 会返回 EPERM/EINVAL）。只读，不支持上传、重命名与删除。密码只走钥匙串，禁止拼进命令行、日志或 `CloudMount`。自动发现依赖 `Info.plist` 的 `NSBonjourServices`（`_smb._tcp`）；共享列表通过 `SMBShareDiscovery` 调用系统 `smbutil view`，密码只经伪终端写入，禁止进入 argv / 环境变量 / 日志；「整个共享」递归扫描结果与目录浏览共用 `cloudDirectoryCache`，缓存键需带 `tree` 前缀避免冲突。
+- SMB 向导的「共享 → 子目录」多级浏览由 `CloudWizard+SMB` 承担：单击共享只把地址设为 `smb://主机/共享名`，双击共享进入目录浏览（`enterShare`，`smbBrowseShare` 非空时渲染面包屑 + 子文件夹），单击子目录把地址定位到 `smb://主机/共享名/子目录` 并验证，双击继续下钻（层数不限）；所有跳转统一走 `browse(to:)`，读取失败/空目录/读取中都要有文案；双击与单击必须用 `TapGesture(count: 2).exclusively(before:)` 组合，避免双击同时触发单击的验证；切换设备、重新发现与关闭向导都要 `resetBrowseState()`。地址中的子路径由 `SMBClient.pieces` 解析，`list/scanTree` 会自动拼到挂载点后面，不要在向导里另写路径拼接。
+- **子路径只能拼一次**：`SMBClient.ensureMounted()` 返回共享挂载点（`/Volumes/<共享名>`，不含地址里的子路径），`mountedRoot`/`fileURL` 才包含子路径。`list`/`scanTree` 必须用 `ensureMounted()` 的返回值再 `appending(subPath …)` 一次；若改用 `mountedRoot` 会拼成 `/Volumes/share/dir/dir`，表现为「未能打开文件 X，因为它不存在」。
+- SMB 向导复用凭据：`prefillSMBAccount(for:)` 只从**当前图库已保存的** `CloudMount` 取用户名、从钥匙串（`store.cloudPassword(for:)`）取密码，按主机名大小写不敏感匹配；匹配不到不得猜测或复用其它主机的账号。复用后直接 `discoverShares(host:)` 列出共享，并在界面显示「已复用…」；密码仅存在于视图的 `@State` 内存中，禁止写入日志、`UserDefaults` 或新的持久化。
 
 ---
 

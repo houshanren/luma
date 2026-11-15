@@ -308,9 +308,14 @@ struct SMBClient {
         return "\(parsed.host) / \(path)"
     }
 
+    /// 共享的挂载点（不含地址里的子路径）；未挂载时返回 nil。
+    private var mountRoot: URL? {
+        Self.resolvedMount(host: host, share: share)
+    }
+
     /// 共享内的根路径（已包含地址中的子路径）；未挂载时返回 nil。
     var mountedRoot: URL? {
-        guard let root = Self.resolvedMount(host: host, share: share) else { return nil }
+        guard let root = mountRoot else { return nil }
         return Self.appending(subPath, to: root)
     }
 
@@ -319,8 +324,9 @@ struct SMBClient {
         return Self.appending(path, to: root)
     }
 
+    /// 确保共享已挂载，返回**共享挂载点**（不含子路径）；子路径由调用方拼接，避免重复追加。
     func ensureMounted() async throws -> URL {
-        if let root = mountedRoot { return root }
+        if let root = mountRoot { return root }
         guard await Self.probe(host: host) else {
             throw SMBError.unreachable(host)
         }

@@ -486,20 +486,23 @@ enum SystemPhotosLibrary {
 enum SystemLibraryCache {
     /// 解析逻辑或快照结构变更时递增，旧缓存会自动失效。
     /// v5：扫描时记录官方 derivative 路径，旧缓存需要重扫一次。
-    static let version = 5
+    /// v6：缓存记录载入上限，调整上限后旧快照不再被当成最新缓存。
+    static let version = 6
     private static let maxCacheFiles = 8
     /// 超大快照不做缓存，避免编码/解码占用过多内存。
     private static let maxCachedPhotos = 250_000
 
     struct Loaded {
         let snapshot: SystemLibrarySnapshot
-        /// Photos.sqlite 未变化，缓存即最新，无需再扫描。
+        /// Photos.sqlite 未变化且载入上限一致，缓存即最新，无需再扫描。
         let isFresh: Bool
     }
 
     private struct Payload: Codable {
         var version: Int
         var signature: String
+        /// 生成该快照时使用的载入上限（0 = 不限制）。
+        var maxAssets: Int
         var name: String
         var photos: [PhotoItem]
         var albums: [SystemAlbumInfo]
@@ -508,7 +511,7 @@ enum SystemLibraryCache {
         var totalAssetCount: Int?
     }
 
-    static func load(for libraryURL: URL) -> Loaded? {
+    static func load(for libraryURL: URL, maxAssets: Int) -> Loaded? {
         guard let signature = signature(for: libraryURL),
               let file = cacheFile(for: libraryURL),
               let data = try? Data(contentsOf: file),
@@ -520,15 +523,18 @@ enum SystemLibraryCache {
                                              folders: payload.folders,
                                              people: payload.people,
                                              totalAssetCount: payload.totalAssetCount)
-        return Loaded(snapshot: snapshot, isFresh: payload.signature == signature)
+        // 上限变化时先展示旧快照，再按新上限重扫，避免出现空白等待。
+        let isFresh = payload.signature == signature && payload.maxAssets == maxAssets
+        return Loaded(snapshot: snapshot, isFresh: isFresh)
     }
 
-    static func save(_ snapshot: SystemLibrarySnapshot, for libraryURL: URL) {
+    static func save(_ snapshot: SystemLibrarySnapshot, maxAssets: Int, for libraryURL: URL) {
         guard snapshot.photos.count <= maxCachedPhotos,
               let signature = signature(for: libraryURL),
               let file = cacheFile(for: libraryURL) else { return }
         let payload = Payload(version: version,
                               signature: signature,
+                              maxAssets: maxAssets,
                               name: snapshot.name,
                               photos: snapshot.photos,
                               albums: snapshot.albums,

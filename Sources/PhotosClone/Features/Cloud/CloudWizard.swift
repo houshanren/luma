@@ -36,6 +36,16 @@ struct CloudSetupWizardView: View {
     @State var availableShares: [String] = []
     @State var isDiscoveringShares = false
     @State var shareDiscoveryToken = 0
+    /// 复用了哪一条已保存 SMB 连接的账号（用于界面提示）。
+    @State var reusedSMBMountName: String?
+    /// 双击共享后进入的目录浏览状态（第二层及更深）。
+    @State var smbBrowseHost: String?
+    @State var smbBrowseShare: String?
+    @State var smbBrowsePath = ""
+    @State var smbBrowseFolders: [String] = []
+    @State var isLoadingBrowseFolders = false
+    @State var browseFoldersError: String?
+    @State var browseToken = 0
 
     // AList
     @State var alistProvider: AlistProvider = .aliyun
@@ -294,7 +304,15 @@ struct CloudSetupWizardView: View {
         networkVerified = false
         smbVerified = false
         if flow == .smb {
+            // 已有 SMB 连接时复用账号与钥匙串密码，不必再输一次。
+            prefillSMBAccount()
             startSMBDiscovery()
+            if let host = SMBClient.pieces(smbAddress)?.host, !host.isEmpty,
+               !smbUsername.trimmingCharacters(in: .whitespaces).isEmpty,
+               !smbPassword.isEmpty {
+                // 账号齐全就直接列出共享，省去再点「发现共享」。
+                discoverShares(host: host)
+            }
         } else {
             cancelSMBDiscovery()
         }

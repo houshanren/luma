@@ -65,9 +65,8 @@ struct EmptyStateView: View {
             return ("eye.slash", "没有隐藏的照片", "")
         case .systemTrash:
             return ("trash", "最近删除为空", "系统图库中删除的照片会显示在这里。")
-        case .systemSharedAlbums:
-            return ("rectangle.stack.badge.person.crop", "没有共享相簿",
-                    "共享相簿的数据保存在 iCloud，无法从本机图库数据库读取。")
+        case .systemCollections:
+            return ("square.stack.3d.up", "还没有精选集", "连接系统图库后，这里会汇总它自己的收藏、视频、截屏等精选内容。")
         case .systemPortraits:
             return ("person.crop.rectangle", "没有人像照片", "带景深信息的人像照片会显示在这里。")
         case .systemDuplicates:

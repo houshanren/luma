@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+/// 场景总览用的汇总：数量与封面各一次遍历算完。
+struct SceneSummary {
+    var counts: [String: Int] = [:]
+    var covers: [String: PhotoItem] = [:]
+}
+
 /// 端侧智能分析：场景标签、OCR 文字与相似照片检索。仅作用于拾光本地图库。
 extension LibraryStore {
     // MARK: - 分析索引
@@ -45,15 +51,17 @@ extension LibraryStore {
     }
 
     /// 端侧分析出的场景中文名，用于信息面板的「智能标签」。
+    /// 网盘照片的识别结果只在内存里，这里一并读取。
     func sceneTitles(for photoID: UUID) -> [String] {
-        guard let analysis = analysisIndex[photoID] else { return [] }
+        guard let analysis = analysisIndex[photoID] ?? cloudModel.analysis[photoID] else { return [] }
         return SceneCatalog.categories
             .filter { !$0.labels.isDisjoint(with: analysis.labels) }
             .map(\.title)
     }
 
     func ocrText(for photoID: UUID) -> String? {
-        guard let text = analysisIndex[photoID]?.text, !text.isEmpty else { return nil }
+        let text = (analysisIndex[photoID] ?? cloudModel.analysis[photoID])?.text
+        guard let text, !text.isEmpty else { return nil }
         return text
     }
 
@@ -159,24 +167,32 @@ extension LibraryStore {
 
     // MARK: - 场景统计
 
-    /// 各场景的照片数；随照片内容与分析结果变化自动重算。
-    var sceneCounts: [String: Int] {
+    /// 场景总览（数量 + 封面）：各场景的照片数随照片内容与分析结果变化自动重算。
+    var sceneSummary: SceneSummary {
         let key = "\(contentRevision)-\(analysisIndex.count)"
-        if key == sceneCountsCacheKey { return sceneCountsCache }
-        var counts: [String: Int] = [:]
+        if key == sceneSummaryCacheKey { return sceneSummaryCache }
+        var summary = SceneSummary()
         if !analysisIndex.isEmpty {
             for photo in photos where photo.deletedAt == nil && !photo.isHidden {
                 guard let analysis = analysisIndex[photo.id] else { continue }
                 for category in SceneCatalog.categories
                 where !category.labels.isDisjoint(with: analysis.labels) {
-                    counts[category.id, default: 0] += 1
+                    summary.counts[category.id, default: 0] += 1
+                    if summary.covers[category.id] == nil {
+                        summary.covers[category.id] = photo
+                    }
                 }
             }
         }
+        sceneSummaryCacheKey = key
+        sceneSummaryCache = summary
         sceneCountsCacheKey = key
-        sceneCountsCache = counts
-        return counts
+        sceneCountsCache = summary.counts
+        return summary
     }
+
+    /// 各场景的照片数；随照片内容与分析结果变化自动重算。
+    var sceneCounts: [String: Int] { sceneSummary.counts }
 
     var hasAnyScene: Bool { sceneCounts.values.contains { $0 > 0 } }
 

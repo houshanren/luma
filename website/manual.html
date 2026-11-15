@@ -78,7 +78,7 @@
     </nav>
 
     <div class="doc-side-foot">
-      <span>版本 1.0</span>
+      <span>版本 1.1</span>
       <span>适用于 macOS 14+</span>
     </div>
   </aside>
@@ -89,7 +89,7 @@
       <h1>把十万张照片，<br>整理成一段清楚的时间线。</h1>
       <p class="doc-lede">这本手册覆盖拾光的全部功能：从建库、导入与浏览，到端侧智能、可选的智能助手、回忆影片、网络存储与官方「照片」图库接入。它同时说明数据写在哪里、权限边界如何划分，以及哪些事情应该继续交给系统「照片」。</p>
       <div class="doc-meta">
-        <span>版本 1.0</span>
+        <span>版本 1.1</span>
         <span>更新于 2026 年 11 月</span>
         <span>界面语言：简体中文</span>
         <span>无账号 · 无第三方依赖</span>
@@ -772,7 +772,7 @@ open Luma.app        # 运行</code></pre></div>
 
       <h3>作为当前图库打开</h3>
       <ul class="doc-list">
-        <li>主侧边栏直接展示该库自己的结构：共享、媒体类型、更多项目、所有项目与相簿；不再显示「拾光 / 系统图库」两个分区。</li>
+        <li>主侧边栏直接展示该库自己的结构：图库、精选集、媒体类型、更多项目与相簿；不再显示「拾光 / 系统图库」两个分区。</li>
         <li>照片内容读取 <code>Photos.sqlite</code>，包括自定义标题、实况照片与连拍标记。</li>
         <li>收藏、隐藏、关键词与查看时间写入该库 <code>database/PhotosClone.sqlite</code> 的 <code>asset_overlays</code>，NULL 表示沿用 Apple 的值。</li>
         <li>删除、编辑、导入、重命名仍然禁止；相关菜单项为禁用状态。</li>
@@ -789,7 +789,7 @@ open Luma.app        # 运行</code></pre></div>
       <ul class="doc-list">
         <li>扫描结果（索引与元数据，不含原图）缓存在当前图库的 <code>resources/system-cache/</code>，缩略图在 <code>resources/system-thumbs/</code>；签名取 <code>Photos.sqlite</code> 的大小 + 修改时间，切换图库不会共用缓存。</li>
         <li>缓存命中直接展示；签名变化才后台重扫。缩略图缓存写在当前图库包内，原图直接从官方库读取。</li>
-        <li>超大图库按设置 › 通用 › 系统图库载入 › 载入上限从新到旧截断（5 万 / 10 万 / 20 万 / 不限制，默认 10 万），超出时提示真实总数。</li>
+        <li>超大图库按设置 › 通用 › 系统图库载入 › 载入上限从新到旧截断（5 万 / 10 万 / 20 万 / 50 万 / 100 万 / 150 万项 / 不限制，默认 10 万），超出时提示真实总数；载入 50 万项以上会占用较多内存。</li>
         <li>相簿与文件夹按 <code>ZGENERICALBUM.Z_PK</code> 排序并混排，与官方「照片」一致；默认全部收起。</li>
       </ul>
 
@@ -875,7 +875,7 @@ open Luma.app        # 运行</code></pre></div>
           <tr><th>幻灯片</th><td>间隔与 Ken Burns 效果</td></tr>
           <tr><th>导入默认</th><td>按文件夹创建相簿、保留上层结构</td></tr>
           <tr><th>查看器</th><td>打开时显示信息面板</td></tr>
-          <tr><th>系统图库载入</th><td>载入上限：5 万 / 10 万 / 20 万 / 不限制（默认 10 万），随当前图库保存</td></tr>
+          <tr><th>系统图库载入</th><td>载入上限：5 万 / 10 万 / 20 万 / 50 万 / 100 万 / 150 万项 / 不限制（默认 10 万），随当前图库保存</td></tr>
         </tbody>
       </table>
 
@@ -1095,7 +1095,7 @@ open Luma.app        # 运行</code></pre></div>
     <footer class="doc-footer">
       <div>
         <b>拾光 Luma 使用手册</b>
-        <span>版本 1.0 · 更新于 2026 年 11 月 · 适用于 macOS 14+</span>
+        <span>版本 1.1 · 更新于 2026 年 11 月 · 适用于 macOS 14+</span>
       </div>
       <div class="doc-footer-links">
         <a href="#intro">回到顶部</a>

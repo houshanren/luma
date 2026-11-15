@@ -22,6 +22,9 @@ extension LibraryStore {
         case .screenshots: return "截屏"
         case .hidden: return "已隐藏"
         case .allAlbums: return "所有相簿"
+        case .mediaTypes: return "媒体类型"
+        case .scenes: return "场景"
+        case .moreItems: return "更多项目"
         case .album(let id): return albums.first(where: { $0.id == id })?.name ?? "相簿"
         case .smartAlbum(let id): return smartAlbums.first(where: { $0.id == id })?.name ?? "智能相簿"
         case .folder(let id): return folders.first(where: { $0.id == id })?.name ?? "文件夹"
@@ -41,6 +44,12 @@ extension LibraryStore {
         case .revisit: return "值得重看"
         case .trash: return "最近删除"
         case .systemLibrary: return systemLibraryName ?? "系统照片图库"
+        case .systemCollections: return "精选集"
+        case .systemAlbums: return "相簿"
+        case .systemMediaTypes: return "媒体类型"
+        case .systemMoreItems: return "更多项目"
+        case .systemLibraries: return "系统图库"
+        case .cloudStorages: return "网络存储"
         case .systemAlbum(let id): return systemAlbums.first(where: { $0.id == id })?.name ?? "系统相簿"
         case .systemFolder(let id): return systemFolders.first(where: { $0.id == id })?.name ?? "系统文件夹"
         case .systemFavorites: return "个人收藏"
@@ -48,7 +57,6 @@ extension LibraryStore {
         case .systemScreenshots: return "截屏"
         case .systemHidden: return "已隐藏"
         case .systemTrash: return "最近删除"
-        case .systemSharedAlbums: return "共享相簿"
         case .systemPortraits: return "人像"
         case .systemSelfies: return "自拍"
         case .systemLivePhotos: return "实况照片"
@@ -75,6 +83,54 @@ extension LibraryStore {
         sidebarItem.isSystemScope
     }
 
+    /// 当前范围的上一级（用于工具栏「返回」与相簿链路）：没有上一级时返回 nil。
+    var navigationParent: (item: SidebarItem, title: String)? {
+        switch sidebarItem {
+        case .album(let id):
+            guard let album = albums.first(where: { $0.id == id }) else { return nil }
+            if let folderID = album.folderID,
+               let folder = folders.first(where: { $0.id == folderID }) {
+                return (.folder(folderID), folder.name)
+            }
+            return (.allAlbums, "所有相簿")
+        case .folder(let id):
+            guard let folder = folders.first(where: { $0.id == id }) else { return nil }
+            if let parentID = folder.parentID,
+               let parent = folders.first(where: { $0.id == parentID }) {
+                return (.folder(parentID), parent.name)
+            }
+            return (.allAlbums, "所有相簿")
+        case .smartAlbum:
+            return (.allAlbums, "所有相簿")
+        case .systemAlbum(let id):
+            guard let album = systemAlbum(id: id) else { return nil }
+            if let parentID = album.parentFolder,
+               let parent = systemFolders.first(where: { $0.id == parentID }) {
+                return (.systemFolder(parentID), parent.name)
+            }
+            return (.systemLibrary, systemLibraryName ?? "所有项目")
+        case .systemFolder(let id):
+            guard let folder = systemFolders.first(where: { $0.id == id }) else { return nil }
+            if let parentID = folder.parent,
+               let parent = systemFolders.first(where: { $0.id == parentID }) {
+                return (.systemFolder(parentID), parent.name)
+            }
+            return (.systemLibrary, systemLibraryName ?? "所有项目")
+        case .allAlbums, .mediaTypes, .scenes, .moreItems:
+            return (.library, "图库")
+        case .systemAlbums, .systemMediaTypes, .systemMoreItems:
+            return (.systemLibrary, systemLibraryName ?? "所有项目")
+        default:
+            return nil
+        }
+    }
+
+    /// 回到当前相簿 / 文件夹的上一级。
+    func navigateUp() {
+        guard let parent = navigationParent else { return }
+        navigate(to: parent.item)
+    }
+
     /// 当前图库就是官方「照片」图库：拾光作为它的增强层，主界面直接展示这个库自己的照片，
     /// 拾光自己的元数据（设置、相簿、分析）写在同一个库的 `database/PhotosClone.sqlite` 里。
     var isNativeContainer: Bool {
@@ -91,7 +147,10 @@ extension LibraryStore {
     var isGridScopeForCommands: Bool {
         switch sidebarItem {
         case .collections, .map, .places, .systemMap, .systemPlaces, .systemPeople,
-             .allAlbums, .folder, .people, .cloudMount, .duplicates:
+             .allAlbums, .folder, .systemFolder, .people, .cloudMount, .duplicates,
+             .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
+             .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
+             .systemDuplicates:
             return false
         default:
             return true
@@ -125,6 +184,26 @@ extension LibraryStore {
         return mount.kind == .smb
     }
 
+    /// 媒体类型总览：数量与封面一次遍历算完（本地 / 系统图库共用）。
+    var mediaTypeSummary: MediaTypeSummary {
+        let key = "\(contentRevision)-\(isSystemScope)"
+        if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
+        var summary = MediaTypeSummary()
+        let source = isSystemScope ? systemPhotos : photos
+        for photo in source {
+            guard photo.deletedAt == nil, !photo.isHidden else { continue }
+            for type in MediaTypeKey.allCases where type.matches(photo) {
+                summary.counts[type, default: 0] += 1
+                if summary.covers[type] == nil {
+                    summary.covers[type] = photo
+                }
+            }
+        }
+        mediaTypeSummaryCacheKey = key
+        mediaTypeSummaryCacheValue = summary
+        return summary
+    }
+
     func photos(for item: SidebarItem) -> [PhotoItem] {
         let live = photos.filter { $0.deletedAt == nil && !$0.isHidden }
         switch item {
@@ -146,6 +225,10 @@ extension LibraryStore {
             return revisitPhotos
         case .systemLibrary:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
+        case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
+             .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages:
+            // 总览页只展示分类卡片，不返回照片。
+            return []
         case .systemFavorites:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isFavorite }
         case .systemVideos:
@@ -156,8 +239,6 @@ extension LibraryStore {
             return systemPhotos.filter { $0.deletedAt == nil && $0.isHidden }
         case .systemTrash:
             return systemPhotos.filter { $0.deletedAt != nil }
-        case .systemSharedAlbums:
-            return []
         case .systemPortraits:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isPortraitCapture }
         case .systemSelfies:
@@ -228,7 +309,7 @@ extension LibraryStore {
             let limit = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? .distantPast
             return live.filter { $0.addedAt >= limit }
         case .duplicates:
-            return duplicateGroups.flatMap { $0 }
+            return duplicateGroups.flatMap(\.photos)
         case .map:
             return live.filter { $0.hasLocation }
         case .places:
@@ -281,7 +362,10 @@ extension LibraryStore {
         case .edited: return photo.hasEdits
         case .photos: return !photo.isVideo
         case .videos: return photo.isVideo
-        case .screenshots: return photo.kind == .screenshot
+        case .screenshots:
+            // 网盘没有可读的相机元数据，截屏只能按文件名判断。
+            if photo.isCloud { return CloudMediaNaming.looksLikeScreenshot(photo.originalName) }
+            return photo.kind == .screenshot
         case .mine: return photo.make != nil || photo.model != nil
         case .notInAlbum: return !albumPhotoIDs.contains(photo.id)
         }
@@ -315,7 +399,12 @@ extension LibraryStore {
         if query.onlyFavorites, !photo.isFavorite { return false }
         if query.onlyVideos, !photo.isVideo { return false }
         if query.onlyPhotos, photo.isVideo { return false }
-        if query.onlyScreenshots, photo.kind != .screenshot { return false }
+        if query.onlyScreenshots {
+            let isScreenshot = photo.isCloud
+                ? CloudMediaNaming.looksLikeScreenshot(photo.originalName)
+                : photo.kind == .screenshot
+            if !isScreenshot { return false }
+        }
         if query.onlyLivePhotos, !photo.isLivePhoto { return false }
         if query.onlyEdited, !photo.hasEdits { return false }
 
@@ -349,8 +438,9 @@ extension LibraryStore {
             DateText.yearFormatter.string(from: photo.capturedAt),
             formatFileSize(photo.fileSize)
         ]
-        // 端侧分析结果：场景标签 + OCR 文字。
-        if let analysis = analysisIndex[photo.id], !analysis.searchBlob.isEmpty {
+        // 端侧分析结果：场景标签 + OCR 文字。网盘照片的识别结果只在内存里。
+        let analysis = analysisIndex[photo.id] ?? (photo.isCloud ? cloudModel.analysis[photo.id] : nil)
+        if let analysis, !analysis.searchBlob.isEmpty {
             parts.append(analysis.searchBlob)
         }
         let haystack = parts.joined(separator: " ").lowercased()
@@ -361,10 +451,12 @@ extension LibraryStore {
         }
     }
 
-    /// 网络存储网格：套用筛选、搜索与排序；目录结果规模有限，直接在内存处理并缓存。
+    /// 网络存储网格：套用范围、筛选、搜索与排序；目录结果规模有限，直接在内存处理并缓存。
     var cloudVisiblePhotos: [PhotoItem] {
         let key = [
             String(cloudModel.revision),
+            String(describing: cloudModel.scope),
+            String(cloudModel.analysis.count),
             searchText,
             photoFilter.rawValue,
             sortKey.rawValue,
@@ -372,6 +464,10 @@ extension LibraryStore {
         ].joined(separator: "\u{1F}")
         if cloudVisibleCacheKey == key { return cloudVisibleCacheValue }
         var items = cloudPhotos.filter { !$0.isHidden }
+        if cloudModel.scope != .all {
+            let scope = cloudModel.scope
+            items = items.filter { cloudPhoto($0, matches: scope) }
+        }
         if photoFilter != .all {
             items = items.filter { matchesFilter($0, albumPhotoIDs: []) }
         }
@@ -401,6 +497,8 @@ extension LibraryStore {
             sortKey.rawValue,
             String(sortAscending),
             String(cloudModel.revision),
+            String(describing: cloudModel.scope),
+            String(cloudModel.analysis.count),
             String(isLoadingSystemLibrary),
             // 端侧分析会改变搜索/场景/OCR 的命中结果，必须参与缓存失效（避免分析过程中反复重算全库）。
             String((searchText.isEmpty && !isAnalysisScope) ? 0 : analysisIndex.count),
@@ -457,6 +555,17 @@ extension LibraryStore {
             return items.sorted { $0.addedAt > $1.addedAt }
         case .trash, .systemTrash:
             return items.sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
+        case .systemAlbum(let id):
+            // 官方相簿在 Photos.sqlite 的关联表里保存了自己的显示顺序（拍摄日期 / 添加日期 / 手动拖拽）。
+            // 默认沿用该顺序（与系统「照片」一致）；用户在排序菜单里换成其它字段时按用户选择排序。
+            guard sortKey == .capturedAt, let album = systemAlbum(id: id) else {
+                return sortedByCurrentKey(items)
+            }
+            let positions = Dictionary(uniqueKeysWithValues:
+                album.assetIDs.enumerated().map { ($0.element, $0.offset) })
+            return items.sorted {
+                (positions[$0.id] ?? Int.max) < (positions[$1.id] ?? Int.max)
+            }
         default:
             // 扫描过程中先按数据库顺序展示，结束后再统一排序，避免反复排序超大数组。
             if isLoadingSystemLibrary, isSystemScope {

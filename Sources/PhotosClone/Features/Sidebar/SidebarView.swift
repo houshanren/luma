@@ -50,15 +50,12 @@ struct SidebarView: View {
                     }
                 }
 
-                sectionHeader("相簿", key: "luma.albums") {
+                sectionHeader("相簿", key: "luma.albums", navigateTo: .allAlbums) {
                     Button("新建相簿") {
                         store.showNewAlbumSheet = true
                     }
                     Button("新建智能相簿…") {
                         store.presentSmartAlbumEditor()
-                    }
-                    Button("新建文件夹") {
-                        namePrompt = .newFolder(parentID: nil)
                     }
                 }
                 if !isCollapsed("luma.albums") {
@@ -70,25 +67,6 @@ struct SidebarView: View {
                     ForEach(store.rootAlbums) { album in
                         albumRow(album, level: 0)
                     }
-
-                    Button {
-                        namePrompt = .newFolder(parentID: nil)
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 11, weight: .medium))
-                                .frame(width: 18)
-                            Text("新建文件夹")
-                                .font(.system(size: 12))
-                            Spacer()
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 2)
                 }
 
                 if !store.smartAlbums.isEmpty {
@@ -104,7 +82,7 @@ struct SidebarView: View {
                     }
                 }
 
-                sectionHeader("媒体类型", key: "luma.media")
+                sectionHeader("媒体类型", key: "luma.media", navigateTo: .mediaTypes)
                 if !isCollapsed("luma.media") {
                     sidebarRow(.videos, icon: "video", title: "视频", pinKey: "videos")
                     sidebarRow(.selfies, icon: "person.crop.circle", title: "自拍", pinKey: "selfies")
@@ -115,7 +93,7 @@ struct SidebarView: View {
                     sidebarRow(.raws, icon: "camera.aperture", title: "RAW", pinKey: "raws")
                 }
 
-                sectionHeader("场景", key: "luma.scenes") {
+                sectionHeader("场景", key: "luma.scenes", navigateTo: .scenes) {
                     if store.isAnalyzingIntelligence {
                         Button("停止分析") { store.cancelIntelligenceAnalysis() }
                     } else {
@@ -134,7 +112,7 @@ struct SidebarView: View {
                     sceneSectionBody
                 }
 
-                sectionHeader("更多项目", key: "luma.more")
+                sectionHeader("更多项目", key: "luma.more", navigateTo: .moreItems)
                 if !isCollapsed("luma.more") {
                     sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏", color: .pink, pinKey: "favorites")
                     trashRow(pinKey: "trash")
@@ -615,20 +593,36 @@ struct SidebarView: View {
     }
 
     /// 可收起的分区头：悬停时显示「更多」与「收起 / 展开」。
+    /// 传入 `navigateTo` 时标题可点击，右侧显示该分区的二级总览视图。
     @ViewBuilder
     private func sectionHeader<MenuContent: View>(
         _ title: String,
         key: String,
         topPadding: CGFloat = 16,
+        navigateTo: SidebarItem? = nil,
         @ViewBuilder menu: () -> MenuContent = { EmptyView() }
     ) -> some View {
         let collapsed = collapsedSections.contains(key)
         let hovering = hoveredSection == key
+        let active = navigateTo.map { $0 == store.sidebarItem } ?? false
 
         HStack(spacing: 2) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+            if let navigateTo {
+                Button {
+                    store.navigate(to: navigateTo)
+                } label: {
+                    Text(title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("打开「\(title)」总览")
+            } else {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
             if hovering {
                 Menu {
@@ -804,7 +798,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var systemSection: some View {
-        sectionHeader("系统图库", key: "sys.libraries") {
+        sectionHeader("系统图库", key: "sys.libraries", navigateTo: .systemLibraries) {
             Button("选择其他图库…") { store.presentSystemLibraryPanel() }
             Button("新建照片图库…") { store.presentNewLibraryPanel() }
             if let path = store.systemLibraryPath {
@@ -963,16 +957,15 @@ struct SidebarView: View {
         }
     }
 
-    /// 当前系统图库的浏览入口（共享 / 媒体类型 / 更多项目 / 项目 / 相簿），缩进挂在对应图库下面。
+    /// 当前系统图库的浏览入口（图库 / 精选集 / 媒体类型 / 更多项目 / 相簿），缩进挂在对应图库下面。
     @ViewBuilder
     private var systemLibraryDetail: some View {
         LazyVStack(alignment: .leading, spacing: 1) {
-            sectionHeader("共享", key: "sys.shared", topPadding: 8)
-            if !isCollapsed("sys.shared") {
-                systemSharedAlbumsRow
-            }
+            // 与「拾光」分区一致：最上面是系统图库自己的「图库」与「精选集」。
+            sidebarRow(.systemLibrary, icon: "photo.stack", title: "图库")
+            sidebarRow(.systemCollections, icon: "square.stack.3d.up", title: "精选集")
 
-            sectionHeader("媒体类型", key: "sys.media", topPadding: 12)
+            sectionHeader("媒体类型", key: "sys.media", topPadding: 12, navigateTo: .systemMediaTypes)
             if !isCollapsed("sys.media") {
                 sidebarRow(.systemVideos, icon: "video", title: "视频")
                 sidebarRow(.systemSelfies, icon: "person.crop.circle", title: "自拍")
@@ -986,7 +979,7 @@ struct SidebarView: View {
                 sidebarRow(.systemRAW, icon: "camera.aperture", title: "RAW")
             }
 
-            sectionHeader("更多项目", key: "sys.more", topPadding: 12)
+            sectionHeader("更多项目", key: "sys.more", topPadding: 12, navigateTo: .systemMoreItems)
             if !isCollapsed("sys.more") {
                 sidebarRow(.systemFavorites, icon: "heart.fill", title: "个人收藏", color: .pink)
                 systemTrashRow
@@ -1009,11 +1002,6 @@ struct SidebarView: View {
                 if store.systemHiddenCount > 0 {
                     sidebarRow(.systemHidden, icon: "eye.slash", title: "已隐藏", color: .secondary)
                 }
-            }
-
-            sectionHeader("项目", key: "sys.project", topPadding: 12)
-            if !isCollapsed("sys.project") {
-                sidebarRow(.systemLibrary, icon: "photo.stack", title: "所有项目")
             }
 
             if store.isLoadingSystemLibrary {
@@ -1042,7 +1030,7 @@ struct SidebarView: View {
             }
 
             if !store.systemFolders.isEmpty || !store.systemAlbums.isEmpty {
-                sectionHeader("相簿", key: "sys.albums", topPadding: 12)
+                sectionHeader("相簿", key: "sys.albums", topPadding: 12, navigateTo: .systemAlbums)
             }
             if !isCollapsed("sys.albums") {
                 ForEach(store.systemChildren(of: nil)) { entry in
@@ -1051,43 +1039,6 @@ struct SidebarView: View {
             }
         }
         .padding(.leading, 14)
-    }
-
-    private var systemSharedAlbumsRow: some View {
-        Button {
-            store.navigate(to: .systemSharedAlbums)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "rectangle.stack.badge.person.crop")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 18)
-                Text("共享相簿")
-                    .font(.system(size: 12.5))
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
-            .background {
-                if store.sidebarItem == .systemSharedAlbums {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == .systemSharedAlbums {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            hoveredItem = hovering
-                ? .systemSharedAlbums
-                : (hoveredItem == .systemSharedAlbums ? nil : hoveredItem)
-        }
     }
 
     private var systemTrashRow: some View {
@@ -1129,7 +1080,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var cloudSection: some View {
-        sectionHeader("网络存储", key: "cloud") {
+        sectionHeader("网络存储", key: "cloud", navigateTo: .cloudStorages) {
             Button("网盘接入向导…") {
                 store.presentCloudWizard()
             }
@@ -1157,78 +1108,9 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             } else {
                 ForEach(cloud.mounts) { mount in
-                    cloudMountRow(mount)
+                    CloudMountSidebarRow(mount: mount)
                 }
             }
-        }
-    }
-
-    private func cloudMountRow(_ mount: CloudMount) -> some View {
-        let item = SidebarItem.cloudMount(mount.id)
-        return Button {
-            store.navigate(to: item)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: mountIcon(mount.kind))
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 18)
-                Text(mount.name)
-                    .font(.system(size: 12.5))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if cloud.loading, store.sidebarItem == item {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
-            .background {
-                if store.sidebarItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
-        }
-        .contextMenu {
-            Button("刷新") {
-                if store.sidebarItem == item {
-                    store.refreshCloudDirectory()
-                } else {
-                    store.navigate(to: item)
-                }
-            }
-            if mount.kind == .webdav || mount.kind == .smb {
-                Button("编辑连接…") {
-                    store.presentCloudSheet(mount)
-                }
-            } else {
-                Button("重新授权…") {
-                    store.presentCloudWizard(flow: mount.kind == .aliyun ? .aliyun : .baidu)
-                }
-            }
-            Divider()
-            Button("断开连接", role: .destructive) {
-                store.removeCloudMount(mount.id)
-            }
-        }
-    }
-
-    private func mountIcon(_ kind: CloudKind) -> String {
-        switch kind {
-        case .webdav: return "externaldrive.connected.to.line.below"
-        case .smb: return "network"
-        case .aliyun: return "cloud"
-        case .baidu: return "cloud.fill"
         }
     }
 

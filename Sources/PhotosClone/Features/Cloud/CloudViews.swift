@@ -199,13 +199,20 @@ struct CloudBrowserView: View {
     }
 
     private var isFiltering: Bool {
-        store.photoFilter != .all || !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty
+        store.cloudScope != .all
+            || store.photoFilter != .all
+            || !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private var pathText: String {
         if isScanAll { return "整个共享" }
         let trail = cloud.trail.map(\.name)
         return trail.isEmpty ? "/" : trail.joined(separator: " / ")
+    }
+
+    /// 按范围浏览时只显示照片，文件夹留到「全部项目」里。
+    private var showsFolders: Bool {
+        store.cloudScope == .all && !cloud.folders.isEmpty
     }
 
     var body: some View {
@@ -240,6 +247,10 @@ struct CloudBrowserView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+            }
+
+            if store.cloudScope != .all {
+                scopeChip
             }
 
             Spacer()
@@ -306,6 +317,31 @@ struct CloudBrowserView: View {
         .padding(.vertical, 10)
     }
 
+    /// 当前网盘范围的胶囊，点 × 回到「全部项目」。
+    private var scopeChip: some View {
+        HStack(spacing: 5) {
+            Image(systemName: store.cloudScope.icon)
+                .font(.system(size: 9.5, weight: .semibold))
+            Text(store.cloudScope.title)
+                .font(.system(size: 10.5, weight: .medium))
+            Button {
+                store.setCloudScope(.all)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("回到全部项目")
+        }
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            Capsule().fill(Color.accentColor.opacity(0.12))
+        }
+    }
+
     @ViewBuilder
     private func content(width: CGFloat) -> some View {
         ScrollView {
@@ -315,7 +351,7 @@ struct CloudBrowserView: View {
                         .padding(.horizontal, 20)
                 }
 
-                if !cloud.folders.isEmpty {
+                if showsFolders {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 10)], spacing: 10) {
                         ForEach(cloud.folders) { entry in
                             CloudFolderTile(entry: entry)
@@ -324,7 +360,7 @@ struct CloudBrowserView: View {
                     .padding(.horizontal, 20)
                 }
 
-                if photos.isEmpty, cloud.folders.isEmpty {
+                if photos.isEmpty, !showsFolders {
                     if cloud.loading {
                         HStack {
                             Spacer()
@@ -405,10 +441,13 @@ struct CloudBrowserView: View {
                 .foregroundStyle(.tertiary)
             Text("没有符合筛选条件的项目")
                 .font(.system(size: 15, weight: .semibold))
-            Text("调整筛选或搜索关键词后再试。")
+            Text(store.cloudScope.requiresAnalysis && store.cloudAnalyzedCount == 0
+                 ? "先在左侧「场景 › 识别内容」完成识别，再按场景或图内文字浏览。"
+                 : "调整范围、筛选或搜索关键词后再试。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             Button("清除筛选与搜索") {
+                store.setCloudScope(.all)
                 store.clearFilter()
                 store.searchText = ""
             }

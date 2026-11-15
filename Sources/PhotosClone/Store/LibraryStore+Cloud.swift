@@ -24,6 +24,7 @@ extension LibraryStore {
         cloudDirectoryCache.removeAll()
         cloudPasswords.removeAll()
         cloudFavorites = []
+        resetCloudInsight()
     }
 
     func loadCloudMounts() {
@@ -178,6 +179,7 @@ extension LibraryStore {
         CloudCredentials.delete(for: id)
         CloudOAuthStore.deleteToken(mountID: id)
         cloudPasswords[id] = nil
+        if cloudModel.insightMountID == id { resetCloudInsight() }
         // 清掉该挂载的本地收藏记录，避免残留键越积越多。
         let favoritePrefix = "\(id.uuidString)|"
         if cloudFavorites.contains(where: { $0.hasPrefix(favoritePrefix) }) {
@@ -196,6 +198,7 @@ extension LibraryStore {
 
     func openCloudMount(_ id: UUID) {
         guard let mount = cloudMounts.first(where: { $0.id == id }) else { return }
+        prepareCloudInsight(for: id)
         switch mount.kind {
         case .webdav:
             openBrowseMount(mount)

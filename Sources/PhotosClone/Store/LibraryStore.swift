@@ -286,6 +286,8 @@ final class LibraryStore: ObservableObject {
     var toastTask: Task<Void, Never>?
     var importTask: Task<Void, Never>?
     var compressionTask: Task<Void, Never>?
+    /// 打开相簿 / 文件夹后的缩略图预热任务，切换范围时取消。
+    var thumbnailPrewarmTask: Task<Void, Never>?
     var compressionEstimateTask: Task<Void, Never>?
     var compressionCancelled = false
     var intelligenceTask: Task<Void, Never>?
@@ -299,10 +301,24 @@ final class LibraryStore: ObservableObject {
     var beautyTask: Task<Void, Never>?
     var sceneCountsCacheKey: String?
     var sceneCountsCache: [String: Int] = [:]
+    /// 场景总览（数量 + 封面）一次遍历缓存。
+    var sceneSummaryCacheKey: String?
+    var sceneSummaryCache = SceneSummary()
+    /// 媒体类型总览（数量 + 封面）一次遍历缓存。
+    var mediaTypeSummaryCacheKey: String?
+    var mediaTypeSummaryCacheValue = MediaTypeSummary()
+    /// 重复项目分组一次遍历缓存（按内容版本失效）。
+    var duplicateGroupsCacheKey: String?
+    var duplicateGroupsCache: [DuplicateGroup] = []
+    /// 系统图库重复项目分组缓存（首次打开重复页时才计算）。
+    var systemDuplicateGroupsCacheKey: String?
+    var systemDuplicateGroupsCache: [DuplicateGroup] = []
     var metadataStore: MetadataStore?
     var systemPhotoIndex: [UUID: PhotoItem] = [:]
     /// 已完成扫描的系统图库路径；再次点击同一个图库时只切换页面，不重复扫描。
     var systemLibraryLoadedPath: String?
+    /// 系统图库载入令牌：每次载入递增，旧扫描的结果不再写回状态与缓存。
+    var systemLoadToken = 0
     var terminateObserver: NSObjectProtocol?
 
     var cloudPasswords: [UUID: String] = [:]
@@ -313,6 +329,9 @@ final class LibraryStore: ObservableObject {
     @Published var cloudFavorites: Set<String> = []
     var cloudVisibleCacheKey: String?
     var cloudVisibleCacheValue: [PhotoItem] = []
+    /// 网盘分类计数与场景计数缓存（键含目录版本与识别进度）。
+    var cloudScopeCountsCacheKey: String?
+    var cloudScopeCountsCache = CloudScopeCounts()
 
     var placeCache: [String: PlaceInfo] = [:]
     var placeCacheLoaded = false
@@ -452,6 +471,15 @@ final class LibraryStore: ObservableObject {
                 self?.flushMetadata()
             }
         }
+
+        #if DEBUG
+        if CommandLine.arguments.contains("--debug-system-videos") {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                self?.navigate(to: .systemVideos)
+            }
+        }
+        #endif
     }
 
     deinit {

@@ -166,6 +166,112 @@ expectEqual(JPEGMetadataStripper.strip(Data(expectedStripped)) ?? Data(), Data(e
 expect(JPEGMetadataStripper.strip(Data([0x00, 0x01, 0x02])) == nil, "非 JPEG 数据返回 nil")
 expect(JPEGMetadataStripper.strip(Data([0xFF, 0xD8, 0xFF, 0xE1, 0x00])) == nil, "段长度不完整返回 nil")
 
+// MARK: - 足迹回放编排
+
+let baseTime = Date(timeIntervalSince1970: 1_800_000_000)
+
+func sample(_ seconds: Double, _ latitude: Double, _ longitude: Double,
+            _ key: String = "a", _ name: String = "杭州") -> FootprintSample {
+    FootprintSample(time: baseTime.addingTimeInterval(seconds),
+                    point: FootprintPoint(latitude: latitude, longitude: longitude),
+                    placeKey: key,
+                    placeName: name)
+}
+
+let merged = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300),
+    sample(60, 30.2600, 120.1300),
+    sample(120, 30.2601, 120.1301)
+])
+expectEqual(merged.stops.count, 1, "同一位置的连拍合并成一站")
+expectEqual(merged.stops.first?.photoCount, 3, "合并后保留照片数")
+
+let nearby = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300),
+    sample(600, 30.2610, 120.1300)
+])
+expectEqual(nearby.stops.count, 2, "相隔约 110 米的照片仍是两站")
+expectEqual(nearby.legs.count, 1, "两站之间有一段行程")
+if let leg = nearby.legs.first {
+    expect(leg.distance > 90 && leg.distance < 130, "近距离行程按实际米数计算")
+    expect(leg.cameraDistance < 500, "近距离行程把镜头压到街区尺度")
+    expect(leg.pitch >= 45, "街区行程使用大俯仰角")
+    expect(leg.caption.contains("米"), "近距离行程给出米级文案")
+    expect(leg.duration >= 0.5 && leg.duration <= 1.2, "近距离行程时长适中")
+}
+
+let flight = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300),
+    sample(3600, 39.9042, 116.4074, "b", "北京")
+])
+if let leg = flight.legs.first {
+    expect(leg.distance > 1_000_000, "跨城距离为千米级")
+    expect(leg.cameraDistance > leg.distance, "长距离航段镜头升到更高处")
+    expect(leg.pitch <= 35, "长距离航段压低俯仰角")
+    expect(leg.heading > 300 || leg.heading < 20, "北京在杭州北方，朝向接近正北")
+    expect(leg.duration <= 2.5, "长距离航段有最长时长上限")
+}
+
+let samePlaceLongStay = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300),
+    sample(3_000, 30.2604, 120.1300),
+    sample(6_000, 30.2604, 120.1301)
+])
+expectEqual(samePlaceLongStay.stops.count, 1, "同地点数十米内合并为一站，避免原地抖动")
+
+let placeChange = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300, "a", "杭州"),
+    sample(600, 30.2700, 120.1300, "west", "西湖")
+])
+expectEqual(placeChange.stops.count, 2, "地点键变化时另起一站")
+expectEqual(placeChange.places, ["杭州", "西湖"], "地点名按出现顺序去重")
+
+let monotonic = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300),
+    sample(600, 30.2700, 120.1300),
+    sample(1200, 30.2800, 120.1300)
+])
+expectEqual(monotonic.distanceToStop.count, monotonic.stops.count, "累计里程与站点数一致")
+expect(monotonic.distanceToStop == monotonic.distanceToStop.sorted(), "累计里程单调递增")
+expectClose(CGFloat(monotonic.totalDistance), CGFloat(monotonic.distanceToStop.last ?? 0),
+            accuracy: 0.001, "总里程取最后一站的累计值")
+
+let far = FootprintPlanner.distance(from: FootprintPoint(latitude: 0, longitude: 0),
+                                    to: FootprintPoint(latitude: 1, longitude: 0))
+expectClose(CGFloat(far), 111_195, accuracy: 500, "一度纬度约 111 公里")
+
+let midpoint = FootprintPlanner.interpolate(from: FootprintPoint(latitude: 10, longitude: 20),
+                                            to: FootprintPoint(latitude: 30, longitude: 40),
+                                            fraction: 0.5)
+expectClose(CGFloat(midpoint.latitude), 20.28, accuracy: 0.2, "大圆插值中点纬度")
+expectClose(CGFloat(midpoint.longitude), 29.35, accuracy: 0.3, "大圆插值中点经度")
+expect(FootprintPlanner.interpolate(from: FootprintPoint(latitude: 10, longitude: 20),
+                                    to: FootprintPoint(latitude: 30, longitude: 40),
+                                    fraction: -1) == FootprintPoint(latitude: 10, longitude: 20),
+       "插值比例夹到 0")
+expect(FootprintPlanner.interpolate(from: FootprintPoint(latitude: 10, longitude: 20),
+                                    to: FootprintPoint(latitude: 30, longitude: 40),
+                                    fraction: 2) == FootprintPoint(latitude: 30, longitude: 40),
+       "插值比例夹到 1")
+
+var manySamples: [FootprintSample] = []
+for index in 0..<400 {
+    let offset = Double(index) * 0.002
+    manySamples.append(sample(Double(index) * 60, 30.0 + offset, 120.0 + offset))
+}
+let capped = FootprintPlanner.plan(samples: manySamples)
+expect(capped.stops.count <= FootprintPlanner.maxStops, "站点数收敛到上限")
+expectEqual(capped.stops.first?.point, manySamples.first?.point, "抽样保留首站")
+expect(capped.stops.last?.point.latitude ?? 0 > 30.7, "抽样保留尾站")
+
+let oneDegree = FootprintPlanner.overviewDistance(of: [
+    FootprintPoint(latitude: 30, longitude: 120),
+    FootprintPoint(latitude: 31, longitude: 121)
+])
+expect(oneDegree > 150_000, "全览镜头覆盖整段范围")
+
+expect(FootprintPlanner.plan(samples: []).isEmpty, "没有样本时返回空计划")
+
 // MARK: - 结果
 
 if failures > 0 {

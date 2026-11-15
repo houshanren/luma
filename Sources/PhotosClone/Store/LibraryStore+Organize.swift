@@ -20,7 +20,36 @@ extension LibraryStore {
         if case .cloudMount(let id) = item {
             openCloudMount(id)
         }
+        prewarmOpenedCollection(item)
     }
+
+    /// 打开相簿 / 文件夹后预热前若干张快速缩略图（解码一次并写入本地快速层缓存），
+    /// 让首屏与后续滚动直接命中；切换范围时取消上一次预热。
+    private func prewarmOpenedCollection(_ item: SidebarItem) {
+        thumbnailPrewarmTask?.cancel()
+        thumbnailPrewarmTask = nil
+
+        let limit = Self.thumbnailPrewarmLimit
+        let targets: [PhotoItem]
+        switch item {
+        case .systemAlbum(let id):
+            guard let album = systemAlbum(id: id) else { return }
+            targets = Array(album.assetIDs.lazy.compactMap { self.systemPhotoIndex[$0] }.prefix(limit))
+        case .systemFolder(let id):
+            targets = systemFolderPreviewAssetIDs(id, limit: limit)
+                .compactMap { self.systemPhotoIndex[$0] }
+        case .album, .folder:
+            targets = Array(photos(for: item).prefix(limit))
+        default:
+            return
+        }
+
+        guard !targets.isEmpty else { return }
+        thumbnailPrewarmTask = ImageLoader.prewarmQuickThumbnails(for: targets)
+    }
+
+    /// 预热数量上限：覆盖两屏左右，再多会挤占滚动时的解码资源。
+    private static let thumbnailPrewarmLimit = 300
 
     func clearFilter() {
         photoFilter = .all

@@ -29,8 +29,11 @@ struct GalleryView: View {
 
     private var isGridScope: Bool {
         switch store.sidebarItem {
-        case .collections, .map, .places, .systemMap, .systemPlaces, .systemPeople,
-             .allAlbums, .folder, .people, .duplicates, .health:
+        case .collections, .systemCollections, .map, .places, .systemMap, .systemPlaces, .systemPeople,
+             .allAlbums, .folder, .systemFolder, .people, .duplicates, .health,
+             .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
+             .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
+             .systemDuplicates:
             return false
         default:
             // 网络存储也使用照片网格：排序、筛选、搜索、缩放与键盘导航一致可用。
@@ -46,7 +49,10 @@ struct GalleryView: View {
     private var supportsZoomControl: Bool {
         if isGridScope { return true }
         switch store.sidebarItem {
-        case .allAlbums, .folder, .people, .systemPeople, .places, .systemPlaces: return true
+        case .allAlbums, .folder, .systemFolder, .people, .systemPeople, .places, .systemPlaces,
+             .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
+             .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages:
+            return true
         default: return false
         }
     }
@@ -80,6 +86,25 @@ struct GalleryView: View {
         }
         .navigationTitle(store.sidebarTitle)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                if let parent = store.navigationParent {
+                    Button {
+                        store.navigateUp()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(parent.title)
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 140, alignment: .leading)
+                        }
+                    }
+                    .help("返回\(parent.title)")
+                    .accessibilityLabel("返回\(parent.title)")
+                }
+            }
             ToolbarItem(placement: .navigation) {
                 if supportsZoomControl {
                     zoomControl
@@ -324,21 +349,46 @@ struct GalleryView: View {
 
     @ViewBuilder
     private func content(width: CGFloat) -> some View {
+        #if DEBUG
+        if CommandLine.arguments.contains("--debug-system-videos"), store.sidebarItem == .systemVideos {
+            let _ = print("[ui] visible=\(store.visibleCount) total=\(store.systemPhotos.count) videos=\(store.systemPhotos.lazy.filter(\.isVideo).count) loading=\(store.isLoadingSystemLibrary) scan=\(store.systemScanCount)")
+        }
+        #endif
         switch store.sidebarItem {
         case .collections:
             CollectionsView()
+        case .systemCollections:
+            SystemCollectionsView()
         case .map, .systemMap:
             PhotoMapView()
         case .places, .systemPlaces:
             PlaceStatisticsView()
         case .duplicates:
             DuplicatesView()
+        case .systemDuplicates:
+            DuplicatesView(system: true)
         case .health:
             LibraryHealthView()
         case .allAlbums:
             AlbumsOverviewView()
         case .folder(let id):
             AlbumsOverviewView(folderID: id)
+        case .systemFolder(let id):
+            SystemFolderOverviewView(folderID: id)
+        case .systemAlbums:
+            SystemFolderOverviewView()
+        case .mediaTypes, .systemMediaTypes:
+            MediaTypesOverviewView()
+        case .scenes:
+            ScenesOverviewView()
+        case .moreItems:
+            MoreItemsOverviewView(system: false)
+        case .systemMoreItems:
+            MoreItemsOverviewView(system: true)
+        case .systemLibraries:
+            SystemLibrariesOverviewView()
+        case .cloudStorages:
+            CloudStoragesOverviewView()
         case .people, .systemPeople:
             PeopleView()
         case .cloudMount:
@@ -713,7 +763,10 @@ struct GalleryView: View {
 
     private var zoomControlTitle: String {
         switch store.sidebarItem {
-        case .allAlbums, .folder: return "相簿卡片大小"
+        case .allAlbums, .folder, .systemFolder: return "相簿卡片大小"
+        case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
+             .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages:
+            return "卡片大小"
         case .people, .systemPeople: return "人物卡片大小"
         case .places, .systemPlaces: return "地点卡片大小"
         default: return "缩略图大小"

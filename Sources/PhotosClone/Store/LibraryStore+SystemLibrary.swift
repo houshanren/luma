@@ -93,6 +93,65 @@ extension LibraryStore {
         return counts
     }
 
+    // MARK: - 系统图库重复项目
+
+    /// 系统图库的重复组：同样按「文件大小 + 像素尺寸」聚合，结果按内容版本缓存。
+    /// 只有打开重复页时才计算，避免扫描 / 侧边栏反复遍历整库。
+    var systemDuplicateGroups: [DuplicateGroup] {
+        // 扫描过程中照片逐批到达：先用已算好的分组，扫描结束后再按新内容重算，避免每批都遍历整库。
+        if isLoadingSystemLibrary, systemDuplicateGroupsCacheKey != nil {
+            return systemDuplicateGroupsCache
+        }
+        let key = "\(contentRevision)"
+        if systemDuplicateGroupsCacheKey == key { return systemDuplicateGroupsCache }
+        let groups = DuplicateDetector.groups(from: systemPhotos, mergeFlagged: true)
+        systemDuplicateGroupsCacheKey = key
+        systemDuplicateGroupsCache = groups
+        return groups
+    }
+
+    /// 官方图库只读：拾光的「合并」是隐藏其余副本（写补充元数据，可撤销），不删除 Apple 的照片。
+    @discardableResult
+    func hideSystemDuplicateCopies(_ group: DuplicateGroup, keeping keepID: UUID) -> Int {
+        guard canEditNativeOverlay else { return 0 }
+        let ids = Set(group.photos.map(\.id)).subtracting([keepID])
+        guard !ids.isEmpty else { return 0 }
+        setSystemHidden(true, ids: ids)
+        systemDuplicateGroupsCacheKey = nil
+        showToast("已隐藏 \(ids.count) 个副本，可在「已隐藏」中恢复")
+        return ids.count
+    }
+
+    /// 隐藏全部重复组里的多余副本，每组保留推荐版本。
+    @discardableResult
+    func hideAllSystemDuplicateCopies() -> (groups: Int, hidden: Int) {
+        guard canEditNativeOverlay else { return (0, 0) }
+        var groupCount = 0
+        var hidden = 0
+        for group in systemDuplicateGroups {
+            let ids = Set(group.photos.map(\.id)).subtracting([group.keepID])
+            guard !ids.isEmpty else { continue }
+            setSystemHidden(true, ids: ids)
+            groupCount += 1
+            hidden += ids.count
+        }
+        guard hidden > 0 else { return (0, 0) }
+        systemDuplicateGroupsCacheKey = nil
+        showToast("已隐藏 \(groupCount) 组重复项目中的 \(hidden) 个副本")
+        return (groupCount, hidden)
+    }
+
+    /// 把重复组的保留版本拷贝一份到拾光，官方图库本身保持只读。
+    func importSystemDuplicateKeep(_ group: DuplicateGroup) {
+        importSystemPhotos([group.pick.photo], albumName: "重复项目")
+    }
+
+    /// 把单张系统图库照片拷贝到拾光（只读来源的导出出口）。
+    func importSystemPhotoToLibrary(_ photo: PhotoItem) {
+        guard photo.isSystem else { return }
+        importSystemPhotos([photo], albumName: nil)
+    }
+
     /// 原始顺序缺失（旧缓存或异常数据）时退回主键，保证排序稳定。
     private static func systemSortKey(_ folder: SystemFolderInfo) -> Int64 {
         folder.sortIndex != 0 ? folder.sortIndex : folder.id
@@ -335,6 +394,9 @@ extension LibraryStore {
     /// 切换 / 新建图库后，把「只属于当前图库」的数据与设置整体换一遍：
     /// 图库级设置、视图状态、系统图库连接、网盘挂载与收藏、最近删除清理。
     func reloadPerLibraryState() {
+        // 换库时停止上一个图库的缩略图预热，避免把缓存写进新库。
+        thumbnailPrewarmTask?.cancel()
+        thumbnailPrewarmTask = nil
         AppSettings.shared.reloadLibraryScopedValues()
         loadViewPreferences()
         loadCloudFavorites()
@@ -444,6 +506,8 @@ extension LibraryStore {
             systemPeople = []
             systemPhotoIndex = [:]
             systemAlbumIndex = [:]
+            systemDuplicateGroupsCacheKey = nil
+            systemDuplicateGroupsCache = []
             systemTotalAssetCount = 0
             systemLibraryError = nil
             systemLibraryLoadedPath = nil
@@ -615,11 +679,19 @@ extension LibraryStore {
         selection.removeAll()
         viewerID = nil
 
+        // 载入上限在本次载入开始时固定；调整上限后重新载入会拿到新值。
+        let limit = systemAssetLimit
+        // 每次载入递增令牌：重扫时旧的扫描结果与缓存写入都要作废。
+        systemLoadToken &+= 1
+        let token = systemLoadToken
+
         Task {
-            // 先读扫描缓存：命中就立刻出图，只有图库确有变化时才在后台重扫。
+            // 先读扫描缓存：命中就立刻出图，只有图库确有变化或上限变化时才在后台重扫。
             let cached = await Task.detached(priority: .userInitiated) {
-                SystemLibraryCache.load(for: url)
+                SystemLibraryCache.load(for: url, maxAssets: limit)
             }.value
+
+            guard token == systemLoadToken else { return }
 
             if let cached {
                 applySystemSnapshot(cached.snapshot, at: url)
@@ -633,7 +705,6 @@ extension LibraryStore {
 
             // 没有缓存时边扫边显示；有缓存时保持现有内容，扫描结束后整体替换。
             let streamBatches = cached == nil
-            let limit = systemAssetLimit
             var continuation: AsyncStream<[PhotoItem]>.Continuation?
             var stream: AsyncStream<[PhotoItem]>?
             if streamBatches {
@@ -652,12 +723,12 @@ extension LibraryStore {
                         maxAssets: limit,
                         progress: { count in
                             Task { @MainActor in
-                                self?.systemScanCount = count
+                                guard let self, self.systemLoadToken == token else { return }
+                                self.systemScanCount = count
                             }
                         },
                         onBatch: streamBatches ? { batch in batchContinuation?.yield(batch) } : nil
                     )
-                    SystemLibraryCache.save(snapshot, for: url)
                     return .success(SystemLoadPayload(snapshot: snapshot))
                 } catch {
                     return .failure(error)
@@ -671,6 +742,7 @@ extension LibraryStore {
                 pending.reserveCapacity(2_000)
                 var lastFlush = Date()
                 for await batch in stream {
+                    guard token == systemLoadToken else { break }
                     pending.append(contentsOf: batch.map { applySystemOverlay($0) })
                     if pending.count >= 2_000 || Date().timeIntervalSince(lastFlush) > 0.3 {
                         systemPhotos.append(contentsOf: pending)
@@ -679,6 +751,11 @@ extension LibraryStore {
                         }
                         pending.removeAll(keepingCapacity: true)
                         lastFlush = Date()
+                        #if DEBUG
+                        if CommandLine.arguments.contains("--debug-system-videos") {
+                            print("[stream] total=\(systemPhotos.count) videos=\(systemPhotos.lazy.filter(\.isVideo).count) scan=\(systemScanCount)")
+                        }
+                        #endif
                     }
                 }
                 if !pending.isEmpty {
@@ -690,9 +767,11 @@ extension LibraryStore {
             }
 
             let result = await scanTask.value
+            guard token == systemLoadToken else { return }
             switch result {
             case .success(let payload):
                 applySystemSnapshot(payload.snapshot, at: url)
+                SystemLibraryCache.save(payload.snapshot, maxAssets: limit, for: url)
                 notifyIfSystemLibraryTruncated()
             case .failure(let error):
                 systemLibraryError = error.localizedDescription
@@ -710,6 +789,8 @@ extension LibraryStore {
             }
             isLoadingSystemLibrary = false
             systemScanCount = 0
+            // 扫描结束后按最终内容重算重复分组。
+            systemDuplicateGroupsCacheKey = nil
         }
     }
 
@@ -725,6 +806,7 @@ extension LibraryStore {
         systemTotalAssetCount = snapshot.totalAssetCount ?? snapshot.photos.count
         systemLibraryError = nil
         systemLibraryLoadedPath = url.path
+        systemDuplicateGroupsCacheKey = nil
     }
 
     /// 把拾光的补充元数据叠加到官方「照片」图库的照片上（收藏 / 隐藏 / 关键词 / 标题 / 查看时间）。
@@ -855,6 +937,25 @@ extension LibraryStore {
         for child in systemFolders where child.parent == folderID {
             ids.append(contentsOf: systemFolderAssetIDs(child.id))
         }
+        return ids
+    }
+
+    /// 只取前 `limit` 个项目 ID：打开文件夹时预热缩略图，避免为预热遍历整棵子树。
+    func systemFolderPreviewAssetIDs(_ folderID: Int64, limit: Int) -> [UUID] {
+        var ids: [UUID] = []
+        ids.reserveCapacity(limit)
+        func walk(_ id: Int64) {
+            guard ids.count < limit else { return }
+            for album in systemAlbums where album.parentFolder == id {
+                ids.append(contentsOf: album.assetIDs.prefix(limit - ids.count))
+                if ids.count >= limit { return }
+            }
+            for child in systemFolders where child.parent == id {
+                walk(child.id)
+                if ids.count >= limit { return }
+            }
+        }
+        walk(folderID)
         return ids
     }
 

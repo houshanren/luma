@@ -219,7 +219,7 @@ extension LibraryStore {
                             ))
                             continue
                         }
-                        let result = self.executeAITool(call)
+                        let result = await self.executeAITool(call)
                         didExecuteTool = true
                         wire.append(AIRequestMessage(role: "tool",
                                                      text: result.json,
@@ -367,11 +367,12 @@ extension LibraryStore {
 
     /// 粗略识别「要动手」的请求，用于提醒模型调用工具，而不是只给方案。
     private static func hasActionIntent(_ text: String) -> Bool {
-        if text.contains("怎么") || text.contains("如何") || text.contains("为什么") {
-            return false
-        }
-        let keywords = ["创建", "新建", "加入", "放到", "放进", "归入", "收藏",
-                        "取消收藏", "添加关键词", "打标签", "整理成", "直接操作", "执行"]
+        if text.contains("怎么") || text.contains("如何") || text.contains("为什么") { return false }
+        let keywords = ["创建", "新建", "加入", "放到", "放进", "归入", "移出", "移除",
+                        "收藏", "取消收藏", "添加关键词", "去掉关键词", "删除关键词", "打标签",
+                        "整理成", "重命名", "改名", "移动", "隐藏", "取消隐藏", "恢复",
+                        "设为封面", "封面", "改标题", "设置标题", "移入最近删除", "压缩", "美化",
+                        "选中", "打开", "切换到", "筛选", "排序", "直接操作", "执行"]
         return keywords.contains { text.contains($0) }
     }
 }

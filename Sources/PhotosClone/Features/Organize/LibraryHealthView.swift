@@ -60,6 +60,16 @@ struct LibraryHealthView: View {
                     .help("停止本次体检")
             } else {
                 Button {
+                    store.showBeautyPanel = true
+                } label: {
+                    Label("智能美化", systemImage: "wand.and.stars")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .controlSize(.small)
+                .disabled(!store.canScanBeauty)
+                .help("按画面偏差推荐可批量美化的照片")
+
+                Button {
                     store.scanLibraryHealth()
                 } label: {
                     Label(report == nil ? "开始体检" : "重新体检", systemImage: "stethoscope")

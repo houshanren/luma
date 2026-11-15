@@ -23,6 +23,9 @@ struct GalleryView: View {
     @State private var infoPanelOffset: CGSize = .zero
     @State private var infoDragOrigin: CGSize?
     @State private var infoResizeOrigin: CGSize?
+    /// 系统图库（十万～几十万项）网格首屏只渲染这么多项，滚动到底再继续追加，
+    /// 避免每次选中或切换都让 SwiftUI 对整库做 diff。
+    @State private var systemRenderLimit = 1_200
 
     private var isGridScope: Bool {
         switch store.sidebarItem {
@@ -428,20 +431,42 @@ struct GalleryView: View {
         }
     }
 
+    /// 系统图库超大时按「首屏 1200 张」渐进渲染；本地图库仍走 SQL 分页窗口。
+    private var systemWindowActive: Bool {
+        store.isSystemScope && store.grouping == .all && store.visibleCount > 1_500
+    }
+
+    private var canLoadMoreSystemWindow: Bool {
+        systemWindowActive && systemRenderLimit < store.visibleCount
+    }
+
+    /// 范围、筛选、搜索或排序变化时，把系统图库的渲染窗口收回首屏。
+    private var systemWindowKey: String {
+        [String(describing: store.sidebarItem), store.photoFilter.rawValue,
+         store.keywordFilter ?? "", store.searchText,
+         store.sortKey.rawValue, String(store.sortAscending)]
+            .joined(separator: "\u{1F}")
+    }
+
+    private func windowedPhotos(_ photos: [PhotoItem]) -> [PhotoItem] {
+        guard systemWindowActive, photos.count > systemRenderLimit else { return photos }
+        return Array(photos.prefix(systemRenderLimit))
+    }
+
     private func allPhotosGrid(width: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     ForEach(store.sections) { section in
                         Section {
-                            sectionGrid(photos: section.photos, width: width)
+                            sectionGrid(photos: windowedPhotos(section.photos), width: width)
                         } header: {
                             if let title = section.title {
                                 SectionHeaderView(title: title, count: section.photos.count)
                             }
                         }
                     }
-                    if store.canLoadMoreVisible {
+                    if store.canLoadMoreVisible || canLoadMoreSystemWindow {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
@@ -457,7 +482,13 @@ struct GalleryView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .onAppear { store.loadMoreVisibleWindow() }
+                        .onAppear {
+                            if store.canLoadMoreVisible {
+                                store.loadMoreVisibleWindow()
+                            } else if canLoadMoreSystemWindow {
+                                systemRenderLimit += 1_200
+                            }
+                        }
                         .onChange(of: store.windowPhotos.count) { _, _ in
                             store.loadMoreVisibleWindow()
                         }
@@ -483,6 +514,7 @@ struct GalleryView: View {
                 }
             }
             .onChange(of: width) { _, newValue in lastGridWidth = newValue }
+            .onChange(of: systemWindowKey) { _, _ in systemRenderLimit = 1_200 }
             .simultaneousGesture(pinchGesture)
             .onChange(of: store.scrollTargetID) { _, target in
                 guard let target else { return }

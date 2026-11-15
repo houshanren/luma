@@ -9,7 +9,7 @@
 
 ## 下载
 
-- 发布产物：[Luma-1.0.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v1.0.0/Luma-1.0.0-macOS.zip)（macOS 14+，ad-hoc 签名，未做 Apple 公证）
+- 发布产物：[Luma-1.1.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v1.1.0/Luma-1.1.0-macOS.zip)（macOS 14+，ad-hoc 签名，未做 Apple 公证）
 - 全部版本：[Releases](https://github.com/houshanren/luma/releases)
 - 从源码构建：`./build.sh`（见下文）
 
@@ -20,6 +20,7 @@
 - 首次启动没有图库时必须新建或打开一个图库（引导页），之后启动自动打开上次使用的图库。
 - 按住 **Option** 启动会先弹出「选取图库」面板（列出当前图库、最近打开、`~/图片` 下的所有 `.photoslibrary`），也可从「文件 › 选取图库…」打开。
 - 图库选择器支持新建图库、打开任意位置图库；打开官方「照片」图库时以该图库为准，照片只读解析、拾光自己的数据写在该库第一层 `database/` 里。
+- **多图库并存**：最近图库最多保留 10 个，每个图库可再保存最多 10 个系统「照片」图库连接；连接与最近记录同时留在侧边栏与图库设置里，随时切换，不必重新打开。每个图库拥有独立的照片、相簿、图库级设置、系统图库连接、网盘挂载与智能助手对话。同一时间渲染一个“当前图库”的网格；多个连接同时保留，但不会把两个库的照片并排显示。
 
 ### 浏览
 - 时间轴分组：**年 / 月 / 所有照片**，仅在图库层级显示。
@@ -38,6 +39,7 @@
 - 照片详情与查看器信息面板共用同一份分区：照片（文件名、标题、类型、尺寸、大小、时长、实况/连拍/慢动作/录屏/动图/人像/旋转）、拍摄时间（含最近查看/编辑）、相机、位置（地点分级、坐标与地图；地图用坐标图钉标注拍摄点，可拖动平移、滚轮缩放）、智能标签（端侧场景与图内文字，可就地分析单张）、关键词、所属相簿、其他（添加日期、来源、收藏/隐藏/最近删除、编辑状态）。
 - 网格底部居中显示当前范围的照片与视频总数（如「1,634 张照片、67 个视频」），有选中项时自动让位给操作条。
 - 视频在网格中始终显示右下角视频角标与时长（时长文案可在「排序与元数据」中关闭），与照片一眼可辨。
+- **视频格式与播放**：可直接导入 30 种扩展名（MP4 / M4V / MOV / QT、AVI / MKV / WebM / FLV / F4V / WMV / ASF、MPG / MPEG / M2V / MPE / M1V / VOB / TS / M2TS / MTS / MTTS、3GP / 3G2 / OGV / RM / RMVB / DIVX / DV / MXF / AMV）。AVPlayer 原生解码 H.264 / HEVC / ProRes / MPEG-4 / VP8 / VP9 / AV1 等常见编码；系统不支持的容器可用可选的 `ffmpeg` 自动转码为 H.264 + AAC 的 MP4，并缓存到 `resources/transcodes/`，二次播放不再转码。播放器支持 0.25–4× 倍速、自动连播下一个视频（跳过照片）、循环、填充 / 适应画面、画中画、保存当前帧、全屏、音量 / 静音、上一个 / 下一个视频、可拖动控制条与完整键盘操作；视频可按类型筛选、按时长排序，导出时始终保留原文件。
 - 查看器两种形态（设置 › 通用 › 浏览方式，默认「窗口内浏览」）：
   - 窗口内浏览：保留侧边栏与顶部工具条（返回、缩放滑杆、日期与序号、信息/共享/收藏/幻灯片/编辑/更多），照片带投影居中，可边看边切换相簿。
   - 全屏沉浸：查看器覆盖整个窗口并隐藏侧边栏，适合专注看图。
@@ -62,12 +64,21 @@
 - **自然语言搜索**：搜索框除文件名、标题、相机、地点外，还检索场景标签与图内文字；中文口语词（如「海边」「烟花」）会映射到 Vision 的英文标签再匹配。支持组合时间词（去年 / 今年 / 上个月 / 2024年 / 5月 / 5月20日 / 上周）、类型限定（收藏 / 视频 / 照片 / 截图 / 实况 / 已编辑）与人物名字，例如「去年 海边 狗」「2024年5月 日落」「上个月 小猫」。搜索「场景 / 图内文字 / 人物」需要先完成端侧分析或人物聚类。
 - **OCR 搜图内文字**：分析时用 Vision 识别照片中的中英文文字，「更多项目 › 包含文字」列出所有含文字的照片，也可以直接在搜索框输入文字内容定位。
 - **相似照片**：右键任意已分析的照片「查找相似照片」，按图像特征向量（余弦相似度）找出同场景 / 同构图的项目，网格顶部提示条可一键退出。
-- 分析结果（标签、OCR 文字、特征向量）只写入当前图库数据库的 `asset_analysis` 表，全程不联网；系统图库与网盘不参与分析。
+- **智能美化**：图库体检页右上角「智能美化」或「照片 › 智能美化…」打开推荐面板。按缩略图把照片分成**偏暗 / 偏亮 / 发灰 / 偏色 / 偏软**五组，每组显示张数、样本与说明，可「查看」选中这些照片，或「一键美化」批量生成副本（先弹窗确认）；收藏的照片会优先排在前面。分析只看缩略图，全部在本机完成，结果只在内存里、不落库。
+- 分析结果（标签、OCR 文字、特征向量）只写入当前图库数据库的 `asset_analysis` 表，全程不联网；系统图库与网盘不参与分析。智能美化同样只对拾光本地图库的照片生效。
 
 ### 智能助手（云端大模型，可选）
 - 入口：工具栏的 ✨ 按钮或「照片 › 智能助手…」。支持 **DeepSeek / Kimi / GLM（智谱）/ 通义千问 / 豆包（火山方舟）/ OpenAI**，统一走 OpenAI 兼容的 `chat/completions` 接口；也可以用「自定义」接入 SiliconFlow、OpenRouter、Ollama 或自建网关，接口地址与模型名都可修改。
 - 默认**不上传图片**：只把当前范围摘要、照片元数据、端侧 Vision 标签与 OCR 文字发给模型；可在「设置 › 智能助手」开启「发送压缩缩略图」，此时优先发送选中照片，否则发送当前范围前几张，统一压成长边约 1024 的 JPEG（最多 6 张），原始 RAW、视频与云端照片不会发送。
-- 可操作：通过工具真正执行 **新建相簿 / 加入相簿 / 收藏 / 添加关键词 / 选中照片**，每次修改前弹窗确认；不会删除、编辑原图或写入官方「照片」图库的 `Photos.sqlite`（官方库只写拾光补充元数据）。
+- 可操作（模型通过工具调用，全部写操作先弹窗确认）：
+  - **相簿**：新建相簿（可同时按主题放入项目、指定所属文件夹）、加入 / 移出项目、重命名、删除相簿（不删除照片）、移动到文件夹、设置封面。
+  - **文件夹**：新建（支持多级）、重命名、删除（不删除照片）。
+  - **图片与视频**：搜索与按类型筛选、收藏 / 取消收藏、隐藏 / 取消隐藏、添加 / 移除关键词、设置标题、原地压缩（有损可调质量与长边；无损保持像素，JPEG 只去元数据、其它格式转 PNG）、自动美化（生成可还原的美化副本，保留原图）、移入最近删除、从最近删除恢复、选中、在查看器中打开（视频即播放）。
+  - **浏览**：切换到图库 / 收藏 / 视频 / 截屏 / 已隐藏 / 最近删除 / 指定相簿 / 指定文件夹 / 场景，并可同时设置筛选、搜索词与排序。
+  - 不支持永久删除、导入、编辑原图或修改文件；系统图库连接与网盘只读，官方「照片」图库作为当前库时只写收藏 / 隐藏 / 关键词等补充元数据。
+- 智能助手面板首屏提供两张主推案例（压缩这组照片、按时间地点建相簿）与四张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频），点击示例即填入输入框；对话开始后保留一条轻量示例条。
+- 常用案例：`把这 3 张照片压到长边 2048、质量 80`、`把这组照片做无损压缩`、`把去年在上海拍的照片整理成相簿`、`把这 8 张照片自动美化一下`、`按主题建 4 个相簿`、`把视频放进「旅行」`、`从最近删除恢复刚才那批`。
+- 工具共 **26 个**：检索与浏览 5（`search_photos` / `list_albums` / `list_folders` / `list_videos` / `navigate`）、选择与打开 2（`select_photos` / `open_photo`）、相簿 7（`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover`）、文件夹 3（`create_folder` / `rename_folder` / `delete_folder`）、图片与视频 5（`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title`）、压缩 1（`compress_photos`）、美化 1（`beautify_photos`）、最近删除 2（`trash_photos` / `restore_photos`）。其中 19 个写操作必须先经用户确认；系统图库、网盘与官方「照片」库按现有权限矩阵限制。
 - 每次请求最多带 40 张候选照片的元数据，避免把整个图库塞进提示词；更大范围的检索通过「应用筛选」回到现有搜索与分页管线完成。
 - API Key 只保存在 macOS 钥匙串（service `com.baymax.luma.ai`），不写入图库数据库、`UserDefaults` 或日志；模型配置与对话记录随当前图库保存，切换图库会切换到各自的对话。
 
@@ -86,9 +97,11 @@
 - **RAW 专用解码**：DNG / CR2 / CR3 / NEF / ARW / RAF / ORF / RW2 等格式可导入，缩略图、查看器与编辑器统一走 `CIRAWFilter`（开启高光恢复）并回退到 ImageIO。
 - **实况照片**：导入时自动把同名 MOV 识别为配对视频；查看器内点「实况」按钮或按 `L` 播放；导出、复制、删除都会带上配对视频。
 - 复制 / 粘贴编辑点：把一张照片的参数套用到其他照片（`⌥⌘C` / `⌥⌘V`，编辑器内亦有按钮）。
+- **编辑器「美化」页**：编辑器里切到「美化」，端侧分析当前画面并给出中文理由（偏暗 / 偏色 / 偏灰 / 偏软等）；可用「强度」控制力度后一键应用，也能「撤销美化」。应用只是把建议写进调整滑块，仍可继续手调，`⌘Z` 可回退。
 - 导入：拖拽、文件面板、剪贴板粘贴、从系统「照片」图库选择；导入窗口支持按文件夹生成相簿与进度显示。**导入始终把原文件拷贝进图库**（不支持“引用原位置”）。批量导入按 CPU 核数并发拷贝与生成缩略图，并批量增量落盘，上千张照片也能保持流畅。
 - 批量更改：一次修改所选项目的标题、拍摄日期与地点（`⌥⌘B`）。
-- 导出所选 / 批量导出：可选原格式或 JPEG/HEIC/PNG/TIFF、质量、最长边尺寸、文件名规则（原始名/标题/日期+序号/序号）、导出未修改的原片；视频始终以原文件导出，实况照片会同时导出同名的配对视频。另支持 JPG 压缩（可还原原始文件）。
+- 导出所选 / 批量导出：可选原格式或 JPEG/HEIC/PNG/TIFF、质量、最长边尺寸、文件名规则（原始名/标题/日期+序号/序号）、导出未修改的原片；视频始终以原文件导出，实况照片会同时导出同名的配对视频。
+- **专业压缩与还原**（`⌘⇧K`）：提供**有损 / 无损**两种模式。无损模式保持像素与尺寸不变：JPEG 只移除 EXIF / XMP / IPTC / 注释段，压缩数据原样保留；PNG / HEIC / TIFF 重编码为无损 PNG。有损模式可调画质 30–100%、长边（原始 / 4096 / 2560 / 2048 / 1600 / 1280 px）与输出格式（原格式 / JPEG / HEIC）。两种模式都默认仅在结果更小时替换，可选「保留原图备份」并逐字节还原；无损模式体积可能不会减小。压缩前逐张预估体积并显示进度，可随时取消。
 - 打印（每张一页）；幻灯片播放（间隔、Ken Burns 效果）。
 - 视频播放基于 AVPlayer，系统无法解码的编码可用 `ffmpeg`（可选，PATH 中存在时可用）转码为 H.264 后播放；一个视频播完后默认自动连播下一个视频（跳过照片），也可在设置或播放器里改为循环当前视频。播放控制条可拖动到画面任意位置（双击把手复位），支持点击时长切换剩余时间、填充 / 适应画面、上一个 / 下一个视频、倍速、音量、画中画、保存当前帧与全屏。
 
@@ -104,7 +117,8 @@
 - 扫描结果（索引与元数据，不含原图）缓存在当前图库的 `resources/system-cache/`：首次扫描后再次打开直接命中缓存，`Photos.sqlite` 变化时自动在后台重扫；切换图库不会共用缓存。
 - 超大图库按拍摄日期从新到旧截断载入（设置 › 通用 › 系统图库载入 › 载入上限：5 万 / 10 万 / 20 万 / 不限制，默认 10 万），避免一次载入上百万项导致内存过高；该设置随当前图库保存，超出时会提示实际总数。
 - 读取官方库中的自定义标题（`ZTITLE`）、实况照片与连拍标记，在元数据与信息面板中标注。
-- 缩略图缓存在当前图库的 `resources/system-thumbs/`，原图直接从官方图库读取，不修改官方数据库。
+- 缩略图优先直接复用官方图库已经生成好的 `resources/derivatives`（照片取 `_1_105_c.jpeg`，视频取 `_1_102_o.jpeg` 封面帧），不再为每个格子解码 HEIC / RAW / 视频原文件；只有极少数缺失时才现场生成并缓存到当前图库的 `resources/system-thumbs/`，生成限制 3 路并发并按目标文件去重。
+- 十万级以上的「所有照片」首屏只渲染 1200 张，滚动到底自动继续追加；侧边栏的相簿 / 文件夹分组与各计数按「结构版本 / 内容版本」分别缓存，扫描过程中不会反复重建上万个相簿的分桶。
 - 支持把某个**相簿**或**文件夹（含子文件夹）**整体拷贝到拾光；也支持多选照片、单张右键拷贝。重复项目（同名同大小）自动跳过。
 
 ### 网络存储
@@ -173,6 +187,7 @@ photos/
 ├── Tests/LumaCoreChecks/         # 纯逻辑断言检查（swift run LumaCoreChecks）
 ├── Sources/LumaCore/             # 无 UI 依赖的纯算法层
 │   ├── GridLayout.swift          # 正方形 / 完整宽高比 / 瀑布流布局计算
+│   ├── BeautyAdvisor.swift       # 智能美化：画面统计 → 调整建议与理由
 │   └── ThumbnailSizing.swift     # 缩略图解码档位策略
 └── Sources/PhotosClone/
     ├── App/                       # 应用入口与窗口
@@ -188,6 +203,7 @@ photos/
     │   ├── CloudModels.swift      # CloudKind/CloudMount/CloudEntry 等
     │   ├── CloudWizardModels.swift# 网盘向导的流程枚举
     │   ├── SceneTags.swift        # 场景目录、分析结果模型、中文检索词表
+    │   ├── BeautyRecommendation.swift # 智能美化候选、分组与报告模型
     │   ├── AIAgentModels.swift    # 智能助手提供商、配置、对话与检索建议模型
     │   └── PhotoQuery.swift       # 可下推到 SQLite 的范围/筛选/排序描述
     ├── Store/                     # 全局状态（唯一状态源），按领域拆成 extension
@@ -204,14 +220,15 @@ photos/
     │   ├── LibraryStore+Cloud.swift         # 网盘挂载、目录浏览、云端写操作
     │   ├── LibraryStore+Paging.swift        # 大图库分页窗口：加载、追加、定位、胶片条
     │   ├── LibraryStore+Intelligence.swift  # 端侧场景/OCR 分析、场景统计、相似照片
+    │   ├── LibraryStore+Beauty.swift        # 智能美化：扫描推荐分组、批量生成副本
     │   ├── LibraryStore+AIAgent.swift       # 智能助手：上下文、请求编排、对话持久化
-    │   ├── LibraryStore+AITools.swift       # 智能助手工具执行：相簿、收藏、关键词、选中
+    │   ├── LibraryStore+AITools.swift       # 智能助手工具执行：相簿、文件夹、图片与视频操作
     │   ├── SelectionModel.swift             # 选择状态（独立订阅）
     │   ├── ViewerModel.swift                # 查看器/编辑器状态（独立订阅）
     │   └── CloudBrowserModel.swift          # 网盘浏览状态
     ├── Services/                  # 无 UI 的服务层
     │   ├── Library/               # LibraryPaths、MetadataStore（+Query 分页）、SQLite、SystemPhotosLibrary
-    │   ├── Media/                 # ImageLoader、ImageTransform、RawSupport、VideoSupport、LivePhotoSupport、PhotoIntelligence
+    │   ├── Media/                 # ImageLoader、ImageTransform、RawSupport、VideoSupport、LivePhotoSupport、PhotoIntelligence、PhotoBeauty
     │   ├── Import/                # ImportService
     │   ├── Cloud/                 # CloudSupport、WebDAVClient、SMBClient、JPEGMetadata、CloudProviders
     │   ├── AI/                    # AIKeychain、AIProviderClient、AILibraryContext、AIImageEncoder、AILibraryTools
@@ -224,13 +241,13 @@ photos/
     │   ├── Gallery/               # GalleryView、PhotoGrids、TimelineOverviewView、DuplicatesView
     │   ├── Sidebar/               # SidebarView、NamePromptSheet
     │   ├── Viewer/                # PhotoViewer、FilmstripView、InfoPanelView、ShortcutHelpView、VideoPlayerStage、SlideshowView
-    │   ├── Editor/                # PhotoEditor
+    │   ├── Editor/                # PhotoEditor、EditState+Beauty（美化建议叠加）
     │   ├── Settings/              # SettingsKeys、SettingsModels、AppSettings、SettingsView
     │   ├── Cloud/                 # CloudViews、CloudWizard（+OAuth/+SMB/+WebDAV/+AList）
     │   ├── Import/                # ImportView
     │   ├── Maps/                  # PhotoMapView、MapCanvas、PlaceStatisticsView
     │   ├── People/                # PeopleLocalView
-    │   ├── Organize/              # SmartAlbumEditorView、BatchChangeView、ExportOptionsView
+    │   ├── Organize/              # SmartAlbumEditorView、BatchChangeView、ExportOptionsView、LibraryHealthView、BeautyRecommendView
     │   ├── Compression/           # CompressionSheetView
     │   ├── AI/                    # AIAssistantView（智能助手面板）
     │   └── Collections/           # CollectionsView、TripStoryView
@@ -315,6 +332,8 @@ photos/
 - 端侧内容分析（场景标签 / OCR / 相似照片）同样只对拾光本地图库的照片生效，视频暂不参与；未分析的照片不会出现在「场景」「包含文字」或相似结果里。
 - 导入始终拷贝原文件，不支持引用原位置。
 - 视频转码依赖外部 `ffmpeg`，未安装时仅支持系统可解码的编码。
+- **多图库**：最近图库与系统图库连接会同时保留并可快速切换，但同一时间只渲染一个“当前图库”的网格，不支持两个库并排显示。
+- **压缩**：无损模式保持像素与尺寸不变（JPEG 仅移除元数据、其它格式转无损 PNG），体积可能不会减小；有损模式为高质量有损压缩，逐字节还原依赖「保留原图备份」。
 - 「年 / 月」时间轴总览只在图库层级提供，相簿/文件夹使用普通网格。
 - 大图库分页覆盖「所有照片」网格与媒体类型/收藏/隐藏等本地范围；「年 / 月」总览在超过 5000 张时同样走 SQL 分区（每年/每天最多取 4 张样本）。人物、回忆与地图仍基于内存索引，超百万张时首次进入这些页面会较慢。
 - 图库元数据仍在启动时整体载入内存（分页只减少筛选/排序/复制的开销）；下一步是把常驻元数据也改为按需查询。

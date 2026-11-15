@@ -4,6 +4,21 @@ import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
 
+/// 系统图库侧边栏计数：一次遍历算完，供徽标与「更多项目」的显示条件共用。
+struct SystemSidebarCounts {
+    var active = 0
+    var hidden = 0
+    var trash = 0
+    var duplicate = 0
+    var recentlySaved = 0
+    var imports = 0
+    var portrait = 0
+    var screenshots = 0
+    var totalBytes: Int64 = 0
+    var earliest: Date?
+    var latest: Date?
+}
+
 extension LibraryStore {
     // MARK: - System library
 
@@ -22,9 +37,10 @@ extension LibraryStore {
     }
 
     /// 文件夹与相簿按图库原始顺序（Photos.sqlite 的 Z_PK）混排，与官方「照片」侧边栏一致。
-    /// 大图库有上万个相簿，按父节点一次性分组并缓存，避免每次重绘都过滤全量数组。
+    /// 大图库有上万个相簿，按父节点一次性分组并缓存；只随相簿结构变化失效，
+    /// 扫描时逐批到达的照片不会反复触发重建。
     func systemChildren(of parent: Int64?) -> [SystemSidebarEntry] {
-        if systemChildrenCacheRevision != contentRevision {
+        if systemChildrenCacheRevision != systemStructureRevision {
             var buckets: [Int64: [SystemSidebarEntry]] = [:]
             for folder in systemFolders {
                 buckets[folder.parent ?? -1, default: []].append(.folder(folder))
@@ -36,20 +52,45 @@ extension LibraryStore {
                 buckets[key]?.sort { $0.sortIndex < $1.sortIndex }
             }
             systemChildrenBuckets = buckets
-            systemChildrenCacheRevision = contentRevision
+            systemChildrenCacheRevision = systemStructureRevision
         }
         return systemChildrenBuckets[parent ?? -1] ?? []
     }
 
     /// 侧边栏徽标用的有效项目数（不含已删除与隐藏），按内容版本缓存。
     var systemActivePhotoCount: Int {
-        if systemActiveCountCacheRevision != contentRevision {
-            systemActiveCountCacheValue = systemPhotos.lazy
-                .filter { $0.deletedAt == nil && !$0.isHidden }
-                .count
-            systemActiveCountCacheRevision = contentRevision
+        systemSidebarCounts.active
+    }
+
+    /// 系统侧边栏计数：一次遍历算完所有徽标，避免每个计数各扫一遍 20 万张照片。
+    var systemSidebarCounts: SystemSidebarCounts {
+        if systemCountsCacheRevision == contentRevision, let cached = systemCountsCache {
+            return cached
         }
-        return systemActiveCountCacheValue
+        var counts = SystemSidebarCounts()
+        let cutoff = Self.recentlySavedCutoff
+        for photo in systemPhotos {
+            guard photo.deletedAt == nil else {
+                counts.trash += 1
+                continue
+            }
+            counts.totalBytes += photo.fileSize
+            counts.earliest = min(counts.earliest ?? photo.capturedAt, photo.capturedAt)
+            counts.latest = max(counts.latest ?? photo.capturedAt, photo.capturedAt)
+            if photo.isHidden {
+                counts.hidden += 1
+                continue
+            }
+            counts.active += 1
+            if photo.isDuplicateItem { counts.duplicate += 1 }
+            if photo.addedAt >= cutoff { counts.recentlySaved += 1 }
+            if photo.isDeviceImport { counts.imports += 1 }
+            if photo.isPortraitCapture { counts.portrait += 1 }
+            if photo.kind == .screenshot { counts.screenshots += 1 }
+        }
+        systemCountsCache = counts
+        systemCountsCacheRevision = contentRevision
+        return counts
     }
 
     /// 原始顺序缺失（旧缓存或异常数据）时退回主键，保证排序稳定。
@@ -144,6 +185,7 @@ extension LibraryStore {
         systemFolders = []
         systemPeople = []
         systemPhotoIndex = [:]
+        systemAlbumIndex = [:]
         systemOverlays = [:]
         systemTotalAssetCount = 0
         systemLibraryError = nil
@@ -301,6 +343,8 @@ extension LibraryStore {
         loadCloudMounts()
         remountSMBMountsOnLaunch()
         purgeExpiredTrashIfNeeded()
+        // 美化推荐是派生结果，换库后必须清空，避免把上一个图库的照片带过来。
+        resetBeautyState()
     }
 
     // MARK: - 图库选择器
@@ -399,6 +443,7 @@ extension LibraryStore {
             systemFolders = []
             systemPeople = []
             systemPhotoIndex = [:]
+            systemAlbumIndex = [:]
             systemTotalAssetCount = 0
             systemLibraryError = nil
             systemLibraryLoadedPath = nil
@@ -563,6 +608,9 @@ extension LibraryStore {
         // 先清空，随后用缓存或按批次增量展示。
         systemPhotos = []
         systemPhotoIndex = [:]
+        systemAlbums = []
+        systemFolders = []
+        systemAlbumIndex = [:]
         systemTotalAssetCount = 0
         selection.removeAll()
         viewerID = nil
@@ -617,11 +665,25 @@ extension LibraryStore {
             }
 
             // 边扫描边显示：每批到达就追加，用户可以立刻开始浏览。
+            // 20 万张会分成几百批，这里合并成约 2000 张一次，减少主线程重算与视图刷新次数。
             if let stream {
+                var pending: [PhotoItem] = []
+                pending.reserveCapacity(2_000)
+                var lastFlush = Date()
                 for await batch in stream {
-                    let items = batch.map { applySystemOverlay($0) }
-                    systemPhotos.append(contentsOf: items)
-                    for item in items {
+                    pending.append(contentsOf: batch.map { applySystemOverlay($0) })
+                    if pending.count >= 2_000 || Date().timeIntervalSince(lastFlush) > 0.3 {
+                        systemPhotos.append(contentsOf: pending)
+                        for item in pending {
+                            systemPhotoIndex[item.id] = item
+                        }
+                        pending.removeAll(keepingCapacity: true)
+                        lastFlush = Date()
+                    }
+                }
+                if !pending.isEmpty {
+                    systemPhotos.append(contentsOf: pending)
+                    for item in pending {
                         systemPhotoIndex[item.id] = item
                     }
                 }
@@ -640,6 +702,7 @@ extension LibraryStore {
                     systemFolders = []
                     systemPeople = []
                     systemPhotoIndex = [:]
+                    systemAlbumIndex = [:]
                 }
                 if informOnFailure {
                     showToast(error.localizedDescription)
@@ -658,6 +721,7 @@ extension LibraryStore {
         systemFolders = snapshot.folders
         systemPeople = snapshot.people
         systemPhotoIndex = Dictionary(uniqueKeysWithValues: systemPhotos.map { ($0.id, $0) })
+        systemAlbumIndex = Dictionary(uniqueKeysWithValues: snapshot.albums.map { ($0.id, $0) })
         systemTotalAssetCount = snapshot.totalAssetCount ?? snapshot.photos.count
         systemLibraryError = nil
         systemLibraryLoadedPath = url.path
@@ -707,11 +771,11 @@ extension LibraryStore {
     }
 
     var systemLibraryTotalBytes: Int64 {
-        systemPhotos.filter { $0.deletedAt == nil }.reduce(0) { $0 + $1.fileSize }
+        systemSidebarCounts.totalBytes
     }
 
     var systemTrashCount: Int {
-        systemPhotos.filter { $0.deletedAt != nil }.count
+        systemSidebarCounts.trash
     }
 
     static var recentlySavedCutoff: Date {
@@ -724,38 +788,42 @@ extension LibraryStore {
     }
 
     var systemPortraitCount: Int {
-        systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isPortraitCapture }.count
+        systemSidebarCounts.portrait
     }
 
     var systemDuplicateCount: Int {
-        systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isDuplicateItem }.count
+        systemSidebarCounts.duplicate
     }
 
     var systemScreenshotCount: Int {
-        systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.kind == .screenshot }.count
+        systemSidebarCounts.screenshots
     }
 
     var systemRecentlySavedCount: Int {
-        systemPhotos.filter {
-            $0.deletedAt == nil && !$0.isHidden && $0.addedAt >= Self.recentlySavedCutoff
-        }.count
+        systemSidebarCounts.recentlySaved
     }
 
     var systemImportCount: Int {
-        systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isDeviceImport }.count
+        systemSidebarCounts.imports
     }
 
     var systemHiddenCount: Int {
-        systemPhotos.filter { $0.deletedAt == nil && $0.isHidden }.count
+        systemSidebarCounts.hidden
     }
 
     func systemAlbumNamesContaining(_ id: UUID) -> [String] {
         systemAlbums.filter { $0.assetIDs.contains(id) }.map { $0.name }
     }
 
+    /// 按主键取相簿：优先走索引，索引尚未建立时退回线性查找。
+    func systemAlbum(id: Int64) -> SystemAlbumInfo? {
+        if let album = systemAlbumIndex[id] { return album }
+        return systemAlbums.first(where: { $0.id == id })
+    }
+
     var systemLibraryDateRange: String? {
-        let dates = systemPhotos.filter { $0.deletedAt == nil }.map { $0.capturedAt }
-        guard let minDate = dates.min(), let maxDate = dates.max() else { return nil }
+        let counts = systemSidebarCounts
+        guard let minDate = counts.earliest, let maxDate = counts.latest else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy/M/d"

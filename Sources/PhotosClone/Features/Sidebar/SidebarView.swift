@@ -1412,7 +1412,7 @@ private struct SystemAlbumCoverView: View {
     let albumID: Int64
 
     private var firstPhoto: PhotoItem? {
-        guard let album = store.systemAlbums.first(where: { $0.id == albumID }),
+        guard let album = store.systemAlbum(id: albumID),
               let first = album.assetIDs.first else { return nil }
         return store.systemPhoto(id: first)
     }

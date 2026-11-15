@@ -99,7 +99,7 @@
         <a href="#start"><b>第一次使用</b><span>建库、导入与第一次整理 →</span></a>
         <a href="#browse"><b>每天浏览</b><span>时间轴、四种显示形式与查看器 →</span></a>
         <a href="#intelligence"><b>端侧智能</b><span>场景、OCR、自然语言搜索 →</span></a>
-        <a href="#assistant"><b>智能助手</b><span>自带 Key 的可选云端问答 →</span></a>
+        <a href="#assistant"><b>智能助手</b><span>自带 Key 的可选云端问答与整理 →</span></a>
         <a href="#settings"><b>设置与快捷键</b><span>五页设置与全部键盘操作 →</span></a>
         <a href="#compare"><b>和「照片」对比</b><span>什么时候用拾光，什么时候不 →</span></a>
       </div>
@@ -144,7 +144,7 @@
       <p class="lead">拾光没有安装器，也没有后台服务。构建产出一份 <code>Luma.app</code>，双击即可运行；所有数据都写在你选择的图库里。</p>
 
       <h3>下载现成版本</h3>
-      <p>不想自己编译，可以直接下载发布产物：<a href="https://github.com/houshanren/luma/releases/download/v1.0.0/Luma-1.0.0-macOS.zip">Luma-1.0.0-macOS.zip</a>（约 5 MB）。解压后把 <code>Luma.app</code> 拖进「应用程序」即可。</p>
+      <p>不想自己编译，可以直接下载发布产物：<a href="https://github.com/houshanren/luma/releases/download/v1.1.0/Luma-1.1.0-macOS.zip">Luma-1.1.0-macOS.zip</a>（约 5 MB）。解压后把 <code>Luma.app</code> 拖进「应用程序」即可。</p>
       <p>产物为 ad-hoc 签名、未做 Apple 公证，首次打开如提示“无法验证开发者”，请右键点击 <code>Luma.app</code> → 「打开」，或执行：</p>
       <div class="code-block"><pre><code>xattr -dr com.apple.quarantine /Applications/Luma.app</code></pre></div>
       <p>全部版本与源码见 GitHub：<a href="https://github.com/houshanren/luma/releases" target="_blank" rel="noopener">Releases</a> · <a href="https://github.com/houshanren/luma" target="_blank" rel="noopener">仓库</a>。</p>
@@ -240,6 +240,20 @@ open Luma.app        # 运行</code></pre></div>
         </tbody>
       </table>
 
+      <h3 id="multi-library">多图库并存</h3>
+      <p>拾光把「当前图库」与「连接」分开管理：当前图库决定主界面展示的照片、相簿与设置；连接则是同时保留、随时可切过去的其他库。</p>
+      <ul class="doc-list">
+        <li><b>最近图库</b>最多保留 10 个。可在「文件 › 选取图库…」、按住 <kbd>Option</kbd> 启动、设置 › 图库的最近列表里切换。</li>
+        <li><b>系统图库连接</b>每个图库最多保存 10 个，记录在<strong>当前图库自己</strong>的 <code>settings.system_libraries</code>；连接新库不会移除已有连接。</li>
+        <li><b>各自独立</b>：照片、相簿、图库级设置、系统图库连接、网盘挂载与智能助手对话都随当前图库切换，不会串数据。</li>
+        <li><b>边界</b>：额外连接与网盘只读；当前图库才可写入。图库被移动或删除时，连接会提示找不到并自动移除。</li>
+        <li><b>同屏范围</b>：多个库同时保留在侧边栏与列表里，但同一时间只渲染一个「当前图库」的网格；当前版本不提供两个库并排显示。</li>
+      </ul>
+      <div class="callout note">
+        <b>为什么不做并排双库</b>
+        <p>每个图库都有自己的 SQLite、缩略图缓存与选择状态。并排渲染会让内存、缓存键与写入目标同时翻倍；当前选择是「多个库同时在线、单库聚焦」，保证大图库下的稳定与写入安全。</p>
+      </div>
+
       <h3>官方「照片」图库的只读边界</h3>
       <p>打开官方图库时，它就是这个 App 的当前图库。照片内容读取 <code>Photos.sqlite</code>，拾光自己的数据写在该库第一层的 <code>database/PhotosClone.sqlite</code>（与 <code>Photos.sqlite</code> 并列）。Apple 的数据库与自带原图始终只读。</p>
       <div class="callout warn">
@@ -329,13 +343,37 @@ open Luma.app        # 运行</code></pre></div>
         <p>人物、回忆与地图基于内存索引；超百万张时首次进入这些页面会较慢。图库元数据在启动时整体载入内存，分页主要降低筛选、排序与复制的开销。</p>
       </div>
 
-      <h3>视频播放</h3>
-      <ul class="doc-list">
-        <li>基于 AVPlayer；系统无法解码的编码可用可选的 <code>ffmpeg</code> 转码为 H.264 后播放。</li>
-        <li>默认一个视频播完后自动连播下一个视频（跳过照片），也可改为循环当前视频。</li>
-        <li>播放控制条可拖到画面任意位置，双击把手复位；点时长可切换剩余时间。</li>
-        <li>支持填充 / 适应画面、上一个 / 下一个视频、倍速、音量、画中画、保存当前帧与全屏。</li>
-      </ul>
+      <h3 id="video">视频格式与播放</h3>
+      <p>拾光集中维护可导入、可播放的视频扩展名，不完全依赖系统 UTI。支持的 30 种扩展名分为四组：</p>
+      <table class="doc-table">
+        <thead><tr><th>容器 / 扩展名</th><th>常见来源</th></tr></thead>
+        <tbody>
+          <tr><td><code>mp4</code> · <code>m4v</code> · <code>mov</code> · <code>qt</code></td><td>iPhone / macOS / 相机</td></tr>
+          <tr><td><code>avi</code> · <code>mkv</code> · <code>webm</code> · <code>flv</code> · <code>f4v</code> · <code>wmv</code> · <code>asf</code></td><td>下载、录屏、旧设备</td></tr>
+          <tr><td><code>mpg</code> · <code>mpeg</code> · <code>m2v</code> · <code>mpe</code> · <code>m1v</code> · <code>vob</code> · <code>ts</code> · <code>m2ts</code> · <code>mts</code> · <code>mtts</code></td><td>摄像机、光盘、广播流</td></tr>
+          <tr><td><code>3gp</code> · <code>3g2</code> · <code>ogv</code> · <code>rm</code> · <code>rmvb</code> · <code>divx</code> · <code>dv</code> · <code>mxf</code> · <code>amv</code></td><td>手机、网络视频、专业设备</td></tr>
+        </tbody>
+      </table>
+      <p>播放优先走 AVPlayer；系统不支持的容器或编码，在 PATH 中存在 <code>ffmpeg</code> 时会自动转码为 H.264 + AAC 的 MP4，写入 <code>resources/transcodes/</code> 并复用缓存。常见编码包括 H.264、HEVC、ProRes、MPEG-4、VP8 / VP9、AV1、Motion JPEG、MPEG-2、Theora、RealVideo、WMV 与 Sorenson H.263。</p>
+
+      <h3>播放能力</h3>
+      <table class="doc-table">
+        <thead><tr><th>能力</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>倍速</td><td>0.25× / 0.5× / 0.75× / 1× / 1.25× / 1.5× / 2× / 3× / 4×</td></tr>
+          <tr><td>连播与循环</td><td>播完自动连播列表里的下一个视频（跳过照片）；可在设置或播放器里改为循环当前视频</td></tr>
+          <tr><td>画面</td><td>填充 / 适应、全屏、画中画、保存当前帧</td></tr>
+          <tr><td>声音</td><td>音量滑杆、默认静音、一键静音</td></tr>
+          <tr><td>控制条</td><td>可拖到画面任意位置，双击把手复位；点击时长切换剩余时间；上一个 / 下一个视频</td></tr>
+          <tr><td>键盘</td><td><kbd>K</kbd> 播放 / 暂停、<kbd>J</kbd> / <kbd>L</kbd> 快退 / 快进、<kbd>M</kbd> 静音、<kbd>A</kbd> 填充 / 适应、<kbd>F</kbd> 全屏、<kbd>空格</kbd> 返回图库</td></tr>
+          <tr><td>图库内</td><td>视频右下角始终显示时长角标与视频标记；可按「视频」筛选、按时长排序；导出时保留原文件</td></tr>
+          <tr><td>实况照片</td><td>同名 MOV 自动识别为配对视频，查看器按 <kbd>L</kbd> 播放；导出、复制、删除都带配对视频</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        <b>边界</b>
+        <p>暂不支持视频修剪与慢动作变速；未安装 <code>ffmpeg</code> 时，只能播放系统可解码的编码。系统图库与网盘上的视频按其来源权限播放，不参与端侧分析。</p>
+      </div>
     </section>
 
     <!-- 05 组织 -->
@@ -450,10 +488,110 @@ open Luma.app        # 运行</code></pre></div>
       <ul class="doc-list">
         <li>就当前范围提问：照片数量、时间分布、场景构成、某张照片的拍摄信息与端侧标签。</li>
         <li>总结与解释：总结选中的一组照片，或结合端侧 OCR 文字解释画面内容。</li>
-        <li>找照片：用 <code>search_photos</code> 搜索整个当前图库，或按模型给出的关键词与筛选条件应用检索。</li>
-        <li>整理图库：新建相簿、把照片加入相簿、收藏 / 取消收藏、添加关键词、选中照片。</li>
-        <li>安全边界：每次修改前弹出确认；不支持删除、编辑原图、导入，也不会写入官方「照片」库的 <code>Photos.sqlite</code>。</li>
+        <li>找照片与视频：用 <code>search_photos</code> / <code>list_videos</code> 搜索当前图库，或按模型给出的关键词与筛选条件应用检索。</li>
+        <li>整理图库：相簿、文件夹、收藏、隐藏、关键词、标题、原地压缩、自动美化、最近删除与恢复，都可以让助手实际执行。</li>
+        <li>切换视图：让助手切到收藏 / 视频 / 最近删除 / 某个相簿或文件夹，并同时设置筛选与排序。</li>
+        <li>安全边界：每次修改前弹出确认；不支持永久删除、编辑原图与导入，也不会写入官方「照片」库的 <code>Photos.sqlite</code>。</li>
       </ul>
+
+      <h3>工具一览</h3>
+      <p>模型通过 OpenAI function calling 调用下列本地工具，共 <b>26 个</b>，其中 <b>19 个写操作</b>。写操作统一先确认，再经 <code>LibraryStore</code> 落盘；失败或取消会如实回传。</p>
+      <table class="doc-table">
+        <thead><tr><th>类别</th><th>工具</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>检索与浏览 · 7</td>
+            <td><code>search_photos</code> · <code>list_albums</code> · <code>list_folders</code> · <code>list_videos</code> · <code>navigate</code> · <code>select_photos</code> · <code>open_photo</code></td>
+            <td>按关键词 / 时间 / 地点 / 类型搜索；列出相簿、文件夹树与视频；切换范围并设置筛选 / 搜索 / 排序；选中项目；在查看器中打开照片或播放视频。</td>
+          </tr>
+          <tr>
+            <td>相簿 · 7</td>
+            <td><code>create_albums</code> · <code>add_photos_to_album</code> · <code>remove_photos_from_album</code> · <code>rename_album</code> · <code>delete_album</code> · <code>move_album</code> · <code>set_album_cover</code></td>
+            <td>新建相簿（可同时放入项目、指定文件夹）、加入 / 移出、改名、删除相簿（不删照片）、移动到文件夹、设置封面。</td>
+          </tr>
+          <tr>
+            <td>文件夹 · 3</td>
+            <td><code>create_folder</code> · <code>rename_folder</code> · <code>delete_folder</code></td>
+            <td>新建多级文件夹、重命名、删除（不删照片）。</td>
+          </tr>
+          <tr>
+            <td>图片与视频 · 5</td>
+            <td><code>set_favorite</code> · <code>set_hidden</code> · <code>add_keywords</code> · <code>remove_keywords</code> · <code>set_title</code></td>
+            <td>收藏、隐藏、关键词增删、标题；照片与视频共用。</td>
+          </tr>
+          <tr>
+            <td>压缩 · 1</td>
+            <td><code>compress_photos</code></td>
+            <td>对指定照片原地压缩，支持有损 / 无损：有损可传 <code>quality</code>（10–100）、<code>max_dimension</code>、<code>format</code>（original / jpeg / heic）；无损保持像素与尺寸，JPEG 仅移除元数据、其它格式转无损 PNG。可传 <code>keep_backup</code>；仅本地库照片，且只在更小时替换。</td>
+          </tr>
+          <tr>
+            <td>美化 · 1</td>
+            <td><code>beautify_photos</code></td>
+            <td>按画面自动调整曝光、对比度、白平衡、饱和度、阴影与锐度，生成可还原的美化副本；<code>strength</code>（20–150）控制强度，原图与已有编辑保留。</td>
+          </tr>
+          <tr>
+            <td>最近删除 · 2</td>
+            <td><code>trash_photos</code> · <code>restore_photos</code></td>
+            <td>移入最近删除与恢复；不提供永久删除。</td>
+          </tr>
+        </tbody>
+      </table>
+      <ul class="doc-list">
+        <li><b>只读</b>：检索与浏览 7 个工具只改变视图或返回信息，不写图库。</li>
+        <li><b>写 · 仅本地图库</b>：相簿 7、文件夹 3、压缩 1、美化 1、最近删除 2；确认后执行。</li>
+        <li><b>写 · 当前库</b>：收藏 / 隐藏 / 关键词 / 标题 5 个；官方「照片」库作为当前库时，只写 <code>asset_overlays</code> 的补充元数据。</li>
+        <li><b>不支持</b>：永久删除、导入、编辑原图、写入 <code>Photos.sqlite</code>，以及在只读系统图库 / 网盘上执行写操作。</li>
+      </ul>
+
+      <h3>界面提示</h3>
+      <p>面板首屏用两张主推案例（压缩这组照片、按时间地点建相簿）与四张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频）展示可以做的事，点任意示例即可填入输入框；对话开始后，输入框上方保留一条轻量示例条。工具执行成功后会在对话里插入一条绿色操作回执，失败或被取消则如实返回原因。</p>
+
+      <h3>常用案例</h3>
+      <table class="doc-table">
+        <thead><tr><th>场景</th><th>可以这样说</th><th>会发生什么</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>压缩图片</td>
+            <td>把这 3 张照片压到长边 2048、质量 80</td>
+            <td>调用 <code>compress_photos</code> 有损压缩；确认框会列出数量与参数，只替换更小的文件，压缩面板可还原</td>
+          </tr>
+          <tr>
+            <td>无损压缩</td>
+            <td>把这组照片做无损压缩</td>
+            <td>调用 <code>compress_photos</code>（<code>mode=lossless</code>）：JPEG 只移除 EXIF / XMP / IPTC，其它格式转无损 PNG，像素与尺寸不变</td>
+          </tr>
+          <tr>
+            <td>自动美化</td>
+            <td>把这 8 张照片自动美化一下</td>
+            <td>调用 <code>beautify_photos</code> 按画面调整曝光、白平衡与锐度，生成可还原的美化副本，原图保留</td>
+          </tr>
+          <tr>
+            <td>按时间与地点建相簿</td>
+            <td>把去年在上海拍的照片整理成相簿</td>
+            <td>先用 <code>search_photos</code> 按「去年 · 上海」检索，再用 <code>create_albums</code> 建相簿并放入</td>
+          </tr>
+          <tr>
+            <td>按主题整理</td>
+            <td>按主题把这 8 张整理成 4 个相簿</td>
+            <td><code>create_albums</code> 一次创建多个相簿，可同时指定所属文件夹</td>
+          </tr>
+          <tr>
+            <td>视频归组</td>
+            <td>把最近的视频放进「旅行」</td>
+            <td><code>list_videos</code> 取回视频 id，再 <code>add_photos_to_album</code> 加入相簿</td>
+          </tr>
+          <tr>
+            <td>恢复最近删除</td>
+            <td>把刚才移入最近删除的 3 张恢复</td>
+            <td><code>restore_photos</code> 从「最近删除」恢复，不涉及永久删除</td>
+          </tr>
+          <tr>
+            <td>切换与筛选</td>
+            <td>切到收藏，只看视频</td>
+            <td><code>navigate</code> 切换范围并设置筛选，不修改图库内容</td>
+          </tr>
+        </tbody>
+      </table>
 
       <h3>配置步骤</h3>
       <ol class="steps">
@@ -495,7 +633,7 @@ open Luma.app        # 运行</code></pre></div>
         <li>模型配置与对话记录保存在当前图库的 <code>settings</code> 中（<code>ai_config</code> / <code>ai_conversation</code>）；切换图库会切换到各自的对话。</li>
         <li>请求直接发往你选择的提供商，不经过拾光的任何服务器；关闭助手或清空对话不会影响照片。</li>
         <li>写操作由模型调用本地工具完成：先弹窗列出将要创建 / 修改的内容，确认后才通过 <code>LibraryStore</code> 落盘；取消则不会改动图库。</li>
-        <li>官方「照片」图库作为当前图库时，只允许写拾光补充元数据（收藏 / 关键词），不允许新建相簿或编辑原图。</li>
+        <li>官方「照片」图库作为当前图库时，只允许写拾光补充元数据（收藏 / 隐藏 / 关键词），不允许新建相簿、移动项目或编辑原图，也不能移入最近删除。</li>
       </ul>
 
       <div class="callout note">
@@ -586,6 +724,33 @@ open Luma.app        # 运行</code></pre></div>
         <li>批量导入按 CPU 核数并发（上限 6），过程中增量写入新照片，结束或取消时再同步相簿与文件夹关系。</li>
       </ul>
 
+      <h3 id="compression">专业压缩与还原</h3>
+      <p>入口是 <kbd>⌘⇧K</kbd> 或「文件 › 压缩所选」。只作用于本地图库中的照片：视频、系统图库、网盘与最近删除不参与。支持有损与无损两种方式，压缩是原地替换，但可以保留一份逐字节的原图备份。</p>
+      <table class="doc-table">
+        <thead><tr><th>参数</th><th>可选值 / 行为</th></tr></thead>
+        <tbody>
+          <tr><td>源格式</td><td>JPEG · PNG · HEIC · HEIF · TIFF · BMP；动图暂不支持</td></tr>
+          <tr><td>压缩方式</td><td>有损压缩（可调画质 / 长边 / 输出格式）· 无损压缩（保持像素与尺寸）</td></tr>
+          <tr><td>输出格式</td><td>保持原格式 / JPEG / HEIC；仅在有损模式生效</td></tr>
+          <tr><td>画质</td><td>30–100%，默认 80%；仅在有损模式生效</td></tr>
+          <tr><td>最大尺寸</td><td>原始尺寸 / 4096 / 2560 / 2048 / 1600 / 1280 px（长边）；仅在有损模式生效</td></tr>
+          <tr><td>元数据</td><td>有损模式可保留 EXIF、拍摄时间与 GPS 信息；无损模式会移除元数据以减小体积</td></tr>
+          <tr><td>仅在更小时替换</td><td>默认开启；压缩结果更大时保留原文件并跳过</td></tr>
+          <tr><td>原图备份</td><td>可选；写入 <code>resources/backups/&lt;uuid&gt;/&lt;filename&gt;</code>，可逐字节还原</td></tr>
+          <tr><td>批量处理</td><td>逐张预估体积、显示支持数量与进度，可随时取消；分别统计成功 / 跳过 / 失败</td></tr>
+        </tbody>
+      </table>
+      <ul class="doc-list">
+        <li><b>无损压缩</b>：保持像素与尺寸完全不变。JPEG 只剥离 EXIF / XMP / IPTC 与注释段，压缩数据原样保留；PNG / HEIC / TIFF 会重编码为无损 PNG，体积可能不会变小。</li>
+        <li><b>有损压缩</b>：JPEG / HEIC 重新编码并可缩放长边；即使画质 100% 也不是逐字节无损，需要完全可逆时开启「保留原图备份」。</li>
+        <li><b>还原</b>：压缩完成后可在原照片的菜单中还原备份；还原会替换回原始文件并删除备份目录。</li>
+        <li><b>不可压缩</b>：原始文件缺失、无法读取、动图或多帧图片会标记为不支持，不会写入半成品。</li>
+      </ul>
+      <div class="callout tip">
+        <b>推荐设置</b>
+        <p>归档节省空间：有损压缩，JPEG 画质 78–85%、长边 2560、保留元数据、开启原图备份。需要像素级无损：选择无损压缩，JPEG 只去元数据、其它格式转 PNG，并保持原始尺寸。</p>
+      </div>
+
       <h3>导出与压缩</h3>
       <table class="doc-table">
         <thead><tr><th>能力</th><th>说明</th></tr></thead>
@@ -594,7 +759,7 @@ open Luma.app        # 运行</code></pre></div>
           <tr><td>文件名规则</td><td>原始文件名、标题、拍摄日期 + 序号、序号</td></tr>
           <tr><td>未修改原片</td><td>可导出未编辑的原始文件；视频始终以原文件导出</td></tr>
           <tr><td>实况照片</td><td>同时导出同名的配对视频</td></tr>
-          <tr><td>JPG 压缩</td><td><kbd>⌘⇧K</kbd>；保留可还原的原始备份，可回滚</td></tr>
+          <tr><td>专业压缩</td><td><kbd>⌘⇧K</kbd>；有损 / 无损、原格式 / JPEG / HEIC、画质、长边、仅在更小时替换；可选原图备份并逐字节还原</td></tr>
           <tr><td>打印 / 幻灯片</td><td><kbd>⌘P</kbd> 每张一页；<kbd>⌥⌘P</kbd> 幻灯片，可设间隔与 Ken Burns</td></tr>
         </tbody>
       </table>
@@ -745,7 +910,7 @@ open Luma.app        # 运行</code></pre></div>
           <tr><th>接口与模型</th><td>可修改 Base URL 与模型名；豆包填写推理接入点 ID（<code>ep-...</code>）</td></tr>
           <tr><th>API Key</th><td>按提供商分别保存在 macOS 钥匙串（service <code>com.baymax.luma.ai</code>），支持保存、清除与测试连接</td></tr>
           <tr><th>图片理解</th><td>默认关闭；开启后把选中/候选照片压成长边约 1024 的 JPEG，单次最多 6 张</td></tr>
-          <tr><th>可执行操作</th><td>新建相簿、加入相簿、收藏、添加关键词、选中照片；每次修改前弹窗确认，不删除或编辑原图</td></tr>
+          <tr><th>可执行操作</th><td>共 26 个工具（19 个写操作需确认）：检索与浏览 7、相簿 7、文件夹 3、图片与视频 5、压缩 1、美化 1、最近删除 2；不永久删除或编辑原图</td></tr>
           <tr><th>保存位置</th><td>模型配置与对话记录随当前图库保存；API Key 不属于图库，切换图库无需重填</td></tr>
         </tbody>
       </table>
@@ -878,6 +1043,8 @@ open Luma.app        # 运行</code></pre></div>
         <li>智能助手每次只带当前范围最多 40 张候选照片；更大范围检索通过「应用筛选」回到本地搜索管线。视觉支持、上下文长度与限流取决于所选提供商与模型。</li>
         <li>导入始终拷贝原文件，不支持引用原位置。</li>
         <li>视频转码依赖外部 <code>ffmpeg</code>；未安装时仅支持系统可解码的编码。</li>
+        <li><b>多图库</b>：最近图库与系统图库连接会同时保留并可快速切换，但同一时间只渲染一个「当前图库」的网格，不支持两个库并排显示。</li>
+        <li><b>压缩</b>：有损（JPEG / HEIC，可调画质与长边）与无损（保持像素与尺寸）两种方式；无损模式对 JPEG 只移除元数据，其它格式转无损 PNG，体积可能不会变小。</li>
         <li>「年 / 月」时间轴总览只在图库层级提供；相簿 / 文件夹使用普通网格。</li>
         <li>大图库分页覆盖「所有照片」与媒体类型 / 收藏 / 隐藏等本地范围；人物、回忆与地图仍基于内存索引，超百万张时首次进入较慢。</li>
         <li>图库元数据仍在启动时整体载入内存；分页主要减少筛选 / 排序 / 复制的开销。</li>
@@ -895,17 +1062,19 @@ open Luma.app        # 运行</code></pre></div>
         <thead><tr><th>维度</th><th>macOS「照片」</th><th>拾光 Luma</th></tr></thead>
         <tbody>
           <tr><td>图库位置</td><td>系统图库为主，多库需按住 Option 切换</td><td>任意位置的 <code>.photoslibrary</code>，最近图库一键切换</td></tr>
+          <tr><td>多图库</td><td>多库切换，单窗口一个图库</td><td>最多 10 个最近图库 + 每库 10 个连接同时保留，随时切换；同屏仍只渲染当前库</td></tr>
           <tr><td>大图库</td><td>由系统统一管理</td><td>超过 5,000 张自动 SQL 分页（600 / 页），年 / 月走 SQL 分区</td></tr>
           <tr><td>显示形式</td><td>正方形网格，按年 / 月 / 日分段</td><td>正方形 / 完整比例 / 瀑布流 / 列表，四种可缩放</td></tr>
           <tr><td>查看器</td><td>窗口或全屏</td><td>窗口内浏览 / 全屏沉浸，渐进加载 + 预取 + 胶片条</td></tr>
           <tr><td>网络存储</td><td>需先导入图库</td><td>SMB / WebDAV / 阿里云盘 / 百度网盘 / AList 直接浏览</td></tr>
           <tr><td>官方图库</td><td>本体</td><td>只读接入 + sidecar 补充元数据，不改 <code>Photos.sqlite</code></td></tr>
           <tr><td>端侧索引</td><td>系统智能搜索</td><td>场景标签 + OCR + 特征向量落库，可浏览、可组合、可检查</td></tr>
-          <tr><td>智能助手</td><td>—</td><td>可选、自带 API Key；问答检索与整理（建相簿 / 收藏 / 关键词），修改前确认</td></tr>
+          <tr><td>视频格式</td><td>系统可解码格式</td><td>30 种扩展名直接导入；ffmpeg 自动转码，0.25–4×、连播、循环、画中画、存帧</td></tr>
+          <tr><td>智能助手</td><td>—</td><td>可选、自带 API Key；26 个工具 / 19 个写操作需确认；支持整理、原地压缩与自动美化</td></tr>
           <tr><td>图库体检</td><td>—</td><td>模糊 / 相似连拍 / 大视频 / 可腾出空间，一次扫描</td></tr>
           <tr><td>旅行与足迹</td><td>回忆 / 地图</td><td>旅行故事线 + 地图行程段 + 足迹回放</td></tr>
           <tr><td>回忆导出</td><td>系统回忆</td><td>三种风格 + 导出 720p mp4（无声）</td></tr>
-          <tr><td>JPG 压缩</td><td>—</td><td>批量压缩并保留可还原的原始备份</td></tr>
+          <tr><td>专业压缩</td><td>—</td><td>有损 / 无损两种方式，画质与长边可调，仅在更小时替换；无损保持像素，备份可逐字节还原</td></tr>
           <tr><td>iCloud 同步</td><td>支持</td><td>不接管，请继续使用系统「照片」</td></tr>
           <tr><td>视频修剪 / 变速</td><td>支持</td><td>暂不支持</td></tr>
           <tr><td>凭据与隐私</td><td>系统 + iCloud</td><td>默认本地，钥匙串保存凭据与助手 API Key，无账号与遥测</td></tr>

@@ -558,6 +558,12 @@
   .compare-doc-table tbody td:last-child { background: transparent; }
 }
 
+@media (max-width: 380px) {
+  .doc-brand span { display: none; }
+  .doc-search input { width: 64px; }
+  .doc-back { padding: 0 9px; font-size: 11px; }
+}
+
 /* 打印 */
 @media print {
   @page { margin: 16mm 15mm; }

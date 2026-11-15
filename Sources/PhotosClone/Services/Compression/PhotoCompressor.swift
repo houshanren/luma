@@ -3,8 +3,24 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 import CoreGraphics
+import LumaCore
 
 struct CompressionSettings: Equatable {
+    /// 有损：重新编码并可缩放；无损：保持像素与尺寸，只移除元数据或转 PNG。
+    enum Mode: String, CaseIterable, Identifiable {
+        case lossy
+        case lossless
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .lossy: return "有损压缩"
+            case .lossless: return "无损压缩"
+            }
+        }
+    }
+
     enum Format: String, CaseIterable, Identifiable {
         case original
         case jpeg
@@ -21,6 +37,7 @@ struct CompressionSettings: Equatable {
         }
     }
 
+    var mode: Mode = .lossy
     var quality: Double = 0.8
     var maxDimension: Int = 0
     var format: Format = .original
@@ -139,6 +156,18 @@ enum PhotoCompressor {
         if CGImageSourceGetCount(source) > 1 {
             return unsupported("动图暂不支持压缩")
         }
+        if let stripped = losslessJPEGData(for: url, source: source, settings: settings) {
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? photo.pixelWidth
+            let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? photo.pixelHeight
+            return CompressionEstimate(photoID: photo.id,
+                                       originalBytes: fileSize,
+                                       estimatedBytes: Int64(stripped.count),
+                                       width: width,
+                                       height: height,
+                                       isSupported: true,
+                                       note: "无损：仅移除 EXIF / XMP / IPTC 等元数据，像素不变")
+        }
         guard let type = destinationType(source: source, settings: settings) else {
             return unsupported(settings.format == .original ? "该格式需选择 JPEG 或 HEIC" : "无法确定输出格式")
         }
@@ -147,7 +176,9 @@ enum PhotoCompressor {
         }
 
         var note: String?
-        if type == .png, settings.maxDimension == 0 {
+        if settings.mode == .lossless {
+            note = "无损：重编码为 PNG，像素不变；体积可能不会减小"
+        } else if type == .png, settings.maxDimension == 0 {
             note = "PNG 为无损格式，未缩放时体积可能不会减小"
         }
         return CompressionEstimate(photoID: photo.id,
@@ -172,13 +203,23 @@ enum PhotoCompressor {
         if CGImageSourceGetCount(source) > 1 {
             throw CompressionError.unsupported("动图暂不支持压缩")
         }
-        guard let type = destinationType(source: source, settings: settings) else {
-            throw CompressionError.unsupported(settings.format == .original
-                ? "该格式需选择 JPEG 或 HEIC"
-                : "无法确定输出格式")
-        }
-        guard let encoded = encode(source: source, settings: settings, type: type) else {
-            throw CompressionError.encodingFailed
+        let encoded: EncodedImage
+        if let stripped = losslessJPEGData(for: originalURL, source: source, settings: settings) {
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            encoded = EncodedImage(data: stripped,
+                                   width: properties?[kCGImagePropertyPixelWidth] as? Int ?? photo.pixelWidth,
+                                   height: properties?[kCGImagePropertyPixelHeight] as? Int ?? photo.pixelHeight,
+                                   type: .jpeg)
+        } else {
+            guard let type = destinationType(source: source, settings: settings) else {
+                throw CompressionError.unsupported(settings.format == .original
+                    ? "该格式需选择 JPEG 或 HEIC"
+                    : "无法确定输出格式")
+            }
+            guard let result = encode(source: source, settings: settings, type: type) else {
+                throw CompressionError.encodingFailed
+            }
+            encoded = result
         }
 
         let newSize = Int64(encoded.data.count)
@@ -197,7 +238,7 @@ enum PhotoCompressor {
             }
         }
 
-        let ext = type.preferredFilenameExtension ?? originalURL.pathExtension
+        let ext = encoded.type.preferredFilenameExtension ?? originalURL.pathExtension
         let filename = photo.id.uuidString + "." + ext
         let targetURL = LibraryPaths.originals
             .appendingPathComponent(LibraryPaths.shard(for: photo.id), isDirectory: true)
@@ -272,6 +313,8 @@ enum PhotoCompressor {
 
     private static func destinationType(source: CGImageSource,
                                         settings: CompressionSettings) -> UTType? {
+        // 无损模式统一输出 PNG（像素不变）；JPEG 会走元数据剥离，不会到这里。
+        if settings.mode == .lossless { return .png }
         switch settings.format {
         case .jpeg:
             return .jpeg
@@ -291,9 +334,9 @@ enum PhotoCompressor {
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let sourceWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
         let sourceHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
-        let maxPixel = settings.maxDimension > 0
-            ? settings.maxDimension
-            : max(sourceWidth, sourceHeight)
+        let maxPixel = settings.mode == .lossless
+            ? max(sourceWidth, sourceHeight)
+            : (settings.maxDimension > 0 ? settings.maxDimension : max(sourceWidth, sourceHeight))
 
         var options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -321,11 +364,23 @@ enum PhotoCompressor {
         outputProperties[kCGImagePropertyOrientation] = 1
         outputProperties[kCGImagePropertyPixelWidth] = image.width
         outputProperties[kCGImagePropertyPixelHeight] = image.height
-        outputProperties[kCGImageDestinationLossyCompressionQuality] = settings.quality
+        if settings.mode == .lossy {
+            outputProperties[kCGImageDestinationLossyCompressionQuality] = settings.quality
+        }
 
         CGImageDestinationAddImage(destination, image, outputProperties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return EncodedImage(data: data as Data, width: image.width, height: image.height, type: type)
+    }
+
+    /// 无损压缩 JPEG：只剥离 EXIF / XMP / IPTC 与注释段，压缩数据原样保留，像素完全不变。
+    private static func losslessJPEGData(for url: URL,
+                                         source: CGImageSource,
+                                         settings: CompressionSettings) -> Data? {
+        guard settings.mode == .lossless,
+              (CGImageSourceGetType(source) as String?) == UTType.jpeg.identifier,
+              let data = try? Data(contentsOf: url) else { return nil }
+        return JPEGMetadataStripper.strip(data)
     }
 
     private static func flattenAlpha(_ image: CGImage) -> CGImage {

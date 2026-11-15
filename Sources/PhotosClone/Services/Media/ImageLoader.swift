@@ -48,13 +48,7 @@ enum ImageLoader {
                 return image
             }
             let destination = LibraryPaths.systemThumbs.appendingPathComponent(photo.id.uuidString + ".jpg")
-            if photo.isVideo {
-                ImportService.makeVideoThumbnail(url: LibraryPaths.sourceURL(for: photo), destination: destination)
-            } else {
-                ImportService.makeImageThumbnail(url: LibraryPaths.sourceURL(for: photo),
-                                                 destination: destination,
-                                                 rotation: photo.rotationAngle)
-            }
+            generateSystemThumbnail(for: photo, destination: destination)
             guard let image = NSImage(contentsOf: destination) else { return nil }
             store(image, forKey: key)
             return image
@@ -155,6 +149,24 @@ enum ImageLoader {
             let existing = LibraryPaths.thumbnailURL(for: photo)
             if FileManager.default.fileExists(atPath: existing.path) { return existing }
             let destination = LibraryPaths.systemThumbs.appendingPathComponent(photo.id.uuidString + ".jpg")
+            generateSystemThumbnail(for: photo, destination: destination)
+            url = destination
+        } else {
+            url = LibraryPaths.thumbnailURL(for: photo)
+        }
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// 系统图库没有现成 derivative 时，从原图 / 视频现场生成缩略图。
+    /// 网格滚动会同时请求很多格子，这里限制并发并按目标文件去重，避免几十个大图解码同时抢 CPU 与磁盘。
+    private static func generateSystemThumbnail(for photo: PhotoItem, destination: URL) {
+        let key = destination.path
+        switch ThumbnailGenerationGate.shared.checkout(key) {
+        case .duplicate, .throttled:
+            // 已有任务在生成同一个文件（或并发已满）：本次直接跳过，稍后重新请求即可命中。
+            return
+        case .granted:
+            defer { ThumbnailGenerationGate.shared.finish(key) }
             if photo.isVideo {
                 ImportService.makeVideoThumbnail(url: LibraryPaths.sourceURL(for: photo), destination: destination)
             } else {
@@ -162,11 +174,7 @@ enum ImageLoader {
                                                  destination: destination,
                                                  rotation: photo.rotationAngle)
             }
-            url = destination
-        } else {
-            url = LibraryPaths.thumbnailURL(for: photo)
         }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private static func decodeThumbnail(at url: URL, maxPixel: CGFloat) -> NSImage? {
@@ -445,5 +453,58 @@ private final class DisplayPrefetchLimiter: @unchecked Sendable {
         lock.lock()
         active = max(0, active - 1)
         lock.unlock()
+    }
+}
+
+/// 系统图库缩略图生成门控：限制并发，并在同一个目标文件上做去重。
+private final class ThumbnailGenerationGate: @unchecked Sendable {
+    enum Ticket {
+        /// 本次调用负责生成，结束后必须 `finish`。
+        case granted
+        /// 已有任务在生成同一个文件，等待其完成后放弃本次生成。
+        case duplicate
+        /// 并发已满且等待超时，本次放弃（滚动回来会再请求）。
+        case throttled
+    }
+
+    static let shared = ThumbnailGenerationGate()
+
+    private let condition = NSCondition()
+    private let limit = 3
+    private var active = 0
+    private var inFlight: Set<String> = []
+
+    func checkout(_ key: String) -> Ticket {
+        // 主线程兜底：不阻塞界面（正常路径都在后台任务里）。
+        guard !Thread.isMainThread else { return .granted }
+        condition.lock()
+        defer { condition.unlock() }
+        if inFlight.contains(key) {
+            // 等同一个文件的生成结束，避免重复解码。
+            let deadline = Date(timeIntervalSinceNow: 3)
+            while inFlight.contains(key), Date() < deadline {
+                condition.wait(until: Date(timeIntervalSinceNow: 0.2))
+            }
+            return .duplicate
+        }
+        let deadline = Date(timeIntervalSinceNow: 3)
+        while active >= limit {
+            guard Date() < deadline else { return .throttled }
+            condition.wait(until: Date(timeIntervalSinceNow: 0.2))
+            if inFlight.contains(key) { return .duplicate }
+        }
+        active += 1
+        inFlight.insert(key)
+        return .granted
+    }
+
+    func finish(_ key: String) {
+        // 主线程授予的票没有登记，不参与计数。
+        guard !Thread.isMainThread else { return }
+        condition.lock()
+        active = max(0, active - 1)
+        inFlight.remove(key)
+        condition.broadcast()
+        condition.unlock()
     }
 }

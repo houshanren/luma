@@ -246,7 +246,7 @@ extension LibraryStore {
         }
     }
 
-    static func jpegData(from image: CGImage) -> Data? {
+    nonisolated static func jpegData(from image: CGImage) -> Data? {
         let rep = NSBitmapImageRep(cgImage: image)
         return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.94])
     }

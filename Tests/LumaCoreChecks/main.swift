@@ -91,6 +91,81 @@ expectEqual(moved, [0...0, 1...2], "地点变化即分段")
 expectEqual(TripSegmentation.spans(placeKeys: [], dayOrdinals: []), [], "空输入不产生行程段")
 expectEqual(TripSegmentation.spans(placeKeys: ["a"], dayOrdinals: [1]), [0...0], "单张照片单独成段")
 
+// MARK: - 智能美化
+
+let darkPhoto = BeautyAdvisor.advise(BeautyStats(luma: 0.18, lumaSpread: 0.2, saturation: 0.35,
+                                                red: 0.20, green: 0.18, blue: 0.17,
+                                                highlightClip: 0, shadowClip: 0.12,
+                                                sharpness: 130))
+expect(darkPhoto.exposure > 0.3, "偏暗画面提亮")
+expect(darkPhoto.shadows > 0.05, "暗部补光")
+expect(darkPhoto.score > BeautyAdvisor.recommendThreshold, "偏暗照片进入推荐")
+expect(darkPhoto.reasons.contains { $0.contains("偏暗") }, "理由包含偏暗")
+
+let brightPhoto = BeautyAdvisor.advise(BeautyStats(luma: 0.86, lumaSpread: 0.3, saturation: 0.4,
+                                                  red: 0.90, green: 0.86, blue: 0.82,
+                                                  highlightClip: 0.18, shadowClip: 0,
+                                                  sharpness: 130))
+expect(brightPhoto.exposure < 0, "过亮画面压暗")
+expect(brightPhoto.reasons.contains { $0.contains("偏亮") }, "理由包含偏亮")
+
+let warmPhoto = BeautyAdvisor.advise(BeautyStats(luma: 0.45, lumaSpread: 0.24, saturation: 0.4,
+                                                red: 0.52, green: 0.45, blue: 0.36,
+                                                highlightClip: 0, shadowClip: 0,
+                                                sharpness: 130))
+expect(warmPhoto.warmth < 0, "偏暖画面回正色温")
+expect(warmPhoto.reasons.contains { $0.contains("偏暖") }, "理由包含偏暖")
+
+let coldPhoto = BeautyAdvisor.advise(BeautyStats(luma: 0.45, lumaSpread: 0.24, saturation: 0.4,
+                                                red: 0.36, green: 0.45, blue: 0.52,
+                                                highlightClip: 0, shadowClip: 0,
+                                                sharpness: 130))
+expect(coldPhoto.warmth > 0, "偏冷画面回正色温")
+
+let flatPhoto = BeautyAdvisor.advise(BeautyStats(luma: 0.46, lumaSpread: 0.08, saturation: 0.12,
+                                                red: 0.46, green: 0.46, blue: 0.46,
+                                                highlightClip: 0, shadowClip: 0,
+                                                sharpness: 130))
+expect(flatPhoto.contrast > 0.05, "低对比画面提升对比度")
+expect(flatPhoto.saturation > 0.05, "低饱和画面提升饱和度")
+
+let softPhoto = BeautyAdvisor.advise(BeautyStats(luma: 0.5, lumaSpread: 0.25, saturation: 0.4,
+                                                red: 0.5, green: 0.5, blue: 0.5,
+                                                highlightClip: 0, shadowClip: 0,
+                                                sharpness: 20))
+expect(softPhoto.sharpness > 0.1, "偏软画面提升锐度")
+
+let cleanPhoto = BeautyAdvisor.advise(BeautyStats.neutral)
+expect(cleanPhoto.score < BeautyAdvisor.recommendThreshold, "正常照片不进入推荐")
+expectEqual(cleanPhoto.sharpness, 0, "无需调整时不加锐化")
+expectEqual(cleanPhoto.exposure, 0, "正常曝光不调整")
+expect(cleanPhoto.reasons.isEmpty, "正常照片没有理由文案")
+
+// MARK: - JPEGMetadataStripper
+
+// 合成一个包含 APP0 / APP1 / COM 的最小 JPEG 段结构，只用于验证字节级重建。
+var jpegWithMetadata: [UInt8] = [0xFF, 0xD8]
+jpegWithMetadata += [0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]              // APP0
+jpegWithMetadata += [0xFF, 0xE1, 0x00, 0x08, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00] // APP1 EXIF
+jpegWithMetadata += [0xFF, 0xFE, 0x00, 0x04, 0x41, 0x42]              // COM
+jpegWithMetadata += [0xFF, 0xDB, 0x00, 0x04, 0x00, 0x01]              // DQT
+jpegWithMetadata += [0xFF, 0xDA, 0x00, 0x02]                          // SOS
+jpegWithMetadata += [0x12, 0x34, 0x56, 0xFF, 0xD9]                    // 熵数据 + EOI
+
+var expectedStripped: [UInt8] = [0xFF, 0xD8]
+expectedStripped += [0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]
+expectedStripped += [0xFF, 0xDB, 0x00, 0x04, 0x00, 0x01]
+expectedStripped += [0xFF, 0xDA, 0x00, 0x02]
+expectedStripped += [0x12, 0x34, 0x56, 0xFF, 0xD9]
+
+let stripped = JPEGMetadataStripper.strip(Data(jpegWithMetadata))
+expectEqual(stripped ?? Data(), Data(expectedStripped), "无损剥离只移除 APP1 与 COM，保留图像段与压缩数据")
+expectEqual(stripped?.count ?? -1, jpegWithMetadata.count - 16, "无损剥离后体积减小且像素段不变")
+expectEqual(JPEGMetadataStripper.strip(Data(expectedStripped)) ?? Data(), Data(expectedStripped),
+            "没有可移除元数据时字节完全不变")
+expect(JPEGMetadataStripper.strip(Data([0x00, 0x01, 0x02])) == nil, "非 JPEG 数据返回 nil")
+expect(JPEGMetadataStripper.strip(Data([0xFF, 0xD8, 0xFF, 0xE1, 0x00])) == nil, "段长度不完整返回 nil")
+
 // MARK: - 结果
 
 if failures > 0 {

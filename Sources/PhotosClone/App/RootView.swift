@@ -42,6 +42,11 @@ struct RootView: View {
                 .environmentObject(store)
                 .environmentObject(settings)
         }
+        .sheet(isPresented: $store.showBeautyPanel) {
+            BeautyRecommendView()
+                .environmentObject(store)
+                .environmentObject(settings)
+        }
         .sheet(isPresented: $store.showLibraryPicker) {
             LibraryPickerView()
                 .environmentObject(store)

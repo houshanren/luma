@@ -25,6 +25,21 @@ enum LibraryPaths {
     static var cloudThumbs: URL { cloud.appendingPathComponent("thumbs", isDirectory: true) }
     /// 系统图库缩略图缓存：跟着当前图库走，切换图库时互不共享。
     static var systemThumbs: URL { root.appendingPathComponent("resources/system-thumbs", isDirectory: true) }
+    /// 官方「照片」图库自己生成好的 derivative 目录（缩略图与视频封面帧）。
+    /// 直接复用这些 JPEG，可以避免为每个格子解码 HEIC / RAW / 视频原文件。
+    static func systemDerivatives(libraryURL: URL) -> URL {
+        libraryURL.appendingPathComponent("resources/derivatives", isDirectory: true)
+    }
+
+    /// 官方 derivative 的路径规则：`resources/derivatives/<UUID 首字符>/<UUID>_1_105_c.jpeg`。
+    /// 视频没有 `_1_105_c`，官方只保留一张 `_1_102_o.jpeg` 封面帧。
+    static func systemDerivativePath(libraryURL: URL, assetID: UUID, isVideo: Bool) -> String {
+        let key = assetID.uuidString
+        let directory = systemDerivatives(libraryURL: libraryURL)
+            .appendingPathComponent(String(key.prefix(1)), isDirectory: true)
+        let name = isVideo ? "\(key)_1_102_o.jpeg" : "\(key)_1_105_c.jpeg"
+        return directory.appendingPathComponent(name).path
+    }
     /// 系统「照片」图库的扫描结果缓存（仅索引与元数据，不含原图），同样写进当前图库。
     static var systemLibraryCacheDir: URL {
         root.appendingPathComponent("resources/system-cache", isDirectory: true)

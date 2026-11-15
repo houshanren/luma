@@ -68,6 +68,11 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Domain/LibraryHealth.swift` | 图库体检结果模型（模糊项、相似组、大视频） | 扫描逻辑、IO |
 | `Services/Media/PhotoIntelligence.swift` | Vision 分类 / OCR / 特征向量提取与归一化 | 业务规则、UI、数据库写入 |
 | `Services/Media/PhotoQuality.swift` | 缩略图清晰度评估（拉普拉斯方差） | 缓存策略、业务规则 |
+| `Services/Media/PhotoBeauty.swift` | 缩略图 256×256 采样亮度/色彩/清晰度，调用 `BeautyAdvisor` 出建议 | 阈值与业务规则（放 LumaCore）、UI |
+| `Store/LibraryStore+Beauty.swift` | 智能美化：扫描推荐分组、批量渲染美化副本、应用前确认 | 视图绘制、SQL 拼接 |
+| `Domain/BeautyRecommendation.swift` | 美化候选、分组与报告模型 | 扫描逻辑、IO |
+| `Features/Organize/BeautyRecommendView.swift` | 智能美化推荐面板（分组卡片、查看、一键美化） | 扫描算法、路径拼接 |
+| `Features/Editor/EditState+Beauty.swift` | 把美化建议按强度叠加到 `EditState` | 视图状态、扫描 |
 | `Domain/AIAgentModels.swift` | 智能助手提供商、配置、对话与检索建议模型 | 网络请求、Keychain、视图状态 |
 | `Services/AI/AIProviderClient.swift` | OpenAI 兼容的 chat/completions 请求与错误映射 | 业务规则、UI、持久化 |
 | `Services/AI/AILibraryContext.swift` | 当前范围快照 → 提示词、检索建议解析 | 直接读数据库、发送请求 |
@@ -81,7 +86,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Features/Maps/FootprintPlaybackView.swift` | 足迹回放覆盖层（地图折线、进度与调速） | 轨迹数据生成规则（放 Store） |
 | `Domain/PhotoQuery.swift` | 可下推的范围/筛选/排序描述与 `SidebarItem` 映射 | SQL、IO |
 | `Services/Library/MetadataStore+Query.swift` | `PhotoQuery` → SQL：count / page / index / neighbor / 索引提示 | UI、业务规则 |
-| `Sources/LumaCore/` | 无 UI 依赖的纯算法：网格布局、缩略图档位 | 任何 AppKit/SwiftUI/模型 IO |
+| `Sources/LumaCore/` | 无 UI 依赖的纯算法：网格布局、缩略图档位、美化建议（`BeautyAdvisor`） | 任何 AppKit/SwiftUI/模型 IO |
 | `Services/Library/LibraryPaths.swift` | 图库与系统路径的唯一入口 | 业务规则、UI |
 | `Services/Import/ImportService.swift` | 导入、缩略图生成、预览缩略图 | 业务规则（由 Store 决定） |
 | `Services/Media/ImageLoader.swift` | 缩略图/显示图解码与内存缓存 | 视图状态 |
@@ -112,6 +117,8 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 端侧智能分析结果写在 `asset_analysis` 表（`asset_id` 主键 + `labels` / `text` / `feature` BLOB / `updated_at`），只允许经 `MetadataStore.saveAnalysis(_:)` / `removeAnalysis(_:)` 写入；内存里的 `analysisIndex` 只保留标签与文字，特征向量按需从数据库读，禁止把向量塞进 `PhotoItem`。删除照片时必须同步 `removeAnalysis(_:)` 与 `analysisIndex` 过滤。
 - 「最近查看」写在 `assets.viewed_at`，由 `LibraryStore.recordView(_:)` → `MetadataStore.setViewedAt(_:date:)` 单行更新（不要为一次打开触发全量 `save()`）；系统图库的 `viewedAt` 只来自 `Photos.sqlite`，不写回。
 - 「值得重看」「图库体检」都是**派生视图**：扫描结果放在 `healthReport`（内存），不新增数据库表；判定阈值集中在 `LibraryHealthTuning`，不要散落到视图里。
+- 「智能美化」同样是派生视图：推荐分组放在 `beautyReport`（内存），不落库，换库时由 `resetBeautyState()` 清空；阈值与调整量集中在 `LumaCore/BeautyAdvisor`，App 侧 `PhotoBeauty` 只负责采样。
+- 智能美化只生成渲染副本（与编辑器同一条 `commit` 管线：`resources/renders/` + `editRecipe` + `editVersion` + `ImageLoader.invalidate`），绝不覆盖原图；已编辑照片从原图重建编辑点后再叠加建议，不能丢弃用户已有调整。
 
 ### 智能助手（AI）
 
@@ -119,8 +126,21 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 请求只能经 `AIProviderClient`（OpenAI 兼容 `chat/completions`）发出，不引入第三方 SDK；新增提供商只增加 `AIProvider` 的默认 Base URL / 模型与设置项。
 - 提示词只能由 `AIContextBuilder` 组装：当前范围摘要 + 最多 40 张候选照片的元数据/本地 Vision 标签/OCR；禁止把整个 `photos` 数组或文件路径序列化给模型。
 - 图片默认不发送。开启「图片理解」后，只能经 `AIImageEncoder` 压成长边约 1024 的 JPEG（单次最多 6 张），跳过 RAW、视频与云端照片；不得上传原图。
-- 智能助手可通过工具修改图库：`create_albums` / `add_photos_to_album` / `set_favorite` / `add_keywords` / `select_photos`。所有写操作必须先经用户确认，再调用 `LibraryStore` 现有方法并 `save()`；禁止直接写 SQLite、删除或编辑原图、导入，禁止写官方 `Photos.sqlite`（官方库只允许 `asset_overlays` 的收藏 / 关键词等补充元数据）。
+- 智能助手可通过工具修改图库，工具分为七类：
+  - 检索：`search_photos` / `list_albums` / `list_folders` / `list_videos`
+  - 浏览：`navigate` / `select_photos` / `open_photo`
+  - 相簿：`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover`
+  - 文件夹：`create_folder` / `rename_folder` / `delete_folder`
+  - 图片与视频：`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title`
+  - 压缩：`compress_photos`
+  - 美化：`beautify_photos`
+  - 最近删除：`trash_photos` / `restore_photos`
+- 工具定义与参数解析集中在 `AILibraryTools`（`writeToolNames` / `describe`），执行在 `LibraryStore+AITools`；新增工具必须同时补齐定义、写操作白名单、确认文案、执行分支与 README/官网说明。
+- 所有写操作必须先经用户确认，再调用 `LibraryStore` 现有方法并 `save()`；禁止直接写 SQLite、删除或编辑原图、导入，禁止写官方 `Photos.sqlite`（官方库只允许 `asset_overlays` 的收藏 / 隐藏 / 关键词等补充元数据）。
 - 工具参数里的照片 ID 必须验证为当前图库中真实存在且未删除的项目；工具失败或用户取消时，必须把失败结果回传给模型，不能伪造成功。模型回答不得声称未通过工具完成的操作已执行。
+- 智能助手不提供永久删除（`trash_photos` 只移入最近删除，可用 `restore_photos` 恢复）、导入、编辑原图与改文件能力，也不支持在只读来源写入。
+- `compress_photos` 必须复用 `PhotoCompressor`（与压缩面板同一引擎），禁止在 AI 层另写编解码；只允许本地图库、非视频项目，且只在结果更小时替换原文件（`onlyIfSmaller = true`）。压缩支持 `mode = lossy / lossless`：有损可调质量、长边与格式；无损保持像素与尺寸，JPEG 仅经 `LumaCore/JPEGMetadataStripper` 剥离 EXIF / XMP / IPTC / COM，其它格式重编码为 PNG。压缩参数（模式、质量、长边、格式、备份）由工具参数临时构造 `CompressionSettings`，不得修改用户在压缩面板里的默认设置。
+- `beautify_photos` 必须复用 `LibraryStore.applyBeauty(to:strength:)`（与编辑器/美化建议同一管线），只生成可还原的美化副本并保留原图；禁止 AI 层直接写 `editedFilename` 或覆盖原文件，只允许本地图库的非视频项目。
 
 ### 缩略图与缓存
 
@@ -146,6 +166,9 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 切换 / 新建图库必须走 `reloadPerLibraryState()`：它会重读图库级设置、视图状态、系统图库连接、网盘挂载与收藏；切换前先调用 `resetCloudStateForLibrarySwitch()` 清空上一个图库的挂载与目录缓存，否则旧挂载会被当成新库的连接写回新库。
 - 每个图库只管理自己的数据：照片与元数据、系统图库连接、网盘挂载与收藏、库级设置（视图状态 / 导入选项 / 最近删除保留期 / 系统图库载入上限 / 网格元数据显示）全部写在该图库内。新图库必须以空连接、默认设置启动；只有旧版全局设置会在升级时一次性迁入当时打开的图库。
 - 系统「照片」图库的扫描结果（索引与元数据，不含原图）缓存在当前图库的 `resources/system-cache/`，缩略图缓存在 `resources/system-thumbs/`，签名取 `Photos.sqlite` 的大小 + 修改时间；缓存命中直接展示，签名变化才后台重扫。超大图库按 `settings.system.maxAssets`（随图库保存）从新到旧截断载入（0 = 不限制），`SystemLibrarySnapshot.totalAssetCount` 保留真实总数用于提示；禁止为系统图库复制原图，拷贝出口仍走 `importSystem*`。
+- 系统图库缩略图必须**优先读官方 `resources/derivatives`**（照片 `_1_105_c.jpeg`、视频 `_1_102_o.jpeg` 封面帧，路径由 `LibraryPaths.systemDerivativePath` 推导，扫描时记录到 `systemThumbnailPath`），只有文件缺失时才从原图 / 视频现场生成到 `system-thumbs/`；生成必须经过 `ImageLoader` 的并发门控（3 路）与同文件去重，禁止为网格滚动同时解码几十张原图。
+- 系统图库的相簿 / 文件夹分组缓存键是 `systemStructureRevision`（只随相簿、文件夹变化），不是 `contentRevision`；侧边栏计数统一走 `systemSidebarCounts` 的一次遍历缓存。禁止在扫描过程中按每批照片重建相簿分桶或对每个计数各扫一遍全库。
+- 十万级以上的系统图库「所有照片」网格在视图层按 1200 张渐进渲染（`systemRenderLimit`，滚动到底追加），避免 SwiftUI 对整库做 diff；本地大图库仍走 SQL 分页窗口。
 - 系统图库侧边栏的相簿与文件夹按 `ZGENERICALBUM.Z_PK`（`sortIndex`）排序并混排，与官方「照片」一致；不要改回按名称排序。打开系统图库默认 `grouping == .all`、`sortKey == .capturedAt` 降序。
 - 侧边栏相簿与文件夹默认收起（只记录用户展开过的 `expandedFolders` / `expandedSystemFolders`），不要改成默认展开——系统图库可能有上万个相簿。
 
@@ -163,6 +186,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | 阿里云盘 / 百度网盘 | ✅ | ❌ | ❌ |
 
 - 判断统一使用 `store.isSystemScope`、`store.isCloudScope`、`store.isReadOnlyScope`、`store.isNativeContainer`、`store.canEditNativeOverlay`、`store.isCurrentCloudWritable`。
+- 智能美化只对本地图库开放（`store.canScanBeauty` = 非系统图库 && 非网盘 && 已建库），菜单项、体检页入口与推荐面板都要用同一个判断；系统图库、网盘与官方「照片」图库不提供美化入口。
 - 官方「照片」图库是当前图库时，它是**增强对象**而不是只读浏览：内容读取 `Photos.sqlite`，拾光的补充元数据写在该库的 `PhotosClone.sqlite`（`asset_overlays`，`MetadataStore.saveOverlay(_:_:)`），绝不回写 `Photos.sqlite`；删除、编辑、导入、重命名仍然禁止。
 - 任何写操作入口（菜单、右键、快捷键、工具栏）都必须先做权限判断；只读时菜单项应 `disabled`，不要只在执行时弹 Toast。
 - 系统图库的拷贝出口：`importSystemSelectionToLibrary` / `importSystemAlbumToLibrary` / `importSystemFolderToLibrary`，目录递归用 `systemFolderAssetIDs`，重复项目按「同名 + 同大小」跳过。

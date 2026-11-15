@@ -288,6 +288,11 @@ struct PhotosCloneApp: App {
                     store.showAIAssistant = true
                 }
 
+                Button("智能美化…") {
+                    store.showBeautyPanel = true
+                }
+                .disabled(!store.canScanBeauty)
+
                 Divider()
 
                 Picker("分组方式", selection: $store.grouping) {

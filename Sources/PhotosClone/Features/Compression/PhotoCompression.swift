@@ -67,7 +67,7 @@ struct CompressionSheetView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("原地压缩")
                     .font(.system(size: 16, weight: .semibold))
-                Text("\(targets.count) 张照片 · 将直接替换图库中的原始文件")
+                Text("\(targets.count) 张照片 · \(store.compressionSettings.mode.title) · 将直接替换图库中的原始文件")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             }
@@ -177,54 +177,16 @@ struct CompressionSheetView: View {
                     .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("画质")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Text("\(Int((store.compressionSettings.quality * 100).rounded()))%")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: $store.compressionSettings.quality, in: 0.3...1.0)
-                        .controlSize(.small)
-                    Text(qualityHint)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("最大尺寸")
+                    Text("压缩方式")
                         .font(.system(size: 12, weight: .medium))
-                    Picker("最大尺寸", selection: $store.compressionSettings.maxDimension) {
-                        Text("原始尺寸").tag(0)
-                        Text("4096 px").tag(4096)
-                        Text("2560 px").tag(2560)
-                        Text("2048 px").tag(2048)
-                        Text("1600 px").tag(1600)
-                        Text("1280 px").tag(1280)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    Text("缩小长边可显著降低体积。")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("输出格式")
-                        .font(.system(size: 12, weight: .medium))
-                    Picker("输出格式", selection: $store.compressionSettings.format) {
-                        ForEach(CompressionSettings.Format.allCases) { format in
-                            Text(format.title).tag(format)
+                    Picker("压缩方式", selection: $store.compressionSettings.mode) {
+                        ForEach(CompressionSettings.Mode.allCases) { mode in
+                            Text(mode.title).tag(mode)
                         }
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    Text(formatHint)
+                    Text(modeHint)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -232,17 +194,86 @@ struct CompressionSheetView: View {
 
                 Divider()
 
-                Toggle(isOn: $store.compressionSettings.preserveMetadata) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("保留元数据")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("保留 EXIF、拍摄时间与 GPS 信息。")
+                if store.compressionSettings.mode == .lossy {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("画质")
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer()
+                            Text("\(Int((store.compressionSettings.quality * 100).rounded()))%")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $store.compressionSettings.quality, in: 0.3...1.0)
+                            .controlSize(.small)
+                        Text(qualityHint)
                             .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("最大尺寸")
+                            .font(.system(size: 12, weight: .medium))
+                        Picker("最大尺寸", selection: $store.compressionSettings.maxDimension) {
+                            Text("原始尺寸").tag(0)
+                            Text("4096 px").tag(4096)
+                            Text("2560 px").tag(2560)
+                            Text("2048 px").tag(2048)
+                            Text("1600 px").tag(1600)
+                            Text("1280 px").tag(1280)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        Text("缩小长边可显著降低体积。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("输出格式")
+                            .font(.system(size: 12, weight: .medium))
+                        Picker("输出格式", selection: $store.compressionSettings.format) {
+                            ForEach(CompressionSettings.Format.allCases) { format in
+                                Text(format.title).tag(format)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        Text(formatHint)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("无损说明")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("保持像素与尺寸不变：JPEG 只移除 EXIF / XMP / IPTC 等元数据，压缩数据原样保留；PNG / HEIC / TIFF 会重编码为无损 PNG。只有在结果更小时才会替换原文件。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .toggleStyle(.switch)
-                .controlSize(.small)
+
+                Divider()
+
+                if store.compressionSettings.mode == .lossy {
+                    Toggle(isOn: $store.compressionSettings.preserveMetadata) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("保留元数据")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("保留 EXIF、拍摄时间与 GPS 信息。")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                }
 
                 Toggle(isOn: $store.compressionSettings.onlyIfSmaller) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -270,6 +301,15 @@ struct CompressionSheetView: View {
             }
             .padding(18)
             .disabled(store.isCompressing)
+        }
+    }
+
+    private var modeHint: String {
+        switch store.compressionSettings.mode {
+        case .lossy:
+            return "可调画质与长边，体积最小；画质会有损失。"
+        case .lossless:
+            return "像素与尺寸完全不变，只做无损优化；体积可能不会减小。"
         }
     }
 

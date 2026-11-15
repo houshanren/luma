@@ -173,11 +173,25 @@ final class LibraryStore: ObservableObject {
     /// 只存在当前图库自己的 `PhotosClone.sqlite`，不写回 `Photos.sqlite`。
     var systemOverlays: [UUID: MetadataStore.AssetOverlay] = [:]
     @Published var systemAlbums: [SystemAlbumInfo] = [] {
-        didSet { contentRevision &+= 1 }
+        didSet {
+            contentRevision &+= 1
+            systemStructureRevision &+= 1
+        }
     }
     @Published var systemFolders: [SystemFolderInfo] = [] {
-        didSet { contentRevision &+= 1 }
+        didSet {
+            contentRevision &+= 1
+            systemStructureRevision &+= 1
+        }
     }
+    /// 相簿 / 文件夹结构版本：与逐批到达的照片增量分离，
+    /// 避免扫描过程中每 2000 张就重建一次上万个相簿的分桶与排序。
+    var systemStructureRevision = 0
+    /// 系统相簿主键索引：侧边栏封面与按 ID 查找不再线性扫全量相簿数组。
+    var systemAlbumIndex: [Int64: SystemAlbumInfo] = [:]
+    /// 侧边栏计数（有效 / 隐藏 / 删除 / 重复等）的合并缓存，按内容版本失效。
+    var systemCountsCache: SystemSidebarCounts?
+    var systemCountsCacheRevision = -1
     @Published var systemPeople: [SystemPersonInfo] = []
     @Published var selectedPerson: SystemPersonInfo?
     /// 本地图库的端侧人物聚类结果。
@@ -196,6 +210,13 @@ final class LibraryStore: ObservableObject {
     @Published var healthReport: LibraryHealthReport?
     @Published var isScanningHealth = false
     @Published var healthScanProgress = 0.0
+    /// 智能美化扫描结果与批量应用进度，仅本地图库；结果只在内存里，不落库。
+    @Published var beautyReport: BeautyReport?
+    @Published var isScanningBeauty = false
+    @Published var beautyScanProgress = 0.0
+    @Published var isApplyingBeauty = false
+    @Published var beautyApplyProgress = 0.0
+    @Published var showBeautyPanel = false
     @Published var isLoadingSystemLibrary = false
     /// 系统图库扫描进度（已读取的资源数）。
     @Published var systemScanCount = 0
@@ -275,6 +296,7 @@ final class LibraryStore: ObservableObject {
     /// 候选照片的文件名到 id，解析模型直接写文件名的情况。
     var aiLastCandidateNames: [String: UUID] = [:]
     var healthTask: Task<Void, Never>?
+    var beautyTask: Task<Void, Never>?
     var sceneCountsCacheKey: String?
     var sceneCountsCache: [String: Int] = [:]
     var metadataStore: MetadataStore?
@@ -302,12 +324,9 @@ final class LibraryStore: ObservableObject {
     var visibleCacheValue: [PhotoItem] = []
     var sectionsCacheKey: String?
     var sectionsCacheValue: [PhotoSection] = []
-    /// 系统图库侧边栏子项（文件夹 + 相簿混排），按 contentRevision 一次性分组。
+    /// 系统图库侧边栏子项（文件夹 + 相簿混排），按结构版本一次性分组。
     var systemChildrenCacheRevision = -1
     var systemChildrenBuckets: [Int64: [SystemSidebarEntry]] = [:]
-    /// 系统图库有效项目数（侧边栏徽标），按 contentRevision 失效。
-    var systemActiveCountCacheRevision = -1
-    var systemActiveCountCacheValue = 0
 
     // MARK: - 大图库分页窗口
     //

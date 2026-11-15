@@ -93,6 +93,9 @@ enum SystemPhotosLibrary {
         var assetIDByPK: [Int64: UUID] = [:]
         // 实况照片的配对视频：同名 MOV 与图片在同一图库中分别存储。
         var liveVideoByStem: [String: String] = [:]
+        // 官方图库自带 derivative 时，逐项直接记录其路径，边扫描边显示也能用上快速缩略图。
+        let hasDerivatives = FileManager.default.fileExists(
+            atPath: LibraryPaths.systemDerivatives(libraryURL: libraryURL).path)
 
         do {
             try db.forEachRow("""
@@ -245,6 +248,13 @@ enum SystemPhotosLibrary {
 
             item.source = .system
             item.systemOriginalPath = originalURL.path
+            if hasDerivatives {
+                item.systemThumbnailPath = LibraryPaths.systemDerivativePath(
+                    libraryURL: libraryURL,
+                    assetID: item.id,
+                    isVideo: item.kind == .video
+                )
+            }
             photos.append(item)
             pendingBatch.append(item)
 
@@ -475,7 +485,8 @@ enum SystemPhotosLibrary {
 /// 只缓存索引与元数据，原图仍然直接从 macOS「照片」图库读取。
 enum SystemLibraryCache {
     /// 解析逻辑或快照结构变更时递增，旧缓存会自动失效。
-    static let version = 4
+    /// v5：扫描时记录官方 derivative 路径，旧缓存需要重扫一次。
+    static let version = 5
     private static let maxCacheFiles = 8
     /// 超大快照不做缓存，避免编码/解码占用过多内存。
     private static let maxCachedPhotos = 250_000

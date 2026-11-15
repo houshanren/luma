@@ -1,0 +1,219 @@
+import SwiftUI
+import AppKit
+
+struct MetadataOptions: Codable, Equatable {
+    var title = false
+    var capturedDate = false
+    var keywords = false
+    var edited = false
+    var fileType = false
+    var favorite = true
+    var location = false
+    var resolution = false
+    var fileSize = false
+    var camera = false
+    var source = false
+    var duration = true
+
+    /// 除「个人收藏」「视频时长」这类角标外，是否还有文字信息需要遮罩。
+    var hasTextOverlay: Bool {
+        title || capturedDate || keywords || edited || fileType
+            || location || resolution || fileSize || camera || source
+    }
+}
+
+/// 缩略图角标与文字的快速预设。
+enum MetadataPreset {
+    case minimal
+    case standard
+    case full
+}
+
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
+enum AppAccent: String, CaseIterable, Identifiable {
+    case system
+    case blue
+    case purple
+    case pink
+    case orange
+    case green
+    case teal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "系统"
+        case .blue: return "蓝色"
+        case .purple: return "紫色"
+        case .pink: return "粉色"
+        case .orange: return "橙色"
+        case .green: return "绿色"
+        case .teal: return "青色"
+        }
+    }
+
+    var color: Color? {
+        switch self {
+        case .system: return nil
+        case .blue: return .blue
+        case .purple: return .purple
+        case .pink: return .pink
+        case .orange: return .orange
+        case .green: return .green
+        case .teal: return .teal
+        }
+    }
+
+    var swatch: Color {
+        color ?? Color.accentColor
+    }
+}
+
+enum PhotoOpenMode: String, CaseIterable, Identifiable {
+    case viewer
+    case editor
+    case systemApp
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .viewer: return "在本 App 中查看"
+        case .editor: return "直接进入编辑（仅照片）"
+        case .systemApp: return "用系统默认应用打开"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .viewer: return "双击照片打开查看器，视频直接播放。"
+        case .editor: return "双击照片进入编辑；视频和只读项目仍用查看器。"
+        case .systemApp: return "双击交给「预览」等默认应用；云端项目仍用查看器。"
+        }
+    }
+}
+
+/// 查看器呈现方式：窗口内浏览（保留侧边栏与工具栏）或全屏沉浸。
+enum ViewerLayout: String, CaseIterable, Identifiable {
+    case window
+    case fullscreen
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .window: return "窗口内浏览"
+        case .fullscreen: return "全屏沉浸"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .window: return "保留侧边栏与顶部工具栏，照片居中显示，可一边浏览一边切换相簿。"
+        case .fullscreen: return "查看器覆盖整个窗口并隐藏侧边栏，适合专注看图。"
+        }
+    }
+}
+
+/// 动效预设。影响页面切换、查看器开合、侧边栏展开与卡片悬停。
+enum MotionPreset: String, CaseIterable, Identifiable {
+    case silky
+    case standard
+    case quick
+    case off
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .silky: return "丝滑"
+        case .standard: return "标准"
+        case .quick: return "轻快"
+        case .off: return "关闭"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .silky: return "弹性收尾，接近系统「照片」的过渡手感。"
+        case .standard: return "较短的平滑过渡，兼顾手感与响应。"
+        case .quick: return "几乎瞬时的淡入淡出，适合高频操作。"
+        case .off: return "完全关闭动画，立即切换。"
+        }
+    }
+
+    /// 页面切换、尺寸变化等布局动画。
+    var layout: Animation? {
+        switch self {
+        case .silky: return .spring(response: 0.42, dampingFraction: 0.86)
+        case .standard: return .snappy(duration: 0.25)
+        case .quick: return .easeOut(duration: 0.15)
+        case .off: return nil
+        }
+    }
+
+    /// 查看器、信息面板等浮层动画。
+    var overlay: Animation? {
+        switch self {
+        case .silky: return .spring(response: 0.48, dampingFraction: 0.9)
+        case .standard: return .easeInOut(duration: 0.24)
+        case .quick: return .easeOut(duration: 0.15)
+        case .off: return nil
+        }
+    }
+
+    /// 卡片悬停等微交互。
+    var hover: Animation? {
+        switch self {
+        case .silky: return .spring(response: 0.26, dampingFraction: 0.92)
+        case .standard: return .snappy(duration: 0.18)
+        case .quick: return .easeOut(duration: 0.12)
+        case .off: return nil
+        }
+    }
+
+    /// 查看器打开时的初始缩放。
+    var viewerScale: CGFloat {
+        switch self {
+        case .silky: return 0.94
+        case .standard: return 0.97
+        case .quick: return 0.98
+        case .off: return 1
+        }
+    }
+
+    var hoverScale: CGFloat {
+        switch self {
+        case .silky: return 1.01
+        case .standard: return 1.006
+        case .quick: return 1.004
+        case .off: return 1
+        }
+    }
+}
+
+// MARK: - 设置存储

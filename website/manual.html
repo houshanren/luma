@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="拾光 Luma 产品使用手册：图库、浏览、组织、端侧智能、回忆与旅行、编辑导出、系统「照片」接入、网络存储、设置与快捷键。">
+<title>使用手册 — 拾光 Luma</title>
+<link rel="icon" type="image/png" href="assets/luma-icon-180.png">
+<script>document.documentElement.classList.add('js');</script>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body class="page-doc">
+
+<header class="doc-top">
+  <div class="doc-top-inner">
+    <a class="brand doc-brand" href="index.html">
+      <img src="assets/luma-icon-180.png" alt="" width="24" height="24">
+      <span>拾光 <em>Luma</em></span>
+    </a>
+    <span class="doc-top-divider"></span>
+    <span class="doc-top-title">使用手册</span>
+    <div class="doc-top-actions">
+      <label class="doc-search">
+        <svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="docSearch" type="search" placeholder="搜索手册" autocomplete="off" aria-label="搜索手册">
+        <kbd>⌘K</kbd>
+      </label>
+      <button class="doc-print" type="button" id="printDoc" title="打印或导出 PDF">
+        <svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>打印 / PDF
+      </button>
+      <a class="doc-back" href="index.html">返回官网<span>→</span></a>
+    </div>
+  </div>
+</header>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 19 6v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+</svg>
+
+<div class="doc-layout">
+
+  <aside class="doc-side">
+    <nav class="doc-toc" id="docToc" aria-label="手册目录">
+      <p class="toc-title">开始</p>
+      <a href="#intro">产品概览</a>
+      <a href="#start">开始使用</a>
+      <a href="#library">图库与数据</a>
+
+      <p class="toc-title">日常</p>
+      <a href="#browse">浏览</a>
+      <a href="#organize">组织</a>
+      <a href="#intelligence">端侧智能</a>
+      <a href="#assistant">智能助手</a>
+
+      <p class="toc-title">重温</p>
+      <a href="#memories">回忆与旅行</a>
+      <a href="#map">地图与足迹</a>
+
+      <p class="toc-title">输出与接入</p>
+      <a href="#edit">编辑与输出</a>
+      <a href="#native">系统「照片」图库</a>
+      <a href="#cloud">网络存储</a>
+
+      <p class="toc-title">参考</p>
+      <a href="#settings">设置</a>
+      <a href="#shortcuts">键盘快捷键</a>
+      <a href="#privacy">数据与隐私</a>
+      <a href="#faq">常见问题</a>
+      <a href="#limits">已知限制</a>
+      <a href="#compare">附录：与「照片」对比</a>
+    </nav>
+
+    <div class="doc-side-foot">
+      <span>版本 1.0</span>
+      <span>适用于 macOS 14+</span>
+    </div>
+  </aside>
+
+  <main class="doc-main" id="docMain">
+    <div class="doc-hero">
+      <p class="doc-eyebrow">拾光 Luma · 产品手册</p>
+      <h1>把十万张照片，<br>整理成一段清楚的时间线。</h1>
+      <p class="doc-lede">这本手册覆盖拾光的全部功能：从建库、导入与浏览，到端侧智能、可选的智能助手、回忆影片、网络存储与官方「照片」图库接入。它同时说明数据写在哪里、权限边界如何划分，以及哪些事情应该继续交给系统「照片」。</p>
+      <div class="doc-meta">
+        <span>版本 1.0</span>
+        <span>更新于 2026 年 11 月</span>
+        <span>界面语言：简体中文</span>
+        <span>无账号 · 无第三方依赖</span>
+      </div>
+
+      <div class="doc-quick">
+        <a href="#start"><b>第一次使用</b><span>建库、导入与第一次整理 →</span></a>
+        <a href="#browse"><b>每天浏览</b><span>时间轴、四种显示形式与查看器 →</span></a>
+        <a href="#intelligence"><b>端侧智能</b><span>场景、OCR、自然语言搜索 →</span></a>
+        <a href="#assistant"><b>智能助手</b><span>自带 Key 的可选云端问答 →</span></a>
+        <a href="#settings"><b>设置与快捷键</b><span>五页设置与全部键盘操作 →</span></a>
+        <a href="#compare"><b>和「照片」对比</b><span>什么时候用拾光，什么时候不 →</span></a>
+      </div>
+    </div>
+
+    <div class="search-empty" id="searchEmpty" hidden>没有匹配的章节，试试更短的关键词。</div>
+
+    <!-- 01 概览 -->
+    <section class="doc-chapter" id="intro">
+      <h2><span class="chapter-no">01</span>产品概览</h2>
+      <p class="lead">拾光（Luma）是一个 macOS 原生照片管理应用，使用 SwiftUI + SQLite 构建。界面与交互对齐系统「照片」，并额外提供网络存储（SMB / WebDAV / 阿里云盘 / 百度网盘）与官方「照片」图库接入。</p>
+
+      <div class="doc-cards">
+        <div><h3>适合谁</h3><p>照片在本地或 NAS 上、数量从几千到上百万；希望用键盘与文件系统管理照片；不愿意把图库交给云端账号。</p></div>
+        <div><h3>不适合谁</h3><p>依赖 iCloud 跨设备同步、共享图库、视频修剪与屏幕保护输出。这些能力继续使用系统「照片」更合适。</p></div>
+        <div><h3>核心原则</h3><p>图库是一个可移动的文件夹；所有元数据只有一份真源；只读来源绝不写入；端侧智能默认完全在本机完成，云端助手需要显式配置才会启用。</p></div>
+        <div><h3>界面结构</h3><p>左侧为图库范围（拾光 / 系统图库 / 网络存储），中间是网格，右侧或浮层是信息与编辑。查看器覆盖在网格之上。</p></div>
+      </div>
+
+      <h3>能力地图</h3>
+      <div class="cap-grid">
+        <a href="#library"><b>图库</b><span>任意位置 .photoslibrary、多库切换、外置磁盘、官方图库接入</span></a>
+        <a href="#browse"><b>浏览</b><span>年 / 月 / 所有照片、四种显示形式、大图库分页、查看器</span></a>
+        <a href="#organize"><b>组织</b><span>多级相簿、智能相簿、封面、拖拽排序、人物、重复项目、体检</span></a>
+        <a href="#intelligence"><b>智能</b><span>场景标签、OCR、自然语言搜索、相似照片，全部端侧</span></a>
+        <a href="#assistant"><b>智能助手</b><span>可选云端模型、自带 API Key、问答检索与整理操作</span></a>
+        <a href="#memories"><b>重温</b><span>回忆影片、那年今日、旅行故事线、足迹回放</span></a>
+        <a href="#edit"><b>编辑</b><span>非破坏调整、RAW 解码、实况照片、批量更改、导出与压缩</span></a>
+        <a href="#cloud"><b>网络</b><span>SMB / WebDAV / 阿里云盘 / 百度网盘 / AList</span></a>
+        <a href="#privacy"><b>隐私</b><span>默认不上传、钥匙串凭据、本地数据库、无遥测</span></a>
+      </div>
+
+      <div class="callout tip">
+        <b>阅读约定</b>
+        <p><kbd>⌘</kbd> 表示 Command，<kbd>⌥</kbd> 表示 Option，<kbd>⇧</kbd> 表示 Shift。文中「当前图库」指应用此刻打开的那个 <code>.photoslibrary</code>；「只读来源」指系统「照片」图库、SMB 共享与云盘。</p>
+      </div>
+    </section>
+
+    <!-- 02 开始使用 -->
+    <section class="doc-chapter" id="start">
+      <h2><span class="chapter-no">02</span>开始使用</h2>
+      <p class="lead">拾光没有安装器，也没有后台服务。构建产出一份 <code>Luma.app</code>，双击即可运行；所有数据都写在你选择的图库里。</p>
+
+      <h3>系统要求</h3>
+      <table class="doc-table">
+        <tbody>
+          <tr><th>操作系统</th><td>macOS 14 Sonoma 或更高</td></tr>
+          <tr><th>开发工具</th><td>Xcode 15+ 或 Swift 5.9 工具链</td></tr>
+          <tr><th>构建方式</th><td>SwiftPM（<code>Package.swift</code>），无第三方依赖</td></tr>
+          <tr><th>产物</th><td>仓库根目录的 <code>Luma.app</code>（可执行文件 <code>Luma</code>）</td></tr>
+        </tbody>
+      </table>
+
+      <h3>构建与运行</h3>
+      <div class="code-block"><pre><code>./build.sh debug     # 日常开发构建
+./build.sh           # release 构建
+open Luma.app        # 运行</code></pre></div>
+      <p>纯逻辑检查（网格布局、缩略图档位、旅行分段）使用断言可执行目标：</p>
+      <div class="code-block"><pre><code>swift run LumaCoreChecks</code></pre></div>
+      <p class="muted">构建脚本会执行 <code>swift build</code>，把可执行文件、<code>Resources/Info.plist</code> 与 <code>Resources/AppIcon.icns</code> 组装成 <code>Luma.app</code>，并做 ad-hoc 签名。</p>
+
+      <h3>第一次启动</h3>
+      <ol class="steps">
+        <li><b>没有图库时</b>：主界面被建库门禁挡住，只显示引导页。此时不会在固定位置创建任何数据。</li>
+        <li><b>新建图库</b>：选择任意文件夹（可在桌面、外置磁盘或 NAS 挂载点），命名后生成一个 <code>.photoslibrary</code> 包。</li>
+        <li><b>打开已有图库</b>：选择拾光图库，或直接打开官方「照片」图库。</li>
+        <li><b>以后启动</b>：自动打开上次使用的图库；路径记录在 <code>Application Support/PhotosClone/ContainerPath.txt</code>。</li>
+        <li><b>临时切换</b>：按住 <kbd>Option</kbd> 启动应用，先弹出「选取图库」面板。</li>
+      </ol>
+
+      <h3>打开、切换与最近图库</h3>
+      <table class="doc-table">
+        <thead><tr><th>操作</th><th>入口</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>打开图库</td><td><kbd>⌘O</kbd> / 文件 › 打开图库…</td><td>打开任意位置的 <code>.photoslibrary</code>，立即成为当前图库</td></tr>
+          <tr><td>选取图库</td><td><kbd>⌥⌘O</kbd> / 按住 Option 启动</td><td>面板列出当前图库、最近打开与 <code>~/图片</code> 下的所有图库</td></tr>
+          <tr><td>新建图库</td><td><kbd>⌥⇧⌘N</kbd> / 文件 › 新建图库…</td><td>生成新的空图库并切换过去</td></tr>
+          <tr><td>切换图库</td><td>设置 › 图库 › 最近使用的图库</td><td>一键「切换到此图库」；不会搬运内容</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note">
+        <b>切换的含义</b>
+        <p>打开哪个图库就以哪个图库为准：展示它自己的照片、相簿、设置与系统图库连接。导入、编辑与设置写入它自己的 <code>database/PhotosClone.sqlite</code>，不会把上一个图库的内容搬进来。只有建库引导里的「迁入旧库」才会迁移数据。</p>
+      </div>
+
+      <h3>应用支持目录</h3>
+      <table class="doc-table">
+        <tbody>
+          <tr><th><code>ContainerPath.txt</code></th><td>上次打开的图库路径（当前图库的唯一真源）</td></tr>
+          <tr><td>旧版本地库残留</td><td>仅在没有图库时用于迁移提示；旧版 <code>SystemThumbs/</code> 与 <code>SystemLibraryCache/</code> 不再写入</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">系统图库缩略图与扫描索引现在写在当前图库包内的 <code>resources/system-thumbs/</code> 与 <code>resources/system-cache/</code>。应用支持目录位于 <code>~/Library/Application Support/PhotosClone/</code>，清理缓存不会影响图库本身。</p>
+
+      <h3>建议的第一次整理</h3>
+      <ol class="steps">
+        <li>新建或打开一个图库，设置 › 浏览里选好缩略图尺寸与显示形式。</li>
+        <li>把照片拖进窗口，或按 <kbd>⌘I</kbd> 导入；上千张可以分批，导入会并发拷贝并增量落盘。</li>
+        <li>重复项目检测（侧边栏「更多项目 › 重复项目」）先合并明显重复。</li>
+        <li>「场景 › 分析照片内容…」跑一次端侧分析；需要人物时再运行本地人脸聚类。</li>
+        <li>「图库体检」扫一轮，处理模糊、相似连拍与过大视频。所有删除都先进最近删除。</li>
+      </ol>
+    </section>
+
+    <!-- 03 图库与数据 -->
+    <section class="doc-chapter" id="library">
+      <h2><span class="chapter-no">03</span>图库与数据</h2>
+      <p class="lead">图库就是一个 <code>.photoslibrary</code> 包。所有图库（自建库与直接打开的官方「照片」图库）的数据都写入包内第一层，因此备份、归档与换机都只是复制一个文件夹。</p>
+
+      <h3>图库结构</h3>
+      <div class="code-block"><pre><code>我的图库.photoslibrary/
+├── database/PhotosClone.sqlite        # 元数据唯一真源
+├── originals/&lt;首字符&gt;/&lt;uuid&gt;.&lt;ext&gt;    # 原图副本
+├── resources/derivatives/             # 缩略图
+├── resources/renders/                 # 编辑渲染结果
+├── resources/transcodes/              # 视频转码缓存
+├── resources/backups/                 # 压缩前备份
+├── resources/system-thumbs/           # 系统图库缩略图缓存
+├── resources/system-cache/            # 系统图库扫描结果缓存
+└── cloud/thumbs/                      # 网盘缩略图缓存</code></pre></div>
+
+      <h3>数据库里有什么</h3>
+      <table class="doc-table">
+        <thead><tr><th>表</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td><code>assets</code></td><td>照片与视频元数据：路径、拍摄时间、相机、地点、尺寸、大小、收藏、隐藏、查看时间等</td></tr>
+          <tr><td><code>albums</code> / <code>folders</code></td><td>相簿、文件夹与层级关系、自定义封面、相簿内顺序</td></tr>
+          <tr><td><code>people</code></td><td>本地人物聚类结果与人物关系</td></tr>
+          <tr><td><code>settings</code></td><td>图库级设置：视图状态、系统图库连接、网盘挂载与收藏、智能助手配置与对话等</td></tr>
+          <tr><td><code>asset_analysis</code></td><td>端侧场景标签、OCR 文字、归一化特征向量</td></tr>
+          <tr><td><code>asset_overlays</code></td><td>官方「照片」图库的拾光补充元数据（收藏 / 隐藏 / 关键词 / 查看时间）</td></tr>
+        </tbody>
+      </table>
+
+      <h3>官方「照片」图库的只读边界</h3>
+      <p>打开官方图库时，它就是这个 App 的当前图库。照片内容读取 <code>Photos.sqlite</code>，拾光自己的数据写在该库第一层的 <code>database/PhotosClone.sqlite</code>（与 <code>Photos.sqlite</code> 并列）。Apple 的数据库与自带原图始终只读。</p>
+      <div class="callout warn">
+        <b>不要手动搬数据库日志</b>
+        <p>迁移图库时，禁止直接复制 <code>-wal</code> / <code>-shm</code>：先把旧库三件套复制到临时目录，用 SQLite 执行 <code>wal_checkpoint(TRUNCATE)</code> 合并，再只移动主库文件。把别的库的日志放进当前库目录，会被当成当前库日志回放，覆盖现有数据。</p>
+      </div>
+
+      <h3>备份与迁移</h3>
+      <ul class="doc-list">
+        <li>退出应用后，整包复制 <code>.photoslibrary</code> 即为完整备份；恢复时放回任意位置并用「打开图库」选中它。</li>
+        <li>外置磁盘未挂载时，拾光不会把「文件不存在」当成删除：元数据保留，缩略图显示占位。</li>
+        <li>旧版放在 <code>private/com.lijialong.photosclone/</code> 的数据会在启动或打开图库时自动上移到第一层，幂等且只移动一次。</li>
+        <li>需要彻底重来：先备份整包，再删除图库包；应用不会在固定位置留下图片。</li>
+      </ul>
+
+      <h3>删除会清理什么</h3>
+      <p>永久删除照片时会同步清理原图、缩略图、编辑渲染结果、压缩备份、视频转码缓存与端侧分析记录，并让内存中的缩略图缓存失效。移到「最近删除」只是标记，仍可在保留期内恢复。</p>
+    </section>
+
+    <!-- 04 浏览 -->
+    <section class="doc-chapter" id="browse">
+      <h2><span class="chapter-no">04</span>浏览</h2>
+      <p class="lead">侧边栏决定「看哪个范围」，工具栏决定「怎么看」。所有范围共享同一套缩略图尺寸、排序与筛选，但只有图库层级提供年 / 月时间轴。</p>
+
+      <h3>侧边栏</h3>
+      <p>侧边栏固定三个分区，每个图库都是独立一套：</p>
+      <div class="doc-cards three">
+        <div><h3>拾光</h3><p>固定项目（个人收藏、最近保存、地图、视频、截屏、人物、最近删除等）、相簿、文件夹、智能相簿、媒体类型与更多项目。右键任意项目可固定或取消固定。</p></div>
+        <div><h3>系统图库</h3><p>可保存多个官方「照片」图库连接；同一时间只有一个处于连接/展开状态。连接列表跟着当前图库走，切换图库时整套更换。</p></div>
+        <div><h3>网络存储</h3><p>每个网盘一行；进入后浏览各自目录，能力与本地网格一致（受写入权限限制）。</p></div>
+      </div>
+      <p class="muted">分区标题在悬停时显示「更多」菜单与收起/展开按钮。相簿与文件夹默认收起，只记录你展开过的项目 —— 系统图库可能有上万个相簿。</p>
+
+      <h3>时间轴：年 / 月 / 所有照片</h3>
+      <ul class="doc-list">
+        <li><b>年</b>：每年一张拼图卡片（最多 4 张照片），点击进入该年的月总览。</li>
+        <li><b>月</b>：按月分段，段内按天展示拼图卡片；点击回到所有照片并定位到当天。</li>
+        <li><b>所有照片</b>：普通缩略图网格。相簿、文件夹与智能项目也使用普通网格，不显示年 / 月分段。</li>
+      </ul>
+      <p class="muted">超过 5,000 张时，年 / 月总览改用 SQL 分区，每个分区最多取 4 张样本，不遍历全库。</p>
+
+      <h3>四种显示形式</h3>
+      <table class="doc-table">
+        <thead><tr><th>形式</th><th>适合</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>正方形</td><td>快速扫图</td><td>裁剪为等边网格，信息密度最高</td></tr>
+          <tr><td>完整宽高比</td><td>看构图</td><td>按原始比例分组排布，行高统一，每张下方居中显示文件名</td></tr>
+          <tr><td>瀑布流</td><td>逛灵感</td><td>等宽多列、每列高度自适应，竖图横图混排不留空洞；卡片更大、带常驻投影</td></tr>
+          <tr><td>列表</td><td>核对元数据</td><td>缩略图 + 文件名 + 拍摄日期 / 尺寸 / 大小</td></tr>
+        </tbody>
+      </table>
+      <p>本地图库、系统图库与网盘共用同一个显示形式设置。缩略图尺寸范围 56–360，可用工具栏滑杆、<kbd>⌘+</kbd> / <kbd>⌘-</kbd> / <kbd>⌘0</kbd> 或触控板捏合调整。</p>
+
+      <h3>排序、筛选与搜索</h3>
+      <ul class="doc-list">
+        <li><b>排序</b>：拍摄 / 添加日期、标题、文件名、大小、类型、相机、地点、时长。</li>
+        <li><b>筛选</b>：全部 / 收藏 / 已编辑 / 照片 / 视频 / 截屏 / 我的 / 未加入相簿。</li>
+        <li><b>搜索</b>：文件名、标题、相机、地点、关键词、场景标签、图内文字与人物。支持中文自然语言组合，详见「端侧智能」。</li>
+      </ul>
+
+      <h3>选择与信息浮卡</h3>
+      <ul class="doc-list">
+        <li>单击选择，<kbd>⌘</kbd> 或 <kbd>⇧</kbd> 单击多选，拖拽框选，方向键移动。</li>
+        <li><kbd>空格</kbd> / <kbd>回车</kbd> 打开所选；<kbd>⌘A</kbd> 全选。</li>
+        <li>悬停可显示可逐项开关的元数据浮层；工具栏「信息」打开浮动信息卡。</li>
+        <li>信息卡可用方向键切换选中项并就地更新，拖动标题移动、拖动右下角调整大小、双击标题复位。</li>
+        <li>网格底部居中显示当前范围的照片与视频总数；有选中项时让位给操作条。</li>
+      </ul>
+
+      <h3>查看器</h3>
+      <p>查看器有两种形态，在设置 › 通用 › 浏览方式中切换，默认「窗口内浏览」：</p>
+      <div class="doc-cards">
+        <div><h3>窗口内浏览</h3><p>保留侧边栏与顶部工具条：返回、缩放滑杆、日期与序号、信息 / 共享 / 收藏 / 幻灯片 / 编辑 / 更多。可边看边切换相簿。</p></div>
+        <div><h3>全屏沉浸</h3><p>查看器覆盖整个窗口并隐藏侧边栏，适合专注看图。照片带投影居中显示。</p></div>
+      </div>
+      <ul class="doc-list">
+        <li>开图渐进加载：先用网格缩略图与 1024px 中等层即时占位，全尺寸解码完成后平滑淡入。</li>
+        <li>相邻照片会预取中等层与全尺寸层，连翻不闪白。</li>
+        <li>查看器内可打开信息面板、编辑、收藏、幻灯片、共享，或用 <kbd>L</kbd> 播放实况照片。</li>
+        <li>方向键翻页；空格收起查看器；<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd> 或双击缩放。</li>
+      </ul>
+
+      <h3>大图库分页</h3>
+      <p>本地图库超过 5,000 张且处于「所有照片」网格时，筛选、排序与计数下推到 SQLite，每页 600 张滚动加载。查看器单步翻页使用 keyset 相邻查询，连翻成本与照片总量无关。</p>
+      <div class="callout note">
+        <b>仍需注意的范围</b>
+        <p>人物、回忆与地图基于内存索引；超百万张时首次进入这些页面会较慢。图库元数据在启动时整体载入内存，分页主要降低筛选、排序与复制的开销。</p>
+      </div>
+
+      <h3>视频播放</h3>
+      <ul class="doc-list">
+        <li>基于 AVPlayer；系统无法解码的编码可用可选的 <code>ffmpeg</code> 转码为 H.264 后播放。</li>
+        <li>默认一个视频播完后自动连播下一个视频（跳过照片），也可改为循环当前视频。</li>
+        <li>播放控制条可拖到画面任意位置，双击把手复位；点时长可切换剩余时间。</li>
+        <li>支持填充 / 适应画面、上一个 / 下一个视频、倍速、音量、画中画、保存当前帧与全屏。</li>
+      </ul>
+    </section>
+
+    <!-- 05 组织 -->
+    <section class="doc-chapter" id="organize">
+      <h2><span class="chapter-no">05</span>组织</h2>
+      <p class="lead">相簿、文件夹、智能相簿、人物、地图与体检，共同构成拾光的整理层。所有组织关系都写入当前图库，随图库一起移动。</p>
+
+      <h3>相簿与文件夹</h3>
+      <ul class="doc-list">
+        <li>支持多级文件夹与相簿：新建、重命名、删除、移动、拖拽加入。</li>
+        <li>点侧边栏文件夹只展示它<b>下一层</b>的子文件夹与相簿（不是照片）；标题旁提供「返回上一级」。</li>
+        <li>「所有相簿」只展示第一层；进入文件夹后逐层展示下一层。</li>
+        <li>卡片大小随工具栏缩放（<kbd>⌘+</kbd> / <kbd>⌘-</kbd> / <kbd>⌘0</kbd>）调整。</li>
+        <li>把照片从网格拖到侧边栏相簿或「所有相簿」卡片即可加入；拖动时显示缩略图与数量徽标，目标高亮。</li>
+        <li>在相簿网格里把照片拖到另一张照片的左 / 右半侧，可插入其前 / 后，顺序随相簿保存。</li>
+      </ul>
+
+      <h3>自定义相簿封面</h3>
+      <p>在相簿里右键任意照片或视频，选择「设为相册封面」；右键相簿卡片或封面本身可「恢复自动封面」回到首张。封面随相簿持久化；移除该项目时自动回落。</p>
+
+      <h3>智能相簿</h3>
+      <p>按媒体类型、收藏、已编辑、关键词、相机、镜头、地点、定位、拍摄日期、像素、文件大小、文件名、时长、场景与图内文字自由组合条件。条件之间可选「满足全部」或「满足任一」，编辑时实时预览命中数量。</p>
+      <div class="callout tip">
+        <b>场景智能相簿</b>
+        <p>「场景」分区的「更多」菜单可把已识别的场景一键写成智能相簿；之后新分析的照片会自动落入对应相簿。</p>
+      </div>
+
+      <h3>关键词</h3>
+      <p>按 <kbd>⌘K</kbd> 为所选项目添加关键词；侧边栏「更多项目 › 关键词」可集中管理，也可在搜索框直接输入关键词。</p>
+
+      <h3>人物</h3>
+      <ul class="doc-list">
+        <li>本地图库可用端侧人脸聚类在 Mac 上离线分析，按人脸相似度自动聚合为人物。</li>
+        <li>支持重命名、查看某人的全部照片；人物页顶部列出「常一起出现」的组合，点开可看两人同框。</li>
+        <li>照片移入最近删除或被隐藏后不再计入人物；永久删除时同步清理人物关系，没有可见照片的人物自动消失。</li>
+        <li>系统「照片」图库直接读取官方已有的人物 / 宠物识别结果，不参与本地聚类。</li>
+      </ul>
+
+      <h3>重复项目与相似照片</h3>
+      <p><b>重复项目</b>按「文件大小 + 像素尺寸」分组，逐组展示；合并时按分辨率、文件大小与收藏挑出「最佳」一张。它与「相似照片」不同：前者处理完全重复，后者按图像特征找同场景 / 同构图。</p>
+
+      <h3>图库体检</h3>
+      <p>「图库体检」把模糊照片、相似连拍、过大视频与可腾出空间集中成一张清单。清晰度在缩略图上用拉普拉斯方差评估，不解码原图。</p>
+      <ul class="doc-list">
+        <li>体检结果只保存在内存（<code>healthReport</code>），不新增数据库表。</li>
+        <li>相似组会保留每组最清晰的一张，其余可一键移入最近删除；不会自动删除。</li>
+        <li>扫描可随时停止；再次体检会重新评估当前图库。</li>
+      </ul>
+
+      <h3>导入项目与最近删除</h3>
+      <ul class="doc-list">
+        <li>导入按批次分组，每段显示「导入于 年/月/日 时:分」与该批项目数；批次 ID 随照片写入图库。</li>
+        <li>最近删除默认保留 30 天，可在设置 › 图库中改为 7 / 30 / 90 / 180 天或永不自动清理。</li>
+        <li>在「最近删除」中按 <kbd>⌘⌫</kbd> 会永久删除；其他位置按 <kbd>⌘⌫</kbd> 只是移入最近删除。</li>
+      </ul>
+    </section>
+
+    <!-- 06 智能 -->
+    <section class="doc-chapter" id="intelligence">
+      <h2><span class="chapter-no">06</span>端侧智能</h2>
+      <p class="lead">场景识别、OCR 与图像特征全部由 Vision 在本机完成。分析结果写入当前图库的 <code>asset_analysis</code> 表，不联网、不上传，也不需要账号。</p>
+
+      <h3>运行分析</h3>
+      <ol class="steps">
+        <li>侧边栏「场景」分区点「分析照片内容…」，或用「更多」菜单执行整库分析。</li>
+        <li>也可以在信息面板的「智能标签」中就地分析单张照片。</li>
+        <li>需要人物时，进入「人物」页运行本地人脸聚类。</li>
+        <li>分析完成后，「场景」「包含文字」与相似照片结果才会出现。</li>
+      </ol>
+      <div class="callout note">
+        <b>只作用于拾光本地图库</b>
+        <p>系统「照片」图库与网盘不参与端侧分析；视频暂不参与。首次分析需要逐张读取图片，照片越多耗时越长。</p>
+      </div>
+
+      <h3>场景目录</h3>
+      <p>场景按人物 / 动物 / 自然风景 / 食物 / 建筑 / 交通 / 室内 / 文档 / 夜景 / 活动聚合计数。点任一行查看该场景照片；「更多」菜单可把已识别场景生成智能相簿。</p>
+
+      <h3>自然语言搜索</h3>
+      <p>搜索框会解析时间词、类型限定、人物名字与场景词，其余词作为普通关键词匹配文件名、标题、相机与地点。中文口语词（如「海边」「烟花」）会映射到 Vision 的英文标签再匹配。</p>
+      <table class="doc-table">
+        <thead><tr><th>类型</th><th>可用写法</th></tr></thead>
+        <tbody>
+          <tr><td>相对时间</td><td>今天、昨天、前天、本周、上周、本月、上个月、今年、去年、前年</td></tr>
+          <tr><td>绝对时间</td><td>2024、2024年5月、2024-05、2024年5月20日、5月、5月20日</td></tr>
+          <tr><td>类型 / 状态</td><td>收藏（喜欢 / 最爱）、视频、照片、截图（截屏）、实况、已编辑</td></tr>
+          <tr><td>人物</td><td>直接输入人物名字（需已完成人物聚类）</td></tr>
+          <tr><td>场景 / 文字</td><td>海边、烟花、日落、小猫、包含文字的内容等（需已完成分析）</td></tr>
+        </tbody>
+      </table>
+      <p>示例：<code>去年 海边 狗</code>、<code>2024年5月 日落</code>、<code>上个月 小猫</code>、<code>有文字的截图</code>。多个时间词会取交集；只写月份且该月还没到时，理解为去年那个月。</p>
+
+      <h3>OCR 图内文字</h3>
+      <p>分析时识别照片中的中英文文字并落库。「更多项目 › 包含文字」列出所有含文字的照片；也可以直接在搜索框输入文字内容定位。</p>
+
+      <h3>相似照片</h3>
+      <p>右键任意已分析的照片「查找相似照片」，按特征向量余弦相似度找出同场景 / 同构图项目。结果在网格顶部显示提示条，可一键退出。</p>
+
+      <h3>存储与隐私</h3>
+      <ul class="doc-list">
+        <li>标签、OCR 文字与归一化特征向量写入 <code>asset_analysis</code>；内存索引只保留标签与文字，向量按需读取。</li>
+        <li>特征向量不会放进 <code>PhotoItem</code>，也不会进入 JSON。</li>
+        <li>删除照片时同步删除分析记录；分析过程没有任何网络请求。</li>
+      </ul>
+    </section>
+
+    <!-- 07 智能助手 -->
+    <section class="doc-chapter" id="assistant">
+      <h2><span class="chapter-no">07</span>智能助手（可选云端）</h2>
+      <p class="lead">智能助手是一个独立的可选功能：只有你配置了自己的模型 API Key 后才会联网。它可以问答、检索和整理当前图库；所有写操作都会先弹窗确认。</p>
+
+      <h3>能做什么</h3>
+      <ul class="doc-list">
+        <li>就当前范围提问：照片数量、时间分布、场景构成、某张照片的拍摄信息与端侧标签。</li>
+        <li>总结与解释：总结选中的一组照片，或结合端侧 OCR 文字解释画面内容。</li>
+        <li>找照片：用 <code>search_photos</code> 搜索整个当前图库，或按模型给出的关键词与筛选条件应用检索。</li>
+        <li>整理图库：新建相簿、把照片加入相簿、收藏 / 取消收藏、添加关键词、选中照片。</li>
+        <li>安全边界：每次修改前弹出确认；不支持删除、编辑原图、导入，也不会写入官方「照片」库的 <code>Photos.sqlite</code>。</li>
+      </ul>
+
+      <h3>配置步骤</h3>
+      <ol class="steps">
+        <li>打开「设置 › 智能助手」，选择提供商。</li>
+        <li>确认接口地址与模型；豆包需要填写控制台创建的推理接入点 ID（<code>ep-...</code>）。</li>
+        <li>粘贴该提供商的 API Key，点「保存」。</li>
+        <li>点「测试连接」确认网络与 Key 可用。</li>
+        <li>回到主界面，点工具栏 ✨ 或「照片 › 智能助手…」开始对话。</li>
+      </ol>
+
+      <h3>支持的提供商</h3>
+      <table class="doc-table">
+        <thead><tr><th>提供商</th><th>默认接口 / 模型</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>DeepSeek</td><td><code>api.deepseek.com/v1</code> · <code>deepseek-chat</code></td><td>可改用 <code>deepseek-reasoner</code></td></tr>
+          <tr><td>Kimi</td><td><code>api.moonshot.cn/v1</code> · <code>moonshot-v1-8k</code></td><td>可选 32k / 128k</td></tr>
+          <tr><td>GLM（智谱）</td><td><code>open.bigmodel.cn/api/paas/v4</code> · <code>glm-4-flash</code></td><td>视觉模型：<code>glm-4v-flash</code> / <code>glm-4v-plus</code></td></tr>
+          <tr><td>通义千问</td><td><code>dashscope.aliyuncs.com/compatible-mode/v1</code> · <code>qwen-plus</code></td><td>视觉模型：<code>qwen-vl-plus</code> / <code>qwen-vl-max</code></td></tr>
+          <tr><td>豆包（火山方舟）</td><td><code>ark.cn-beijing.volces.com/api/v3</code></td><td>「模型」填推理接入点 ID（<code>ep-...</code>）</td></tr>
+          <tr><td>OpenAI</td><td><code>api.openai.com/v1</code> · <code>gpt-4o-mini</code></td><td>视觉模型：<code>gpt-4o-mini</code> / <code>gpt-4o</code></td></tr>
+          <tr><td>自定义</td><td>手动填写</td><td>任何 OpenAI 兼容服务：SiliconFlow、OpenRouter、Ollama（<code>http://127.0.0.1:11434/v1</code>）等</td></tr>
+        </tbody>
+      </table>
+
+      <h3>发送了什么</h3>
+      <ul class="doc-list">
+        <li>当前范围摘要：范围名称、项目数、筛选与搜索条件、选中数量。</li>
+        <li>最多 40 张候选照片的元数据：文件名、拍摄时间、尺寸、收藏 / 编辑状态、关键词、地点、端侧场景标签与 OCR 文字。</li>
+        <li>不发送文件路径、原图目录、图库数据库，也不会把整个图库序列化给模型。</li>
+        <li>更大范围的检索通过模型给出的关键词与筛选条件，回到本地的搜索与分页管线完成。</li>
+      </ul>
+
+      <h3>图片理解（默认关闭）</h3>
+      <p>默认只发文字与元数据。开启「发送压缩缩略图」后，才会把选中照片（没有选中时取当前范围前几张）压成长边约 1024 的 JPEG 发给模型，单次最多 6 张；原始 RAW、视频与云端照片不会发送。模型需要支持视觉输入，例如 <code>glm-4v-flash</code>、<code>qwen-vl-plus</code> 或 <code>gpt-4o-mini</code>。</p>
+
+      <h3>存储与隐私</h3>
+      <ul class="doc-list">
+        <li>API Key 只存 macOS 钥匙串（service <code>com.baymax.luma.ai</code>），不写入图库数据库、<code>UserDefaults</code>、日志或对话内容。</li>
+        <li>模型配置与对话记录保存在当前图库的 <code>settings</code> 中（<code>ai_config</code> / <code>ai_conversation</code>）；切换图库会切换到各自的对话。</li>
+        <li>请求直接发往你选择的提供商，不经过拾光的任何服务器；关闭助手或清空对话不会影响照片。</li>
+        <li>写操作由模型调用本地工具完成：先弹窗列出将要创建 / 修改的内容，确认后才通过 <code>LibraryStore</code> 落盘；取消则不会改动图库。</li>
+        <li>官方「照片」图库作为当前图库时，只允许写拾光补充元数据（收藏 / 关键词），不允许新建相簿或编辑原图。</li>
+      </ul>
+
+      <div class="callout note">
+        <b>模型能力差异</b>
+        <p>不同提供商与模型的上下文长度、视觉支持与限流策略不同。若报「模型不支持图片输入」，关闭图片理解；若报额度或频率错误，请检查提供商控制台。</p>
+      </div>
+    </section>
+
+    <!-- 08 回忆 -->
+
+    <section class="doc-chapter" id="memories">
+      <h2><span class="chapter-no">08</span>回忆与旅行</h2>
+      <p class="lead">拾光会把数量足够的主题自动整理成回忆，也能从定位与时间中识别旅行，把一段行程播成影片。</p>
+
+      <h3>精选集与回忆卡片</h3>
+      <ul class="doc-list">
+        <li>精选集顶部按「按月」「按地点」「收藏」「那年今日」自动生成回忆卡片，只收录数量足够的主题。</li>
+        <li>「那年今日」按年份（最多最近 3 年）各生成一条，以大横幅置顶。</li>
+        <li>点击卡片进入回忆影片：均匀取样的照片按 Ken Burns 缓慢缩放平移播放。</li>
+        <li>支持上一张 / 下一张、暂停与 <kbd>Esc</kbd> 退出。</li>
+      </ul>
+
+      <h3>风格与导出</h3>
+      <p>回忆影片提供「经典 / 电影 / 清新」三种风格模板，电影风格带上下黑边。可以导出为 mp4：1280×720、24fps、照片间交叉淡化、无声。</p>
+      <div class="callout warn">
+        <b>影片是无声的</b>
+        <p>当前版本不包含配乐，也不支持在导出时剪辑片段。需要带音乐的成片时，请把 mp4 导入其他剪辑工具继续制作。</p>
+      </div>
+
+      <h3>旅行</h3>
+      <ul class="doc-list">
+        <li>按「拍摄时间 + 定位」自动识别出行：时间间隔过大或移动距离过远即切分。</li>
+        <li>生成「杭州之行」这类旅行卡片，显示日期范围、天数与项目数。</li>
+        <li>点击卡片打开故事线：首图拼贴 + 按天分组的照片。</li>
+        <li>可一键「播放回忆」，把整段旅行转成电影风格影片。</li>
+      </ul>
+    </section>
+
+    <!-- 08 地图 -->
+    <section class="doc-chapter" id="map">
+      <h2><span class="chapter-no">09</span>地图与足迹</h2>
+      <p class="lead">带定位的照片会出现在地图页。地图右上角可切换「网格」，把地点与日期整理成可浏览的行程段。</p>
+
+      <h3>地图浏览</h3>
+      <ul class="doc-list">
+        <li>地图用坐标图钉标注拍摄点，可拖动平移、滚轮缩放。</li>
+        <li>支持切换卫星底图，选择会被记住；重新进入地图页默认回到地图底图。</li>
+        <li>信息面板中的地图与地点分级同样来自照片 EXIF 坐标。</li>
+      </ul>
+
+      <h3>地图网格</h3>
+      <p>按「地点 + 连续日期」把带定位的照片切成行程段。段头显示城市、日期范围、张数与「查看地点」入口，下面是跟随缩放的照片卡片墙；换城市或隔天自动分段。</p>
+      <p class="muted">「网格」是一次性浏览方式；重新进入地图页会回到默认地图底图。</p>
+
+      <h3>足迹回放</h3>
+      <p>按拍摄时间顺序在地图上逐站点亮，把一段时间内的行程播成一条线。最多保留 180 个站点（按时间均匀取样），支持播放 / 暂停与调速；按 <kbd>Esc</kbd> 退出。</p>
+
+      <h3>地点统计</h3>
+      <p>按城市与地点统计照片数量，查看你把时间留在了哪里；点任一行可进入对应照片。</p>
+    </section>
+
+    <!-- 09 编辑与输出 -->
+    <section class="doc-chapter" id="edit">
+      <h2><span class="chapter-no">10</span>编辑与输出</h2>
+      <p class="lead">编辑是非破坏的：原图始终保留，渲染结果另存，编辑配方随图库保存，随时可以重新调整。</p>
+
+      <h3>编辑器</h3>
+      <p>支持旋转、水平 / 垂直翻转、裁剪与比例、滤镜、曝光、亮度、对比度、饱和度、高光、阴影、色温、色调、锐化、暗角、降噪与自动增强。</p>
+      <ul class="doc-list">
+        <li>保存后生成新的渲染结果，网格与查看器立即使用；<code>cacheKey</code> 含编辑版本，旧缓存自动失效。</li>
+        <li>可按 <kbd>⌥⌘C</kbd> 复制编辑点，<kbd>⌥⌘V</kbd> 粘贴到其他照片；编辑器内也有按钮。</li>
+        <li>批量更改（<kbd>⌥⌘B</kbd>）可一次修改所选项目的标题、拍摄日期与地点。</li>
+      </ul>
+
+      <h3>RAW 与实况照片</h3>
+      <ul class="doc-list">
+        <li>支持 DNG、CR2、CR3、NEF、ARW、RAF、ORF、RW2 等 RAW 格式导入。</li>
+        <li>缩略图、查看器与编辑器统一走 <code>CIRAWFilter</code>（开启高光恢复），失败时回退 ImageIO。</li>
+        <li>导入时自动把同名 MOV 识别为实况照片的配对视频；查看器内点「实况」或按 <kbd>L</kbd> 播放。</li>
+        <li>导出、复制、删除都会带上配对视频。</li>
+      </ul>
+
+      <h3>导入</h3>
+      <ul class="doc-list">
+        <li>入口：拖拽、文件面板（<kbd>⌘I</kbd>）、剪贴板粘贴、从系统「照片」导入（<kbd>⌥⌘I</kbd>）。</li>
+        <li>导入始终把原文件拷贝进图库，不支持「引用原位置」。</li>
+        <li>导入窗口支持按文件夹生成相簿、保留上层结构与进度显示，可取消。</li>
+        <li>批量导入按 CPU 核数并发（上限 6），过程中增量写入新照片，结束或取消时再同步相簿与文件夹关系。</li>
+      </ul>
+
+      <h3>导出与压缩</h3>
+      <table class="doc-table">
+        <thead><tr><th>能力</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>导出所选</td><td><kbd>⌘E</kbd>；可选原格式或 JPEG / HEIC / PNG / TIFF、质量与最长边尺寸</td></tr>
+          <tr><td>文件名规则</td><td>原始文件名、标题、拍摄日期 + 序号、序号</td></tr>
+          <tr><td>未修改原片</td><td>可导出未编辑的原始文件；视频始终以原文件导出</td></tr>
+          <tr><td>实况照片</td><td>同时导出同名的配对视频</td></tr>
+          <tr><td>JPG 压缩</td><td><kbd>⌘⇧K</kbd>；保留可还原的原始备份，可回滚</td></tr>
+          <tr><td>打印 / 幻灯片</td><td><kbd>⌘P</kbd> 每张一页；<kbd>⌥⌘P</kbd> 幻灯片，可设间隔与 Ken Burns</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 10 系统照片 -->
+    <section class="doc-chapter" id="native">
+      <h2><span class="chapter-no">11</span>系统「照片」图库</h2>
+      <p class="lead">官方「照片」图库可以直接作为拾光的当前图库。内容只读解析，拾光的补充元数据写在 sidecar，不修改 Apple 的数据库与文件。</p>
+
+      <h3>作为当前图库打开</h3>
+      <ul class="doc-list">
+        <li>主侧边栏直接展示该库自己的结构：共享、媒体类型、更多项目、所有项目与相簿；不再显示「拾光 / 系统图库」两个分区。</li>
+        <li>照片内容读取 <code>Photos.sqlite</code>，包括自定义标题、实况照片与连拍标记。</li>
+        <li>收藏、隐藏、关键词与查看时间写入该库 <code>database/PhotosClone.sqlite</code> 的 <code>asset_overlays</code>，NULL 表示沿用 Apple 的值。</li>
+        <li>删除、编辑、导入、重命名仍然禁止；相关菜单项为禁用状态。</li>
+      </ul>
+
+      <h3>多个连接（只读浏览）</h3>
+      <p>侧边栏「系统图库」可保存多个图库连接，同一时间只有一个处于连接 / 展开状态。每个连接有独立菜单：在「照片」中打开、重新读取、在访达中显示、断开连接。连接新图库不会移除已有连接。</p>
+      <div class="callout note">
+        <b>连接列表是 per-library 数据</b>
+        <p>列表与当前连接保存在当前图库自己的 <code>settings.system_libraries</code>。打开 A 图库只看到 A 的连接，切到 B 图库换回 B 的列表。旧的全局列表只作为一次性迁入来源。</p>
+      </div>
+
+      <h3>扫描、缓存与载入上限</h3>
+      <ul class="doc-list">
+        <li>扫描结果（索引与元数据，不含原图）缓存在当前图库的 <code>resources/system-cache/</code>，缩略图在 <code>resources/system-thumbs/</code>；签名取 <code>Photos.sqlite</code> 的大小 + 修改时间，切换图库不会共用缓存。</li>
+        <li>缓存命中直接展示；签名变化才后台重扫。缩略图缓存写在当前图库包内，原图直接从官方库读取。</li>
+        <li>超大图库按设置 › 通用 › 系统图库载入 › 载入上限从新到旧截断（5 万 / 10 万 / 20 万 / 不限制，默认 10 万），超出时提示真实总数。</li>
+        <li>相簿与文件夹按 <code>ZGENERICALBUM.Z_PK</code> 排序并混排，与官方「照片」一致；默认全部收起。</li>
+      </ul>
+
+      <h3>拷贝到拾光</h3>
+      <ul class="doc-list">
+        <li>支持多选照片、单张右键拷贝，或把某个相簿 / 文件夹（含子文件夹）整体拷贝到拾光。</li>
+        <li>目录递归使用 <code>systemFolderAssetIDs</code>；重复项目按「同名 + 同大小」跳过。</li>
+        <li>拷贝是唯一写入出口；不会在原库中创建拾光的文件。</li>
+      </ul>
+      <div class="callout warn">
+        <b>iCloud 照片可能未下载到本地</b>
+        <p>如果官方图库开启了「优化 Mac 存储空间」，部分原图可能仍在 iCloud。拾光读取的是本地文件；需要完整离线副本时，先在系统「照片」中下载原片。</p>
+      </div>
+    </section>
+
+    <!-- 11 网络存储 -->
+    <section class="doc-chapter" id="cloud">
+      <h2><span class="chapter-no">12</span>网络存储</h2>
+      <p class="lead">网络存储让 NAS 与云盘直接出现在侧边栏，不必先整库导入。所有凭据只存钥匙串，收藏只记录在本机。</p>
+
+      <h3>接入入口</h3>
+      <p>侧边栏「网络存储 › ＋」或菜单「文件 › 接入网络存储…」，打开同一个接入向导。选择 SMB、WebDAV、阿里云盘、百度网盘或 AList / OpenList。</p>
+
+      <h3>SMB 共享</h3>
+      <ul class="doc-list">
+        <li>适用于群晖、TrueNAS、Windows 共享等；地址形如 <code>smb://主机/共享名</code>。</li>
+        <li>通过系统 NetFS 挂载（与 Finder「连接服务器」一致），挂载点由系统决定（<code>/Volumes/&lt;共享名&gt;</code>），拾光复用该挂载点读取。</li>
+        <li>只读：不支持上传、重命名与删除。支持「在访达中显示」与用系统应用打开。</li>
+        <li>打开应用时自动重连已保存的 SMB；断开时自动卸载。</li>
+        <li>向导通过 Bonjour 自动发现局域网设备；共享列表通过系统 <code>smbutil view</code> 获取，密码只经伪终端写入。</li>
+        <li>新添加的 SMB 默认点开即递归扫描「整个共享」，也可在浏览页切换为「按文件夹」。</li>
+      </ul>
+
+      <h3>WebDAV</h3>
+      <ul class="doc-list">
+        <li>可浏览、播放，并支持新建文件夹、重命名、上传与删除。</li>
+        <li>请求统一走 <code>WebDAVClient</code>，已处理百分号编码、Basic Auth、PROPFIND / MKCOL / PUT / MOVE / DELETE 与 Range。</li>
+        <li>缩略图优先服务端缩略图；没有时用 <code>Range: bytes=0-262143</code> 读取文件头解析内嵌缩略图，绝不整文件下载。</li>
+      </ul>
+
+      <h3>阿里云盘 / 百度网盘 / AList</h3>
+      <ul class="doc-list">
+        <li>阿里云盘与百度网盘使用 OAuth 2.0 桌面端授权，本地回环 <code>127.0.0.1:53682/callback</code> 接收 code，并校验 <code>state</code>。</li>
+        <li>Token 存钥匙串，过期由 <code>CloudService.accessToken(for:)</code> 自动刷新并回写。</li>
+        <li>两者均为只读：可浏览、播放、幻灯片、打印与导出；不能上传或删除。</li>
+        <li>AList / OpenList 向导填写地址后自动推导 WebDAV 入口。</li>
+      </ul>
+
+      <h3>权限矩阵</h3>
+      <table class="doc-table">
+        <thead><tr><th>范围</th><th>读取</th><th>改元数据 / 删除 / 编辑</th><th>上传 / 重命名 / 新建文件夹</th></tr></thead>
+        <tbody>
+          <tr><td>本地图库</td><td class="ok">可以</td><td class="ok">可以</td><td class="ok">可以</td></tr>
+          <tr><td>官方「照片」图库作为当前图库</td><td class="ok">可以</td><td class="partial">仅补充元数据</td><td class="no">不可以</td></tr>
+          <tr><td>官方图库作为额外连接</td><td class="ok">可以</td><td class="no">不可以</td><td class="no">不可以</td></tr>
+          <tr><td>WebDAV</td><td class="ok">可以</td><td class="no">不可以</td><td class="ok">可以</td></tr>
+          <tr><td>SMB 共享</td><td class="ok">可以</td><td class="no">不可以</td><td class="no">不可以</td></tr>
+          <tr><td>阿里云盘 / 百度网盘</td><td class="ok">可以</td><td class="no">不可以</td><td class="no">不可以</td></tr>
+        </tbody>
+      </table>
+
+      <h3>网络与安全</h3>
+      <ul class="doc-list">
+        <li>网盘密码、OAuth 凭据与 token 只存 macOS 钥匙串（service <code>com.baymax.photosclone.oauth</code>；旧版条目会自动迁移）。</li>
+        <li>凭据禁止写入 <code>UserDefaults</code>、日志或 <code>CloudMount</code>；SMB 密码不会进入 argv / 环境变量。</li>
+        <li>网盘请求失败会转换为可读中文错误，不直接抛英文 NSError 文案。</li>
+        <li>并发加载由 <code>CloudConcurrencyGate(limit: 3)</code> 控制，避免一次打满 NAS。</li>
+        <li>云照片的「收藏」只写入当前图库的 <code>settings</code>（<code>cloud_favorites</code>），键为 <code>mountID|path</code>，不会写回服务器。</li>
+      </ul>
+    </section>
+
+    <!-- 12 设置 -->
+    <section class="doc-chapter" id="settings">
+      <h2><span class="chapter-no">13</span>设置</h2>
+      <p class="lead">设置分为通用、外观、浏览、图库与智能助手五页。图库级业务设置写入当前图库的数据库，外观等 App 级偏好写入 <code>UserDefaults</code>；只与单个视图相关的轻量状态才使用 <code>@AppStorage</code>。</p>
+
+      <h3>通用</h3>
+      <table class="doc-table">
+        <tbody>
+          <tr><th>双击打开方式</th><td>查看器 / 编辑器 / 系统应用；单击为选择，⌘ 或 ⇧ 单击多选</td></tr>
+          <tr><th>查看器形态</th><td>窗口内浏览（默认）/ 全屏沉浸</td></tr>
+          <tr><th>视频</th><td>自动播放、播放结束后自动连播下一个、默认静音、循环播放、查看完整 HDR</td></tr>
+          <tr><th>幻灯片</th><td>间隔与 Ken Burns 效果</td></tr>
+          <tr><th>导入默认</th><td>按文件夹创建相簿、保留上层结构</td></tr>
+          <tr><th>查看器</th><td>打开时显示信息面板</td></tr>
+          <tr><th>系统图库载入</th><td>载入上限：5 万 / 10 万 / 20 万 / 不限制（默认 10 万），随当前图库保存</td></tr>
+        </tbody>
+      </table>
+
+      <h3>外观</h3>
+      <ul class="doc-list">
+        <li>主题：跟随系统 / 浅色 / 深色。</li>
+        <li>强调色：滑杆、开关、选中框、高亮与强调文字跟随同一个颜色。</li>
+        <li>动效预设：丝滑 / 标准 / 轻快 / 关闭。</li>
+        <li>卡片圆角与悬停抬升。</li>
+      </ul>
+
+      <h3>浏览</h3>
+      <ul class="doc-list">
+        <li>缩略图尺寸与显示形式（正方形 / 完整宽高比 / 瀑布流 / 列表）。</li>
+        <li>排序与分组默认值。</li>
+        <li>缩略图角标与文字：按「基础信息 / 状态角标 / 参数与来源」分组，支持「简洁 / 标准 / 全部」一键预设。</li>
+      </ul>
+
+      <h3>图库</h3>
+      <ul class="doc-list">
+        <li>卡片式展示当前使用图库的封面、名称、路径与照片 / 视频 / 相簿 / 文件夹 / 系统图库 / 网络存储数量。</li>
+        <li>列出最近使用的其他图库（含官方「照片」图库），可一键「切换到此图库」。</li>
+        <li>切换后，界面只显示新图库自己的照片、系统图库连接、网盘挂载与库级设置；原图库文件不会被删除。</li>
+        <li>最近删除保留期：7 / 30 / 90 / 180 天或永不自动清理。</li>
+        <li>系统图库缩略图缓存、网盘缩略图缓存清理与版本信息。</li>
+      </ul>
+
+      <h3>智能助手</h3>
+      <table class="doc-table">
+        <tbody>
+          <tr><th>提供商</th><td>DeepSeek / Kimi / GLM（智谱）/ 通义千问 / 豆包（火山方舟）/ OpenAI / 自定义 OpenAI 兼容</td></tr>
+          <tr><th>接口与模型</th><td>可修改 Base URL 与模型名；豆包填写推理接入点 ID（<code>ep-...</code>）</td></tr>
+          <tr><th>API Key</th><td>按提供商分别保存在 macOS 钥匙串（service <code>com.baymax.luma.ai</code>），支持保存、清除与测试连接</td></tr>
+          <tr><th>图片理解</th><td>默认关闭；开启后把选中/候选照片压成长边约 1024 的 JPEG，单次最多 6 张</td></tr>
+          <tr><th>可执行操作</th><td>新建相簿、加入相簿、收藏、添加关键词、选中照片；每次修改前弹窗确认，不删除或编辑原图</td></tr>
+          <tr><th>保存位置</th><td>模型配置与对话记录随当前图库保存；API Key 不属于图库，切换图库无需重填</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 13 快捷键 -->
+    <section class="doc-chapter" id="shortcuts">
+      <h2><span class="chapter-no">14</span>键盘快捷键</h2>
+      <p class="lead">按 <kbd>⌘/</kbd> 可在应用内随时查看快捷键面板。下表按使用场景分组。</p>
+
+      <h3>图库</h3>
+      <table class="doc-table shortcut-table">
+        <tbody>
+          <tr><td>方向键</td><td>移动选择</td></tr>
+          <tr><td><kbd>空格</kbd> / <kbd>回车</kbd></td><td>打开所选</td></tr>
+          <tr><td><kbd>⌘A</kbd></td><td>全选</td></tr>
+          <tr><td><kbd>⌘C</kbd> / <kbd>⌘V</kbd></td><td>复制文件 / 粘贴</td></tr>
+          <tr><td><kbd>⌘D</kbd></td><td>复制照片</td></tr>
+          <tr><td><kbd>⌘R</kbd> / <kbd>⌥⌘R</kbd></td><td>向右 / 向左旋转</td></tr>
+          <tr><td><kbd>⌘P</kbd> / <kbd>⌥⌘P</kbd></td><td>打印 / 幻灯片播放</td></tr>
+          <tr><td><kbd>⌘⌫</kbd> / <kbd>⌥⌘⌫</kbd></td><td>移到最近删除（在最近删除中为永久删除）/ 永久删除</td></tr>
+          <tr><td><kbd>⌘⇧H</kbd></td><td>隐藏 / 取消隐藏</td></tr>
+          <tr><td><kbd>⌘K</kbd></td><td>添加关键词</td></tr>
+          <tr><td><kbd>⌘F</kbd></td><td>搜索</td></tr>
+          <tr><td><kbd>⌘+</kbd> / <kbd>⌘-</kbd> / <kbd>⌘0</kbd></td><td>缩略图放大 / 缩小 / 默认</td></tr>
+          <tr><td><kbd>⌘⇧R</kbd></td><td>在访达中显示</td></tr>
+        </tbody>
+      </table>
+
+      <h3>查看器</h3>
+      <table class="doc-table shortcut-table">
+        <tbody>
+          <tr><td>← → ↑ ↓</td><td>上一张 / 下一张</td></tr>
+          <tr><td><kbd>空格</kbd></td><td>收起查看器，返回图库</td></tr>
+          <tr><td><kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd>、双击</td><td>放大 / 缩小 / 适应窗口</td></tr>
+          <tr><td><kbd>I</kbd> / <kbd>E</kbd> / <kbd>F</kbd></td><td>信息面板 / 编辑 / 全屏</td></tr>
+          <tr><td><kbd>L</kbd></td><td>播放实况照片</td></tr>
+        </tbody>
+      </table>
+
+      <h3>视频与幻灯片</h3>
+      <table class="doc-table shortcut-table">
+        <tbody>
+          <tr><td><kbd>空格</kbd></td><td>收起查看器，返回图库</td></tr>
+          <tr><td><kbd>K</kbd></td><td>播放 / 暂停</td></tr>
+          <tr><td><kbd>J</kbd> / <kbd>L</kbd>、← →</td><td>快退 / 快进</td></tr>
+          <tr><td><kbd>M</kbd> / <kbd>F</kbd></td><td>静音 / 全屏</td></tr>
+          <tr><td><kbd>A</kbd></td><td>填充 / 适应画面</td></tr>
+          <tr><td>← →、空格、<kbd>Esc</kbd></td><td>幻灯片：上一张 / 暂停 / 退出</td></tr>
+        </tbody>
+      </table>
+
+      <h3>文件与编辑</h3>
+      <table class="doc-table shortcut-table">
+        <tbody>
+          <tr><td><kbd>⌘I</kbd> / <kbd>⌥⌘I</kbd></td><td>导入照片 / 从「照片」导入</td></tr>
+          <tr><td><kbd>⌘O</kbd> / <kbd>⌥⌘O</kbd></td><td>打开图库 / 选取图库</td></tr>
+          <tr><td><kbd>⌘E</kbd> / <kbd>⌘⇧K</kbd></td><td>导出所选 / 压缩所选</td></tr>
+          <tr><td><kbd>⇧⌘N</kbd> / <kbd>⌥⇧⌘N</kbd> / <kbd>⌥⌘N</kbd></td><td>新建相簿 / 新建智能相簿 / 新建图库</td></tr>
+          <tr><td><kbd>⌥⌘B</kbd></td><td>批量更改所选</td></tr>
+          <tr><td><kbd>⌥⌘C</kbd> / <kbd>⌥⌘V</kbd></td><td>复制 / 粘贴编辑点</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 14 隐私 -->
+    <section class="doc-chapter" id="privacy">
+      <h2><span class="chapter-no">15</span>数据与隐私</h2>
+      <p class="lead">隐私在这个应用里是架构，而不是一句承诺：没有账号、没有遥测与第三方 SDK。端侧智能默认完全离线；可选的智能助手只有在你配置 API Key 后才会调用你选择的模型。</p>
+
+      <div class="doc-cards">
+        <div><h3>照片默认不上传</h3><p>端侧场景、OCR 与特征向量由系统 Vision 在本机计算，断网也能完成分析与搜索。智能助手默认只发送元数据与端侧标签；图片理解必须显式开启。</p></div>
+        <div><h3>数据库在图库里</h3><p>元数据只有一份真源：图库内的 <code>PhotosClone.sqlite</code>。没有隐藏的云同步或影子数据库。</p></div>
+        <div><h3>凭据在钥匙串</h3><p>SMB / WebDAV 密码、OAuth 应用凭据、token 与智能助手 API Key 只存 macOS 钥匙串，绝不进入日志或设置文件。</p></div>
+        <div><h3>写操作有边界</h3><p>官方「照片」图库、SMB、阿里云盘与百度网盘没有写入路径；智能助手的修改操作会先弹窗确认，且不支持删除或编辑原图。</p></div>
+      </div>
+
+      <h3>网络访问清单</h3>
+      <ul class="doc-list">
+        <li>端侧分析与本地浏览不需要网络；应用不会在后台发起分析或统计请求。</li>
+        <li>仅当你主动接入网络存储时，应用才会向对应主机发起连接。</li>
+        <li>WebDAV / SMB / 云盘请求用于列目录、取缩略图、播放与（WebDAV）上传；没有分析或统计请求。</li>
+        <li>智能助手只在你发送消息时，直接连接你所选提供商的接口；发送内容与图片策略见「07 智能助手」。拾光没有中转服务器。</li>
+        <li>应用不包含自动更新器，也不会在后台下载内容。</li>
+      </ul>
+    </section>
+
+    <!-- 15 FAQ -->
+    <section class="doc-chapter" id="faq">
+      <h2><span class="chapter-no">16</span>常见问题</h2>
+
+      <h3>可以在不建库的情况下先看看吗？</h3>
+      <p>不能。没有图库时主界面会被建库门禁挡住，避免在固定位置创建散落数据。先新建一个图库，或打开已有的 <code>.photoslibrary</code>。</p>
+
+      <h3>为什么照片文件不见了，但记录还在？</h3>
+      <p>外置盘未挂载或文件暂时不可达时，拾光不会把空结果写回数据库。缩略图会显示占位，重新挂载磁盘后即可恢复。请不要在这种情况下执行「清理」类操作。</p>
+
+      <h3>可以在一个窗口里同时看两个图库吗？</h3>
+      <p>当前只能有一个图库作为「当前图库」。其他官方「照片」图库可以在「系统图库」分区作为只读连接保存，随时展开浏览，但同一时间只有一个连接处于活动状态。</p>
+
+      <h3>为什么首次分析很慢？</h3>
+      <p>场景、OCR 与特征向量都要逐张读取图片并在本机推理。照片越多耗时越长，但结果只需计算一次；之后搜索与相似检索都走本地数据库。</p>
+
+      <h3>为什么相似照片不会自动删除？</h3>
+      <p>删除是不可逆的产品决策，必须由你确认。体检与相似检索只给建议；执行删除时会移入最近删除，保留期内仍可恢复。</p>
+
+      <h3>视频无法播放怎么办？</h3>
+      <p>先确认系统播放器能否打开。某些编码需要可选的 <code>ffmpeg</code>；安装并确保它在 <code>PATH</code> 中，拾光会转码为 H.264 后播放。</p>
+
+      <h3>为什么不能编辑官方「照片」图库里的照片？</h3>
+      <p>为了不破坏 Apple 的数据库与原图，官方图库只允许写入拾光的补充元数据（收藏 / 隐藏 / 关键词 / 查看时间）。需要编辑时，把照片拷贝到拾光图库后再改。</p>
+
+      <h3>图库可以放在 NAS 上吗？</h3>
+      <p>可以通过系统挂载的卷使用，但不要把正在使用的图库放在不稳定的网络卷上。断线会导致读写失败，甚至让 SQLite 处于不一致状态。更稳妥的做法是图库放在本地或直连磁盘，NAS 通过「网络存储」浏览。</p>
+
+      <h3>怎么彻底卸载？</h3>
+      <p>退出应用，删除 <code>Luma.app</code>；如不再需要，可删除图库包与 <code>~/Library/Application Support/PhotosClone/</code>。应用不写系统级后台服务。</p>
+    </section>
+
+    <!-- 16 限制 -->
+    <section class="doc-chapter" id="limits">
+      <h2><span class="chapter-no">17</span>已知限制</h2>
+      <p class="lead">以下限制是当前版本的真实边界，购买或迁移前请先确认。</p>
+      <ul class="doc-list">
+        <li>官方「照片」图库、SMB 共享与阿里云盘 / 百度网盘为只读；只有本地图库与 WebDAV 支持写入。</li>
+        <li>暂未实现：视频修剪与慢动作变速、iCloud 共享图库、屏幕保护输出。</li>
+        <li>回忆影片导出为无声 mp4（不含配乐）。</li>
+        <li>端侧人脸聚类只在本地图库生效，需要逐张分析，首次运行较慢；系统图库只读官方已有人物结果。</li>
+        <li>场景标签、OCR 与相似照片同样只对本地图库照片生效，视频不参与；未分析的照片不会出现在结果里。</li>
+        <li>智能助手每次只带当前范围最多 40 张候选照片；更大范围检索通过「应用筛选」回到本地搜索管线。视觉支持、上下文长度与限流取决于所选提供商与模型。</li>
+        <li>导入始终拷贝原文件，不支持引用原位置。</li>
+        <li>视频转码依赖外部 <code>ffmpeg</code>；未安装时仅支持系统可解码的编码。</li>
+        <li>「年 / 月」时间轴总览只在图库层级提供；相簿 / 文件夹使用普通网格。</li>
+        <li>大图库分页覆盖「所有照片」与媒体类型 / 收藏 / 隐藏等本地范围；人物、回忆与地图仍基于内存索引，超百万张时首次进入较慢。</li>
+        <li>图库元数据仍在启动时整体载入内存；分页主要减少筛选 / 排序 / 复制的开销。</li>
+        <li>HDR 设置对查看器内的静态图片生效；系统级 EDR 行为仍由 macOS 决定。</li>
+        <li>SMB 的「整个共享」扫描在超大目录上首次会较慢，之后刷新会重新读取。</li>
+      </ul>
+    </section>
+
+    <!-- 17 对比 -->
+    <section class="doc-chapter" id="compare">
+      <h2><span class="chapter-no">18</span>附录：与系统「照片」的对比</h2>
+      <p class="lead">拾光不是系统「照片」的替代品，而是补上它不适合处理的那一层：任意图库、超大图库、网络存储与可检查的端侧索引。iCloud 同步、共享图库与系统级集成继续交给「照片」。</p>
+
+      <table class="doc-table compare-doc-table">
+        <thead><tr><th>维度</th><th>macOS「照片」</th><th>拾光 Luma</th></tr></thead>
+        <tbody>
+          <tr><td>图库位置</td><td>系统图库为主，多库需按住 Option 切换</td><td>任意位置的 <code>.photoslibrary</code>，最近图库一键切换</td></tr>
+          <tr><td>大图库</td><td>由系统统一管理</td><td>超过 5,000 张自动 SQL 分页（600 / 页），年 / 月走 SQL 分区</td></tr>
+          <tr><td>显示形式</td><td>正方形网格，按年 / 月 / 日分段</td><td>正方形 / 完整比例 / 瀑布流 / 列表，四种可缩放</td></tr>
+          <tr><td>查看器</td><td>窗口或全屏</td><td>窗口内浏览 / 全屏沉浸，渐进加载 + 预取 + 胶片条</td></tr>
+          <tr><td>网络存储</td><td>需先导入图库</td><td>SMB / WebDAV / 阿里云盘 / 百度网盘 / AList 直接浏览</td></tr>
+          <tr><td>官方图库</td><td>本体</td><td>只读接入 + sidecar 补充元数据，不改 <code>Photos.sqlite</code></td></tr>
+          <tr><td>端侧索引</td><td>系统智能搜索</td><td>场景标签 + OCR + 特征向量落库，可浏览、可组合、可检查</td></tr>
+          <tr><td>智能助手</td><td>—</td><td>可选、自带 API Key；问答检索与整理（建相簿 / 收藏 / 关键词），修改前确认</td></tr>
+          <tr><td>图库体检</td><td>—</td><td>模糊 / 相似连拍 / 大视频 / 可腾出空间，一次扫描</td></tr>
+          <tr><td>旅行与足迹</td><td>回忆 / 地图</td><td>旅行故事线 + 地图行程段 + 足迹回放</td></tr>
+          <tr><td>回忆导出</td><td>系统回忆</td><td>三种风格 + 导出 720p mp4（无声）</td></tr>
+          <tr><td>JPG 压缩</td><td>—</td><td>批量压缩并保留可还原的原始备份</td></tr>
+          <tr><td>iCloud 同步</td><td>支持</td><td>不接管，请继续使用系统「照片」</td></tr>
+          <tr><td>视频修剪 / 变速</td><td>支持</td><td>暂不支持</td></tr>
+          <tr><td>凭据与隐私</td><td>系统 + iCloud</td><td>默认本地，钥匙串保存凭据与助手 API Key，无账号与遥测</td></tr>
+        </tbody>
+      </table>
+
+      <div class="doc-cards">
+        <div><h3>选拾光，如果你……</h3><p>照片在本地或 NAS、图库很大、需要批量整理与可检查的本地索引；愿意用文件系统与键盘工作。</p></div>
+        <div><h3>继续用「照片」，如果你……</h3><p>依赖 iCloud 跨设备同步、共享图库、视频修剪、屏幕保护，或希望所有编辑与系统深度集成。</p></div>
+      </div>
+
+      <div class="callout tip">
+        <b>两者可以同时使用</b>
+        <p>推荐工作流：官方图库继续由「照片」与 iCloud 管理；拾光以只读方式接入，补充收藏、关键词与检索；需要深度编辑或长期归档时，再把选中的项目拷贝到拾光图库。</p>
+      </div>
+    </section>
+
+    <footer class="doc-footer">
+      <div>
+        <b>拾光 Luma 使用手册</b>
+        <span>版本 1.0 · 更新于 2026 年 11 月 · 适用于 macOS 14+</span>
+      </div>
+      <div class="doc-footer-links">
+        <a href="#intro">回到顶部</a>
+        <a href="index.html">返回官网</a>
+        <a href="luma-manual.pdf" download>下载 PDF</a>
+        <a href="#" id="printDoc2">打印 / 导出 PDF</a>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<script src="manual.js"></script>
+</body>
+</html>

@@ -15,6 +15,114 @@ enum PhotoSource: String, Codable {
     case cloud
 }
 
+/// 选片旗标：与评分、色标共同构成轻量元数据工作流。
+enum PhotoFlag: String, Codable, CaseIterable, Identifiable {
+    case none
+    case pick
+    case reject
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "无旗标"
+        case .pick: return "留用"
+        case .reject: return "排除"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .none: return "flag"
+        case .pick: return "flag.fill"
+        case .reject: return "xmark.circle.fill"
+        }
+    }
+}
+
+/// 色标：用于交付状态、主题分组等；与评分相互独立。
+enum PhotoColorLabel: String, Codable, CaseIterable, Identifiable {
+    case none
+    case red
+    case orange
+    case yellow
+    case green
+    case blue
+    case purple
+    case gray
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "无色标"
+        case .red: return "红色"
+        case .orange: return "橙色"
+        case .yellow: return "黄色"
+        case .green: return "绿色"
+        case .blue: return "蓝色"
+        case .purple: return "紫色"
+        case .gray: return "灰色"
+        }
+    }
+}
+
+// MARK: - 整理工作室
+
+/// 整理工作室的浏览维度：评分 / 旗标 / 色标 / 关键词。
+enum OrganizeDimension: String, CaseIterable, Identifiable {
+    case rating
+    case flag
+    case colorLabel
+    case keyword
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rating: return "评分"
+        case .flag: return "旗标"
+        case .colorLabel: return "色标"
+        case .keyword: return "关键词"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .rating: return "star.fill"
+        case .flag: return "flag.fill"
+        case .colorLabel: return "paintpalette.fill"
+        case .keyword: return "tag.fill"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .rating: return "用 0–5 星排出先后，把值得留下的照片顶上来。"
+        case .flag: return "留用与排除，让第一轮初筛更快完成。"
+        case .colorLabel: return "用颜色给照片贴上用途或情绪，一眼就能找回来。"
+        case .keyword: return "把零散的标签集中起来，按关键词整批回看。"
+        }
+    }
+}
+
+/// 整理工作室的分布统计（当前图库范围）。
+struct OrganizeStudioStats: Equatable {
+    var total = 0
+    /// 下标 0…5：未评分与 1–5 星，各自的数量。
+    var ratingCounts = [Int](repeating: 0, count: 6)
+    var pick = 0
+    var reject = 0
+    var unflagged = 0
+    /// key 为 `PhotoColorLabel.rawValue`。
+    var colorCounts: [String: Int] = [:]
+    var rated = 0
+    var flagged = 0
+    var labeled = 0
+    /// 至少有一个关键词的照片数量（本地图库）。
+    var keyworded = 0
+}
+
 struct PhotoItem: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
     var filename: String
@@ -53,6 +161,16 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     var placeDistrict: String?
     var placePOI: String?
     var keywords: [String]?
+    /// 星级评分 0–5；nil 视为 0，兼容旧库与旧 JSON。
+    var rating: Int?
+    /// 选片旗标；nil 视为无旗标。
+    var flag: PhotoFlag?
+    /// 色标；nil 视为无色标。
+    var colorLabel: PhotoColorLabel?
+    /// 原文件内容哈希（SHA-256），用于导入查重与内容级重复检测。
+    var contentHash: String?
+    /// 图像感知哈希（64 位 dHash），用于发现重压缩 / 缩放 / 轻微编辑副本。
+    var perceptualHash: Int64?
 
     var source: PhotoSource?
     var systemOriginalPath: String?
@@ -65,16 +183,28 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     /// 官方图库中的实况照片 / 连拍项目（仅官方库可判定）。
     var isLivePhoto: Bool = false
     var isBurstItem: Bool = false
+    /// 连拍组 ID（Photos.sqlite 的 ZAVALANCHEUUID）：同一组内共享，非连拍为 nil。
+    var burstGroupID: String?
+    /// 连拍组的代表照片（键照片，ZAVALANCHEPICKTYPE & 16；单成员组自身即代表）。
+    var isBurstKeyPhoto: Bool = false
     /// 本地实况照片的配对视频文件名（位于 originals/<分片>/）。
     var livePhotoFilename: String?
     /// 系统图库实况照片的配对视频绝对路径。
     var livePhotoVideoPath: String?
     /// 慢动作视频（系统图库按 ZKINDSUBTYPE = 101 判定）。
     var isSlowMotion: Bool = false
-    /// 录屏视频（系统图库按 ZISDETECTEDSCREENSHOT 判定）。
+    /// 录屏视频（系统图库按 ZISDETECTEDSCREENSHOT 或 ZKINDSUBTYPE = 103 判定）。
     var isScreenRecording: Bool = false
     /// 动图（系统图库按 ZPLAYBACKSTYLE = 2 判定）。
     var isAnimated: Bool = false
+    /// 延时摄影（系统图库按 ZKINDSUBTYPE = 102 判定）。
+    var isTimelapse: Bool = false
+    /// 电影效果（`Photos.sqlite` 没有稳定字段，集合由 PhotoKit 智能相簿提供）。
+    var isCinematic: Bool = false
+    /// 空间照片 / 空间视频（系统图库按 ZSPATIALTYPE <> 0 判定）。
+    var isSpatial: Bool = false
+    /// 长曝光（系统图库由 PhotoKit 智能相簿判定）。
+    var isLongExposure: Bool = false
     /// 最近查看 / 最近编辑时间（仅系统图库可读，本地库为 nil）。
     var viewedAt: Date?
     var editedAt: Date?
@@ -83,6 +213,8 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     var cloudPath: String?
     var cloudRemoteID: String?
     var cloudThumbnailURL: String?
+    /// 网盘端已把该文件标记为受限内容（夸克 risk_type ≠ 0），无法取得播放地址。
+    var cloudRestricted: Bool?
 
     var displayFilename: String { editedFilename ?? filename }
     /// 展示用标题：优先用户标题，否则用原始文件名。
@@ -99,10 +231,15 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     }
     /// 按扩展名判定动图（系统图库另有 isAnimated）。
     var isAnimatedFile: Bool {
-        (originalName as NSString).pathExtension.lowercased() == "gif"
+        ["gif", "webp", "apng"].contains((originalName as NSString).pathExtension.lowercased())
     }
 
-    private static let rawExtensions: Set<String> = [
+    /// 查看器是否按动图播放；已编辑的照片是静态渲染结果，不再播放。
+    var playsAnimation: Bool {
+        !isVideo && (isAnimated || isAnimatedFile) && !hasEdits
+    }
+
+    static let rawExtensions: Set<String> = [
         "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "raf", "orf",
         "rw2", "pef", "srw", "raw", "3fr", "erf", "mef", "mos", "iiq", "rwl"
     ]
@@ -129,11 +266,34 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     var isDeleted: Bool { deletedAt != nil }
     var hasLocation: Bool { CoordinateValidator.isValid(latitude: latitude, longitude: longitude) }
     var tags: [String] { keywords ?? [] }
+
+    /// 0–5 的稳定评分值；旧数据与越界值都会被收敛。
+    var starRating: Int { min(5, max(0, rating ?? 0)) }
+    var pickFlag: PhotoFlag { flag ?? .none }
+    var labelColor: PhotoColorLabel { colorLabel ?? .none }
+
+    /// 层级关键词使用 `/` 分隔，例如「旅行/日本/京都」。
+    static func keywordComponents(_ path: String) -> [String] {
+        path.split(separator: "/", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    static func keywordLeaf(_ path: String) -> String {
+        keywordComponents(path).last ?? path
+    }
+
+    static func keywordDepth(_ path: String) -> Int {
+        max(0, keywordComponents(path).count - 1)
+    }
 }
 
 /// 媒体类型总览里的分类：标题、图标、匹配规则与对应的侧边栏范围。
 enum MediaTypeKey: String, CaseIterable, Identifiable {
-    case videos, selfies, livePhotos, portraits, panoramas, slowMotion, screenshots, screenRecordings, animated, raws
+    // 顺序与系统「照片」的媒体类型列表一致。
+    case videos, selfies, livePhotos, portraits, longExposure, panoramas,
+         timelapse, slowMotion, cinematic, spatial, bursts, screenshots,
+         screenRecordings, animated, raws
 
     var id: String { rawValue }
 
@@ -143,8 +303,13 @@ enum MediaTypeKey: String, CaseIterable, Identifiable {
         case .selfies: return "自拍"
         case .livePhotos: return "实况照片"
         case .portraits: return "人像"
+        case .longExposure: return "长曝光"
         case .panoramas: return "全景照片"
+        case .timelapse: return "延时摄影"
         case .slowMotion: return "慢动作"
+        case .cinematic: return "电影效果"
+        case .spatial: return "空间"
+        case .bursts: return "连拍快照"
         case .screenshots: return "截屏"
         case .screenRecordings: return "录屏"
         case .animated: return "动图"
@@ -158,8 +323,13 @@ enum MediaTypeKey: String, CaseIterable, Identifiable {
         case .selfies: return "person.crop.circle"
         case .livePhotos: return "livephoto"
         case .portraits: return "person.crop.rectangle"
+        case .longExposure: return "circle.dotted"
         case .panoramas: return "pano"
+        case .timelapse: return "camera.metering.center.weighted"
         case .slowMotion: return "slowmo"
+        case .cinematic: return "film"
+        case .spatial: return "cube.transparent"
+        case .bursts: return "square.stack.3d.down.right"
         case .screenshots: return "camera.viewfinder"
         case .screenRecordings: return "record.circle"
         case .animated: return "photo.on.rectangle.angled"
@@ -170,7 +340,9 @@ enum MediaTypeKey: String, CaseIterable, Identifiable {
     /// 只有官方「照片」图库才会提供的分类，本地图库不展示。
     var isSystemOnly: Bool {
         switch self {
-        case .portraits, .slowMotion, .screenRecordings: return true
+        case .portraits, .slowMotion, .screenRecordings,
+             .longExposure, .timelapse, .cinematic, .spatial, .bursts:
+            return true
         default: return false
         }
     }
@@ -183,8 +355,13 @@ enum MediaTypeKey: String, CaseIterable, Identifiable {
         case .selfies: return !photo.isVideo && photo.kind == .selfie
         case .livePhotos: return photo.isLivePhoto
         case .portraits: return !photo.isVideo && photo.isPortraitCapture
+        case .longExposure: return photo.isLongExposure
         case .panoramas: return photo.kind == .panorama
+        case .timelapse: return photo.isTimelapse
         case .slowMotion: return photo.isSlowMotion
+        case .cinematic: return photo.isCinematic
+        case .spatial: return photo.isSpatial
+        case .bursts: return photo.isBurstItem
         case .screenshots: return photo.kind == .screenshot
         case .screenRecordings: return photo.isScreenRecording
         case .animated: return photo.isAnimated || photo.isAnimatedFile
@@ -199,8 +376,13 @@ enum MediaTypeKey: String, CaseIterable, Identifiable {
             case .selfies: return .systemSelfies
             case .livePhotos: return .systemLivePhotos
             case .portraits: return .systemPortraits
+            case .longExposure: return .systemLongExposure
             case .panoramas: return .systemPanoramas
+            case .timelapse: return .systemTimelapse
             case .slowMotion: return .systemSlowMotion
+            case .cinematic: return .systemCinematic
+            case .spatial: return .systemSpatial
+            case .bursts: return .systemBursts
             case .screenshots: return .systemScreenshots
             case .screenRecordings: return .systemScreenRecordings
             case .animated: return .systemAnimated
@@ -216,8 +398,8 @@ enum MediaTypeKey: String, CaseIterable, Identifiable {
         case .animated: return .animated
         case .raws: return .raws
         case .portraits: return .people
-        case .slowMotion: return .videos
-        case .screenRecordings: return .videos
+        case .slowMotion, .screenRecordings, .timelapse, .cinematic, .spatial: return .videos
+        case .longExposure, .bursts: return .library
         }
     }
 }
@@ -232,6 +414,13 @@ struct KeywordOption: Identifiable {
     let name: String
     let count: Int
     var id: String { name }
+}
+
+/// 相簿 / 文件夹层级面包屑：点任意一级可跳回该层。
+struct AlbumBreadcrumb: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let item: SidebarItem
 }
 
 struct Album: Identifiable, Codable, Hashable {
@@ -258,6 +447,8 @@ struct FolderOption: Identifiable {
 
 enum SidebarItem: Hashable {
     case library
+    /// 影院：刮削后的电影 / 电视剧库。
+    case cinema
     case collections
     case favorites
     case recentlySaved
@@ -275,6 +466,12 @@ enum SidebarItem: Hashable {
     case scenes
     /// 更多项目总览（侧边栏「更多项目」分区头点击进入）。
     case moreItems
+    /// 关键词总览：按关键词聚合的卡片墙。
+    case keywords
+    /// 问一问：全库检索 + 模型总结。
+    case ask
+    /// 标签治理：重复 / 相似 / 可归入标准标签的建议。
+    case tagGovernance
     case album(UUID)
     case smartAlbum(UUID)
     case folder(UUID)
@@ -289,6 +486,10 @@ enum SidebarItem: Hashable {
     case scene(String)
     /// 图库体检：模糊照片、相似连拍备选、过大视频与「值得重看」范围。
     case health
+    /// 整理工作室：评分 / 旗标 / 色标的分布与筛选。
+    case ratings
+    case flags
+    case colorLabels
     case blurry
     case similarDuplicates
     case largeVideos
@@ -303,6 +504,8 @@ enum SidebarItem: Hashable {
     case systemMediaTypes
     /// 系统图库更多项目总览。
     case systemMoreItems
+    /// 系统图库关键词总览：关键词来自拾光的补充元数据。
+    case systemKeywords
     /// 已连接的系统图库列表总览（侧边栏「系统图库」分区头点击进入）。
     case systemLibraries
     /// 网络存储列表总览（侧边栏「网络存储」分区头点击进入）。
@@ -318,6 +521,12 @@ enum SidebarItem: Hashable {
     case systemSelfies
     case systemLivePhotos
     case systemPanoramas
+    /// 系统图库媒体类型：长曝光 / 延时摄影 / 电影效果 / 连拍快照。
+    case systemLongExposure
+    case systemTimelapse
+    case systemCinematic
+    case systemSpatial
+    case systemBursts
     case systemSlowMotion
     case systemScreenRecordings
     case systemAnimated
@@ -325,14 +534,29 @@ enum SidebarItem: Hashable {
     case systemEdited
     case systemRecentlyViewed
     case systemDuplicates
-    case systemHandwriting
-    case systemIllustrations
     case systemRecentlySaved
     case systemImports
+    /// 单个导入会话（点进「导入项目」里的某一次导入）。
+    case systemImportSession(Int64)
+    /// 系统图库「值得重看」（纯元数据派生，只读）。
+    case systemRevisit
+    /// 系统图库场景总览与单个场景（端侧识别结果缓存在 `system_analysis`）。
+    case systemScenes
+    case systemScene(String)
+    /// 系统图库「包含文字」（端侧 OCR 结果缓存在 `system_analysis`）。
+    case systemOcrTexts
+    /// 系统图库图库体检（只读预览，基于缩略图与缓存特征）。
+    case systemHealth
+    /// 系统图库整理工作室：评分 / 旗标 / 色标（写入拾光的补充元数据）。
+    case systemRatings
+    case systemFlags
+    case systemColorLabels
     case systemMap
     case systemPlaces
     case systemPeople
     case cloudMount(UUID)
+    /// 某一个网盘实例自己的影院（刮削结果与海报都归属这个网盘）。
+    case cloudCinema(UUID)
 
     /// 是否属于只读的系统「照片」图库范围。
     var isSystemScope: Bool {
@@ -341,11 +565,14 @@ enum SidebarItem: Hashable {
              .systemFavorites, .systemVideos,
              .systemScreenshots, .systemHidden, .systemTrash,
              .systemPortraits, .systemSelfies, .systemLivePhotos, .systemPanoramas,
+             .systemLongExposure, .systemTimelapse, .systemCinematic, .systemSpatial, .systemBursts,
              .systemSlowMotion, .systemScreenRecordings, .systemAnimated, .systemRAW,
-             .systemEdited, .systemRecentlyViewed, .systemDuplicates, .systemHandwriting,
-             .systemIllustrations, .systemRecentlySaved, .systemImports, .systemMap,
+             .systemEdited, .systemRecentlyViewed, .systemDuplicates,
+             .systemRecentlySaved, .systemImports, .systemImportSession, .systemRevisit,
+             .systemScenes, .systemScene, .systemOcrTexts, .systemHealth, .systemMap,
              .systemPlaces, .systemPeople, .systemAlbums, .systemMediaTypes,
-             .systemMoreItems:
+             .systemMoreItems, .systemKeywords,
+             .systemRatings, .systemFlags, .systemColorLabels:
             return true
         default:
             return false
@@ -360,6 +587,13 @@ struct SystemAlbumInfo: Identifiable, Hashable, Codable {
     let assetIDs: [UUID]
     /// 图库内原始顺序（Photos.sqlite 的 Z_PK），用于与官方「照片」保持一致的相簿排序。
     var sortIndex: Int64 = 0
+    /// Photos.sqlite 的 ZUUID：用于映射 PhotoKit 的 localIdentifier（写回相簿时必需）。
+    var uuid: String? = nil
+    /// 官方图库给这个相簿保存的排序方式（`ZGENERICALBUM.ZCUSTOMSORTKEY`）。
+    /// 位含义：1 = 按日期、2 = 按标题、4 = 手动拖拽顺序；0 表示跟随默认（拍摄日期降序）。
+    var customSortKey: Int? = nil
+    /// 官方图库保存的排序方向（`ZGENERICALBUM.ZCUSTOMSORTASCENDING`）。
+    var customSortAscending: Bool? = nil
 }
 
 struct SystemFolderInfo: Identifiable, Hashable, Codable {
@@ -368,6 +602,23 @@ struct SystemFolderInfo: Identifiable, Hashable, Codable {
     let parent: Int64?
     /// 图库内原始顺序（Photos.sqlite 的 Z_PK）；与相簿共用同一序列，可混排。
     var sortIndex: Int64 = 0
+}
+
+/// 官方「照片」的一次导入会话（Photos.sqlite 的 `ZGENERICALBUM.ZKIND = 1506`）。
+/// `id` 同时是 `ZASSET.ZIMPORTSESSION` 的外键，官方已缓存该批次数量。
+struct SystemImportSession: Identifiable, Hashable {
+    let id: Int64
+    let createdAt: Date
+    let count: Int
+    let uuid: String?
+}
+
+/// 导入批次的补充概览：批内照片的拍摄跨度与视频数量，用于顶部栏的批次信息。
+struct SystemImportSessionSummary {
+    let earliest: Date?
+    let latest: Date?
+    let videoCount: Int
+    let totalCount: Int
 }
 
 /// 系统图库侧边栏的一个条目：文件夹与相簿按原始顺序混排。
@@ -398,17 +649,23 @@ struct SystemLibraryRef: Identifiable, Codable, Hashable {
     var id: String { path }
 }
 
-/// 被固定到侧边栏「固定」分区的项目：系统智能项、相簿或文件夹。
+/// 被固定到侧边栏「固定」分区的项目：系统智能项、相簿、智能相簿、文件夹或系统图库里的相簿 / 文件夹。
 enum PinnedSidebarItem: Codable, Hashable, Identifiable {
     case system(String)
     case album(UUID)
+    case smartAlbum(UUID)
     case folder(UUID)
+    case systemAlbum(Int64)
+    case systemFolder(Int64)
 
     var id: String {
         switch self {
         case .system(let key): return "system-\(key)"
         case .album(let id): return "album-\(id.uuidString)"
+        case .smartAlbum(let id): return "smartAlbum-\(id.uuidString)"
         case .folder(let id): return "folder-\(id.uuidString)"
+        case .systemAlbum(let id): return "systemAlbum-\(id)"
+        case .systemFolder(let id): return "systemFolder-\(id)"
         }
     }
 }
@@ -533,6 +790,68 @@ enum ThumbnailAspect: String, CaseIterable, Identifiable {
         case .actual: return "aspectratio"
         case .masonry: return "rectangle.split.3x1"
         case .list: return "list.bullet"
+        }
+    }
+}
+
+/// 相簿总览（「所有相簿」与文件夹层级）的展示形式。
+enum AlbumDisplayStyle: String, CaseIterable, Identifiable {
+    case grid
+    case list
+    case collage
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .grid: return "网格"
+        case .list: return "列表"
+        case .collage: return "拼贴墙"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .list: return "list.bullet"
+        case .collage: return "rectangle.grid.2x2"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .grid: return "大卡片展示相簿封面"
+        case .list: return "紧凑行展示封面、名称与数量"
+        case .collage: return "无边拼贴墙，名称叠加在封面上"
+        }
+    }
+}
+
+/// 「人物」总览的头像形状（圆形 / 圆角方形，参考官方照片 App 的方形大卡片），随当前图库保存。
+enum PeopleDisplayStyle: String, CaseIterable, Identifiable {
+    case circle
+    case roundedSquare
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .circle: return "圆形"
+        case .roundedSquare: return "圆角方形"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .circle: return "circle"
+        case .roundedSquare: return "roundedrect"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .circle: return "圆形头像卡片"
+        case .roundedSquare: return "圆角方形头像卡片"
         }
     }
 }
@@ -666,6 +985,19 @@ enum DateText {
         f.dateFormat = "HH:mm"
         return f
     }()
+
+    /// 顶栏副标题用的紧凑日期范围：同一天只显示一个日期，同年省略年份、同月省略月份与年份。
+    static func span(from start: Date, to end: Date) -> String {
+        let calendar = Calendar.current
+        let a = calendar.dateComponents([.year, .month, .day], from: start)
+        let b = calendar.dateComponents([.year, .month, .day], from: end)
+        guard let ay = a.year, let am = a.month, let ad = a.day,
+              let by = b.year, let bm = b.month, let bd = b.day else { return "" }
+        if ay == by, am == bm, ad == bd { return "\(ay)年\(am)月\(ad)日" }
+        if ay == by, am == bm { return "\(ay)年\(am)月\(ad)日 – \(bd)日" }
+        if ay == by { return "\(ay)年\(am)月\(ad)日 – \(bm)月\(bd)日" }
+        return "\(ay)年\(am)月\(ad)日 – \(by)年\(bm)月\(bd)日"
+    }
 }
 
 func formatFileSize(_ bytes: Int64) -> String {

@@ -6,50 +6,73 @@ import LumaCore
 /// 与系统「照片」的地点网格一致：段头是城市、日期范围与「查看地点」入口，下面是该段照片。
 struct MapPlaceGridView: View {
     @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
     let photos: [PhotoItem]
     let availableWidth: CGFloat
+    /// 视野指纹：换一片区域时即便照片数量相同也要重算行程段。
+    let scopeKey: String
+    let emptyText: String
 
     @State private var trips: [MapTripGroup] = []
 
-    private let spacing: CGFloat = 10
+    private let spacing: CGFloat = 6
     private let horizontalPadding: CGFloat = 24
 
-    init(photos: [PhotoItem], availableWidth: CGFloat) {
+    init(photos: [PhotoItem],
+         scopeKey: String = "all",
+         availableWidth: CGFloat,
+         emptyText: String = "这些照片还没有可用的地点信息。") {
         self.photos = photos
+        self.scopeKey = scopeKey
         self.availableWidth = availableWidth
-        _trips = State(initialValue: Self.makeTrips(photos))
+        self.emptyText = emptyText
+        // 初始值留空，交给 `.task` 计算：视图每次重新构造时不必再把全部照片重排一遍。
+        _trips = State(initialValue: [])
     }
 
-    /// 照片数量、图库版本或地点解析进度变化时重算行程段。
+    /// 视野、照片数量、图库版本、地点层级或地点解析进度变化时重算行程段。
     private var tripsKey: String {
-        "\(photos.count)|\(store.contentRevision)|\(store.placeResolveDone)"
+        "\(scopeKey)|\(photos.count)|\(store.contentRevision)|\(store.placeGranularity.rawValue)|\(store.placeResolveDone)"
+    }
+
+    /// 查看器序号与翻页的基准：整片视野按段落显示顺序（段间由新到旧、段内由新到旧）展开。
+    private var viewerContextPhotos: [PhotoItem] {
+        trips.flatMap { $0.photos }
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 34) {
-                if trips.isEmpty {
-                    Text("这些照片还没有可用的地点信息。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 260)
-                } else {
-                    ForEach(Array(trips.enumerated()), id: \.element.id) { index, trip in
-                        VStack(alignment: .leading, spacing: 12) {
-                            header(trip, showsDivider: index > 0)
-                            grid(trip)
+        GeometryReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 34) {
+                    if trips.isEmpty {
+                        Text(emptyText)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 260)
+                    } else {
+                        ForEach(Array(trips.enumerated()), id: \.element.id) { index, trip in
+                            VStack(alignment: .leading, spacing: 12) {
+                                header(trip, showsDivider: index > 0)
+                                grid(trip)
+                            }
                         }
+                        Color.clear.frame(height: 36)
                     }
-                    Color.clear.frame(height: 36)
                 }
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, 88)
+                .photoMarqueeSelection(fillHeight: proxy.size.height)
             }
-            .padding(.horizontal, horizontalPadding)
-            .padding(.top, 88)
+            .scrollIndicators(.automatic)
         }
-        .scrollIndicators(.automatic)
         .task(id: tripsKey) {
-            trips = Self.makeTrips(photos)
+            // 行程分段要排序整片照片，放到后台算，避免大图库切换网格时卡住界面。
+            let photos = self.photos
+            let granularity = store.placeGranularity
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.makeTrips(photos, granularity: granularity)
+            }.value
+            guard !Task.isCancelled else { return }
+            trips = result
         }
     }
 
@@ -112,14 +135,24 @@ struct MapPlaceGridView: View {
         let cell = GridLayout.squareCellWidth(contentWidth: contentWidth,
                                               columns: columns,
                                               spacing: spacing)
+        let context = viewerContextPhotos
         return LazyVGrid(
             columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
             spacing: spacing
         ) {
             ForEach(trip.photos) { photo in
                 PhotoCell(photo: photo, width: cell, height: cell,
-                          cornerRadius: settings.cardRadius)
+                          cornerRadius: 0,
+                          viewerContext: context)
                     .id(photo.id)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: PhotoFramePreferenceKey.self,
+                                value: [photo.id: geo.frame(in: .named(PhotoMarqueeSpace.name))]
+                            )
+                        }
+                    )
             }
         }
     }
@@ -130,14 +163,15 @@ struct MapPlaceGridView: View {
 
     // MARK: - 行程分组
 
-    private static func makeTrips(_ photos: [PhotoItem]) -> [MapTripGroup] {
+    private nonisolated static func makeTrips(_ photos: [PhotoItem],
+                                              granularity: PlaceGranularity = .district) -> [MapTripGroup] {
         let sorted = photos
             .filter { $0.latitude != nil && $0.longitude != nil }
             .sorted { $0.capturedAt < $1.capturedAt }
         guard !sorted.isEmpty else { return [] }
 
         let calendar = Calendar.current
-        let keys = sorted.map { PlaceClusterBuilder.key(for: $0) }
+        let keys = sorted.map { PlaceClusterBuilder.key(for: $0, granularity: granularity) }
         let days = sorted.map { calendar.startOfDay(for: $0.capturedAt) }
         let ordinals = days.map { calendar.ordinality(of: .day, in: .era, for: $0) ?? 0 }
         let spans = TripSegmentation.spans(placeKeys: keys.map(\.id), dayOrdinals: ordinals)

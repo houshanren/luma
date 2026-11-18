@@ -8,7 +8,7 @@ enum PhotoQuality {
     /// 低于该值视为「可能模糊」（256px 灰度拉普拉斯方差，实测清晰照片通常 > 100）。
     static let blurryThreshold: Double = 55
 
-    /// 清晰度分数；视频、网盘与系统图库项目返回 nil（体检只针对本地照片）。
+    /// 清晰度分数；视频返回 nil。网盘照片请先用缩略图解码再调用 `sharpness(cgImage:)`。
     static func sharpness(for photo: PhotoItem) -> Double? {
         guard !photo.isVideo, !photo.isCloud, !photo.isSystem else { return nil }
         let fm = FileManager.default
@@ -28,6 +28,11 @@ enum PhotoQuality {
             return nil
         }
         return laplacianVariance(image, side: 256)
+    }
+
+    /// 对已解码的图像（网盘缩略图）计算清晰度。
+    static func sharpness(cgImage: CGImage) -> Double? {
+        laplacianVariance(cgImage, side: 256)
     }
 
     /// 把图像缩到 `side` 见方灰度后计算 3×3 拉普拉斯的方差。

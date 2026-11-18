@@ -4,9 +4,11 @@ import AppKit
 /// 「位置」——按城市 / 区县聚合的地点统计卡片墙。
 struct PlaceStatisticsView: View {
     @EnvironmentObject private var store: LibraryStore
-    @State private var query = ""
-    @State private var hoveredID: String?
+    /// 由顶部工具栏共享的搜索关键词。
+    @Binding var query: String
     @State private var pinchBase: Double?
+    /// 点分组标题收起 / 展开；默认全部展开。
+    @State private var collapsedGroups: Set<String> = []
 
     var body: some View {
         if let place = store.selectedPlace {
@@ -20,7 +22,6 @@ struct PlaceStatisticsView: View {
 
     private var overview: some View {
         VStack(spacing: 0) {
-            header
             if store.isResolvingPlaces {
                 resolveProgress
             }
@@ -30,30 +31,67 @@ struct PlaceStatisticsView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 30) {
                         ForEach(groups, id: \.title) { group in
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text(group.title)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                LazyVGrid(columns: columns, alignment: .leading, spacing: cardSize * 0.17) {
-                                    ForEach(group.clusters) { cluster in
-                                        PlaceCardView(cluster: cluster, isHovered: hoveredID == cluster.id)
-                                            .onTapGesture { store.openPlace(cluster) }
-                                            .onHover { hovering in
-                                                hoveredID = hovering ? cluster.id : (hoveredID == cluster.id ? nil : hoveredID)
-                                            }
-                                    }
-                                }
-                            }
+                            groupSection(group)
                         }
                     }
                     .padding(.horizontal, 26)
-                    .padding(.top, 4)
+                    .padding(.top, 16)
                     .padding(.bottom, 56)
                 }
             }
             .simultaneousGesture(pinchGesture)
         }
-        .task { store.resolveMissingPlacesIfNeeded() }
+        .onChange(of: store.placeGranularity) { _, _ in
+            // 换层级就是换一批分组，收起状态跟着重置。
+            collapsedGroups = []
+        }
+        .task {
+            await store.awaitDirectGeoIfNeeded()
+            store.resolveMissingPlacesIfNeeded()
+        }
+    }
+
+    @ViewBuilder
+    private func groupSection(_ group: (title: String, clusters: [PlaceCluster])) -> some View {
+        let isCollapsed = collapsedGroups.contains(group.title)
+        VStack(alignment: .leading, spacing: 14) {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    if isCollapsed {
+                        collapsedGroups.remove(group.title)
+                    } else {
+                        collapsedGroups.insert(group.title)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                    Text(group.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isCollapsed ? "展开「\(group.title)」" : "收起「\(group.title)」")
+
+            if !isCollapsed {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: cardSize * 0.17) {
+                    ForEach(group.clusters) { cluster in
+                        placeCard(cluster)
+                    }
+                }
+            }
+        }
+    }
+
+    private func placeCard(_ cluster: PlaceCluster) -> some View {
+        PlaceCardView(cluster: cluster)
+            .onTapGesture { store.openPlace(cluster) }
     }
 
     /// 地点卡片尺寸跟随工具栏缩放（56…360 → 90…400，默认 132 → 约 152）。
@@ -62,59 +100,18 @@ struct PlaceStatisticsView: View {
     }
 
     private var pinchGesture: some Gesture {
-        MagnifyGesture(minimumScaleDelta: 0.005)
+        // 阈值要够大：触摸板双指滚动经常带一点张合，阈值太小会把滚动误判成缩放，
+        // 卡片尺寸一变，整页内容高度跟着变，滚动就会不停跳动。
+        MagnifyGesture(minimumScaleDelta: 0.04)
             .onChanged { value in
+                let delta = value.magnification - 1
+                guard abs(delta) > 0.02 else { return }
                 if pinchBase == nil { pinchBase = store.thumbSize }
                 guard let base = pinchBase else { return }
                 store.thumbSize = min(LibraryStore.thumbSizeRange.upperBound,
                                         max(LibraryStore.thumbSizeRange.lowerBound, base * value.magnification))
             }
             .onEnded { _ in pinchBase = nil }
-    }
-
-    private var header: some View {
-        HStack(alignment: .bottom, spacing: 20) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("位置")
-                    .font(.system(size: 28, weight: .bold))
-                Text("\(store.placeClusters.count) 个地点 · \(store.geoPhotos.count.formatted()) 张带位置的照片")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            searchField
-        }
-        .padding(.horizontal, 26)
-        .padding(.top, 20)
-        .padding(.bottom, 16)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-            TextField("搜索地点", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
-            if !query.isEmpty {
-                Button {
-                    query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .frame(width: 250)
-        .background(Color.primary.opacity(0.06), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
     }
 
     private var resolveProgress: some View {
@@ -165,60 +162,36 @@ struct PlaceStatisticsView: View {
 
     // MARK: - 某个地点的照片
 
-    private func placeDetail(_ place: PlaceCluster) -> some View {
-        GeometryReader { proxy in
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Button {
-                        store.closePlace()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .frame(width: 30, height: 30)
-                            .background(Color.primary.opacity(0.07), in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("返回位置")
-                    .accessibilityLabel("返回位置")
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(place.title)
-                            .font(.system(size: 21, weight: .bold))
-                        Text("\(store.visiblePhotos.count.formatted()) 张照片"
-                             + (place.subtitle.map { " · \($0)" } ?? ""))
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Button {
-                        store.navigate(to: store.isSystemScope ? .systemMap : .map)
-                    } label: {
-                        Label("在地图中查看", systemImage: "map")
-                            .font(.system(size: 11.5))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 18)
-                .padding(.bottom, 12)
-
-                ScrollView {
-                    SquarePhotoGrid(photos: store.visiblePhotos, availableWidth: proxy.size.width)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 50)
-                }
+    /// 位置详情直接使用聚类里已经带上的照片：不受当前搜索 / 筛选影响，
+    /// 也不会因为大图库分页窗口尚未加载而显示为空。
+    private func photos(in place: PlaceCluster) -> [PhotoItem] {
+        if store.isCloudScope {
+            return store.cloudGeoPhotos.filter {
+                PlaceClusterBuilder.key(for: $0, granularity: store.placeGranularity).id == place.id
             }
         }
+        return place.photos.filter { $0.deletedAt == nil && !$0.isHidden }
+    }
+
+    private func placeDetail(_ place: PlaceCluster) -> some View {
+        PlaceDetailView(place: place,
+                        photos: photos(in: place),
+                        onBack: { store.closePlace() },
+                        onOpenMap: {
+                            if store.isCloudScope {
+                                store.setCloudScope(.map)
+                            } else {
+                                store.navigate(to: store.isSystemScope ? .systemMap : .map)
+                            }
+                        })
     }
 }
 
 private struct PlaceCardView: View {
     let cluster: PlaceCluster
-    let isHovered: Bool
+    /// 悬停状态放在卡片内部：滚动时鼠标扫过卡片只重算自己，
+    /// 不会因为整页共享一个 hoveredID 而反复重建整个列表。
+    @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -253,6 +226,7 @@ private struct PlaceCardView: View {
         .scaleEffect(isHovered ? 1.02 : 1)
         .animation(.snappy(duration: 0.18), value: isHovered)
         .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
     }
 
     private var cover: some View {
@@ -269,7 +243,7 @@ private struct PlaceCardView: View {
                     .overlay {
                         Image(systemName: "photo")
                             .font(.system(size: 22, weight: .light))
-                            .foregroundStyle(.white.opacity(0.65))
+                            .foregroundStyle(.primary.opacity(0.55))
                     }
                 }
             }

@@ -9,6 +9,7 @@ struct ShortcutHelpView: View {
         ("← → ↑ ↓", "移动选择"),
         ("空格 / 回车", "打开所选"),
         ("⌘[", "返回上一级（相簿 / 文件夹）"),
+        ("⌘Z / ⇧⌘Z", "撤销 / 重做图库操作"),
         ("⌘A", "全选"),
         ("⌘C", "复制文件"),
         ("⌘V", "粘贴"),
@@ -33,9 +34,11 @@ struct ShortcutHelpView: View {
         ("+ / - / 0", "放大 / 缩小 / 适应窗口"),
         ("双击", "以点击位置缩放"),
         ("I", "信息面板"),
+        ("⌥⌘T", "显示 / 隐藏底部缩略图"),
         ("E", "编辑"),
         ("F", "全屏"),
         ("L", "播放实况照片"),
+        ("P", "播放 / 暂停连拍快照"),
         (".", "收藏 / 取消收藏"),
         ("⌘R / ⌥⌘R", "向右 / 向左旋转"),
         ("⌘D", "复制照片"),
@@ -60,7 +63,7 @@ struct ShortcutHelpView: View {
 
     private let videoShortcuts: [(String, String)] = [
         ("空格", "收起查看器，返回图库"),
-        ("K", "播放 / 暂停"),
+        ("K / 回车", "播放 / 暂停"),
         ("← / →", "快退 / 快进 5 秒"),
         ("J / L", "快退 / 快进 10 秒"),
         ("⌘← / ⌘→", "上一个 / 下一个视频"),
@@ -116,6 +119,11 @@ struct ShortcutHelpView: View {
                 }
             }
             .frame(maxHeight: showsCloseButton ? 520 : 420)
+
+            Text("查看器、视频、幻灯片与图库的单键快捷键可在「设置 › 快捷键」中修改。")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
         .frame(width: showsCloseButton ? 400 : 330)

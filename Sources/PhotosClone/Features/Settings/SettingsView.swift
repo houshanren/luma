@@ -8,45 +8,53 @@ struct SettingsView: View {
 
     @State private var cacheSize: Int64 = 0
     @State private var systemCacheSize: Int64 = 0
+    @State private var sidecarSize: Int64 = 0
+    @State private var confirmDestroySidecar = false
     @State private var libraryEntries: [LibraryEntry] = []
     @State private var aiKeyInput = ""
     @State private var aiTesting = false
     @State private var aiTestOK = false
     @State private var aiTestMessage: String?
+    @State private var confirmClearAIConversation = false
 
     /// 与幻灯片窗口共用同一组偏好。
     @AppStorage("slideshowInterval") private var slideshowInterval: Double = 3
     @AppStorage("slideshowKenBurns") private var slideshowKenBurns = true
-
-    private var version: String {
-        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
-        return "\(short) (\(build))"
-    }
+    /// 当前分页；其它入口可先写入目标页再打开设置窗口。
+    @AppStorage(SettingsKeys.selectedTab) private var selectedTab: SettingsTab = .general
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             generalTab
                 .tabItem { Label("通用", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             appearanceTab
                 .tabItem { Label("外观", systemImage: "paintpalette") }
+                .tag(SettingsTab.appearance)
             browsingTab
                 .tabItem { Label("浏览", systemImage: "photo.on.rectangle") }
+                .tag(SettingsTab.browsing)
+            cinemaTab
+                .tabItem { Label("影院", systemImage: "film.stack") }
+                .tag(SettingsTab.cinema)
+            shortcutsTab
+                .tabItem { Label("快捷键", systemImage: "command") }
+                .tag(SettingsTab.shortcuts)
             libraryTab
                 .tabItem { Label("图库", systemImage: "photo.stack") }
+                .tag(SettingsTab.library)
+            modelTab
+                .tabItem { Label("模型", systemImage: "cpu") }
+                .tag(SettingsTab.models)
             assistantTab
-                .tabItem { Label("智能助手", systemImage: "sparkles") }
+                .tabItem { Label("助手", systemImage: "sparkles") }
+                .tag(SettingsTab.assistant)
         }
         .frame(width: 580, height: 500)
         .preferredColorScheme(settings.appearance.colorScheme)
         .tint(settings.accentColor)
         .accentColor(settings.accentColor)
         .onAppear(perform: refreshCacheSize)
-        .onChange(of: settings.systemLibraryMaxAssets) { _, _ in
-            // 调整载入上限后按新上限重扫，否则会继续显示旧的截断结果。
-            guard store.isSystemScope, store.systemLibraryPath != nil else { return }
-            store.reloadSystemLibrary()
-        }
     }
 
     // MARK: 通用
@@ -54,9 +62,22 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section("打开方式") {
-                Picker("双击照片时", selection: $settings.photoOpenMode) {
-                    ForEach(PhotoOpenMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("双击照片时")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(settings.photoOpenMode.title)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: 8) {
+                        ForEach(PhotoOpenMode.allCases) { mode in
+                            OpenModeTile(mode: mode,
+                                         selected: settings.photoOpenMode == mode) {
+                                settings.photoOpenMode = mode
+                            }
+                        }
                     }
                 }
                 Text(settings.photoOpenMode.detail)
@@ -76,6 +97,15 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 Toggle("打开照片时显示信息面板", isOn: $settings.showInfoOnOpen)
                 Text("侧边信息面板会显示文件名、尺寸、相机参数与关键词。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Toggle("显示底部缩略图胶片条", isOn: $settings.viewerFilmstrip)
+                Text("关闭后查看器只保留照片与工具栏，画面更沉浸；查看器工具栏里也能随时开关。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                Toggle("照片背景虚化", isOn: $settings.viewerBackdrop)
+                Text("用当前照片的模糊影像铺满舞台，竖图两侧不再出现大片空白。关闭后改为纯色背景，翻页更省资源。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -99,6 +129,23 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 Toggle("播放结束后自动连播", isOn: $settings.autoPlayNextVideo)
                 Text("一个视频播完后按当前浏览顺序自动播放下一个视频（跳过照片），适合连续观看。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Picker("快进 / 快退步长", selection: $settings.videoSeekStep) {
+                    ForEach([1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { value in
+                        Text("\(Int(value)) 秒").tag(value)
+                    }
+                }
+                Text("视频里 ↑ / ↓ 每次快进 / 快退的距离；J / L 仍固定为 10 秒。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Picker("视频控制条", selection: $settings.videoControlPlacement) {
+                    ForEach(VideoControlPlacement.allCases) { placement in
+                        Text(placement.title).tag(placement)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.videoControlPlacement.detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -143,21 +190,6 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-            }
-
-            Section("系统图库载入") {
-                Picker("载入上限", selection: $settings.systemLibraryMaxAssets) {
-                    Text("最近 5 万项").tag(50_000)
-                    Text("最近 10 万项").tag(100_000)
-                    Text("最近 20 万项").tag(200_000)
-                    Text("最近 50 万项").tag(500_000)
-                    Text("最近 100 万项").tag(1_000_000)
-                    Text("最近 150 万项").tag(1_500_000)
-                    Text("不限制（大图库不推荐）").tag(0)
-                }
-                Text("仅对当前图库连接的系统「照片」图库生效，设置随当前图库保存。只读接入，按拍摄日期从新到旧载入；调整上限后会按新上限重新扫描。载入 50 万项以上会占用较多内存，请按实际需要选择。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -261,19 +293,66 @@ struct SettingsView: View {
 
     // MARK: 浏览
 
+    /// 每行张数的预设；当前值不在预设里时（例如缩到极小）临时补一个。
+    private static let gridDensityPresets = [4, 5, 6, 8, 10]
+    private static let cardDensityPresets = [3, 4, 5, 6, 8]
+
+    private func densityOptions(current: Int, presets: [Int]) -> [Int] {
+        var options = presets
+        if !options.contains(current) { options.append(current) }
+        return options.sorted()
+    }
+
+    private func densityHeader(_ title: String, columns: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+            Text("每行 \(columns) 张")
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func densityPicker(current: Int,
+                               presets: [Int],
+                               action: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 8) {
+            ForEach(densityOptions(current: current, presets: presets), id: \.self) { columns in
+                DensityChip(columns: columns, selected: columns == current) {
+                    action(columns)
+                }
+            }
+        }
+    }
+
+    private var cinemaTab: some View {
+        CinemaSettingsSection()
+    }
+
+    private var shortcutsTab: some View {
+        ShortcutSettingsView()
+    }
+
     private var browsingTab: some View {
         Form {
-            Section("缩略图") {
-                HStack(spacing: 10) {
-                    Image(systemName: "square.grid.3x3")
-                        .foregroundStyle(.secondary)
-                    Slider(value: $store.thumbSize, in: LibraryStore.thumbSizeRange)
-                    Image(systemName: "square.grid.2x2")
-                        .foregroundStyle(.secondary)
-                    Text("\(Int(store.thumbSize)) pt")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 52, alignment: .trailing)
+            Section("图片列表") {
+                VStack(alignment: .leading, spacing: 8) {
+                    densityHeader("新页面默认", columns: settings.defaultGridColumns)
+                    densityPicker(current: settings.defaultGridColumns, presets: Self.gridDensityPresets) {
+                        settings.defaultGridColumns = $0
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("第一次打开某个类型、相簿或文件夹时使用这个张数；已单独调整过的页面保持各自记忆。当前页面可在图库里用 ⌘+ / ⌘- / 双指捏合调整。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button("应用到所有页面") {
+                            store.applyDefaultThumbSizeToAllScopes()
+                        }
+                        .controlSize(.small)
+                    }
                 }
 
                 Picker("显示形式", selection: $store.thumbnailAspect) {
@@ -283,11 +362,52 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
 
-                Text("完整宽高比与瀑布流保留原始比例；列表适合核对文件名与拍摄信息。")
+                Text("张数按当前窗口宽度换算；窗口拉宽或收窄时，同一页面每行的实际张数会跟着变化。完整宽高比与瀑布流保留原始比例；列表适合核对文件名与拍摄信息。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+            }
 
-                Text("网格尺寸同时决定「所有相簿」里的卡片大小。")
+            Section("相簿与分类卡片") {
+                VStack(alignment: .leading, spacing: 8) {
+                    densityHeader("新页面默认", columns: settings.defaultCardColumns)
+                    densityPicker(current: settings.defaultCardColumns, presets: Self.cardDensityPresets) {
+                        settings.defaultCardColumns = $0
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("相簿、文件夹、媒体类型、场景、更多项目与关键词共用这组卡片大小；已单独调整过的页面保持各自记忆。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button("应用到所有页面") {
+                            store.applyDefaultCardColumnsToAllScopes()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            Section("相簿总览") {
+                Picker("显示方式", selection: $store.albumDisplayStyle) {
+                    ForEach(AlbumDisplayStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("网格为大卡片；列表是方形封面 + 名称与数量（与系统「照片」一致）；拼贴墙把 1～4 张封面拼成无边框方块，名称叠在底部。随当前图库保存，也可以在「显示 › 相簿显示方式」或相簿页头切换。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("人物总览") {
+                Picker("头像形状", selection: $store.peopleDisplayStyle) {
+                    ForEach(PeopleDisplayStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("「人物」页的人物卡片按这里选择的形状展示；圆角方形与系统「照片」的人物平铺一致，圆角大小跟随上面的卡片圆角设置。随当前图库保存。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -398,159 +518,294 @@ struct SettingsView: View {
         return options
     }
 
-    // MARK: 卡片样式
+    // MARK: 模型（端侧能力）
 
-    private func cacheCard(title: String,
-                           icon: String,
-                           size: Int64,
-                           clear: @escaping () -> Void) -> some View {
-        infoCard {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 36, height: 36)
-                    .background(Color.primary.opacity(0.06),
-                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 12.5, weight: .medium))
-                    Text(size > 0 ? formatFileSize(size) : "暂无缓存")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                Button("刷新") { refreshCacheSize() }
-                    .controlSize(.small)
-                Button("清理") { clear() }
-                    .controlSize(.small)
-                    .disabled(size == 0)
-            }
+    private var modelTab: some View {
+        Form {
+            LocalModelsSettingsSection()
         }
+        .formStyle(.grouped)
     }
 
-    private func infoCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-            }
+    // MARK: 助手（智能助手自身的配置）
+
+    /// 助手是否可用：模型接入完整，且当前提供商的 Key 已就绪（本地运行不需要 Key）。
+    private var assistantReady: Bool {
+        store.aiConfigurationReady && store.aiHasAPIKey
     }
 
-    // MARK: 智能助手（只读问答）
+    private var assistantHeaderHint: String {
+        if !store.aiConfig.provider.requiresAPIKey {
+            return "本地运行，无需 API Key。"
+        }
+        return assistantReady
+            ? "已就绪，可在任意页面用 ✨ 提问或操作图库。"
+            : "填写模型与 API Key 后可用。"
+    }
 
     private var assistantTab: some View {
-        Form {
-            Section("模型提供商") {
-                Picker("提供商", selection: aiProviderBinding) {
-                    ForEach(AIProvider.allCases) { provider in
-                        Text(provider.title).tag(provider)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                assistantHeaderCard
+
+                settingsGroup(icon: "cpu", title: "云端模型", subtitle: "") {
+                    settingsCard {
+                        settingsRow(icon: "building.2",
+                                    tint: .secondary,
+                                    title: "提供商",
+                                    subtitle: nil) {
+                            Picker("", selection: aiProviderBinding) {
+                                ForEach(AIProvider.allCases) { provider in
+                                    Text(provider.title).tag(provider)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 170)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "link",
+                                    tint: .secondary,
+                                    title: "接口地址",
+                                    subtitle: nil) {
+                            TextField("https://…", text: aiBinding(\.baseURL))
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 240)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "cpu",
+                                    tint: .secondary,
+                                    title: "模型",
+                                    subtitle: nil) {
+                            TextField("模型名称", text: aiBinding(\.model))
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 240)
+                        }
+
+                        if !store.aiConfig.provider.models.isEmpty {
+                            settingsDivider
+                            settingsRow(icon: "star",
+                                        tint: .secondary,
+                                        title: "常用模型",
+                                        subtitle: nil) {
+                                Picker("", selection: aiBinding(\.model)) {
+                                    ForEach(store.aiConfig.provider.models, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 170)
+                            }
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "bolt.horizontal",
+                                    tint: .secondary,
+                                    title: "连接测试",
+                                    subtitle: nil) {
+                            HStack(spacing: 8) {
+                                if let aiTestMessage {
+                                    Text(aiTestMessage)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(aiTestOK ? Color.green : Color.red)
+                                        .lineLimit(1)
+                                }
+                                Button(aiTesting ? "测试中…" : "测试") {
+                                    runAIConnectionTest()
+                                }
+                                .controlSize(.small)
+                                .disabled(aiTesting || !store.aiHasAPIKey)
+                            }
+                        }
+                    }
+
+                    if let hint = store.aiConfig.provider.supportsVisionHint {
+                        Text(hint)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    if store.aiConfig.provider == .doubao {
+                        Text("豆包填控制台创建的推理接入点 ID（ep-…）。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    if store.aiConfig.provider == .custom {
+                        Text("任意 OpenAI 兼容服务：SiliconFlow、OpenRouter、Ollama、自建网关。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                TextField("接口地址", text: aiBinding(\.baseURL))
-                TextField("模型", text: aiBinding(\.model))
-                if !store.aiConfig.provider.models.isEmpty {
-                    Picker("常用模型", selection: aiBinding(\.model)) {
-                        ForEach(store.aiConfig.provider.models, id: \.self) { model in
-                            Text(model).tag(model)
+
+                if store.aiConfig.provider.requiresAPIKey {
+                    settingsGroup(icon: "key.fill", title: "API Key", subtitle: "") {
+                        settingsCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    SecureField("粘贴 \(store.aiConfig.provider.title) 的 API Key", text: $aiKeyInput)
+                                        .textFieldStyle(.roundedBorder)
+                                    Button("保存") {
+                                        store.saveAIAPIKey(aiKeyInput)
+                                        store.showToast("已保存 \(store.aiConfig.provider.title) 的 API Key")
+                                    }
+                                    .disabled(aiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    Button("清除") {
+                                        store.saveAIAPIKey("")
+                                        aiKeyInput = ""
+                                        store.showToast("已清除 API Key")
+                                    }
+                                    .disabled(!store.aiHasAPIKey)
+                                }
+                                HStack(spacing: 6) {
+                                    Image(systemName: store.aiHasAPIKey ? "checkmark.seal.fill" : "exclamationmark.triangle")
+                                        .foregroundStyle(store.aiHasAPIKey ? Color.green : Color.secondary)
+                                    Text(store.aiHasAPIKey ? "已保存到钥匙串" : "未配置")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                    Spacer(minLength: 0)
+                                }
+                                Text("只存 macOS 钥匙串，不写入图库。")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
                         }
                     }
                 }
-                if let hint = store.aiConfig.provider.supportsVisionHint {
-                    Text(hint)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                if store.aiConfig.provider == .doubao {
-                    Text("豆包请把控制台创建的推理接入点 ID（ep-...）填写到「模型」。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                if store.aiConfig.provider == .custom {
-                    Text("任何 OpenAI 兼容服务都可以接：SiliconFlow、OpenRouter、Ollama（如 http://127.0.0.1:11434/v1）、自建网关等，填写对应的 Base URL 与模型名即可。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Text("DeepSeek / Kimi / GLM / 通义千问 / 豆包 / OpenAI 统一使用 OpenAI 兼容的 chat/completions 接口；也可以填写自建或代理地址。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("API Key") {
-                HStack(spacing: 8) {
-                    SecureField("粘贴 \(store.aiConfig.provider.title) 的 API Key", text: $aiKeyInput)
-                    Button("保存") {
-                        store.saveAIAPIKey(aiKeyInput)
-                        store.showToast("已保存 \(store.aiConfig.provider.title) 的 API Key")
+                settingsGroup(icon: "photo.badge.checkmark", title: "图片理解", subtitle: "") {
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Toggle("发送压缩缩略图", isOn: aiBinding(\.includeImages))
+                            HStack(spacing: 8) {
+                                Text("单次上限")
+                                    .font(.system(size: 12))
+                                Spacer(minLength: 8)
+                                Picker("", selection: aiBinding(\.maxImages)) {
+                                    ForEach(1...6, id: \.self) { count in
+                                        Text("\(count) 张").tag(count)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 90)
+                                .disabled(!store.aiConfig.includeImages)
+                            }
+                            Text("关闭时只发送端侧标签、OCR 与元数据。")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
                     }
-                    .disabled(aiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("清除") {
-                        store.saveAIAPIKey("")
-                        aiKeyInput = ""
-                        store.showToast("已清除 API Key")
-                    }
-                    .disabled(!store.aiHasAPIKey)
                 }
-                HStack(spacing: 6) {
-                    Image(systemName: store.aiHasAPIKey ? "checkmark.seal.fill" : "exclamationmark.triangle")
-                        .foregroundStyle(store.aiHasAPIKey ? Color.green : Color.secondary)
-                    Text(store.aiHasAPIKey ? "已保存到钥匙串" : "未配置，智能助手无法发送请求")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                Text("API Key 只保存在 macOS 钥匙串（service com.baymax.luma.ai），不写入图库数据库、UserDefaults 或日志。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("图片理解") {
-                Toggle("发送压缩缩略图", isOn: aiBinding(\.includeImages))
-                Picker("单次图片上限", selection: aiBinding(\.maxImages)) {
-                    ForEach(1...6, id: \.self) { count in
-                        Text("\(count) 张").tag(count)
+                settingsGroup(icon: "bubble.left.and.bubble.right", title: "对话", subtitle: "") {
+                    settingsCard {
+                        settingsRow(icon: "clock.arrow.circlepath",
+                                    tint: .secondary,
+                                    title: "对话记录",
+                                    subtitle: store.aiMessages.isEmpty
+                                        ? "暂无对话"
+                                        : "\(store.aiMessages.count) 条消息") {
+                            Button("清空…") { confirmClearAIConversation = true }
+                                .controlSize(.small)
+                                .disabled(store.aiMessages.isEmpty)
+                        }
                     }
+                    Text("随当前图库保存。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
                 }
-                .disabled(!store.aiConfig.includeImages)
-                Text("默认关闭：只发送本地 Vision 标签、OCR 文字与元数据。开启后优先发送选中照片，否则发送当前范围的前几张；统一压成长边约 1024 的 JPEG，原始 RAW、视频与云端照片不会发送。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text("需要模型支持视觉输入（例如 gpt-4o-mini、glm-4v-flash、qwen-vl-plus）；若模型不支持，请关闭此开关。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("连接测试") {
-                HStack(spacing: 10) {
-                    Button(aiTesting ? "测试中…" : "测试连接") {
-                        runAIConnectionTest()
-                    }
-                    .disabled(aiTesting || !store.aiHasAPIKey)
-                    if let aiTestMessage {
-                        Text(aiTestMessage)
-                            .font(.system(size: 11))
-                            .foregroundStyle(aiTestOK ? Color.green : Color.red)
-                            .lineLimit(2)
-                    }
-                    Spacer(minLength: 0)
-                }
+                Text("写操作会先确认；不会永久删除或编辑原图。端侧标签与 OCR 由「模型」页提供。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Section("存储与隐私") {
-                Text("智能助手可以检索与浏览图库，也能实际操作相簿、文件夹、图片与视频（收藏、隐藏、关键词、标题、最近删除与恢复）；每次修改图库前都会弹窗确认，不支持永久删除或编辑原图。对话记录保存在当前图库，切换图库会切换到各自的对话。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .formStyle(.grouped)
         .onAppear { syncAIKeyInput() }
         .onChange(of: store.aiConfig.provider) { _, _ in syncAIKeyInput() }
+        .confirmationDialog("清空当前图库的对话记录？",
+                            isPresented: $confirmClearAIConversation,
+                            titleVisibility: .visible) {
+            Button("清空对话", role: .destructive) {
+                store.clearAIConversation()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除对话，不影响照片与设置。该操作不可撤销。")
+        }
+    }
+
+    /// 助手身份卡：一句话说明当前状态与所用模型。
+    private var assistantHeaderCard: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(LinearGradient(colors: [LumaBrand.violet, LumaBrand.cyan.opacity(0.70)],
+                                         startPoint: .topLeading,
+                                         endPoint: .bottomTrailing))
+                Image(systemName: "sparkles")
+                    .font(.system(size: 25, weight: .light))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 60, height: 60)
+            .shadow(color: LumaBrand.violet.opacity(0.35), radius: 12, y: 5)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text("智能助手")
+                        .font(.system(size: 18, weight: .bold))
+                    statusTag(icon: assistantReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
+                              text: assistantReady ? "已就绪" : "待配置")
+                }
+
+                HStack(spacing: 6) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(store.aiConfig.provider.title)
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text(store.aiConfig.model)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Text(assistantHeaderHint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(LinearGradient(colors: [LumaBrand.violet.opacity(0.16),
+                                              Color.accentColor.opacity(0.08),
+                                              Color.clear],
+                                     startPoint: .topLeading,
+                                     endPoint: .bottomTrailing))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
     }
 
     private var aiProviderBinding: Binding<AIProvider> {
@@ -589,155 +844,228 @@ struct SettingsView: View {
 
     private var libraryTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("当前使用图库")
-                        .font(.system(size: 17, weight: .semibold))
-                    Text("每个图库独立保存自己的照片、元数据、系统图库连接、网络存储连接与库级设置；切换图库时这些内容一起切换。")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-
+            VStack(alignment: .leading, spacing: 22) {
                 if store.containerLibraryPath != nil {
                     currentLibraryCard
                 } else {
                     emptyLibraryCard
                 }
 
-                Label("切换后，界面只显示新图库自己的照片、连接与设置；原图库的文件不会被删除。",
-                      systemImage: "info.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 2)
-
-                Text("其他图库")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.top, 6)
-
-                if otherLibraryEntries.isEmpty {
-                    infoCard {
-                        Text("没有找到其他图库。用上方「打开图库…」或「新建图库…」添加后会出现在这里。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    infoCard {
-                        VStack(spacing: 0) {
+                settingsGroup(icon: "square.stack.3d.up.fill",
+                              title: "图库管理",
+                              subtitle: "切换后只显示新图库自己的照片、连接与设置；原图库的文件不会被删除。") {
+                    settingsCard {
+                        if otherLibraryEntries.isEmpty {
+                            settingsRow(icon: "tray",
+                                        tint: .secondary,
+                                        title: "没有找到其他图库",
+                                        subtitle: "用上方「新建图库…」或「打开图库…」添加后会出现在这里。") {
+                                EmptyView()
+                            }
+                        } else {
                             ForEach(otherLibraryEntries) { entry in
-                                HStack(spacing: 10) {
-                                    Image(systemName: "photo.stack")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 28, height: 28)
-                                        .background(Color.primary.opacity(0.05),
-                                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.name)
-                                            .font(.system(size: 12, weight: .medium))
-                                            .lineLimit(1)
-                                        Text(entry.url.path)
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-                                    Spacer(minLength: 8)
-                                    Button("切换到此图库") {
-                                        store.activateLibrary(entry.url)
-                                        reloadLibraryEntries()
-                                    }
-                                    .controlSize(.small)
-                                }
-                                .padding(.vertical, 6)
+                                otherLibraryRow(entry)
                                 if entry.id != otherLibraryEntries.last?.id {
-                                    Divider()
+                                    settingsDivider
                                 }
                             }
                         }
                     }
                 }
 
-                Text("「切换到此图库」会打开该图库自己的照片、连接与设置；原图库的文件不会被删除。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 2)
+                settingsGroup(icon: "lock.shield",
+                              title: "图库保险库",
+                              subtitle: "把 originals、数据库与渲染结果备份到外置盘 / NAS；校验只读清单，恢复只补缺失或损坏的文件。") {
+                    VaultSettingsView()
+                }
 
-                Text("最近删除")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.top, 6)
-
-                infoCard {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Picker("自动清理", selection: $settings.trashRetentionDays) {
-                            Text("7 天后").tag(7)
-                            Text("30 天后").tag(30)
-                            Text("90 天后").tag(90)
-                            Text("180 天后").tag(180)
-                            Text("永不自动清理").tag(0)
+                settingsGroup(icon: "internaldrive",
+                              title: "存储与清理",
+                              subtitle: "只清理本机缓存与派生数据，不会影响图库、网盘或云端原图。") {
+                    settingsCard {
+                        settingsRow(icon: "trash",
+                                    tint: .secondary,
+                                    title: "最近删除",
+                                    subtitle: trashRetentionSubtitle) {
+                            Picker("", selection: $settings.trashRetentionDays) {
+                                Text("7 天后").tag(7)
+                                Text("30 天后").tag(30)
+                                Text("90 天后").tag(90)
+                                Text("180 天后").tag(180)
+                                Text("永不清理").tag(0)
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 118)
                         }
-                        Text("移至最近删除的项目超过保留期后会在启动时自动永久删除；手动「清空最近删除」始终可用。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+
+                        settingsDivider
+
+                        settingsRow(icon: "photo.stack",
+                                    tint: .secondary,
+                                    title: "系统图库缩略图",
+                                    subtitle: systemCacheSize > 0 ? formatFileSize(systemCacheSize) : "暂无缓存") {
+                            Button("清理") {
+                                store.clearSystemThumbnailCache()
+                                refreshCacheSize()
+                            }
+                            .controlSize(.small)
+                            .disabled(systemCacheSize == 0)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "externaldrive.badge.icloud",
+                                    tint: .secondary,
+                                    title: "网盘缩略图",
+                                    subtitle: cacheSize > 0 ? formatFileSize(cacheSize) : "暂无缓存") {
+                            Button("清理") {
+                                store.clearCloudThumbnailCache()
+                                refreshCacheSize()
+                            }
+                            .controlSize(.small)
+                            .disabled(cacheSize == 0)
+                        }
+
+                        if store.isNativeContainer {
+                            settingsDivider
+                            settingsRow(icon: "shippingbox",
+                                        tint: .orange,
+                                        title: "系统图库旁挂数据",
+                                        subtitle: sidecarSize > 0 ? formatFileSize(sidecarSize) : "暂无可清理数据") {
+                                HStack(spacing: 8) {
+                                    Button("刷新") { refreshCacheSize() }
+                                        .controlSize(.small)
+                                    Button("销毁…", role: .destructive) {
+                                        confirmDestroySidecar = true
+                                    }
+                                    .controlSize(.small)
+                                    .disabled(sidecarSize == 0)
+                                    .help("删除拾光的元数据库、索引 / 快照、缩略图、转码与缓存；不会动 Apple 的 Photos.sqlite、originals 原图与衍生图。")
+                                }
+                            }
+                        }
                     }
                 }
 
-                Text("缓存")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.top, 6)
-
-                VStack(spacing: 10) {
-                    cacheCard(title: "系统图库缩略图",
-                              icon: "photo.stack",
-                              size: systemCacheSize) {
-                        store.clearSystemThumbnailCache()
-                        refreshCacheSize()
-                    }
-                    cacheCard(title: "网盘缩略图",
-                              icon: "externaldrive.badge.icloud",
-                              size: cacheSize) {
-                        store.clearCloudThumbnailCache()
-                        refreshCacheSize()
-                    }
-                }
-
-                Text("仅删除本机的缩略图缓存，不会影响图库、网盘或云端原图。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 2)
-
-                Text("关于")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.top, 6)
-
-                infoCard {
-                    HStack(spacing: 10) {
-                        Image(systemName: "app.badge.checkmark")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 36, height: 36)
-                            .background(Color.primary.opacity(0.06),
-                                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("拾光 Luma")
-                                .font(.system(size: 12.5, weight: .medium))
-                            Text("版本 \(version)")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }
+                settingsGroup(icon: "info.circle", title: "关于", subtitle: "") {
+                    ProductizationSettingsView()
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { reloadLibraryEntries() }
         .onChange(of: store.containerLibraryPath) { _, _ in reloadLibraryEntries() }
+        .confirmationDialog("销毁拾光在该系统图库写入的数据？",
+                            isPresented: $confirmDestroySidecar,
+                            titleVisibility: .visible) {
+            Button("销毁拾光数据", role: .destructive) {
+                store.destroySystemLibrarySidecar()
+                refreshCacheSize()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除拾光自己的元数据库、索引 / 快照、缩略图、转码与缓存；Apple 的 Photos.sqlite、originals 原图与衍生图不会被动到。该操作不可撤销。")
+        }
     }
 
-    /// 当前系统图库中未删除、未隐藏的项目。
-    private var libraryPhotos: [PhotoItem] {
-        store.photos.filter { $0.deletedAt == nil && !$0.isHidden }
+    // MARK: - 设置分组
+
+    /// 统一分组：图标 + 标题 + 一句说明 + 卡片，替代原先散落的纯文本小标题。
+    private func settingsGroup<Content: View>(icon: String,
+                                              title: String,
+                                              subtitle: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 22, height: 22)
+                    .background(Color.accentColor.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            if !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 30)
+            }
+            content()
+        }
+    }
+
+    private func settingsCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            content()
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+    }
+
+    private func settingsRow<Trailing: View>(icon: String,
+                                             tint: Color = .accentColor,
+                                             title: String,
+                                             subtitle: String?,
+                                             @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.10),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 8)
+            trailing()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var settingsDivider: some View {
+        Divider().padding(.leading, 56)
+    }
+
+    private func otherLibraryRow(_ entry: LibraryEntry) -> some View {
+        settingsRow(icon: "photo.stack",
+                    tint: .secondary,
+                    title: entry.name,
+                    subtitle: entry.url.path) {
+            Button("切换") {
+                store.activateLibrary(entry.url)
+                reloadLibraryEntries()
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private var trashRetentionSubtitle: String {
+        settings.trashRetentionDays > 0
+            ? "超过 \(settings.trashRetentionDays) 天后在启动时自动永久删除"
+            : "不自动清理，直到手动清空最近删除"
     }
 
     /// 最近使用过的其他图库（含官方「照片」图库）；每个库都以自己的数据与连接打开。
@@ -749,19 +1077,18 @@ struct SettingsView: View {
         libraryEntries = store.knownLibraryEntries()
     }
 
+    /// 当前图库：品牌渐变身份卡，左边封面与身份，右边统计胶囊，底部一组动作。
     private var currentLibraryCard: some View {
         let url = store.containerLibraryPath.map { URL(fileURLWithPath: $0) }
-        let photos = libraryPhotos
-        let photoCount = photos.lazy.filter { !$0.isVideo }.count
-        let videoCount = photos.lazy.filter { $0.isVideo }.count
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 14) {
-                libraryCover(photos)
+        let stats = store.libraryStats
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 16) {
+                libraryCover(store.libraryCoverPhoto)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 7) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 8) {
                         Text(url?.deletingPathExtension().lastPathComponent ?? "当前图库")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 18, weight: .bold))
                             .lineLimit(1)
                         statusTag(icon: "internaldrive.fill", text: "当前图库")
                     }
@@ -773,15 +1100,19 @@ struct SettingsView: View {
                         .truncationMode(.middle)
                         .textSelection(.enabled)
 
-                    HStack(spacing: 14) {
-                        statItem(photoCount, "照片")
-                        statItem(videoCount, "视频")
-                        statItem(store.albums.count, "相簿")
-                        statItem(store.folders.count, "文件夹")
-                        statItem(store.systemLibraries.count, "系统图库")
-                        statItem(store.cloudMounts.count, "网络存储")
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            metricChip("\(stats.photos.formatted())", "照片", icon: "photo")
+                            metricChip("\(stats.videos.formatted())", "视频", icon: "video")
+                            metricChip("\(stats.albums.formatted())", "相簿", icon: "rectangle.stack")
+                        }
+                        HStack(spacing: 6) {
+                            metricChip("\(stats.folders.formatted())", "文件夹", icon: "folder")
+                            metricChip("\(stats.systemLibraries.formatted())", "系统图库", icon: "photo.stack")
+                            metricChip("\(store.cloudMounts.count.formatted())", "网络存储", icon: "externaldrive")
+                        }
                     }
-                    .padding(.top, 1)
+                    .padding(.top, 2)
                 }
 
                 Spacer(minLength: 0)
@@ -814,26 +1145,49 @@ struct SettingsView: View {
                 Button {
                     store.revealLibraryInFinder()
                 } label: {
-                    Label("在访达中显示", systemImage: "arrow.up.forward.app")
+                    Image(systemName: "arrow.up.forward.app")
                 }
                 .buttonStyle(.bordered)
+                .help("在访达中显示当前图库")
             }
             .controlSize(.small)
         }
-        .padding(16)
+        .padding(18)
         .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(LinearGradient(colors: [Color.accentColor.opacity(0.16), Color.accentColor.opacity(0.02)],
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(LinearGradient(colors: [Color.accentColor.opacity(0.20),
+                                              LumaBrand.violet.opacity(0.08),
+                                              Color.clear],
                                      startPoint: .topLeading,
                                      endPoint: .bottomTrailing))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
         }
-        .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
+        .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
+    }
+
+    private func metricChip(_ value: String, _ label: String, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(value)
+                .font(.system(size: 11.5, weight: .semibold))
+                .monospacedDigit()
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.05), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+        }
     }
 
     private var emptyLibraryCard: some View {
@@ -874,22 +1228,22 @@ struct SettingsView: View {
         .padding(.vertical, 36)
         .padding(.horizontal, 20)
         .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(Color.primary.opacity(0.025))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.14),
                               style: StrokeStyle(lineWidth: 1.2, dash: [6, 5]))
         }
     }
 
-    private func libraryCover(_ photos: [PhotoItem]) -> some View {
+    private func libraryCover(_ cover: PhotoItem?) -> some View {
         ZStack {
-            if let first = photos.first(where: { !$0.isVideo }) ?? photos.first {
-                PhotoThumbnailView(photo: first)
+            if let cover {
+                PhotoThumbnailView(photo: cover)
             } else {
-                LinearGradient(colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.45)],
+                LinearGradient(colors: [LumaBrand.violet.opacity(0.85), LumaBrand.cyan.opacity(0.55)],
                                startPoint: .topLeading,
                                endPoint: .bottomTrailing)
                 Image(systemName: "photo.on.rectangle.angled")
@@ -897,13 +1251,13 @@ struct SettingsView: View {
                     .foregroundStyle(.white)
             }
         }
-        .frame(width: 96, height: 76)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(width: 104, height: 84)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.6)
         }
-        .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
     }
 
     private func statusTag(icon: String, text: String, spinning: Bool = false) -> some View {
@@ -926,19 +1280,87 @@ struct SettingsView: View {
         .background(Color.primary.opacity(0.06), in: Capsule())
     }
 
-    private func statItem(_ value: Int, _ label: String) -> some View {
-        HStack(spacing: 3) {
-            Text(value.formatted())
-                .font(.system(size: 11, weight: .semibold))
-                .monospacedDigit()
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private func refreshCacheSize() {
         cacheSize = store.cloudThumbnailCacheSize()
         systemCacheSize = store.systemThumbnailCacheSize()
+        sidecarSize = store.systemLibrarySidecarSize()
+    }
+}
+
+/// 缩略图密度选项：用一排小竖条示意每行张数，选中的用强调色玻璃底。
+private struct DensityChip: View {
+    let columns: Int
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                HStack(spacing: 2) {
+                    ForEach(0..<min(columns, 10), id: \.self) { _ in
+                        Capsule()
+                            .fill(selected ? Color.accentColor : Color.secondary.opacity(0.4))
+                            .frame(width: columns > 6 ? 2.5 : 3.5, height: 10)
+                    }
+                }
+                .frame(height: 10)
+                Text("\(columns) 张")
+                    .font(.system(size: 10.5, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .monospacedDigit()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(selected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.045))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(selected ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.08),
+                                  lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("每行 \(columns) 张")
+        .accessibilityLabel("每行 \(columns) 张")
+    }
+}
+
+/// 打开方式选项：图标 + 短标题的玻璃卡片，选中的用强调色描边与浅底。
+private struct OpenModeTile: View {
+    let mode: PhotoOpenMode
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .frame(height: 18)
+                Text(mode.shortTitle)
+                    .font(.system(size: 10.5, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(selected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.045))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(selected ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.08),
+                                  lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(mode.detail)
+        .accessibilityLabel(mode.title)
     }
 }

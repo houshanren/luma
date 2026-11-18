@@ -71,6 +71,18 @@ extension LibraryStore {
     }
 
     func runImport(entries: [(url: URL, folders: [String])], options: ImportOptions) {
+        guard !entries.isEmpty else { return }
+        // 磁盘空间预检：先把明显放不下的导入挡在复制之前。
+        let totalBytes = entries.reduce(Int64(0)) { sum, entry in
+            sum + Int64((try? entry.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        if let values = try? LibraryPaths.originals.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let capacity = values.volumeAvailableCapacityForImportantUsage,
+           totalBytes > capacity {
+            showToast("磁盘空间不足：需要 \(formatFileSize(totalBytes))，可用 \(formatFileSize(capacity))")
+            return
+        }
+
         importProgress = ImportProgress(total: entries.count,
                                         completed: 0,
                                         currentName: entries[0].url.lastPathComponent)
@@ -80,10 +92,15 @@ extension LibraryStore {
         let batchID = UUID()
         // 拷贝、EXIF 解析与缩略图互不依赖，按 CPU 核数并发执行，避免逐张串行等待。
         let concurrency = max(2, min(6, ProcessInfo.processInfo.activeProcessorCount))
+        let existingHashes = Set(self.metadataStore?.contentHashes().keys.map { $0 } ?? [])
+        let hashGate = ImportHashGate(existingHashes)
 
         importTask = Task { [weak self] in
             guard let self else { return }
             var imported = 0
+            var skipped = 0
+            var failed = 0
+            var verified = 0
             var albumCache: [String: UUID] = [:]
             var buffer: [PhotoItem] = []
             var nextIndex = 0
@@ -94,26 +111,60 @@ extension LibraryStore {
                 let end = min(nextIndex + concurrency, entries.count)
                 let chunk = Array(entries[nextIndex..<end])
                 let base = nextIndex
-                let results = await withTaskGroup(of: (Int, PhotoItem?).self,
-                                                  returning: [(Int, PhotoItem?)].self) { group in
+                let results = await withTaskGroup(of: ImportFileResult.self,
+                                                  returning: [ImportFileResult].self) { group in
                     for (offset, entry) in chunk.enumerated() {
                         group.addTask(priority: .userInitiated) {
-                            (base + offset, try? ImportService.importFile(entry.url))
+                            let hashes = PhotoHasher.hashes(for: entry.url, includePerceptual: true)
+                            if options.skipExactDuplicates, let hash = hashes.sha256,
+                               !hashGate.claim(hash) {
+                                return ImportFileResult(index: base + offset, item: nil,
+                                                        outcome: .duplicate, verified: false)
+                            }
+                            do {
+                                var item = try ImportService.importFile(entry.url)
+                                item.contentHash = hashes.sha256
+                                item.perceptualHash = hashes.perceptualHash
+                                var didVerify = false
+                                if options.verifyCopies, let sourceHash = hashes.sha256 {
+                                    let destination = LibraryPaths.originalURL(for: item)
+                                    if let copiedHash = try? PhotoHasher.sha256(of: destination),
+                                       copiedHash == sourceHash {
+                                        didVerify = true
+                                    }
+                                }
+                                return ImportFileResult(index: base + offset, item: item,
+                                                        outcome: .imported, verified: didVerify)
+                            } catch {
+                                return ImportFileResult(index: base + offset, item: nil,
+                                                        outcome: .failed, verified: false)
+                            }
                         }
                     }
-                    var collected: [(Int, PhotoItem?)] = []
+                    var collected: [ImportFileResult] = []
                     collected.reserveCapacity(chunk.count)
                     for await result in group { collected.append(result) }
                     return collected
                 }
 
                 // 已并发拷贝完成的文件仍要写入内存与数据库，避免取消时留下孤立文件。
-                for (index, result) in results.sorted(by: { $0.0 < $1.0 }) {
-                    guard var item = result else { continue }
+                for result in results.sorted(by: { $0.index < $1.index }) {
+                    switch result.outcome {
+                    case .duplicate:
+                        skipped += 1
+                        continue
+                    case .failed:
+                        failed += 1
+                        continue
+                    case .imported:
+                        break
+                    }
+                    guard var item = result.item else { continue }
                     item.importBatchID = batchID
                     buffer.append(item)
                     imported += 1
-                    let folders = entries[index].folders
+                    if result.verified { verified += 1 }
+                    let folders = entries[result.index].folders
                     if options.createAlbumsFromFolders, !folders.isEmpty {
                         let key = folders.joined(separator: "/") + (options.preserveFolderStructure ? "|nested" : "|flat")
                         if let cached = albumCache[key] {
@@ -134,6 +185,9 @@ extension LibraryStore {
                     $0.completed = nextIndex
                     $0.currentName = lastName
                     $0.importedCount = imported
+                    $0.skippedDuplicates = skipped
+                    $0.failedCount = failed
+                    $0.verifiedCount = verified
                 }
 
                 // 批量落盘：积攒一批再写，避免上千次全量重写 SQLite。
@@ -152,6 +206,9 @@ extension LibraryStore {
             self.updateProgress {
                 $0.completed = entries.count
                 $0.importedCount = imported
+                $0.skippedDuplicates = skipped
+                $0.failedCount = failed
+                $0.verifiedCount = verified
             }
             self.save()
             self.isImporting = false
@@ -163,14 +220,18 @@ extension LibraryStore {
             self.showImportSheet = false
             self.importCandidates = []
 
+            let summary = "已导入 \(imported) 项"
+                + (skipped > 0 ? "，跳过 \(skipped) 个重复" : "")
+                + (failed > 0 ? "，失败 \(failed) 个" : "")
+                + (options.verifyCopies ? "，校验 \(verified) 个" : "")
             if cancelled {
-                self.showToast("已取消导入，已导入 \(imported) 项")
+                self.showToast("已取消导入，\(summary)")
             } else if imported == 0 {
-                self.showToast("导入失败")
+                self.showToast(skipped > 0 ? "没有新照片：\(skipped) 个文件已存在" : "导入失败")
             } else if createdAlbums > 0 {
-                self.showToast("已导入 \(imported) 项，创建 \(createdAlbums) 个相簿")
+                self.showToast("\(summary)，创建 \(createdAlbums) 个相簿")
             } else {
-                self.showToast("已导入 \(imported) 项")
+                self.showToast(summary)
             }
         }
     }
@@ -299,5 +360,37 @@ extension LibraryStore {
 
     nonisolated static func coverImage(for url: URL) -> NSImage? {
         ImageLoader.quickThumbnail(url: url, maxPixel: 260)
+    }
+}
+
+private enum ImportOutcome {
+    case imported
+    case duplicate
+    case failed
+}
+
+private struct ImportFileResult {
+    let index: Int
+    let item: PhotoItem?
+    let outcome: ImportOutcome
+    let verified: Bool
+}
+
+/// 导入批次内的哈希闸门：已有图库哈希 + 本批次已认领哈希，避免重复复制同一文件。
+private final class ImportHashGate {
+    private let lock = NSLock()
+    private var hashes: Set<String>
+
+    init(_ hashes: Set<String>) {
+        self.hashes = hashes
+    }
+
+    /// 返回 true 表示第一次见到这个哈希，可以继续导入。
+    func claim(_ hash: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if hashes.contains(hash) { return false }
+        hashes.insert(hash)
+        return true
     }
 }

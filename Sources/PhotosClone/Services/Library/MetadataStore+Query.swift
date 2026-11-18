@@ -351,6 +351,19 @@ extension MetadataStore {
             binds.append("\"\(keyword)\"")
         }
 
+        if query.minRating > 0 {
+            clauses.append("COALESCE(rating, 0) >= ?")
+            binds.append(query.minRating)
+        }
+        if let flag = query.flag {
+            clauses.append("COALESCE(flag, 'none') = ?")
+            binds.append(flag.rawValue)
+        }
+        if let colorLabel = query.colorLabel {
+            clauses.append("COALESCE(color_label, 'none') = ?")
+            binds.append(colorLabel.rawValue)
+        }
+
         return (clauses.joined(separator: " AND "), binds)
     }
 

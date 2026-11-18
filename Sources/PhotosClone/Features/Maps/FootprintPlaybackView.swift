@@ -5,9 +5,9 @@ import SwiftUI
 
 /// 足迹回放：把带定位的照片按时间顺序播成一段有镜头语言的旅程。
 ///
-/// 与「一张大地图 + 一条线」的做法不同，这里每一段行程都单独运镜：
-/// 镜头高度按本段距离缩放（街区级移动也会被放到满屏可见的尺度），
-/// 光点沿大圆逐帧推进、轨迹随之生长，并配上胶片质感的相机 HUD。
+/// 与「一张大地图 + 一条线」的做法不同，这里用统一时间轴连续巡航：
+/// 镜头高度按行程距离缩放（街区级移动也会被放到满屏可见的尺度），
+/// 光点与跟随镜头同帧推进，照片较多的站点短暂停留，并配上胶片质感的相机 HUD。
 struct FootprintPlaybackView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: AppSettings
@@ -16,6 +16,8 @@ struct FootprintPlaybackView: View {
     var onClose: () -> Void
 
     @State private var plan: FootprintPlan?
+    @State private var cruiseTimeline: FootprintCruiseTimeline?
+    @State private var cruiseTime: TimeInterval = 0
     @State private var sortedPhotos: [PhotoItem] = []
     @State private var density: [Double] = []
     @State private var routeCoordinates: [CLLocationCoordinate2D] = []
@@ -24,13 +26,17 @@ struct FootprintPlaybackView: View {
     @State private var stopIndex = 0
     @State private var head: FootprintPoint?
     @State private var legFraction: Double = 0
+    @State private var isDwelling = false
     @State private var playing = false
-    @State private var speed: FootprintSpeed = .medium
+    @State private var speed: FootprintSpeed = .cruise
     @State private var follow = true
     @State private var finished = false
     @State private var pulse = false
     @State private var isScrubbing = false
-    @State private var scrubbingIndex = 0
+    @State private var resumeAfterScrubbing = false
+    @State private var playNotBefore: Date?
+    @State private var cameraTransitionUntil: Date?
+    @State private var playbackToken = 0
 
     @AppStorage("map.footprintImagery") private var imagery = true
 
@@ -45,9 +51,6 @@ struct FootprintPlaybackView: View {
                     mapLayer(plan)
                     scrims
                     chrome(plan)
-                    if finished {
-                        completionCard(plan)
-                    }
                 }
             } else {
                 loadingState
@@ -75,81 +78,100 @@ struct FootprintPlaybackView: View {
             return (FootprintPlanner.plan(samples: samples), sorted)
         }.value
 
+        let timeline = FootprintCruiseTimeline(plan: built.plan)
         sortedPhotos = built.photos
         routeCoordinates = built.plan.stops.map { Self.coordinate($0.point) }
         density = Self.density(for: built.plan)
-        stopIndex = 0
-        head = built.plan.stops.first?.point
+        cruiseTimeline = timeline
+        cruiseTime = 0
         // 先把镜头摆到全览，再让地图第一次出现，避免从默认区域跳过来。
         camera = .camera(Self.overviewCamera(built.plan))
         plan = built.plan
         pulse = true
+        applyCruiseFrame(timeline.frame(at: 0), in: built.plan, updateCamera: false)
         guard !built.plan.isEmpty else { return }
 
         loadPinImage(at: 0, in: built.plan)
         try? await Task.sleep(nanoseconds: 620_000_000)
         guard !Task.isCancelled else { return }
-        playing = true
+        beginPlayback(built.plan)
 
+        let clock = ContinuousClock()
+        var previous = clock.now
         while !Task.isCancelled {
-            if playing, !finished {
-                await advanceLeg(built.plan)
-            } else {
-                try? await Task.sleep(nanoseconds: 60_000_000)
+            let interval = playing && !finished && !isScrubbing ? 16_000_000 : 50_000_000
+            try? await Task.sleep(nanoseconds: UInt64(interval))
+            let now = clock.now
+            let duration = previous.duration(to: now)
+            previous = now
+            guard playing, !finished, !isScrubbing else { continue }
+            if let start = playNotBefore {
+                guard Date() >= start else { continue }
+                playNotBefore = nil
+            }
+
+            let delta = Double(duration.components.seconds)
+                + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+            cruiseTime = min(timeline.totalDuration, cruiseTime + delta * speed.rate)
+            let frame = timeline.frame(at: cruiseTime)
+            applyCruiseFrame(frame, in: built.plan)
+            if frame.isComplete { finish(built.plan) }
+        }
+    }
+
+    /// 从全览柔和进入首个巡航镜头；真正行进后不再使用逐段动画。
+    private func beginPlayback(_ plan: FootprintPlan) {
+        guard let timeline = cruiseTimeline, !plan.isEmpty else { return }
+        guard !plan.legs.isEmpty else {
+            finish(plan)
+            return
+        }
+        finished = false
+        playing = true
+        let transitionUntil = Date().addingTimeInterval(0.75)
+        playNotBefore = transitionUntil
+        cameraTransitionUntil = transitionUntil
+        if follow {
+            let frame = timeline.frame(at: cruiseTime)
+            withAnimation(.easeInOut(duration: 0.75)) {
+                camera = .camera(Self.cruiseCamera(frame))
             }
         }
     }
 
-    /// 推进一步：先运镜到本段的取景，再按帧把光点送过去。
-    private func advanceLeg(_ plan: FootprintPlan) async {
-        guard plan.legs.indices.contains(stopIndex) else {
-            finish(plan)
-            return
-        }
-        let leg = plan.legs[stopIndex]
-        let from = plan.stops[stopIndex].point
-        let to = plan.stops[stopIndex + 1].point
-        let duration = max(0.2, leg.duration * speed.multiplier)
+    private func applyCruiseFrame(_ frame: FootprintCruiseFrame,
+                                  in plan: FootprintPlan,
+                                  updateCamera: Bool = true) {
+        if stopIndex != frame.stopIndex { loadPinImage(at: frame.stopIndex, in: plan) }
+        stopIndex = frame.stopIndex
+        legFraction = frame.legFraction
+        head = frame.head
+        isDwelling = frame.isDwelling
+        guard updateCamera, follow else { return }
 
-        if follow {
-            let center = FootprintPlanner.interpolate(from: from, to: to, fraction: 0.5)
-            withAnimation(.easeInOut(duration: max(0.28, duration * 0.92))) {
-                camera = .camera(MapCamera(centerCoordinate: Self.coordinate(center),
-                                           distance: leg.cameraDistance,
-                                           heading: leg.heading,
-                                           pitch: leg.pitch))
-            }
-        }
-
-        let startFraction = legFraction
-        let started = Date()
-        while true {
-            try? await Task.sleep(nanoseconds: 32_000_000)
-            if Task.isCancelled { return }
-            guard playing, !finished else { return }
-            let elapsed = Date().timeIntervalSince(started)
-            let progress = min(1, startFraction + elapsed / duration)
-            legFraction = progress
-            head = FootprintPlanner.interpolate(from: from, to: to, fraction: Self.smooth(progress))
-            if progress >= 1 { break }
-        }
-
-        stopIndex += 1
-        legFraction = 0
-        head = to
-        loadPinImage(at: stopIndex, in: plan)
-
-        if plan.stops[stopIndex].photoCount >= 2 {
-            let dwell = min(1.1, leg.dwell / max(0.35, speed.multiplier))
-            try? await Task.sleep(nanoseconds: UInt64(max(0, dwell) * 1_000_000_000))
+        let target = MapCameraPosition.camera(Self.cruiseCamera(frame))
+        if let until = cameraTransitionUntil, Date() < until {
+            // 重新跟随时短暂追赶移动中的光点，之后回到无动画的逐帧驱动。
+            withAnimation(.easeOut(duration: 0.18)) { camera = target }
+        } else {
+            cameraTransitionUntil = nil
+            camera = target
         }
     }
 
     private func finish(_ plan: FootprintPlan) {
+        playbackToken += 1
         playing = false
-        finished = true
+        playNotBefore = nil
+        cameraTransitionUntil = nil
+        isDwelling = false
+        cruiseTime = cruiseTimeline?.totalDuration ?? cruiseTime
+        // 结束态镜头多留一点余量，给底部的旅程档案让位，路线不会被压到画面边缘。
+        var overview = Self.overviewCamera(plan)
+        overview.distance *= 1.14
         withAnimation(.easeInOut(duration: 1.5)) {
-            camera = .camera(Self.overviewCamera(plan))
+            camera = .camera(overview)
+            finished = true
         }
     }
 
@@ -157,39 +179,50 @@ struct FootprintPlaybackView: View {
         if finished {
             replay(plan)
         } else {
+            playbackToken += 1
             playing.toggle()
         }
     }
 
     private func replay(_ plan: FootprintPlan) {
-        guard !plan.isEmpty else { return }
-        stopIndex = 0
-        legFraction = 0
-        head = plan.stops.first?.point
+        guard let timeline = cruiseTimeline, !plan.isEmpty else { return }
+        playbackToken += 1
+        let token = playbackToken
+        playing = false
         finished = false
-        playing = true
-        withAnimation(.easeInOut(duration: 1.0)) {
+        playNotBefore = nil
+        cameraTransitionUntil = nil
+        cruiseTime = 0
+        applyCruiseFrame(timeline.frame(at: 0), in: plan, updateCamera: false)
+        loadPinImage(at: 0, in: plan)
+        withAnimation(.easeInOut(duration: 0.45)) {
             camera = .camera(Self.overviewCamera(plan))
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled, token == playbackToken else { return }
+            beginPlayback(plan)
         }
     }
 
-    private func seek(to index: Int) {
-        guard let plan, plan.stops.indices.contains(index) else { return }
+    /// 时间条直接映射统一时间轴；拖动只改变时间基准，不重建逐段动画。
+    private func seek(to time: TimeInterval) {
+        guard let plan, let timeline = cruiseTimeline else { return }
+        playbackToken += 1
         playing = false
         finished = false
-        stopIndex = index
-        legFraction = 0
-        head = plan.stops[index].point
-        loadPinImage(at: index, in: plan)
-        guard follow else { return }
-        let distance = plan.legs.indices.contains(index)
-            ? plan.legs[index].cameraDistance
-            : (index > 0 ? plan.legs[index - 1].cameraDistance : 1_200)
-        withAnimation(.easeInOut(duration: 0.5)) {
-            camera = .camera(MapCamera(centerCoordinate: Self.coordinate(plan.stops[index].point),
-                                       distance: distance,
-                                       heading: 0,
-                                       pitch: plan.legs.indices.contains(index) ? plan.legs[index].pitch : 42))
+        playNotBefore = nil
+        cameraTransitionUntil = nil
+        cruiseTime = min(max(0, time), timeline.totalDuration)
+        let frame = timeline.frame(at: cruiseTime)
+        applyCruiseFrame(frame, in: plan, updateCamera: false)
+        loadPinImage(at: frame.stopIndex, in: plan)
+        if frame.isComplete {
+            finish(plan)
+        } else if follow {
+            withAnimation(.easeInOut(duration: 0.28)) {
+                camera = .camera(Self.cruiseCamera(frame))
+            }
         }
     }
 
@@ -203,14 +236,20 @@ struct FootprintPlaybackView: View {
 
             if visitedCoordinates.count > 1 {
                 MapPolyline(coordinates: visitedCoordinates)
-                    .stroke(Color.accentColor.opacity(0.20),
-                            style: StrokeStyle(lineWidth: 11, lineCap: .round, lineJoin: .round))
+                    .stroke(Color.accentColor.opacity(finished ? 0.16 : 0.20),
+                            style: StrokeStyle(lineWidth: finished ? 18 : 11, lineCap: .round, lineJoin: .round))
                 MapPolyline(coordinates: visitedCoordinates)
                     .stroke(Color.accentColor,
-                            style: StrokeStyle(lineWidth: 2.8, lineCap: .round, lineJoin: .round))
+                            style: StrokeStyle(lineWidth: finished ? 3.4 : 2.8, lineCap: .round, lineJoin: .round))
+                if finished {
+                    // 结束态给整条足迹加一道白色芯线，像灯光描过一遍。
+                    MapPolyline(coordinates: visitedCoordinates)
+                        .stroke(Color.white.opacity(0.6),
+                                style: StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                }
             }
 
-            if let head, plan.stops.indices.contains(stopIndex), stopIndex < plan.stops.count - 1 {
+            if let head, !finished, plan.stops.indices.contains(stopIndex), stopIndex < plan.stops.count - 1 {
                 MapPolyline(coordinates: [Self.coordinate(plan.stops[stopIndex].point),
                                           Self.coordinate(head)])
                     .stroke(Color.accentColor,
@@ -223,15 +262,29 @@ struct FootprintPlaybackView: View {
                 }
             }
 
-            if plan.stops.indices.contains(stopIndex) {
-                Annotation("", coordinate: Self.coordinate(plan.stops[stopIndex].point), anchor: .bottom) {
-                    stopPin(plan.stops[stopIndex])
+            if finished {
+                // 结束态：起点给一个端点徽章，终点保留照片图钉并标注「终点」。
+                if plan.stops.count > 1, let firstStop = plan.stops.first {
+                    Annotation("", coordinate: Self.coordinate(firstStop.point), anchor: .bottom) {
+                        startBadge(firstStop)
+                    }
                 }
-            }
+                if let lastStop = plan.stops.last {
+                    Annotation("", coordinate: Self.coordinate(lastStop.point), anchor: .bottom) {
+                        finishPin(lastStop)
+                    }
+                }
+            } else {
+                if plan.stops.indices.contains(stopIndex) {
+                    Annotation("", coordinate: Self.coordinate(plan.stops[stopIndex].point), anchor: .bottom) {
+                        stopPin(plan.stops[stopIndex])
+                    }
+                }
 
-            if let head {
-                Annotation("", coordinate: Self.coordinate(head), anchor: .center) {
-                    comet
+                if let head {
+                    Annotation("", coordinate: Self.coordinate(head), anchor: .center) {
+                        comet
+                    }
                 }
             }
         }
@@ -246,9 +299,10 @@ struct FootprintPlaybackView: View {
         return (0...end).map { Self.coordinate(plan.stops[$0].point) }
     }
 
-    /// 只画最近若干站的拖尾，避免上百个站点同时参与标注布局；当前站由照片图钉表示。
+    /// 播放中只画最近若干站的拖尾（避免上百个标注参与布局）；结束态补全所有站点。
     private func trailIndices(_ plan: FootprintPlan) -> [Int] {
         guard !plan.stops.isEmpty else { return [] }
+        if finished { return Array(plan.stops.indices) }
         let end = min(stopIndex - 1, plan.stops.count - 1)
         guard end >= 0 else { return [] }
         let start = max(0, end - 13)
@@ -322,6 +376,43 @@ struct FootprintPlaybackView: View {
         }
     }
 
+    /// 结束态的起点：端点圆点压在坐标上，日期徽章浮在上方。
+    private func startBadge(_ stop: FootprintStop) -> some View {
+        VStack(spacing: 5) {
+            endpointTag("起点", date: stop.firstTime)
+            Circle()
+                .fill(Color.white)
+                .frame(width: 12, height: 12)
+                .overlay { Circle().strokeBorder(Color.accentColor, lineWidth: 3.2) }
+                .shadow(color: .black.opacity(0.45), radius: 4, y: 1)
+        }
+    }
+
+    /// 结束态的终点：保留最后一站的照片图钉，上方挂一条「终点」标签。
+    private func finishPin(_ stop: FootprintStop) -> some View {
+        VStack(spacing: 4) {
+            endpointTag("终点", date: stop.lastTime)
+            stopPin(stop)
+        }
+    }
+
+    private func endpointTag(_ title: String, date: Date) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold))
+                .tracking(1.4)
+            Text(Self.shortDayFormatter.string(from: date))
+                .font(.system(size: 9, design: .monospaced))
+                .opacity(0.72)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.black.opacity(0.58), in: Capsule())
+        .overlay { Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.8) }
+        .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
+    }
+
     /// 地图标注里只放已解码的 NSImage，避免每帧重建异步缩略图视图。
     private func loadPinImage(at index: Int, in plan: FootprintPlan) {
         guard plan.stops.indices.contains(index) else { return }
@@ -376,8 +467,15 @@ struct FootprintPlaybackView: View {
         VStack(spacing: 0) {
             topBar(plan)
             Spacer(minLength: 8)
-            readoutRow(plan)
-            bottomPanel(plan)
+            if finished {
+                // 结束只留一条贴底的旅程档案，把整条路线让出来。
+                completionBar(plan)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
+            } else {
+                readoutRow(plan)
+                bottomPanel(plan)
+            }
         }
     }
 
@@ -399,11 +497,20 @@ struct FootprintPlaybackView: View {
                 imagery.toggle()
             }
 
-            glassButton(icon: follow ? "location.fill" : "location.slash",
-                        tint: follow ? Color.accentColor : .white.opacity(0.72),
-                        help: follow ? "镜头正在跟随足迹，点击改为自由查看" : "点击让镜头重新跟随足迹") {
-                follow.toggle()
-                if follow { seek(to: stopIndex) }
+            if !finished {
+                glassButton(icon: follow ? "location.fill" : "location.slash",
+                            tint: follow ? Color.accentColor : .white.opacity(0.72),
+                            help: follow ? "镜头正在跟随足迹，点击改为自由查看" : "点击让镜头重新跟随足迹") {
+                    follow.toggle()
+                    cameraTransitionUntil = nil
+                    if follow, let timeline = cruiseTimeline {
+                        cameraTransitionUntil = Date().addingTimeInterval(0.6)
+                        let frame = timeline.frame(at: cruiseTime)
+                        withAnimation(.easeInOut(duration: 0.6)) {
+                            camera = .camera(Self.cruiseCamera(frame))
+                        }
+                    }
+                }
             }
 
             Button {
@@ -548,7 +655,7 @@ struct FootprintPlaybackView: View {
         .shadow(color: .black.opacity(0.55), radius: 26, y: 12)
     }
 
-    /// 胶片式时间条：竖条是每秒里的照片密度，拖动即可定位到某一站。
+    /// 胶片式时间条：竖条是照片密度，拖动即可定位到旅程的任意时刻。
     private func timeline(_ plan: FootprintPlan) -> some View {
         GeometryReader { proxy in
             let width = max(1, proxy.size.width)
@@ -581,16 +688,19 @@ struct FootprintPlaybackView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        guard !plan.stops.isEmpty else { return }
-                        let ratio = min(1, max(0, value.location.x / width))
-                        let index = Int((ratio * CGFloat(plan.stops.count - 1)).rounded())
-                        if !isScrubbing || index != scrubbingIndex {
+                        guard let timeline = cruiseTimeline, !plan.stops.isEmpty else { return }
+                        if !isScrubbing {
+                            resumeAfterScrubbing = playing
                             isScrubbing = true
-                            scrubbingIndex = index
-                            seek(to: index)
                         }
+                        let ratio = min(1, max(0, value.location.x / width))
+                        seek(to: Double(ratio) * timeline.totalDuration)
                     }
-                    .onEnded { _ in isScrubbing = false }
+                    .onEnded { _ in
+                        isScrubbing = false
+                        if resumeAfterScrubbing, !finished { playing = true }
+                        resumeAfterScrubbing = false
+                    }
             )
         }
         .frame(height: 26)
@@ -647,7 +757,7 @@ struct FootprintPlaybackView: View {
         return ZStack {
             ForEach(Array(items.enumerated().reversed()), id: \.element.id) { offset, photo in
                 Button {
-                    store.openViewer(photo.id)
+                    store.openViewer(photo.id, context: items)
                     onClose()
                 } label: {
                     PhotoThumbnailView(photo: photo, purpose: .filmstrip(120))
@@ -670,54 +780,118 @@ struct FootprintPlaybackView: View {
 
     // MARK: - 结束 / 空 / 加载
 
-    private func completionCard(_ plan: FootprintPlan) -> some View {
-        VStack(spacing: 18) {
-            Image(systemName: "flag.checkered")
-                .font(.system(size: 26, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-
-            VStack(spacing: 5) {
-                Text("这趟旅程")
-                    .font(.system(size: 20, weight: .bold))
+    /// 结束态：一条贴底的「旅程档案」，中间是路线，不遮挡整条足迹。
+    private func completionBar(_ plan: FootprintPlan) -> some View {
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Image(systemName: "flag.checkered")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text("旅程完成")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(2.4)
+                        .foregroundStyle(.white.opacity(0.52))
+                }
                 Text(rangeText(plan))
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
             }
 
-            HStack(spacing: 22) {
+            Rectangle()
+                .fill(.white.opacity(0.10))
+                .frame(width: 1, height: 38)
+                .padding(.horizontal, 2)
+
+            HStack(spacing: 26) {
                 summaryStat(Self.distanceText(plan.totalDistance), "总里程")
                 summaryStat("\(plan.stops.count)", "站点")
                 summaryStat("\(plan.places.count)", "地点")
                 summaryStat("\(dayCount(plan))", "天")
             }
 
+            Spacer(minLength: 12)
+
             HStack(spacing: 10) {
-                Button("再看一遍") { replay(plan) }
-                    .keyboardShortcut(.defaultAction)
-                Button("完成") { onClose() }
+                Button { replay(plan) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text("再看一遍")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.white.opacity(0.10), in: Capsule())
+                    .overlay { Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1) }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("从第一站重新播放")
+
+                Button { onClose() } label: {
+                    Text("完成")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.9))
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 8)
+                        .background {
+                            Capsule().fill(LinearGradient(colors: [Color.accentColor,
+                                                                   Color.accentColor.opacity(0.78)],
+                                                          startPoint: .top,
+                                                          endPoint: .bottom))
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.defaultAction)
+                .help("关闭回放 (Esc)")
             }
-            .padding(.top, 2)
         }
-        .padding(30)
-        .frame(width: 460)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .padding(.horizontal, 22)
+        .padding(.vertical, 15)
+        .frame(maxWidth: 1_060)
+        .background {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(LinearGradient(colors: [Color.black.opacity(0.70), Color.black.opacity(0.90)],
+                                     startPoint: .top,
+                                     endPoint: .bottom))
+        }
         .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.04)],
+                                             startPoint: .top,
+                                             endPoint: .bottom),
+                              lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
-        .transition(.scale(scale: 0.94).combined(with: .opacity))
+        .overlay(alignment: .top) {
+            Capsule()
+                .fill(.white.opacity(0.08))
+                .frame(height: 1)
+                .padding(.horizontal, 40)
+                .padding(.top, 1)
+        }
+        .shadow(color: .black.opacity(0.55), radius: 30, y: 14)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private func summaryStat(_ value: String, _ title: String) -> some View {
-        VStack(spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .fixedSize()
             Text(title)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 9.5, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(.white.opacity(0.42))
+                .lineLimit(1)
+                .fixedSize()
         }
-        .frame(minWidth: 56)
+        .frame(minWidth: 48, alignment: .leading)
     }
 
     private var emptyState: some View {
@@ -786,7 +960,9 @@ struct FootprintPlaybackView: View {
         let stop = plan.stops[stopIndex]
         var parts = ["第 \(stopIndex + 1) / \(plan.stops.count) 站"]
         if stop.photoCount > 1 { parts.append("\(stop.photoCount) 张照片") }
-        if plan.legs.indices.contains(stopIndex) {
+        if isDwelling {
+            parts.append("稍作停留")
+        } else if plan.legs.indices.contains(stopIndex) {
             parts.append("本段：\(plan.legs[stopIndex].caption)")
         }
         return parts.joined(separator: " · ")
@@ -805,8 +981,10 @@ struct FootprintPlaybackView: View {
     }
 
     private func timelineProgress(_ plan: FootprintPlan) -> Double {
-        guard plan.stops.count > 1 else { return plan.isEmpty ? 0 : 1 }
-        return min(1, max(0, (Double(stopIndex) + legFraction) / Double(plan.stops.count - 1)))
+        guard let timeline = cruiseTimeline, timeline.totalDuration > 0 else {
+            return plan.isEmpty ? 0 : (finished ? 1 : 0)
+        }
+        return min(1, max(0, cruiseTime / timeline.totalDuration))
     }
 
     /// 里程读数随光点推进逐帧累加，像真实里程表一样跳动。
@@ -835,9 +1013,11 @@ struct FootprintPlaybackView: View {
         return MapCamera(centerCoordinate: coordinate(center), distance: distance, heading: 0, pitch: 0)
     }
 
-    private static func smooth(_ value: Double) -> Double {
-        let t = min(1, max(0, value))
-        return t * t * (3 - 2 * t)
+    private static func cruiseCamera(_ frame: FootprintCruiseFrame) -> MapCamera {
+        MapCamera(centerCoordinate: coordinate(frame.cameraCenter),
+                  distance: frame.cameraDistance,
+                  heading: frame.heading,
+                  pitch: frame.pitch)
     }
 
     nonisolated private static func placeKey(_ photo: PhotoItem) -> String {
@@ -910,7 +1090,7 @@ struct FootprintPlaybackView: View {
 
 private enum FootprintSpeed: String, CaseIterable, Identifiable {
     case slow
-    case medium
+    case cruise
     case fast
 
     var id: String { rawValue }
@@ -918,17 +1098,17 @@ private enum FootprintSpeed: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .slow: return "慢"
-        case .medium: return "中"
+        case .cruise: return "丝滑"
         case .fast: return "快"
         }
     }
 
-    /// 时长倍率：越大越慢。
-    var multiplier: Double {
+    /// 播放速率；默认档按统一视觉速度巡航，切换时沿用当前时间轴位置。
+    var rate: Double {
         switch self {
-        case .slow: return 1.55
-        case .medium: return 1.0
-        case .fast: return 0.6
+        case .slow: return 0.65
+        case .cruise: return 1.0
+        case .fast: return 1.6
         }
     }
 }

@@ -1,6 +1,8 @@
 .build/
 .env
 Luma.app/
+Luma-*-macOS.zip
 .DS_Store
 *.xcuserstate
 .trae-html-share-packages/
+Vendor/ffmpeg/

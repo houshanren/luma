@@ -1,53 +1,135 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// 「固定」分区拖拽排序用的自定义类型，避免和照片拖拽（纯文本）互相干扰。
+private let pinnedSidebarDragType = UTType(exportedAs: "com.luma.sidebar-pinned-item")
 
 struct SidebarView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
     /// 侧边栏相簿默认全部收起，只记录被用户展开的文件夹，避免一次渲染上千行。
-    @State private var expandedFolders: Set<UUID> = []
-    @State private var expandedSystemFolders: Set<Int64> = []
-    @State private var collapsedSystemLibraries: Set<String> = []
+    /// 展开 / 收起状态写入本地，下次启动沿用上次的层级。
+    @State private var expandedFolders: Set<UUID> =
+        SidebarStateStorage.uuidSet(SidebarStateStorage.Key.expandedFolders)
+    @State private var expandedSystemFolders: Set<Int64> =
+        SidebarStateStorage.int64Set(SidebarStateStorage.Key.expandedSystemFolders)
+    @State private var collapsedSystemLibraries: Set<String> =
+        SidebarStateStorage.stringSet(SidebarStateStorage.Key.collapsedSystemLibraries)
     @State private var hoveredItem: SidebarItem?
     /// 与 hoveredItem 搭配的分区标识：同一个相簿可能同时出现在「固定」和「相簿」里。
     @State private var hoveredItemScope: String = ""
     @State private var hoveredSystemFolder: Int64?
     @State private var hoveredSystemLibraryPath: String?
-    /// 已收起的侧边栏分区（键为分区标识）。
-    @State private var collapsedSections: Set<String> = []
+    /// 已收起的侧边栏分区（键为分区标识），同样持久化。
+    @State private var collapsedSections: Set<String> =
+        SidebarStateStorage.stringSet(SidebarStateStorage.Key.collapsedSections)
+    /// 默认收起的分区被用户主动展开后的记录；没有记录时按默认收起。
+    @State private var expandedSections: Set<String> =
+        SidebarStateStorage.stringSet(SidebarStateStorage.Key.expandedSections)
+    /// 每个图库默认收起「媒体类型」与「场景」，其余分区默认展开。
+    private static let defaultCollapsedSections: Set<String> = [
+        "luma.media", "luma.scenes", "luma.intelligence", "sys.media", "sys.scenes"
+    ]
     @State private var hoveredSection: String?
     @State private var namePrompt: NamePromptPayload?
     @State private var dropTargetAlbumID: UUID?
+    /// 「场景」分区危险操作的二次确认：清空本地 / 系统图库分析结果、系统图库重新识别。
+    @State private var showResetAnalysisConfirm = false
+    @State private var showResetSystemAnalysisConfirm = false
+    @State private var showRestartSystemAnalysisConfirm = false
 
     var body: some View {
         ScrollView {
             // 系统图库可能带成千上万个相簿，侧边栏必须懒加载，否则一次性创建全部行会卡死主线程。
             LazyVStack(alignment: .leading, spacing: 1) {
                 if store.isNativeContainer {
-                    // 打开的是官方「照片」图库：它就是当前图库，内容直接放在主侧边栏，
-                    // 不再单独挂在「系统图库」分区下面。
+                    // 打开的是官方「照片」图库：它就是当前图库，结构直接放在主侧边栏。
                     nativeLibrarySection
                 } else {
                 sectionHeader("拾光", key: "luma", topPadding: 4)
                 if !isCollapsed("luma") {
                     sidebarRow(.library, icon: "photo.stack", title: "图库")
+                    sidebarRow(.cinema, icon: "film.stack", title: "影院", pinKey: "cinema")
                     sidebarRow(.collections, icon: "square.stack.3d.up", title: "精选集")
                 }
 
                 sectionHeader("固定", key: "luma.fixed")
                 if !isCollapsed("luma.fixed") {
-                    if store.pinnedItems.isEmpty {
-                        Text("在相簿或文件夹上右键可固定到这里")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 3)
-                    } else {
-                        ForEach(store.pinnedItems) { item in
-                            pinnedItemRow(item)
+                    pinnedRows(system: false)
+                }
+
+                sectionHeader("智能", key: "luma.intelligence")
+                if !isCollapsed("luma.intelligence") {
+                    sidebarRow(.ask, icon: "sparkle.magnifyingglass", title: "问一问")
+                    if !store.isSystemScope && !store.isCloudScope {
+                        sidebarRow(.tagGovernance, icon: "wand.and.stars", title: "标签治理")
+                    }
+                }
+
+                sectionHeader("媒体类型", key: "luma.media", navigateTo: .mediaTypes)
+                if !isCollapsed("luma.media") {
+                    // 与系统「照片」一致：数量为 0 的媒体类型不占位。
+                    ForEach(MediaTypeKey.localCases) { key in
+                        if (mediaTypeCounts[key] ?? 0) > 0 {
+                            sidebarRow(key.item(system: false), icon: key.icon, title: key.title,
+                                       pinKey: key.rawValue)
                         }
                     }
+                }
+
+                sectionHeader("更多项目", key: "luma.more", navigateTo: .moreItems)
+                if !isCollapsed("luma.more") {
+                    sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏", color: .pink, pinKey: "favorites")
+                    trashRow(pinKey: "trash")
+                    if store.duplicateCount > 0 {
+                        sidebarRow(.duplicates, icon: "square.on.square", title: "重复项目", pinKey: "duplicates")
+                    }
+                    sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存", pinKey: "recentlySaved")
+                    sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑", pinKey: "recentlyEdited")
+                    sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目", pinKey: "imports")
+                    if store.analyzedCount > 0 {
+                        sidebarRow(.ocrTexts, icon: "text.viewfinder", title: "包含文字", pinKey: "ocrTexts")
+                    }
+                    sidebarRow(.keywords, icon: "tag", title: "关键词", pinKey: "keywords")
+                    sidebarRow(.revisit, icon: "clock.arrow.circlepath", title: "值得重看", pinKey: "revisit")
+                    sidebarRow(.health, icon: "stethoscope", title: "图库体检", pinKey: "health")
+                    sidebarRow(.map, icon: "map", title: "地图", pinKey: "map")
+                    sidebarRow(.places, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
+                    sidebarRow(.people, icon: "person.crop.square", title: "人物", pinKey: "people")
+                    sidebarRow(.ratings, icon: "square.grid.2x2", title: "整理工作室", color: .yellow,
+                               pinKey: "ratings")
+                    if store.hiddenCount > 0 {
+                        sidebarRow(.hidden, icon: "eye.slash", title: "已隐藏", color: .secondary, pinKey: "hidden")
+                    }
+                }
+
+                sectionHeader("场景", key: "luma.scenes", navigateTo: .scenes) {
+                    if store.isAnalyzingIntelligence {
+                        Button("停止分析") { store.cancelIntelligenceAnalysis() }
+                    } else {
+                        Button(store.analyzedCount > 0 ? "分析新照片…" : "分析照片内容…") {
+                            store.analyzeIntelligence()
+                        }
+                        if store.analyzedCount > 0 {
+                            Button("重新分析全部照片…") {
+                                store.reanalyzeIntelligence()
+                            }
+                            Button("重置（清空结果）…", role: .destructive) {
+                                showResetAnalysisConfirm = true
+                            }
+                        }
+                    }
+                    if store.hasAnyScene {
+                        Divider()
+                        Button("生成场景智能相簿") {
+                            store.createSceneSmartAlbums()
+                        }
+                    }
+                }
+                if !isCollapsed("luma.scenes") {
+                    sceneSectionBody
                 }
 
                 sectionHeader("相簿", key: "luma.albums", navigateTo: .allAlbums) {
@@ -82,59 +164,6 @@ struct SidebarView: View {
                     }
                 }
 
-                sectionHeader("媒体类型", key: "luma.media", navigateTo: .mediaTypes)
-                if !isCollapsed("luma.media") {
-                    sidebarRow(.videos, icon: "video", title: "视频", pinKey: "videos")
-                    sidebarRow(.selfies, icon: "person.crop.circle", title: "自拍", pinKey: "selfies")
-                    sidebarRow(.livePhotos, icon: "livephoto", title: "实况照片", pinKey: "livePhotos")
-                    sidebarRow(.panoramas, icon: "pano", title: "全景照片", pinKey: "panoramas")
-                    sidebarRow(.screenshots, icon: "camera.viewfinder", title: "截屏", pinKey: "screenshots")
-                    sidebarRow(.animated, icon: "photo.on.rectangle.angled", title: "动图", pinKey: "animated")
-                    sidebarRow(.raws, icon: "camera.aperture", title: "RAW", pinKey: "raws")
-                }
-
-                sectionHeader("场景", key: "luma.scenes", navigateTo: .scenes) {
-                    if store.isAnalyzingIntelligence {
-                        Button("停止分析") { store.cancelIntelligenceAnalysis() }
-                    } else {
-                        Button(store.analyzedCount > 0 ? "分析新照片…" : "分析照片内容…") {
-                            store.analyzeIntelligence()
-                        }
-                    }
-                    if store.hasAnyScene {
-                        Divider()
-                        Button("生成场景智能相簿") {
-                            store.createSceneSmartAlbums()
-                        }
-                    }
-                }
-                if !isCollapsed("luma.scenes") {
-                    sceneSectionBody
-                }
-
-                sectionHeader("更多项目", key: "luma.more", navigateTo: .moreItems)
-                if !isCollapsed("luma.more") {
-                    sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏", color: .pink, pinKey: "favorites")
-                    trashRow(pinKey: "trash")
-                    if store.duplicateCount > 0 {
-                        sidebarRow(.duplicates, icon: "square.on.square", title: "重复项目", pinKey: "duplicates")
-                    }
-                    sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存", pinKey: "recentlySaved")
-                    sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑", pinKey: "recentlyEdited")
-                    sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目", pinKey: "imports")
-                    if store.analyzedCount > 0 {
-                        sidebarRow(.ocrTexts, icon: "text.viewfinder", title: "包含文字")
-                    }
-                    sidebarRow(.revisit, icon: "clock.arrow.circlepath", title: "值得重看")
-                    sidebarRow(.health, icon: "stethoscope", title: "图库体检")
-                    sidebarRow(.map, icon: "map", title: "地图", pinKey: "map")
-                    sidebarRow(.places, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
-                    sidebarRow(.people, icon: "person.crop.square", title: "人物", pinKey: "people")
-                    if store.hiddenCount > 0 {
-                        sidebarRow(.hidden, icon: "eye.slash", title: "已隐藏", color: .secondary, pinKey: "hidden")
-                    }
-                }
-
                 systemSection
                 }
                 cloudSection
@@ -144,18 +173,69 @@ struct SidebarView: View {
             .padding(.bottom, 10)
         }
         .scrollIndicators(.never)
-        .background(.ultraThinMaterial)
+        // 环境光垫在材质下面：侧边栏不是一块死灰，而是一层带颜色的磨砂玻璃。
+        .background {
+            ZStack {
+                LumaAmbientBackground(intensity: 0.75)
+                Rectangle().fill(.ultraThinMaterial)
+                LinearGradient(colors: [Color.white.opacity(0.05), .clear],
+                               startPoint: .top, endPoint: .center)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            LinearGradient(colors: [.clear, Color.primary.opacity(0.14), .clear],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(width: 0.5)
+                .allowsHitTesting(false)
+        }
         .safeAreaInset(edge: .bottom) {
             // 官方「照片」图库只做增强层：不往 Apple 的图库里导入文件，因此不显示导入入口。
             if !store.isNativeContainer {
                 importFooter
-                    .background(.ultraThinMaterial)
+                    .background {
+                        ZStack {
+                            Rectangle().fill(.ultraThinMaterial)
+                            LinearGradient(colors: [Color.primary.opacity(0.05), .clear],
+                                           startPoint: .top, endPoint: .bottom)
+                        }
+                    }
             }
         }
-        .navigationSplitViewColumnWidth(min: 220, ideal: 244, max: 320)
+        // 允许拖拽到更窄（收起封面更紧凑）或更宽（长相簿名少截断）。
+        .navigationSplitViewColumnWidth(min: 180, ideal: 248, max: 440)
         .sheet(item: $namePrompt) { payload in
             NamePromptSheet(payload: payload)
                 .environmentObject(store)
+        }
+        .confirmationDialog("清空照片内容分析结果？",
+                            isPresented: $showResetAnalysisConfirm,
+                            titleVisibility: .visible) {
+            Button("清空全部结果", role: .destructive) {
+                store.resetIntelligenceAnalysis()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会删除全部照片的场景标签、图内文字与相似检索特征（含已保存到图库的结果）；照片本身不受影响，之后可重新分析。")
+        }
+        .confirmationDialog("重新识别全部照片？",
+                            isPresented: $showRestartSystemAnalysisConfirm,
+                            titleVisibility: .visible) {
+            Button("清空并重新识别", role: .destructive) {
+                store.restartSystemAnalysis()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会清空现有识别结果并从头识别整个系统图库，耗时较长；「照片」图库本身不受影响。")
+        }
+        .confirmationDialog("清空系统图库识别结果？",
+                            isPresented: $showResetSystemAnalysisConfirm,
+                            titleVisibility: .visible) {
+            Button("清空全部结果", role: .destructive) {
+                store.resetSystemAnalysis()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会删除本机保存的识别缓存（场景标签、图内文字与特征）；「照片」图库与照片本身不受影响，之后可重新识别。")
         }
     }
 
@@ -207,32 +287,27 @@ struct SidebarView: View {
         Button {
             store.navigate(to: item)
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 Image(systemName: icon)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarIconSize))
                     .foregroundStyle(color)
-                    .frame(width: 18)
+                    .frame(width: LumaMetrics.sidebarIconColumn)
                 Text(title)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if pinKey == "trash" {
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 9))
+                        .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == item && hoveredItemScope == scope {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
+                LumaRowHighlight(active: store.sidebarItem == item,
+                                 hovered: hoveredItem == item && hoveredItemScope == scope)
             }
         }
         .buttonStyle(.plain)
@@ -259,29 +334,24 @@ struct SidebarView: View {
         Button {
             store.navigate(to: .trash)
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 Image(systemName: "trash")
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarIconSize))
                     .foregroundStyle(.secondary)
-                    .frame(width: 18)
+                    .frame(width: LumaMetrics.sidebarIconColumn)
                 Text("最近删除")
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                 Spacer(minLength: 0)
                 Image(systemName: "lock.fill")
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == .trash {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == .trash && hoveredItemScope == scope {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
+                LumaRowHighlight(active: store.sidebarItem == .trash,
+                                 hovered: hoveredItem == .trash && hoveredItemScope == scope)
             }
         }
         .buttonStyle(.plain)
@@ -302,65 +372,159 @@ struct SidebarView: View {
         }
     }
 
-    /// 「固定」区里的条目：系统项、相簿或文件夹。
+    /// 「固定」区的条目：可拖动排序，右键取消固定。
+    /// - Parameter system: 当前是否在系统「照片」图库范围内，决定条目指向系统入口还是拾光入口。
     @ViewBuilder
-    private func pinnedItemRow(_ item: PinnedSidebarItem) -> some View {
+    private func pinnedRows(system: Bool) -> some View {
+        if store.pinnedItems.isEmpty {
+            Text("在项目、场景、相簿或文件夹上右键可固定到这里")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 3)
+        } else {
+            ForEach(store.pinnedItems) { item in
+                pinnedItemRow(item, system: system)
+                    .onDrag { pinnedDragProvider(item) }
+                    .onDrop(of: [pinnedSidebarDragType],
+                            delegate: PinnedReorderDropDelegate(target: item, store: store))
+            }
+            // 拖到列表下方空白处 → 移到末尾。
+            Color.clear
+                .frame(height: 6)
+                .onDrop(of: [pinnedSidebarDragType],
+                        delegate: PinnedEndDropDelegate(store: store))
+        }
+    }
+
+    private func pinnedDragProvider(_ item: PinnedSidebarItem) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: pinnedSidebarDragType.identifier,
+                                            visibility: .ownProcess) { completion in
+            completion(Data(item.id.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    /// 「固定」区里的条目：系统项、相簿、智能相簿、文件夹或系统图库的相簿 / 文件夹。
+    @ViewBuilder
+    private func pinnedItemRow(_ item: PinnedSidebarItem, system: Bool) -> some View {
         switch item {
         case .system(let key):
-            switch key {
-            case "favorites":
-                sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏",
-                           color: .pink, scope: "fixed", pinKey: key)
-            case "recentlySaved":
-                sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存",
-                           scope: "fixed", pinKey: key)
-            case "duplicates":
-                sidebarRow(.duplicates, icon: "square.on.square", title: "重复项目",
-                           scope: "fixed", pinKey: key)
-            case "map":
-                sidebarRow(.map, icon: "map", title: "地图", scope: "fixed", pinKey: key)
-            case "places":
-                sidebarRow(.places, icon: "mappin.and.ellipse", title: "位置", scope: "fixed", pinKey: key)
-            case "videos":
-                sidebarRow(.videos, icon: "video", title: "视频", scope: "fixed", pinKey: key)
-            case "screenshots":
-                sidebarRow(.screenshots, icon: "camera.viewfinder", title: "截屏", scope: "fixed", pinKey: key)
-            case "people":
-                sidebarRow(.people, icon: "person.crop.square", title: "人物", scope: "fixed", pinKey: key)
-            case "selfies":
-                sidebarRow(.selfies, icon: "person.crop.circle", title: "自拍", scope: "fixed", pinKey: key)
-            case "livePhotos":
-                sidebarRow(.livePhotos, icon: "livephoto", title: "实况照片", scope: "fixed", pinKey: key)
-            case "panoramas":
-                sidebarRow(.panoramas, icon: "pano", title: "全景照片", scope: "fixed", pinKey: key)
-            case "animated":
-                sidebarRow(.animated, icon: "photo.on.rectangle.angled", title: "动图",
-                           scope: "fixed", pinKey: key)
-            case "raws":
-                sidebarRow(.raws, icon: "camera.aperture", title: "RAW", scope: "fixed", pinKey: key)
-            case "recentlyEdited":
-                sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑",
-                           scope: "fixed", pinKey: key)
-            case "imports":
-                sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目",
-                           scope: "fixed", pinKey: key)
-            case "hidden":
-                sidebarRow(.hidden, icon: "eye.slash", title: "已隐藏",
-                           color: .secondary, scope: "fixed", pinKey: key)
-            case "trash":
-                trashRow(scope: "fixed", pinKey: key)
-            default:
-                EmptyView()
+            if let info = pinnedSystemInfo(for: key, system: system) {
+                sidebarRow(info.item, icon: info.icon, title: info.title,
+                           color: info.color, scope: "fixed", pinKey: key)
             }
         case .album(let id):
             if let album = store.albums.first(where: { $0.id == id }) {
                 albumRow(album, level: 0, scope: "fixed")
             }
+        case .smartAlbum(let id):
+            if let album = store.smartAlbums.first(where: { $0.id == id }) {
+                smartAlbumRow(album, scope: "fixed")
+            }
         case .folder(let id):
             if let folder = store.folders.first(where: { $0.id == id }) {
                 folderNode(folder, level: 0, scope: "fixed")
             }
+        case .systemAlbum(let id):
+            if let album = store.systemAlbums.first(where: { $0.id == id }) {
+                systemAlbumRow(album, level: 0, scope: "fixed")
+            }
+        case .systemFolder(let id):
+            if let folder = store.systemFolders.first(where: { $0.id == id }) {
+                systemFolderNode(folder, level: 0, scope: "fixed")
+            }
         }
+    }
+
+    private struct PinnedSystemInfo {
+        let title: String
+        let icon: String
+        var color: Color = .accentColor
+        let item: SidebarItem
+    }
+
+    /// 固定项 key 在当前范围对应的入口：系统图库范围指向系统入口，拾光范围指向本地入口。
+    private func pinnedSystemInfo(for key: String, system: Bool) -> PinnedSystemInfo? {
+        switch key {
+        case "favorites":
+            return PinnedSystemInfo(title: "个人收藏", icon: "heart.fill", color: .pink,
+                                    item: system ? .systemFavorites : .favorites)
+        case "trash":
+            return PinnedSystemInfo(title: "最近删除", icon: "trash", color: .secondary,
+                                    item: system ? .systemTrash : .trash)
+        case "duplicates":
+            return PinnedSystemInfo(title: "重复项目", icon: "square.on.square",
+                                    item: system ? .systemDuplicates : .duplicates)
+        case "recentlySaved":
+            return PinnedSystemInfo(title: "最近保存", icon: "square.and.arrow.down",
+                                    item: system ? .systemRecentlySaved : .recentlySaved)
+        case "recentlyViewed":
+            return PinnedSystemInfo(title: "最近查看", icon: "eye", item: .systemRecentlyViewed)
+        case "recentlyEdited":
+            return PinnedSystemInfo(title: "最近编辑", icon: "slider.horizontal.3",
+                                    item: system ? .systemEdited : .recentlyEdited)
+        case "imports":
+            return PinnedSystemInfo(title: "导入项目", icon: "square.and.arrow.down.on.square",
+                                    item: system ? .systemImports : .imports)
+        case "map":
+            return PinnedSystemInfo(title: "地图", icon: "map", item: system ? .systemMap : .map)
+        case "places":
+            return PinnedSystemInfo(title: "位置", icon: "mappin.and.ellipse",
+                                    item: system ? .systemPlaces : .places)
+        case "people":
+            return PinnedSystemInfo(title: "人物", icon: "person.crop.square",
+                                    item: system ? .systemPeople : .people)
+        case "hidden":
+            return PinnedSystemInfo(title: "已隐藏", icon: "eye.slash", color: .secondary,
+                                    item: system ? .systemHidden : .hidden)
+        case "ocrTexts":
+            return PinnedSystemInfo(title: "包含文字", icon: "text.viewfinder",
+                                    item: system ? .systemOcrTexts : .ocrTexts)
+        case "keywords":
+            return PinnedSystemInfo(title: "关键词", icon: "tag",
+                                    item: system ? .systemKeywords : .keywords)
+        case "revisit":
+            return PinnedSystemInfo(title: "值得重看", icon: "clock.arrow.circlepath",
+                                    item: system ? .systemRevisit : .revisit)
+        case "health":
+            return PinnedSystemInfo(title: "图库体检", icon: "stethoscope",
+                                    item: system ? .systemHealth : .health)
+        case "ratings", "flags", "colorLabels":
+            // 旧的三个固定项统一收敛成「整理工作室」入口。
+            return PinnedSystemInfo(title: "整理工作室", icon: "square.grid.2x2", color: .yellow,
+                                    item: system ? .systemRatings : .ratings)
+        default:
+            // 场景固定 key：`scene:<分类 id>`，与媒体类型一样随当前范围指向拾光或系统图库入口。
+            if key.hasPrefix("scene:"),
+               let category = SceneCatalog.category(id: String(key.dropFirst(6))) {
+                return PinnedSystemInfo(title: category.title, icon: category.icon,
+                                        item: system ? .systemScene(category.id)
+                                                     : .scene(category.id))
+            }
+            guard let type = MediaTypeKey(rawValue: key) else { return nil }
+            return PinnedSystemInfo(title: type.title, icon: type.icon,
+                                    item: type.item(system: system))
+        }
+    }
+
+    /// 文件夹展开箭头的列宽：只够放下箭头，避免封面被推远。
+    private static let folderChevronWidth: CGFloat = 12
+    /// 箭头与封面之间的间隙，保持紧贴但可点。
+    private static let folderChevronGap: CGFloat = 3
+
+    /// 侧边栏树形缩进：顶层与普通相簿同一列，展开后的每一层多缩进 14 pt。
+    private func rowLeadingPadding(_ level: Int) -> CGFloat {
+        8 + CGFloat(level) * 14
+    }
+
+    /// 相簿没有展开箭头，留出同宽的箭头列，封面才和文件夹图标对齐。
+    /// 「固定」区的条目本身就是第一层，不再为箭头列预留缩进，和其它固定项左对齐。
+    private func albumLeadingPadding(_ level: Int, scope: String = "albums") -> CGFloat {
+        if scope == "fixed", level == 0 { return rowLeadingPadding(0) }
+        return rowLeadingPadding(level) + Self.folderChevronWidth + Self.folderChevronGap
     }
 
     private func folderNode(_ folder: AlbumFolder, level: Int, scope: String = "albums") -> AnyView {
@@ -371,7 +535,7 @@ struct SidebarView: View {
 
         return AnyView(
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 2) {
+                HStack(spacing: Self.folderChevronGap) {
                     Button {
                         withAnimation(settings.motion.layout) {
                             if isExpanded {
@@ -380,12 +544,13 @@ struct SidebarView: View {
                                 expandedFolders.insert(folder.id)
                             }
                         }
+                        persistExpansionState()
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8.5, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: 14, height: 18)
+                            .frame(width: Self.folderChevronWidth, height: 18)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -395,15 +560,16 @@ struct SidebarView: View {
                     Button {
                         store.navigate(to: .folder(folder.id))
                     } label: {
-                        HStack(spacing: 7) {
+                        HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                             Image(systemName: "folder.fill")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 18, height: 18)
-                            .background(Color.accentColor.opacity(0.14),
-                                        in: RoundedRectangle(cornerRadius: settings.smallCoverRadius))
-                        Text(folder.name)
-                                .font(.system(size: 12.5))
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
+                                .background(Color.accentColor.opacity(0.14),
+                                            in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                                                 style: .continuous))
+                            Text(folder.name)
+                                .font(.system(size: LumaMetrics.sidebarTextSize))
                                 .lineLimit(1)
                             Spacer(minLength: 0)
                         }
@@ -411,17 +577,12 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.leading, CGFloat(level) * 14 + 4)
+                .padding(.leading, rowLeadingPadding(level))
                 .padding(.trailing, 8)
-                .padding(.vertical, 5)
+                .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                 .background {
-                    if store.sidebarItem == .folder(folder.id) {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color.accentColor.opacity(0.16))
-                    } else if hoveredItem == .folder(folder.id) && hoveredItemScope == scope {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color.primary.opacity(0.06))
-                    }
+                    LumaRowHighlight(active: store.sidebarItem == .folder(folder.id),
+                                     hovered: hoveredItem == .folder(folder.id) && hoveredItemScope == scope)
                 }
                 .onHover { hovering in
                     if hovering {
@@ -470,27 +631,29 @@ struct SidebarView: View {
         Button {
             store.navigate(to: .album(album.id))
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 AlbumCoverView(album: album)
                 Text(album.name)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .padding(.leading, CGFloat(level) * 14 + 22)
+            .padding(.leading, albumLeadingPadding(level, scope: scope))
             .padding(.trailing, 8)
-            .padding(.vertical, 3)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == .album(album.id) {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if dropTargetAlbumID == album.id {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.24))
-                } else if hoveredItem == .album(album.id) && hoveredItemScope == scope {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
+                ZStack {
+                    LumaRowHighlight(active: store.sidebarItem == .album(album.id),
+                                     hovered: hoveredItem == .album(album.id) && hoveredItemScope == scope)
+                    if dropTargetAlbumID == album.id {
+                        RoundedRectangle(cornerRadius: LumaMetrics.rowRadius, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.24))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: LumaMetrics.rowRadius, style: .continuous)
+                                    .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1)
+                            }
+                    }
                 }
             }
         }
@@ -549,42 +712,46 @@ struct SidebarView: View {
         }
     }
 
-    private func smartAlbumRow(_ album: SmartAlbum) -> some View {
+    private func smartAlbumRow(_ album: SmartAlbum, scope: String = "smart") -> some View {
         let item = SidebarItem.smartAlbum(album.id)
         return Button {
             store.navigate(to: item)
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 Image(systemName: "gearshape.2.fill")
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 12))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 18, height: 18)
+                    .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
                     .background(Color.accentColor.opacity(0.14),
-                                in: RoundedRectangle(cornerRadius: settings.smallCoverRadius))
+                                in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                                     style: .continuous))
                 Text(album.name)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
+                LumaRowHighlight(active: store.sidebarItem == item,
+                                 hovered: hoveredItem == item && hoveredItemScope == scope)
             }
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
+            if hovering {
+                hoveredItem = item
+                hoveredItemScope = scope
+            } else if hoveredItem == item && hoveredItemScope == scope {
+                hoveredItem = nil
+            }
         }
         .contextMenu {
             Button("打开智能相簿") { store.navigate(to: item) }
+            Button(store.isPinned(.smartAlbum(album.id)) ? "取消固定" : "固定到侧边栏") {
+                store.togglePin(.smartAlbum(album.id))
+            }
             Button("编辑条件…") { store.presentSmartAlbumEditor(album) }
             Divider()
             Button("删除智能相簿", role: .destructive) { store.deleteSmartAlbum(album.id) }
@@ -602,62 +769,71 @@ struct SidebarView: View {
         navigateTo: SidebarItem? = nil,
         @ViewBuilder menu: () -> MenuContent = { EmptyView() }
     ) -> some View {
-        let collapsed = collapsedSections.contains(key)
+        let collapsed = isCollapsed(key)
         let hovering = hoveredSection == key
         let active = navigateTo.map { $0 == store.sidebarItem } ?? false
 
-        HStack(spacing: 2) {
+        ZStack(alignment: .trailing) {
+            // 整行（含左右留白）都是点击区域，不只是标题那几个字。
             if let navigateTo {
                 Button {
                     store.navigate(to: navigateTo)
                 } label: {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 0) {
+                        sectionLabel(title, active: active)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("打开「\(title)」总览")
             } else {
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 0) {
+                    sectionLabel(title, active: active)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
             }
-            Spacer(minLength: 0)
-            if hovering {
-                Menu {
-                    Button(collapsed ? "展开" : "收起") {
-                        withAnimation(settings.motion.layout) { toggleSection(key) }
+            // 「更多」与收起 / 展开按钮浮在整行点击区之上，各自响应自己的点击。
+            HStack(spacing: 2) {
+                if hovering {
+                    Menu {
+                        Button(collapsed ? "展开" : "收起") {
+                            withAnimation(settings.motion.layout) { toggleSection(key) }
+                        }
+                        menu()
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
-                    menu()
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 16)
+                    .help("更多")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 16)
-                .help("更多")
-            }
-            if hovering || collapsed {
-                Button {
-                    withAnimation(settings.motion.layout) { toggleSection(key) }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(collapsed ? -90 : 0))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+                if hovering || collapsed {
+                    Button {
+                        withAnimation(settings.motion.layout) { toggleSection(key) }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(collapsed ? -90 : 0))
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(collapsed ? "展开" : "收起")
                 }
-                .buttonStyle(.plain)
-                .help(collapsed ? "展开" : "收起")
             }
+            .padding(.trailing, 8)
         }
-        .padding(.horizontal, 8)
         .padding(.top, topPadding)
         .padding(.bottom, 3)
         .contentShape(Rectangle())
@@ -666,16 +842,47 @@ struct SidebarView: View {
         }
     }
 
-    private func toggleSection(_ key: String) {
-        if collapsedSections.contains(key) {
-            collapsedSections.remove(key)
-        } else {
-            collapsedSections.insert(key)
+    /// 分区标题：左侧一条强调色细线 + 轻微字距，让侧边栏有清晰的层级节奏。
+    private func sectionLabel(_ title: String, active: Bool) -> some View {
+        HStack(spacing: 7) {
+            Capsule()
+                .fill(
+                    LinearGradient(colors: [
+                        Color.accentColor.opacity(active ? 0.95 : 0.42),
+                        Color.accentColor.opacity(active ? 0.35 : 0.08)
+                    ], startPoint: .top, endPoint: .bottom)
+                )
+                .frame(width: 2, height: 10)
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.06)
+                .foregroundStyle(active ? Color.accentColor : Color.secondary)
         }
     }
 
+    private func toggleSection(_ key: String) {
+        if isCollapsed(key) {
+            collapsedSections.remove(key)
+            expandedSections.insert(key)
+        } else {
+            collapsedSections.insert(key)
+            expandedSections.remove(key)
+        }
+        persistExpansionState()
+    }
+
+    /// 把当前所有层级的展开 / 收起状态写入本地：下次启动按同样的层级展示。
+    private func persistExpansionState() {
+        SidebarStateStorage.save(SidebarStateStorage.Key.collapsedSections, collapsedSections)
+        SidebarStateStorage.save(SidebarStateStorage.Key.expandedSections, expandedSections)
+        SidebarStateStorage.save(SidebarStateStorage.Key.expandedFolders, expandedFolders)
+        SidebarStateStorage.save(SidebarStateStorage.Key.expandedSystemFolders, expandedSystemFolders)
+        SidebarStateStorage.save(SidebarStateStorage.Key.collapsedSystemLibraries, collapsedSystemLibraries)
+    }
+
     private func isCollapsed(_ key: String) -> Bool {
-        collapsedSections.contains(key)
+        if collapsedSections.contains(key) { return true }
+        return Self.defaultCollapsedSections.contains(key) && !expandedSections.contains(key)
     }
 
     // MARK: - 场景（端侧智能分析）
@@ -698,18 +905,18 @@ struct SidebarView: View {
             Button {
                 store.analyzeIntelligence()
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                     Image(systemName: "sparkles")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: LumaMetrics.sidebarIconSize))
                         .foregroundStyle(Color.accentColor)
-                        .frame(width: 18)
+                        .frame(width: LumaMetrics.sidebarIconColumn)
                     Text("分析照片内容…")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: LumaMetrics.sidebarTextSize))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -745,13 +952,13 @@ struct SidebarView: View {
         return Button {
             store.navigate(to: item)
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 Image(systemName: category.icon)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarIconSize))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 18)
+                    .frame(width: LumaMetrics.sidebarIconColumn)
                 Text(category.title)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Text("\(count)")
@@ -759,19 +966,150 @@ struct SidebarView: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.13))
-                } else if hoveredItem == item {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
+                LumaRowHighlight(active: store.sidebarItem == item,
+                                 hovered: hoveredItem == item)
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
+                store.togglePin(.system("scene:\(category.id)"))
+            }
+        }
+        .help("查看「\(category.title)」照片")
+        .onHover { hovering in
+            hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
+        }
+    }
+
+    // MARK: - 系统图库场景（端侧识别，缓存到 system_analysis）
+
+    private var systemAnalysisFraction: Double {
+        guard store.systemAnalysisTotal > 0 else { return 0 }
+        return min(1, Double(store.systemAnalysisDone) / Double(store.systemAnalysisTotal))
+    }
+
+    @ViewBuilder
+    private var systemSceneSectionBody: some View {
+        if store.isAnalyzingSystemContent {
+            HStack(spacing: 7) {
+                ProgressView(value: systemAnalysisFraction)
+                    .progressViewStyle(.linear)
+                    .frame(width: 92)
+                Text("识别中 \(store.systemAnalysisDone)/\(store.systemAnalysisTotal)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+        }
+
+        if store.systemAnalyzedCount == 0 {
+            if !store.isAnalyzingSystemContent {
+                Button {
+                    store.analyzeSystemContent()
+                } label: {
+                    HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: LumaMetrics.sidebarIconSize))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: LumaMetrics.sidebarIconColumn)
+                        Text("识别照片内容…")
+                            .font(.system(size: LumaMetrics.sidebarTextSize))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Text("在本机识别系统图库的场景与图内文字；结果只保存在内存，不写回「照片」")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 2)
+            }
+        } else {
+            // 结果边识别边出现：每识别一批就刷新下面的场景行。
+            let counts = store.sceneCounts
+            let visible = SceneCatalog.categories.filter { (counts[$0.id] ?? 0) > 0 }
+            if visible.isEmpty {
+                if !store.isAnalyzingSystemContent {
+                    Text("未识别到常见场景")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 3)
+                }
+            } else {
+                ForEach(visible) { category in
+                    systemSceneRow(category, count: counts[category.id] ?? 0)
+                }
+            }
+            if !store.isAnalyzingSystemContent {
+                let pending = store.systemPendingAnalysisCount
+                if pending > 0 {
+                    Button {
+                        store.analyzeSystemContent()
+                    } label: {
+                        HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: LumaMetrics.sidebarIconSize))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: LumaMetrics.sidebarIconColumn)
+                            Text("继续识别（剩余 \(pending) 张）")
+                                .font(.system(size: LumaMetrics.sidebarTextSize))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("在后台持续识别，可随时停止；结果只保存在内存")
+                }
+            }
+        }
+    }
+
+    private func systemSceneRow(_ category: SceneCategory, count: Int) -> some View {
+        let item = SidebarItem.systemScene(category.id)
+        return Button {
+            store.navigate(to: item)
+        } label: {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                Image(systemName: category.icon)
+                    .font(.system(size: LumaMetrics.sidebarIconSize))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: LumaMetrics.sidebarIconColumn)
+                Text(category.title)
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(count)")
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
+            .contentShape(Rectangle())
+            .background {
+                LumaRowHighlight(active: store.sidebarItem == item,
+                                 hovered: hoveredItem == item)
+            }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
+                store.togglePin(.system("scene:\(category.id)"))
+            }
+        }
         .help("查看「\(category.title)」照片")
         .onHover { hovering in
             hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
@@ -779,6 +1117,11 @@ struct SidebarView: View {
     }
 
     // MARK: - System libraries
+
+    /// 媒体类型数量：与系统「照片」一致，数量为 0 的类型不显示入口。
+    private var mediaTypeCounts: [MediaTypeKey: Int] {
+        store.mediaTypeSummary.counts
+    }
 
     /// 当前图库就是官方「照片」图库：把它自己的结构（共享、媒体类型、更多项目、相簿）直接作为主侧边栏。
     @ViewBuilder
@@ -813,18 +1156,18 @@ struct SidebarView: View {
                 Button {
                     store.presentSystemLibraryPanel()
                 } label: {
-                    HStack(spacing: 7) {
+                    HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                         Image(systemName: "plus.circle")
-                            .font(.system(size: 12.5))
+                            .font(.system(size: LumaMetrics.sidebarIconSize))
                             .foregroundStyle(.secondary)
-                            .frame(width: 18)
+                            .frame(width: LumaMetrics.sidebarIconColumn)
                         Text("连接照片图库…")
-                            .font(.system(size: 12.5))
+                            .font(.system(size: LumaMetrics.sidebarTextSize))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -862,6 +1205,7 @@ struct SidebarView: View {
                     collapsedSystemLibraries.remove(ref.path)
                     store.activateSystemLibrary(ref)
                 }
+                persistExpansionState()
             } label: {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8.5, weight: .semibold))
@@ -877,14 +1221,15 @@ struct SidebarView: View {
             Button {
                 collapsedSystemLibraries.remove(ref.path)
                 store.activateSystemLibrary(ref)
+                persistExpansionState()
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                     Image(systemName: "photo.stack")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: LumaMetrics.sidebarIconSize))
                         .foregroundStyle(isActive ? Color.accentColor : .secondary)
-                        .frame(width: 18)
+                        .frame(width: LumaMetrics.sidebarIconColumn)
                     Text(ref.name)
-                        .font(.system(size: 12.5))
+                        .font(.system(size: LumaMetrics.sidebarTextSize))
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     if isActive {
@@ -898,7 +1243,7 @@ struct SidebarView: View {
                         }
                     }
                 }
-                .padding(.vertical, 5)
+                .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -917,7 +1262,7 @@ struct SidebarView: View {
                 Button("新建照片图库…") { store.presentNewLibraryPanel() }
                 Divider()
                 Button("断开连接", role: .destructive) {
-                    store.removeSystemLibrary(ref.path)
+                    store.confirmRemoveSystemLibrary(path: ref.path, name: ref.name)
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -933,13 +1278,7 @@ struct SidebarView: View {
             .opacity(isHovered || isHighlighted ? 1 : 0)
         }
         .background {
-            if isHighlighted {
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(Color.accentColor.opacity(0.16))
-            } else if isHovered {
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(Color.primary.opacity(0.06))
-            }
+            LumaRowHighlight(active: isHighlighted, hovered: isHovered)
         }
         .onHover { hovering in
             hoveredSystemLibraryPath = hovering
@@ -953,11 +1292,13 @@ struct SidebarView: View {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: ref.path)])
             }
             Divider()
-            Button("断开连接", role: .destructive) { store.removeSystemLibrary(ref.path) }
+            Button("断开连接", role: .destructive) {
+                store.confirmRemoveSystemLibrary(path: ref.path, name: ref.name)
+            }
         }
     }
 
-    /// 当前系统图库的浏览入口（图库 / 精选集 / 媒体类型 / 更多项目 / 相簿），缩进挂在对应图库下面。
+    /// 当前系统图库的浏览入口（图库 / 精选集 / 固定 / 媒体类型 / 更多项目 / 场景 / 相簿），与其它分区左对齐。
     @ViewBuilder
     private var systemLibraryDetail: some View {
         LazyVStack(alignment: .leading, spacing: 1) {
@@ -965,50 +1306,85 @@ struct SidebarView: View {
             sidebarRow(.systemLibrary, icon: "photo.stack", title: "图库")
             sidebarRow(.systemCollections, icon: "square.stack.3d.up", title: "精选集")
 
-            sectionHeader("媒体类型", key: "sys.media", topPadding: 12, navigateTo: .systemMediaTypes)
-            if !isCollapsed("sys.media") {
-                sidebarRow(.systemVideos, icon: "video", title: "视频")
-                sidebarRow(.systemSelfies, icon: "person.crop.circle", title: "自拍")
-                sidebarRow(.systemLivePhotos, icon: "livephoto", title: "实况照片")
-                sidebarRow(.systemPortraits, icon: "person.crop.rectangle", title: "人像")
-                sidebarRow(.systemPanoramas, icon: "pano", title: "全景照片")
-                sidebarRow(.systemSlowMotion, icon: "slowmo", title: "慢动作")
-                sidebarRow(.systemScreenshots, icon: "camera.viewfinder", title: "截屏")
-                sidebarRow(.systemScreenRecordings, icon: "record.circle", title: "录屏")
-                sidebarRow(.systemAnimated, icon: "photo.on.rectangle.angled", title: "动图")
-                sidebarRow(.systemRAW, icon: "camera.aperture", title: "RAW")
+            sectionHeader("固定", key: "sys.fixed", topPadding: 12)
+            if !isCollapsed("sys.fixed") {
+                pinnedRows(system: true)
+            }
+
+            let visibleMediaTypes = MediaTypeKey.allCases.filter { (mediaTypeCounts[$0] ?? 0) > 0 }
+            if !visibleMediaTypes.isEmpty {
+                sectionHeader("媒体类型", key: "sys.media", topPadding: 12, navigateTo: .systemMediaTypes)
+                if !isCollapsed("sys.media") {
+                    ForEach(visibleMediaTypes) { key in
+                        sidebarRow(key.item(system: true), icon: key.icon, title: key.title,
+                                   pinKey: key.rawValue)
+                    }
+                }
             }
 
             sectionHeader("更多项目", key: "sys.more", topPadding: 12, navigateTo: .systemMoreItems)
             if !isCollapsed("sys.more") {
-                sidebarRow(.systemFavorites, icon: "heart.fill", title: "个人收藏", color: .pink)
+                // 与「拾光 › 更多项目」保持同一顺序与图标；最近查看 / 值得重看是系统图库独有入口。
+                sidebarRow(.systemFavorites, icon: "heart.fill", title: "个人收藏", color: .pink,
+                           pinKey: "favorites")
                 systemTrashRow
                 if store.systemDuplicateCount > 0 {
-                    sidebarRow(.systemDuplicates, icon: "square.on.square", title: "重复项目")
+                    sidebarRow(.systemDuplicates, icon: "square.on.square", title: "重复项目",
+                               pinKey: "duplicates")
                 }
-                sidebarRow(.systemHandwriting, icon: "pencil.tip", title: "手写")
-                sidebarRow(.systemIllustrations, icon: "scribble.variable", title: "插图")
-                if store.systemRecentlySavedCount > 0 {
-                    sidebarRow(.systemRecentlySaved, icon: "square.and.arrow.down", title: "最近保存")
+                sidebarRow(.systemRecentlySaved, icon: "square.and.arrow.down", title: "最近保存",
+                           pinKey: "recentlySaved")
+                sidebarRow(.systemRecentlyViewed, icon: "eye", title: "最近查看",
+                           pinKey: "recentlyViewed")
+                sidebarRow(.systemEdited, icon: "slider.horizontal.3", title: "最近编辑",
+                           pinKey: "recentlyEdited")
+                sidebarRow(.systemImports, icon: "square.and.arrow.down.on.square", title: "导入项目",
+                           pinKey: "imports")
+                if store.ocrPhotoCount > 0 {
+                    sidebarRow(.systemOcrTexts, icon: "text.viewfinder", title: "包含文字",
+                               pinKey: "ocrTexts")
                 }
-                sidebarRow(.systemRecentlyViewed, icon: "eye", title: "最近查看")
-                sidebarRow(.systemEdited, icon: "slider.horizontal.3", title: "最近编辑")
-                if store.systemImportCount > 0 {
-                    sidebarRow(.systemImports, icon: "square.and.arrow.down.on.square", title: "导入项目")
-                }
-                sidebarRow(.systemMap, icon: "map", title: "地图")
-                sidebarRow(.systemPlaces, icon: "mappin.and.ellipse", title: "位置")
-                sidebarRow(.systemPeople, icon: "person.2", title: "人物")
+                sidebarRow(.systemKeywords, icon: "tag", title: "关键词", pinKey: "keywords")
+                sidebarRow(.systemRevisit, icon: "clock.arrow.circlepath", title: "值得重看",
+                           pinKey: "revisit")
+                sidebarRow(.systemHealth, icon: "stethoscope", title: "图库体检", pinKey: "health")
+                sidebarRow(.systemMap, icon: "map", title: "地图", pinKey: "map")
+                sidebarRow(.systemPlaces, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
+                sidebarRow(.systemPeople, icon: "person.crop.square", title: "人物", pinKey: "people")
+                sidebarRow(.systemRatings, icon: "square.grid.2x2", title: "整理工作室", color: .yellow,
+                           pinKey: "ratings")
                 if store.systemHiddenCount > 0 {
-                    sidebarRow(.systemHidden, icon: "eye.slash", title: "已隐藏", color: .secondary)
+                    sidebarRow(.systemHidden, icon: "eye.slash", title: "已隐藏", color: .secondary,
+                               pinKey: "hidden")
                 }
             }
 
+            sectionHeader("场景", key: "sys.scenes", topPadding: 12, navigateTo: .systemScenes) {
+                if store.isAnalyzingSystemContent {
+                    Button("停止识别") { store.cancelSystemContentAnalysis() }
+                } else {
+                    Button(store.systemAnalyzedCount > 0 ? "继续识别…" : "识别照片内容…") {
+                        store.analyzeSystemContent()
+                    }
+                    if store.systemAnalyzedCount > 0 {
+                        Button("重新识别全部照片…") {
+                            showRestartSystemAnalysisConfirm = true
+                        }
+                        Button("重置（清空结果）…", role: .destructive) {
+                            showResetSystemAnalysisConfirm = true
+                        }
+                    }
+                }
+            }
+            if !isCollapsed("sys.scenes") {
+                systemSceneSectionBody
+            }
+
             if store.isLoadingSystemLibrary {
-                HStack(spacing: 7) {
+                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                     ProgressView()
                         .controlSize(.mini)
-                        .frame(width: 18)
+                        .frame(width: LumaMetrics.sidebarIconColumn)
                     Text(store.systemScanCount > 0
                          ? "正在读取系统图库… \(store.systemScanCount.formatted()) 项"
                          : "正在读取系统图库…")
@@ -1038,41 +1414,40 @@ struct SidebarView: View {
                 }
             }
         }
-        .padding(.leading, 14)
     }
 
     private var systemTrashRow: some View {
         Button {
             store.navigate(to: .systemTrash)
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 Image(systemName: "trash")
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarIconSize))
                     .foregroundStyle(.secondary)
-                    .frame(width: 18)
+                    .frame(width: LumaMetrics.sidebarIconColumn)
                 Text("最近删除")
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                 Spacer(minLength: 0)
                 Image(systemName: "lock.fill")
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == .systemTrash {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == .systemTrash {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
+                LumaRowHighlight(active: store.sidebarItem == .systemTrash,
+                                 hovered: hoveredItem == .systemTrash)
             }
         }
         .buttonStyle(.plain)
         .onHover { hovering in
             hoveredItem = hovering ? .systemTrash : (hoveredItem == .systemTrash ? nil : hoveredItem)
+        }
+        .contextMenu {
+            Button(store.isPinned(.system("trash")) ? "取消固定" : "固定到侧边栏") {
+                store.togglePin(.system("trash"))
+            }
         }
     }
 
@@ -1091,18 +1466,18 @@ struct SidebarView: View {
                 Button {
                     store.presentCloudWizard()
                 } label: {
-                    HStack(spacing: 7) {
+                    HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                         Image(systemName: "wand.and.stars")
-                            .font(.system(size: 12.5))
+                            .font(.system(size: LumaMetrics.sidebarIconSize))
                             .foregroundStyle(Color.accentColor)
-                            .frame(width: 18)
+                            .frame(width: LumaMetrics.sidebarIconColumn)
                         Text("网盘接入向导…")
-                            .font(.system(size: 12.5))
+                            .font(.system(size: LumaMetrics.sidebarTextSize))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1114,14 +1489,14 @@ struct SidebarView: View {
         }
     }
 
-    private func systemFolderNode(_ folder: SystemFolderInfo, level: Int) -> AnyView {
+    private func systemFolderNode(_ folder: SystemFolderInfo, level: Int, scope: String = "system") -> AnyView {
         let isExpanded = expandedSystemFolders.contains(folder.id)
         let children = store.systemChildren(of: folder.id)
         let hasChildren = !children.isEmpty
 
         return AnyView(
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 2) {
+                HStack(spacing: Self.folderChevronGap) {
                     Button {
                         withAnimation(settings.motion.layout) {
                             if isExpanded {
@@ -1130,12 +1505,13 @@ struct SidebarView: View {
                                 expandedSystemFolders.insert(folder.id)
                             }
                         }
+                        persistExpansionState()
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8.5, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: 14, height: 18)
+                            .frame(width: Self.folderChevronWidth, height: 18)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1145,15 +1521,16 @@ struct SidebarView: View {
                     Button {
                         store.navigate(to: .systemFolder(folder.id))
                     } label: {
-                        HStack(spacing: 7) {
+                        HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                             Image(systemName: "folder.fill")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 18, height: 18)
-                            .background(Color.accentColor.opacity(0.14),
-                                        in: RoundedRectangle(cornerRadius: settings.smallCoverRadius))
-                        Text(folder.name)
-                                .font(.system(size: 12.5))
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
+                                .background(Color.accentColor.opacity(0.14),
+                                            in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                                                 style: .continuous))
+                            Text(folder.name)
+                                .font(.system(size: LumaMetrics.sidebarTextSize))
                                 .lineLimit(1)
                             Spacer(minLength: 0)
                         }
@@ -1161,17 +1538,12 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.leading, CGFloat(level) * 14 + 4)
+                .padding(.leading, rowLeadingPadding(level))
                 .padding(.trailing, 8)
-                .padding(.vertical, 5)
+                .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                 .background {
-                    if store.sidebarItem == .systemFolder(folder.id) {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color.accentColor.opacity(0.16))
-                    } else if hoveredSystemFolder == folder.id {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color.primary.opacity(0.06))
-                    }
+                    LumaRowHighlight(active: store.sidebarItem == .systemFolder(folder.id),
+                                     hovered: hoveredSystemFolder == folder.id)
                 }
                 .onHover { hovering in
                     hoveredSystemFolder = hovering ? folder.id : (hoveredSystemFolder == folder.id ? nil : hoveredSystemFolder)
@@ -1179,6 +1551,9 @@ struct SidebarView: View {
                 .contextMenu {
                     Button("打开文件夹") {
                         store.navigate(to: .systemFolder(folder.id))
+                    }
+                    Button(store.isPinned(.systemFolder(folder.id)) ? "取消固定" : "固定到侧边栏") {
+                        store.togglePin(.systemFolder(folder.id))
                     }
                     Button("拷贝到拾光（含子文件夹）") {
                         store.importSystemFolderToLibrary(folder.id)
@@ -1205,50 +1580,115 @@ struct SidebarView: View {
         }
     }
 
-    private func systemAlbumRow(_ album: SystemAlbumInfo, level: Int) -> some View {
+    private func systemAlbumRow(_ album: SystemAlbumInfo, level: Int, scope: String = "system") -> some View {
         Button {
             store.navigate(to: .systemAlbum(album.id))
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
                 SystemAlbumCoverView(albumID: album.id)
                 Text(album.name)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: LumaMetrics.sidebarTextSize))
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if album.assetIDs.isEmpty {
+                if store.systemAlbumIsEmpty(album.id) {
                     Image(systemName: "tray")
-                        .font(.system(size: 9))
+                        .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.leading, CGFloat(level) * 14 + 22)
+            .padding(.leading, albumLeadingPadding(level, scope: scope))
             .padding(.trailing, 8)
-            .padding(.vertical, 3)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
             .background {
-                if store.sidebarItem == .systemAlbum(album.id) {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.accentColor.opacity(0.16))
-                } else if hoveredItem == .systemAlbum(album.id) {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.06))
-                }
+                LumaRowHighlight(active: store.sidebarItem == .systemAlbum(album.id),
+                                 hovered: hoveredItem == .systemAlbum(album.id) && hoveredItemScope == scope)
             }
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            hoveredItem = hovering ? .systemAlbum(album.id) : (hoveredItem == .systemAlbum(album.id) ? nil : hoveredItem)
+            if hovering {
+                hoveredItem = .systemAlbum(album.id)
+                hoveredItemScope = scope
+            } else if hoveredItem == .systemAlbum(album.id) && hoveredItemScope == scope {
+                hoveredItem = nil
+            }
         }
         .contextMenu {
             Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+            Button(store.isPinned(.systemAlbum(album.id)) ? "取消固定" : "固定到侧边栏") {
+                store.togglePin(.systemAlbum(album.id))
+            }
             Button("拷贝到拾光") {
                 store.importSystemAlbumToLibrary(album.id)
             }
+            if store.canManageSystemAlbums {
+                Divider()
+                Button("重命名相簿…") {
+                    namePrompt = .renameSystemAlbum(album.id, current: album.name)
+                }
+                Button("删除相簿", role: .destructive) {
+                    store.deleteSystemAlbum(album.id)
+                }
+            }
             if let path = store.systemLibraryPath {
+                Divider()
                 Button("在访达中显示图库") {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                 }
             }
+        }
+    }
+}
+
+/// 「固定」分区的拖拽排序：只接受固定项自身的拖拽，照片拖拽仍交给相簿 / 文件夹处理。
+private func loadPinnedDragID(from info: DropInfo, completion: @escaping (String) -> Void) -> Bool {
+    guard let provider = info.itemProviders(for: [pinnedSidebarDragType]).first else {
+        return false
+    }
+    provider.loadDataRepresentation(forTypeIdentifier: pinnedSidebarDragType.identifier) { data, _ in
+        guard let data, let raw = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async {
+            completion(raw)
+        }
+    }
+    return true
+}
+
+private struct PinnedReorderDropDelegate: DropDelegate {
+    let target: PinnedSidebarItem
+    let store: LibraryStore
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [pinnedSidebarDragType])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        loadPinnedDragID(from: info) { id in
+            store.movePinned(id: id, before: target.id)
+        }
+    }
+}
+
+/// 拖到「固定」列表末尾：移到最后一位。
+private struct PinnedEndDropDelegate: DropDelegate {
+    let store: LibraryStore
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [pinnedSidebarDragType])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        loadPinnedDragID(from: info) { id in
+            store.movePinnedToEnd(id: id)
         }
     }
 }
@@ -1271,49 +1711,51 @@ private struct AlbumCoverView: View {
     var body: some View {
         Group {
             if let coverPhoto {
-                PhotoThumbnailView(photo: coverPhoto, purpose: .cover(18))
+                PhotoThumbnailView(photo: coverPhoto, purpose: .cover(LumaMetrics.sidebarCoverSize))
             } else {
-                RoundedRectangle(cornerRadius: settings.smallCoverRadius)
+                RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius, style: .continuous)
                     .fill(Color.secondary.opacity(0.14))
                     .overlay {
                         Image(systemName: "rectangle.stack")
-                            .font(.system(size: 8))
+                            .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
             }
         }
-        .frame(width: 18, height: 18)
-        .clipShape(RoundedRectangle(cornerRadius: settings.smallCoverRadius))
+        .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
+        .clipShape(RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius, style: .continuous))
     }
 }
 
 private struct SystemAlbumCoverView: View {
     @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
     let albumID: Int64
-
-    private var firstPhoto: PhotoItem? {
-        guard let album = store.systemAlbum(id: albumID),
-              let first = album.assetIDs.first else { return nil }
-        return store.systemPhoto(id: first)
-    }
+    @State private var photo: PhotoItem?
+    @State private var loadedAlbumID: Int64?
 
     var body: some View {
         Group {
-            if let firstPhoto {
-                PhotoThumbnailView(photo: firstPhoto, purpose: .cover(18))
+            if let photo {
+                PhotoThumbnailView(photo: photo, purpose: .cover(LumaMetrics.sidebarCoverSize))
             } else {
-                RoundedRectangle(cornerRadius: settings.smallCoverRadius)
+                RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius, style: .continuous)
                     .fill(Color.secondary.opacity(0.14))
                     .overlay {
                         Image(systemName: "rectangle.stack")
-                            .font(.system(size: 8))
+                            .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
             }
         }
-        .frame(width: 18, height: 18)
-        .clipShape(RoundedRectangle(cornerRadius: settings.smallCoverRadius))
+        .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
+        .clipShape(RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius, style: .continuous))
+        // 封面在后台查询并按相簿缓存：侧边栏有上百个相簿时，body 里逐行查库会直接卡住滚动。
+        .task(id: albumID) {
+            if loadedAlbumID != albumID { photo = nil }
+            let loaded = await store.systemAlbumCover(albumID)
+            guard !Task.isCancelled else { return }
+            loadedAlbumID = albumID
+            photo = loaded
+        }
     }
 }

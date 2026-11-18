@@ -67,6 +67,8 @@ extension CloudSetupWizardView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("确认并添加")
                     .font(.system(size: 13, weight: .semibold))
+                labeledField("名称", text: $mountName,
+                             prompt: SMBClient.displayName(smbAddress) ?? "SMB 共享")
                 VStack(alignment: .leading, spacing: 6) {
                     infoRow("接入方式", "SMB 共享")
                     infoRow("地址", smbAddress)
@@ -652,7 +654,7 @@ extension CloudSetupWizardView {
     func addSMB() {
         isBusy = true
         let error = store.saveCloudMount(existing: nil,
-                                         name: "",
+                                         name: mountName,
                                          address: smbAddress,
                                          username: smbUsername,
                                          password: smbPassword,

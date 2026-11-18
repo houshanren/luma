@@ -11,6 +11,11 @@ struct LocalPerson: Identifiable, Hashable {
     var coverImageData: Data?
     var faceCount: Int
     var centroid: [Float]
+
+    /// 聚类生成时默认叫「人物 N」，用户没改过名就视为未命名。
+    var isUnnamed: Bool {
+        name.hasPrefix("人物 ") && Int(name.dropFirst(3)) != nil
+    }
 }
 
 struct FaceClusterProgress {
@@ -39,7 +44,11 @@ enum FaceClusterEngine {
         guard let cgImage = thumbnail.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return []
         }
+        return analyze(cgImage: cgImage, assetID: photo.id)
+    }
 
+    /// 分析任意已解码图像（网盘缩略图也走同一条端侧管线）。
+    static func analyze(cgImage: CGImage, assetID: UUID) -> [FaceSample] {
         let request = VNDetectFaceRectanglesRequest()
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         do {
@@ -57,7 +66,7 @@ enum FaceClusterEngine {
             guard area > 0.008 else { continue }
             guard let crop = cropFace(cgImage, boundingBox: face.boundingBox),
                   let vector = featurePrint(cgImage: crop) else { continue }
-            samples.append(FaceSample(assetID: photo.id,
+            samples.append(FaceSample(assetID: assetID,
                                       vector: vector,
                                       cover: jpegData(crop, maxSide: 180),
                                       quality: area))

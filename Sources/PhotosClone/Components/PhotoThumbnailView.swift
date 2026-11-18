@@ -39,12 +39,51 @@ enum PhotoThumbnailLoader {
                      purpose: ThumbnailPurpose,
                      store: LibraryStore,
                      onQuick: (NSImage) -> Void = { _ in }) async -> NSImage? {
-        if photo.isCloud {
-            return await store.cloudThumbnail(for: photo)
+        // 已刮削的视频优先显示海报 / 背景图，所有网盘与本地库通用。
+        if photo.isVideo, let artwork = store.cinemaGridArtwork(for: photo),
+           let image = await CinemaArtworkCache.shared.image(for: artwork) {
+            return image
         }
         let maxPixel = purpose.maxPixel
+        if photo.isCloud {
+            // 云盘两层加载：先读 192px 快速层（纯本地），目标图仍按需走网络。
+            if purpose.isTwoTier,
+               ImageLoader.pixelBucket(for: maxPixel) > ImageLoader.gridQuickPixel,
+               let quick = await store.cloudQuickThumbnail(for: photo,
+                                                           maxPixel: CGFloat(ImageLoader.gridQuickPixel)) {
+                guard !Task.isCancelled else { return nil }
+                onQuick(quick)
+            }
+            return await store.cloudThumbnail(for: photo)
+        }
+        // 本地视频缺封面（导入时尚不支持 MKV）时，用内置 ffmpeg 补一帧。
+        if photo.isVideo {
+            await ImageLoader.LocalVideoPoster.ensure(for: photo)
+        }
         if let cached = ImageLoader.cachedGridImage(for: photo, maxPixel: maxPixel) {
             return cached
+        }
+        // 原生系统图库：优先由系统「照片」给出缩略图（含预取、iCloud 与共享相簿资源）。
+        if photo.isSystem, store.usesPhotoKitThumbnails {
+            let bucket = ImageLoader.pixelBucket(for: maxPixel)
+            if purpose.isTwoTier, bucket > ImageLoader.gridQuickPixel {
+                if let quick = await PhotoKitThumbnailProvider.shared.thumbnail(
+                    for: photo,
+                    maxPixel: ImageLoader.gridQuickPixel,
+                    degradedAllowed: true
+                ) {
+                    guard !Task.isCancelled else { return nil }
+                    ImageLoader.storeGridThumbnail(quick, for: photo,
+                                                   maxPixel: CGFloat(ImageLoader.gridQuickPixel))
+                    onQuick(quick)
+                }
+            }
+            if let image = await PhotoKitThumbnailProvider.shared.thumbnail(for: photo, maxPixel: bucket) {
+                guard !Task.isCancelled else { return nil }
+                ImageLoader.storeGridThumbnail(image, for: photo, maxPixel: maxPixel)
+                return image
+            }
+            // 系统取不到（该项目不在当前系统照片库等）：继续走本地 derivative / 现场解码。
         }
         if purpose.isTwoTier,
            ImageLoader.pixelBucket(for: maxPixel) > ImageLoader.gridQuickPixel {

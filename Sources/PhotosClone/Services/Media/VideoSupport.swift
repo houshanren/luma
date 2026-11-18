@@ -49,13 +49,20 @@ enum FFmpeg {
 
     private static func locate(_ name: String) -> URL? {
         let fm = FileManager.default
-        let candidates = [
+        var candidates: [String] = []
+        // 优先使用 App 内置的静态 ffmpeg（由 build.sh 打进 Contents/Resources/bin）。
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("bin/\(name)").path {
+            candidates.append(bundled)
+        }
+        candidates += [
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
             "/usr/bin/\(name)",
             "/opt/local/bin/\(name)"
         ]
         for path in candidates where fm.isExecutableFile(atPath: path) {
+            Diagnostics.record("视频组件：使用 \(path)")
             return URL(fileURLWithPath: path)
         }
         guard fm.isExecutableFile(atPath: "/usr/bin/which") else { return nil }
@@ -92,6 +99,8 @@ struct VideoProbe {
 enum VideoError: LocalizedError {
     case transcodeUnavailable
     case transcodeFailed
+    /// 带 ffmpeg 输出的失败原因（401、编码不支持等）。
+    case transcodeFailedMessage(String)
 
     var errorDescription: String? {
         switch self {
@@ -99,6 +108,8 @@ enum VideoError: LocalizedError {
             return "未检测到 ffmpeg，无法转换该视频格式"
         case .transcodeFailed:
             return "视频转换失败"
+        case .transcodeFailedMessage(let message):
+            return "视频转换失败：\(message)"
         }
     }
 }
@@ -106,7 +117,18 @@ enum VideoError: LocalizedError {
 enum VideoSupport {
     /// 用于播放前的快速探测。
     static func probe(url: URL, options: [String: Any] = [:]) async -> VideoProbe {
-        let asset = AVURLAsset(url: url, options: options)
+        var probe = await probe(asset: AVURLAsset(url: url, options: options))
+        if !probe.isPlayable || probe.duration <= 0 || probe.size.width <= 0 {
+            let fallback = ffprobeMetadata(url: url)
+            if probe.duration <= 0 { probe.duration = fallback.duration }
+            if probe.size.width <= 0 { probe.size = fallback.size }
+            if probe.codec == nil { probe.codec = fallback.codec }
+        }
+        return probe
+    }
+
+    /// 任意 AVAsset（例如 PhotoKit 返回的云端素材，没有本地 URL）的轨道探测。
+    static func probe(asset: AVAsset) async -> VideoProbe {
         var probe = VideoProbe()
 
         let playable = (try? await asset.load(.isPlayable)) ?? false
@@ -125,13 +147,6 @@ enum VideoSupport {
             if let formats = try? await track.load(.formatDescriptions), let first = formats.first {
                 probe.codec = codecDisplayName(CMFormatDescriptionGetMediaSubType(first))
             }
-        }
-
-        if !probe.isPlayable || probe.duration <= 0 || probe.size.width <= 0 {
-            let fallback = ffprobeMetadata(url: url)
-            if probe.duration <= 0 { probe.duration = fallback.duration }
-            if probe.size.width <= 0 { probe.size = fallback.size }
-            if probe.codec == nil { probe.codec = fallback.codec }
         }
         return probe
     }
@@ -163,13 +178,27 @@ enum VideoSupport {
         return probe
     }
 
+    /// 远端视频探测：WebDAV 需要 Basic 认证头等，ffprobe 同样要带上。
+    static func ffprobeMetadata(url: URL, headers: [String: String],
+                                tlsInsecure: Bool = false) -> VideoProbe {
+        guard !headers.isEmpty || tlsInsecure else { return ffprobeMetadata(url: url) }
+        var input: [String] = []
+        if tlsInsecure { input += ["-tls_verify", "0"] }
+        input += inputArguments(url: url, headers: headers)
+        return ffprobeMetadata(inputArguments: input)
+    }
+
     static func ffprobeMetadata(url: URL) -> VideoProbe {
+        ffprobeMetadata(inputArguments: ["-i", url.path])
+    }
+
+    private static func ffprobeMetadata(inputArguments: [String]) -> VideoProbe {
         var probe = VideoProbe()
         guard let ffprobe = FFmpeg.probe else { return probe }
         let process = Process()
         process.executableURL = ffprobe
         process.arguments = ["-v", "error", "-print_format", "json",
-                             "-show_format", "-show_streams", url.path]
+                             "-show_format", "-show_streams"] + inputArguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()
@@ -233,10 +262,13 @@ enum VideoSupport {
         }
 
         guard let ffmpeg = FFmpeg.executable else { return false }
+        // ffmpeg 同样先写临时文件，成功后再替换：读取方（网格 / 内容识别）不会读到半张图。
+        let temp = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent)-\(UUID().uuidString).jpg")
         let process = Process()
         process.executableURL = ffmpeg
         process.arguments = ["-y", "-v", "error", "-ss", "0.3", "-i", url.path,
-                             "-frames:v", "1", "-vf", "scale='min(1200,iw)':-2", destination.path]
+                             "-frames:v", "1", "-vf", "scale='min(1200,iw)':-2", temp.path]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {
@@ -245,42 +277,165 @@ enum VideoSupport {
             return false
         }
         process.waitUntilExit()
-        return process.terminationStatus == 0
-            && FileManager.default.fileExists(atPath: destination.path)
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: temp.path) else {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)
+            } else {
+                try FileManager.default.moveItem(at: temp, to: destination)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        ThumbnailFileIndex.shared.recordWrite(url: destination)
+        return true
+    }
+
+    /// 远端抽帧：MKV 等容器系统无法解码，由 ffmpeg 直接读取远端地址（带认证头）。
+    @discardableResult
+    static func makeRemoteThumbnail(url: URL, headers: [String: String],
+                                    trustSelfSigned: Bool = false, destination: URL) -> Bool {
+        guard let ffmpeg = FFmpeg.executable else { return false }
+        try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        let temp = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent)-\(UUID().uuidString).jpg")
+        var arguments = ["-y", "-v", "error"]
+        if !headers.isEmpty {
+            arguments += ["-headers", headerBlock(headers)]
+        }
+        // NAS 的自签名证书：只有挂载点明确信任时才跳过校验。
+        if trustSelfSigned {
+            arguments += ["-tls_verify", "0"]
+        }
+        arguments += ["-ss", "1"]
+        arguments += inputArguments(url: url, headers: [:])
+        arguments += ["-frames:v", "1", "-vf", "scale='min(1200,iw)':-2", temp.path]
+
+        let process = Process()
+        process.executableURL = ffmpeg
+        process.arguments = arguments
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: temp.path) else {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)
+            } else {
+                try FileManager.default.moveItem(at: temp, to: destination)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            return false
+        }
+        return true
     }
 
     /// 用 ffmpeg 转成 H.264 + AAC 的 MP4，供系统不支持解码的容器播放。
     static func transcode(source: URL, destination: URL) async throws {
+        try await transcode(inputArguments: ["-i", source.path], destination: destination)
+    }
+
+    /// 云端视频转码：ffmpeg 直接从远端读取（带认证头）。
+    /// 先尝试把视频流无损封装进 MP4（仅音频转 AAC），系统仍无法播放时再全量转 H.264。
+    static func transcodeRemote(source: URL, headers: [String: String],
+                                trustSelfSigned: Bool = false,
+                                destination: URL) async throws {
+        guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
+        try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+
+        var tlsArguments: [String] = []
+        if trustSelfSigned { tlsArguments = ["-tls_verify", "0"] }
+        var inputArguments = tlsArguments
+        inputArguments += self.inputArguments(url: source, headers: headers)
+
+        let metadata = ffprobeMetadata(url: source, headers: headers, tlsInsecure: trustSelfSigned)
+        let remuxed = destination.deletingLastPathComponent()
+            .appendingPathComponent(".remux-\(UUID().uuidString).mp4")
+        var arguments = ["-y", "-v", "error"]
+        arguments += inputArguments
+        arguments += ["-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy"]
+        // AVFoundation 只认 hvc1 标签，ffmpeg 默认写 hev1。
+        if metadata.codec == "HEVC" { arguments += ["-tag:v", "hvc1"] }
+        arguments += ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", remuxed.path]
+
+        _ = try? await run(ffmpeg, arguments)
+        if FileManager.default.fileExists(atPath: remuxed.path) {
+            let check = await probe(asset: AVURLAsset(url: remuxed))
+            if check.hasVideoTrack, check.isPlayable {
+                try moveIntoPlace(remuxed, destination: destination)
+                return
+            }
+            try? FileManager.default.removeItem(at: remuxed)
+        }
+        try await transcode(inputArguments: inputArguments, destination: destination)
+    }
+
+    private static func transcode(inputArguments: [String], destination: URL) async throws {
         guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
         try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         let partial = destination.deletingLastPathComponent()
             .appendingPathComponent(".transcode-\(UUID().uuidString).mp4")
 
+        var arguments = ["-y", "-v", "error"]
+        arguments += inputArguments
+        arguments += ["-map", "0:v:0",
+                      "-map", "0:a:0?",
+                      "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                      "-pix_fmt", "yuv420p",
+                      "-c:a", "aac", "-b:a", "160k",
+                      "-movflags", "+faststart",
+                      partial.path]
+        let status = try await run(ffmpeg, arguments)
+
+        guard status == 0, FileManager.default.fileExists(atPath: partial.path) else {
+            try? FileManager.default.removeItem(at: partial)
+            throw VideoError.transcodeFailed
+        }
+        try moveIntoPlace(partial, destination: destination)
+    }
+
+    /// ffmpeg 的 `-headers`：每个请求头一行，以 CRLF 结尾。
+    private static func headerBlock(_ headers: [String: String]) -> String {
+        headers.map { "\($0.key): \($0.value)\r\n" }.joined()
+    }
+
+    private static func inputArguments(url: URL, headers: [String: String]) -> [String] {
+        var arguments: [String] = []
+        if !headers.isEmpty {
+            arguments += ["-headers", headerBlock(headers)]
+        }
+        arguments += ["-i", url.absoluteString]
+        return arguments
+    }
+
+    @discardableResult
+    private static func run(_ executable: URL, _ arguments: [String]) async throws -> Int32 {
         let process = Process()
-        process.executableURL = ffmpeg
-        process.arguments = [
-            "-y", "-v", "error",
-            "-i", source.path,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "160k",
-            "-movflags", "+faststart",
-            partial.path
-        ]
+        process.executableURL = executable
+        process.arguments = arguments
         process.standardOutput = Pipe()
         process.standardError = Pipe()
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
             process.terminationHandler = { finished in
-                if finished.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    try? FileManager.default.removeItem(at: partial)
-                    continuation.resume(throwing: VideoError.transcodeFailed)
-                }
+                continuation.resume(returning: finished.terminationStatus)
             }
             do {
                 try process.run()
@@ -288,10 +443,9 @@ enum VideoSupport {
                 continuation.resume(throwing: error)
             }
         }
+    }
 
-        guard FileManager.default.fileExists(atPath: partial.path) else {
-            throw VideoError.transcodeFailed
-        }
+    private static func moveIntoPlace(_ partial: URL, destination: URL) throws {
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try? FileManager.default.replaceItemAt(destination, withItemAt: partial)
         } else {

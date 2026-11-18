@@ -30,10 +30,7 @@ extension CloudSetupWizardView {
                         alistProvider = item
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: item.icon)
-                                .font(.system(size: 20))
-                                .foregroundStyle(alistProvider == item ? Color.accentColor : Color.secondary)
-                                .frame(width: 26)
+                            CloudBrandIcon(brand: item.brand, size: 26)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
                                     .font(.system(size: 12.5, weight: .medium))
@@ -107,8 +104,7 @@ extension CloudSetupWizardView {
     private var alistProviderGuideStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Image(systemName: alistProvider.icon)
-                    .foregroundStyle(Color.accentColor)
+                CloudBrandIcon(brand: alistProvider.brand, size: 18)
                 Text("在 AList 中添加\(alistProvider.title)")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
@@ -155,6 +151,7 @@ extension CloudSetupWizardView {
         VStack(alignment: .leading, spacing: 12) {
             Text("确认并添加")
                 .font(.system(size: 13, weight: .semibold))
+            labeledField("名称", text: $mountName, prompt: "\(alistProvider.title)（AList）")
             VStack(alignment: .leading, spacing: 6) {
                 infoRow("网盘类型", "\(alistProvider.title)（AList）")
                 infoRow("AList 地址", alistAddress)
@@ -191,7 +188,8 @@ extension CloudSetupWizardView {
             return
         }
         isBusy = true
-        let name = "\(alistProvider.title)（AList）"
+        let trimmedName = mountName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmedName.isEmpty ? "\(alistProvider.title)（AList）" : trimmedName
         let account = alistUser
         let secret = alistPassword
         Task {

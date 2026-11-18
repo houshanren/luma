@@ -71,18 +71,33 @@ struct EmptyStateView: View {
             return ("person.crop.rectangle", "没有人像照片", "带景深信息的人像照片会显示在这里。")
         case .systemDuplicates:
             return ("square.on.square", "没有重复项目", "")
-        case .systemHandwriting:
-            return ("pencil.tip", "没有手写项目", "Apple 未在本机数据库中提供手写识别结果。")
-        case .systemIllustrations:
-            return ("scribble.variable", "没有插图", "Apple 未在本机数据库中提供插图识别结果。")
         case .systemRecentlySaved:
             return ("square.and.arrow.down", "最近没有保存的项目", "最近 30 天保存到图库的项目会显示在这里。")
         case .systemImports:
             return ("square.and.arrow.down.on.square", "没有导入项目", "从相机或存储卡导入的项目会显示在这里。")
+        case .systemRevisit:
+            return ("clock.arrow.circlepath", "没有值得重看的照片", "拍摄超过两年、且最近一年没有查看过的照片会出现在这里。")
+        case .systemScenes, .systemScene:
+            return ("sparkles", "还没有识别照片内容", "在侧边栏「场景」里点「识别照片内容…」，结果只保存在内存，不写回「照片」。")
+        case .systemOcrTexts:
+            return ("text.viewfinder", "没有包含文字的照片", "先识别照片内容，图内文字会汇总到这里。")
         case .systemMap:
             return ("map", "没有位置信息", "带有 GPS 信息的照片会显示在地图上。")
+        case .systemHealth:
+            return ("stethoscope", "还没有体检结果", "体检会用缩略图检查清晰度与相似连拍，结果只保存在内存，不写回「照片」。")
         case .cloudMount:
-            return ("externaldrive.connected.to.line.below", "此文件夹没有照片", "当前目录中没有支持的照片或视频，可返回上一级或点按刷新重新读取。")
+            switch store.cloudScope {
+            case .map, .places:
+                return ("map", "没有位置信息", "点「读取照片信息」后，带 GPS 的网盘照片会显示在地图上。")
+            case .people:
+                return ("person.crop.square", "还没有识别到人物", "在「人物」页开始端侧分析，结果只保存在内存，不会上传或写回网盘。")
+            case .duplicates:
+                return ("square.on.square", "没有重复项目", "文件大小与像素尺寸相同的网盘项目会显示在这里；网盘只读，请到网盘 App 中合并。")
+            case .revisit:
+                return ("clock.arrow.circlepath", "没有值得重看的照片", "拍摄超过两年、且最近一年没有查看过的网盘照片会出现在这里。")
+            default:
+                return ("externaldrive.connected.to.line.below", "此文件夹没有照片", "当前目录中没有支持的照片或视频，可返回上一级或点按刷新重新读取。")
+            }
         default:
             return ("photo.on.rectangle.angled", "没有照片", "")
         }
@@ -104,10 +119,11 @@ struct EmptyStateView: View {
                     .font(.system(size: 36, weight: .light))
                     .foregroundStyle(Color.accentColor.opacity(0.9))
             }
-            .shadow(color: Color.accentColor.opacity(0.14), radius: 16, y: 6)
+            .shadow(color: Color.accentColor.opacity(0.32), radius: 24, y: 10)
 
             Text(content.title)
                 .font(.system(size: 19, weight: .semibold))
+                .tracking(-0.015)
             if !content.message.isEmpty {
                 Text(content.message)
                     .font(.system(size: 13))
@@ -145,168 +161,16 @@ struct EmptyStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        // 空状态不再铺一层实心底色：让环境光与一团强调色光晕透出来，和网站主视觉一致。
+        .background {
+            Circle()
+                .fill(Color.accentColor.opacity(0.16))
+                .frame(width: 340, height: 340)
+                .blur(radius: 100)
+                .offset(y: -70)
+                .allowsHitTesting(false)
+        }
         .animation(settings.motion.overlay, value: content.title)
-    }
-}
-
-struct SelectionBar: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var selectionModel: SelectionModel
-
-    var body: some View {
-        if !selectionModel.ids.isEmpty {
-            HStack(spacing: 4) {
-                Text("已选择 \(selectionModel.ids.count) 项")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.06), in: Capsule())
-                    .padding(.horizontal, 6)
-
-                Divider().frame(height: 16)
-
-                if store.isSystemScope {
-                    // 当前图库就是官方「照片」图库：收藏 / 隐藏 / 关键词写进拾光的补充元数据。
-                    if store.canEditNativeOverlay {
-                        barButton("收藏", icon: "heart") {
-                            store.toggleFavoriteSelection()
-                        }
-                        barButton("隐藏", icon: "eye.slash") {
-                            store.setHidden(selectionModel.ids, hidden: true)
-                        }
-                        barButton("关键词", icon: "tag") {
-                            store.showKeywordManager = true
-                        }
-                    }
-                    barButton("导入到我的图库", icon: "square.and.arrow.down") {
-                        store.importSystemSelectionToLibrary()
-                    }
-                    barButton("导出到文件夹", icon: "square.and.arrow.down.on.square") {
-                        store.presentBatchExport()
-                    }
-                    barButton("在访达中显示", icon: "folder") {
-                        if let first = selectionModel.ids.first {
-                            store.revealInFinder(first)
-                        }
-                    }
-                } else if store.isCloudScope {
-                    barButton("收藏", icon: "heart") {
-                        store.toggleFavoriteSelection()
-                    }
-                    barButton("导出", icon: "square.and.arrow.down") {
-                        store.presentBatchExport()
-                    }
-                    if store.isCurrentCloudWritable {
-                        barButton("重命名", icon: "pencil") {
-                            if selectionModel.ids.count == 1, let first = selectionModel.ids.first {
-                                store.requestCloudRename(first)
-                            }
-                        }
-                        barButton("从云端删除", icon: "trash", tint: .red) {
-                            store.confirmDeleteCloud(selectionModel.ids)
-                        }
-                    }
-                    barButton("刷新", icon: "arrow.clockwise") {
-                        store.refreshCloudDirectory()
-                    }
-                } else if store.sidebarItem == .trash {
-                    barButton("恢复", icon: "arrow.uturn.backward") {
-                        store.restore(selectionModel.ids)
-                    }
-                    barButton("永久删除", icon: "trash", tint: .red) {
-                        store.confirmPermanentDelete(selectionModel.ids)
-                    }
-                } else {
-                    barButton("收藏", icon: "heart") {
-                        store.toggleFavoriteSelection()
-                    }
-
-                    barButton("关键词", icon: "tag") {
-                        store.showKeywordManager = true
-                    }
-
-                    barButton("压缩", icon: "arrow.down.right.and.arrow.up.left") {
-                        store.presentCompression(for: selectionModel.ids)
-                    }
-
-                    barButton("导出到文件夹", icon: "square.and.arrow.down.on.square") {
-                        store.presentBatchExport()
-                    }
-
-                    Menu {
-                        ForEach(store.albums) { album in
-                            Button(album.name) {
-                                store.addToAlbum(album.id, photoIDs: selectionModel.ids)
-                            }
-                        }
-                        if !store.albums.isEmpty { Divider() }
-                        Button("新建相簿…") {
-                            store.showNewAlbumSheet = true
-                        }
-                    } label: {
-                        Image(systemName: "rectangle.stack.badge.plus")
-                            .font(.system(size: 13))
-                            .frame(width: 30, height: 26)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .frame(width: 30)
-                    .help("添加到相簿")
-
-                    if case .album = store.sidebarItem {
-                        barButton("从相簿中移除", icon: "rectangle.stack.badge.minus") {
-                            store.removeFromCurrentAlbum(selectionModel.ids)
-                        }
-                    }
-
-                    if store.sidebarItem == .hidden {
-                        barButton("取消隐藏", icon: "eye") {
-                            store.setHidden(selectionModel.ids, hidden: false)
-                        }
-                    } else {
-                        barButton("隐藏", icon: "eye.slash") {
-                            store.setHidden(selectionModel.ids, hidden: true)
-                        }
-                    }
-                    barButton("删除", icon: "trash", tint: .red) {
-                        store.delete(selectionModel.ids)
-                    }
-                }
-
-                Divider().frame(height: 16)
-
-                barButton("完成", icon: "xmark") {
-                    store.clearSelection()
-                }
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .background(.regularMaterial, in: Capsule())
-            .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-            }
-            .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-            .padding(.bottom, 18)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
-    }
-
-    private func barButton(_ title: String, icon: String,
-                           tint: Color = .primary,
-                           action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(tint)
-                .frame(width: 30, height: 26)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(title)
     }
 }
 
@@ -339,11 +203,7 @@ struct ToastView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
-                .background(.regularMaterial, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-                }
-                .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+                .lumaGlassCapsule()
                 .padding(.bottom, 84)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -388,7 +248,7 @@ struct KeywordManagerView: View {
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
-                TextField("输入关键词，可用逗号分隔", text: $newKeyword)
+                TextField("输入关键词；用 / 表示层级，如 旅行/日本/京都", text: $newKeyword)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(addKeyword)
                 Button("添加") {
@@ -414,7 +274,9 @@ struct KeywordManagerView: View {
             } else {
                 ScrollView {
                     VStack(spacing: 2) {
-                        ForEach(store.keywordOptions) { option in
+                        ForEach(store.keywordOptions.sorted {
+                            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                        }) { option in
                             keywordRow(option)
                         }
                     }
@@ -435,17 +297,30 @@ struct KeywordManagerView: View {
     }
 
     private func keywordRow(_ option: KeywordOption) -> some View {
-        HStack(spacing: 8) {
+        let depth = PhotoItem.keywordDepth(option.name)
+        let leaf = PhotoItem.keywordLeaf(option.name)
+        let parent = PhotoItem.keywordComponents(option.name).dropLast().joined(separator: " / ")
+        return HStack(spacing: 8) {
             Button {
                 store.keywordFilter = option.name
                 dismiss()
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "tag")
+                    if depth > 0 {
+                        Spacer()
+                            .frame(width: CGFloat(depth) * 12)
+                    }
+                    Image(systemName: depth == 0 ? "folder" : "tag")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    Text(option.name)
+                    Text(leaf)
                         .font(.system(size: 12.5))
+                    if !parent.isEmpty {
+                        Text(parent)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                     Spacer()
                     Text("\(option.count)")
                         .font(.system(size: 10.5, design: .monospaced))
@@ -454,6 +329,7 @@ struct KeywordManagerView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(option.name)
 
             if !selectionModel.ids.isEmpty {
                 Button {

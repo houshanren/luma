@@ -1,4 +1,5 @@
 import Foundation
+import LumaCore
 
 /// 一组重复项目：同一张照片的多个副本（文件大小与像素尺寸相同）。
 /// `photos` 已按建议保留顺序排列，第一张为推荐保留项。
@@ -36,7 +37,13 @@ enum DuplicateDetector {
         var buckets: [String: [PhotoItem]] = [:]
         for photo in photos where photo.deletedAt == nil && !photo.isHidden {
             guard photo.fileSize > 0, photo.pixelWidth > 0, photo.pixelHeight > 0 else { continue }
-            let key = "\(photo.fileSize)-\(photo.pixelWidth)x\(photo.pixelHeight)"
+            // 有内容哈希时优先按字节完全相同归组；没有哈希的旧资产继续按大小 + 尺寸兜底。
+            let key: String
+            if let hash = photo.contentHash, !hash.isEmpty {
+                key = "content-\(hash)"
+            } else {
+                key = "\(photo.fileSize)-\(photo.pixelWidth)x\(photo.pixelHeight)"
+            }
             buckets[key, default: []].append(photo)
         }
         var groups = buckets.values
@@ -127,5 +134,94 @@ enum DuplicateDetector {
 
         guard let best else { return nil }
         return DuplicatePick(photo: best.photo, reasons: Array(best.reasons.prefix(3)))
+    }
+}
+
+/// 相似照片组：按感知哈希 + 拍摄时间窗口 + 宽高比接近归组。
+/// 只用于展示与人工判断，不自动合并；避免把同一场景的不同瞬间误删。
+struct SimilarPhotoGroup: Identifiable {
+    let photos: [PhotoItem]
+    let representative: PhotoItem
+
+    var id: UUID { representative.id }
+}
+
+enum SimilarPhotoDetector {
+    static func groups(from photos: [PhotoItem],
+                       threshold: Int = 10,
+                       timeWindow: TimeInterval = 600) -> [SimilarPhotoGroup] {
+        let candidates = photos.filter {
+            $0.deletedAt == nil && !$0.isHidden && !$0.isVideo
+                && $0.perceptualHash != nil && $0.pixelWidth > 0 && $0.pixelHeight > 0
+        }.sorted { $0.capturedAt < $1.capturedAt }
+        guard candidates.count > 1 else { return [] }
+
+        var buckets: [Int: [PhotoItem]] = [:]
+        for photo in candidates {
+            let bucket = Int(photo.capturedAt.timeIntervalSince1970 / max(1, timeWindow))
+            buckets[bucket, default: []].append(photo)
+        }
+
+        var result: [SimilarPhotoGroup] = []
+        for bucket in buckets.values {
+            guard bucket.count > 1 else { continue }
+            var groups: [[PhotoItem]] = []
+            for photo in bucket {
+                guard let hash = photo.perceptualHash else { continue }
+                var placed = false
+                for index in groups.indices {
+                    guard let anchor = groups[index].first,
+                          let anchorHash = anchor.perceptualHash else { continue }
+                    guard abs(photo.capturedAt.timeIntervalSince(anchor.capturedAt)) <= timeWindow else { continue }
+                    guard ratioClose(photo, anchor) else { continue }
+                    if PerceptualHash.isSimilar(hash, anchorHash, threshold: threshold) {
+                        groups[index].append(photo)
+                        placed = true
+                        break
+                    }
+                }
+                if !placed {
+                    groups.append([photo])
+                }
+            }
+            for group in groups where group.count > 1 {
+                // 字节完全相同的副本交给「重复项目」，相似页不重复展示。
+                let hashes = Set(group.compactMap(\.contentHash))
+                if hashes.count == 1, group.allSatisfy({ $0.contentHash != nil }) { continue }
+                guard let representative = pickRepresentative(group) else { continue }
+                result.append(SimilarPhotoGroup(photos: group, representative: representative))
+            }
+        }
+        return result.sorted {
+            if $0.photos.count != $1.photos.count { return $0.photos.count > $1.photos.count }
+            return $0.representative.capturedAt > $1.representative.capturedAt
+        }
+    }
+
+    private static func ratioClose(_ lhs: PhotoItem, _ rhs: PhotoItem) -> Bool {
+        let left = Double(lhs.pixelWidth) / Double(max(1, lhs.pixelHeight))
+        let right = Double(rhs.pixelWidth) / Double(max(1, rhs.pixelHeight))
+        guard left > 0, right > 0 else { return false }
+        let ratio = max(left, right) / min(left, right)
+        let pixelRatio = Double(max(lhs.pixelWidth * lhs.pixelHeight, rhs.pixelWidth * rhs.pixelHeight))
+            / Double(max(1, min(lhs.pixelWidth * lhs.pixelHeight, rhs.pixelWidth * rhs.pixelHeight)))
+        return ratio <= 1.25 && pixelRatio <= 4
+    }
+
+    private static func pickRepresentative(_ photos: [PhotoItem]) -> PhotoItem? {
+        photos.max { lhs, rhs in
+            score(lhs) < score(rhs)
+        }
+    }
+
+    private static func score(_ photo: PhotoItem) -> Double {
+        var value = Double(photo.pixelWidth) * Double(photo.pixelHeight)
+        value += Double(photo.fileSize) * 0.001
+        value += Double(photo.starRating) * 1e8
+        if photo.isFavorite { value += 5e8 }
+        if photo.hasEdits { value += 2e8 }
+        if photo.pickFlag == .pick { value += 1e8 }
+        if photo.pickFlag == .reject { value -= 1e9 }
+        return value
     }
 }

@@ -7,14 +7,20 @@ struct PhotoViewerView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var viewer: ViewerModel
+    @Environment(\.colorScheme) private var colorScheme
     /// true 表示嵌入主窗口浏览（保留侧边栏与工具栏），对应官方「照片」的窗口内查看。
     var embedded: Bool = false
     @State private var image: NSImage?
-    /// 查看器占位层：先显示网格缩略图/中等尺寸，全尺寸解码完成后在其上淡入，避免分辨率突变。
+    /// 动图（GIF / 动画 WebP 等）的逐帧图像，交给 `AnimatedImageView` 打开即播放。
+    @State private var animatedImage: NSImage?
+    /// 窗口内浏览的背景图：照片/视频缩略图，用来铺满舞台两侧，避免竖图出现大片死黑。
+    @State private var backdropImage: NSImage?
+    /// 查看器占位层：先显示网格缩略图/中等尺寸，全尺寸解码完成后直接替换。
     @State private var placeholder: NSImage?
-    @State private var imageToken = 0
     @State private var zoom: CGFloat = 1
     @State private var offset: CGSize = .zero
+    /// 舞台尺寸：双指滚动拖动画面时用来限制边界。
+    @State private var stageSize: CGSize = .zero
     @State private var baseOffset: CGSize = .zero
     @State private var pinchStartZoom: CGFloat?
     @State private var pinchStartOffset: CGSize = .zero
@@ -26,34 +32,62 @@ struct PhotoViewerView: View {
     @State private var livePlayer: AVPlayer?
     @State private var livePlaying = false
     @State private var liveEndObserver: NSObjectProtocol?
-    /// 鼠标是否停留在图片区域；翻页按钮只在悬停时浮现，减少视觉噪音。
-    @State private var stageHovering = false
+    /// 连拍逐帧播放任务。
+    @State private var burstPlayTask: Task<Void, Never>?
+    /// 「保留所选，删除其余」的确认卡片。
+    @State private var confirmBurstKeep = false
+    /// 视频手动旋转角度：画面与顶栏按钮共用。
+    @State private var videoQuarterTurns = 0
+    /// 顶栏时间点击后显示剩余时长。
+    @State private var videoShowsRemainingTime = false
+
+    private var videoModel: VideoPlayerModel { viewer.videoPlayer }
 
     private var photo: PhotoItem? { store.viewerPhoto }
-    /// 分页模式下是当前照片附近的一小段；否则是完整的可见列表。
+    /// 连拍组内浏览：组为空时按普通照片浏览。
+    private var burstMembers: [PhotoItem] { viewer.burstMembers }
+    /// 分页模式下是当前照片附近的一小段；连拍时是整组成员；否则是完整的可见列表。
     private var items: [PhotoItem] {
+        if !burstMembers.isEmpty { return burstMembers }
         let strip = store.viewerStrip
-        return strip.isEmpty ? store.visiblePhotos : strip
+        return strip.isEmpty ? store.viewerVisiblePhotos : strip
     }
-    private var totalCount: Int { store.visibleCount }
+    /// 序号与总数：优先用查询下标，算不出时由 Store 逐级兜底，
+    /// 从相簿位置跳转、场景目录、卡片墙封面等入口打开也必须有数字。
+    private var viewerPosition: (index: Int, total: Int) {
+        guard let id = photo?.id else { return (0, 1) }
+        if !burstMembers.isEmpty {
+            return (burstMembers.firstIndex(where: { $0.id == id }) ?? 0, burstMembers.count)
+        }
+        return store.viewerPosition(of: id)
+    }
+    private var totalCount: Int { viewerPosition.total }
     private var loadKey: String {
         guard let photo else { return "none" }
         return "\(photo.id.uuidString)-\(photo.editVersion)-\(settings.viewFullHDR)"
     }
     private var currentIndex: Int? {
-        guard let id = photo?.id else { return nil }
-        return store.viewerIndex(of: id)
+        guard photo != nil else { return nil }
+        return viewerPosition.index
+    }
+
+    /// 当前照片在可见列表里的位置，用于工具栏上的小进度环。
+    private var progressFraction: CGFloat {
+        guard let currentIndex, totalCount > 0 else { return 0 }
+        return min(1, max(0, CGFloat(currentIndex + 1) / CGFloat(totalCount)))
     }
 
     var body: some View {
         ZStack {
-            if embedded {
-                Color(nsColor: .windowBackgroundColor)
-                    .ignoresSafeArea()
-            } else {
-                Color.black.opacity(0.97)
-                    .ignoresSafeArea()
-            }
+            // 视频真全屏的纯黑底：常驻在层级里、只改透明度。
+            // 用 if 切换底色会改变 ZStack 的子视图结构，SwiftUI 会重建播放器，
+            // 全屏时表现为「黑屏没画面，但声音还在放」。
+            Color.black
+                .opacity(viewer.videoImmersiveFullScreen ? 1 : 0)
+
+            // 照片与窗口内浏览的灯箱底；全屏视频时让位给纯黑。
+            photoBackdrop(immersive: !embedded)
+                .opacity(viewer.videoImmersiveFullScreen ? 0 : 1)
 
             if let photo {
                 if embedded {
@@ -76,19 +110,29 @@ struct PhotoViewerView: View {
         .task(id: loadKey) {
             await load()
         }
+        .task(id: photo?.cacheKey) {
+            await loadBackdrop()
+        }
+        .onChange(of: settings.viewerBackdrop) { _, enabled in
+            // 关掉背景虚化时清掉已加载的模糊底图，打开时补回来。
+            if enabled {
+                Task { await loadBackdrop() }
+            } else {
+                backdropImage = nil
+            }
+        }
         .scaleEffect(didAppear ? 1 : 0.985)
         .opacity(didAppear ? 1 : 0)
         .onAppear {
             installViewerKeyMonitor()
-            if !embedded {
-                installViewerScrollMonitor()
-            }
+            installViewerScrollMonitor()
             withAnimation(.easeOut(duration: 0.18)) { didAppear = true }
         }
         .onDisappear {
             removeViewerKeyMonitor()
             removeViewerScrollMonitor()
             stopLivePhoto()
+            stopBurstPlayback()
         }
         .background(
             WindowAccessor { window in
@@ -96,151 +140,873 @@ struct PhotoViewerView: View {
             }
         )
         .animation(settings.motion.overlay, value: viewer.showInfoPanel)
+        // 窗口内浏览：把返回、缩放、拍摄时间与操作交给统一工具栏，画面里只留照片。
+        .toolbar {
+            if embedded {
+                embeddedToolbar
+            }
+        }
+        // 连拍处理：保留所选，其余移入最近删除。
+        .confirmationDialog("保留所选照片？",
+                            isPresented: $confirmBurstKeep,
+                            titleVisibility: .visible) {
+            Button("保留 \(viewer.burstSelection.count) 张，删除其余 \(max(0, burstMembers.count - viewer.burstSelection.count)) 张",
+                   role: .destructive) {
+                store.deleteBurstPhotos(keeping: viewer.burstSelection)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("其余照片会移入最近删除，30 天内可恢复。")
+        }
     }
 
-    // MARK: - 嵌入主窗口的查看器
+    // MARK: - 查看器背景
+
+    /// 查看器「灯箱」底：用当前照片自身的模糊影像铺满整个舞台。
+    /// 竖图 / 竖视频两侧、宽图上下都不再出现大片死黑，同时保留照片本身的色彩气质。
+    /// - Parameter immersive: 全屏查看时压得更暗，突出前景照片。
+    private func photoBackdrop(immersive: Bool) -> some View {
+        GeometryReader { proxy in
+            ZStack {
+                if immersive {
+                    Color.black
+                } else {
+                    Color(nsColor: .underPageBackgroundColor)
+                }
+
+                // 设置里关闭「背景虚化」时只保留纯色底：翻页不再为每张照片重算大半径模糊。
+                if settings.viewerBackdrop {
+                    // 模糊底只需要低分辨率缩略图，避免每次缩放都对全尺寸图重算大半径模糊。
+                    if let backdrop = backdropImage ?? placeholder ?? image {
+                        Image(nsImage: backdrop)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .scaleEffect(1.12)
+                            .blur(radius: immersive ? 64 : 52)
+                            .clipped()
+                    }
+
+                    // 压暗到能看清前景，又保留一圈来自照片本身的环境色。
+                    Color.black.opacity(immersive
+                                        ? (colorScheme == .dark ? 0.58 : 0.44)
+                                        : (colorScheme == .dark ? 0.46 : 0.24))
+
+                    RadialGradient(colors: [Color.accentColor.opacity(colorScheme == .dark ? 0.10 : 0.05), .clear],
+                                   center: .center,
+                                   startRadius: 40,
+                                   endRadius: 720)
+
+                    RadialGradient(colors: [.clear, Color.black.opacity(immersive
+                                                                       ? 0.50
+                                                                       : (colorScheme == .dark ? 0.38 : 0.12))],
+                                   center: .center,
+                                   startRadius: 260,
+                                   endRadius: 1000)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+        .ignoresSafeArea()
+    }
 
     private func embeddedLayout(_ photo: PhotoItem) -> some View {
         VStack(spacing: 0) {
-            embeddedBar(photo)
-            Divider()
             HStack(spacing: 0) {
+                // 画面直接铺满内容区：不再给照片额外的上下/左右留边。
                 stage(photo)
-                    .padding(20)
                 if viewer.showInfoPanel {
                     InfoPanelView(photo: photo)
                         .frame(width: 304)
-                        .background(Color(nsColor: .windowBackgroundColor))
+                        .background(.regularMaterial)
                         .transition(.move(edge: .trailing))
                 }
+            }
+            // 连拍按官方「照片」的做法：普通浏览不铺胶片条，进入选择后底部才浮出整组帧条。
+            // 视频真全屏时不铺帧条：否则底部被占去一条，画面就铺不满了。
+            if settings.viewerFilmstrip, totalCount > 1, burstMembers.isEmpty,
+               !viewer.videoImmersiveFullScreen {
+                embeddedFilmstrip(photo)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if viewer.burstSelectionMode, !burstMembers.isEmpty {
+                burstSelectionPanel(photo)
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(settings.motion.overlay, value: settings.viewerFilmstrip)
+        .animation(settings.motion.overlay, value: viewer.showInfoPanel)
+        .animation(settings.motion.overlay, value: viewer.burstSelectionMode)
+    }
+
+    /// 连拍选择模式下浮在舞台上方的帧条：与官方「照片」一样是一块居中的深色圆角面板，
+    /// 帧缩略图带勾选圈，右侧放全选、收藏所选与「保留所选，删除其余」。
+    private func burstSelectionPanel(_ photo: PhotoItem) -> some View {
+        HStack(spacing: 12) {
+            Button("全选") {
+                store.selectAllBurstMembers()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(.white.opacity(0.85))
+            .help("选中组内全部照片")
+
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 6) {
+                        ForEach(burstMembers) { item in
+                            Button {
+                                store.toggleBurstSelection(item.id)
+                            } label: {
+                                FilmstripThumb(photo: item, isCurrent: item.id == photo.id)
+                                    .overlay(alignment: .topTrailing) {
+                                        let picked = viewer.burstSelection.contains(item.id)
+                                        Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(picked ? Color.accentColor : Color.white)
+                                            .shadow(color: .black.opacity(0.55), radius: 2, y: 0.5)
+                                            .padding(4)
+                                    }
+                                    .opacity(viewer.burstSelection.contains(item.id) ? 1 : 0.6)
+                            }
+                            .buttonStyle(.plain)
+                            .id(item.id)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .frame(maxWidth: 520)
+                .onAppear { proxy.scrollTo(photo.id, anchor: .center) }
+                .onChange(of: photo.id) { _, id in
+                    withAnimation(settings.motion.overlay) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+            }
+
+            Divider()
+                .frame(height: 26)
+                .overlay(.white.opacity(0.18))
+
+            Button {
+                store.favoriteBurstSelection()
+            } label: {
+                Image(systemName: "heart")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.9))
+            .disabled(viewer.burstSelection.isEmpty)
+            .help("收藏所选")
+
+            Button {
+                confirmBurstKeep = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.9))
+            .disabled(viewer.burstSelection.isEmpty)
+            .help("保留所选，删除其余")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.35), radius: 18, y: 6)
+    }
+
+    private func embeddedFilmstrip(_ photo: PhotoItem) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 4) {
+                    ForEach(items) { item in
+                        Button {
+                            viewer.viewerID = item.id
+                        } label: {
+                            FilmstripThumb(photo: item, isCurrent: item.id == photo.id)
+                        }
+                        .buttonStyle(.plain)
+                        .id(item.id)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
+            }
+            .frame(height: 76)
+            // 通到底部的渐变与整宽缩略图：不再是一块悬空的小玻璃，两侧也不留空白。
+            .background {
+                LinearGradient(colors: [Color.black.opacity(0.10),
+                                        Color.black.opacity(0.58),
+                                        Color.black.opacity(0.86)],
+                               startPoint: .top, endPoint: .bottom)
+                    .allowsHitTesting(false)
+            }
+            .overlay(alignment: .top) {
+                LinearGradient(colors: [Color.white.opacity(0.14), .clear],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: 1)
+            }
+            .onAppear { proxy.scrollTo(photo.id, anchor: .center) }
+            .onChange(of: photo.id) { _, id in
+                withAnimation(settings.motion.overlay) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+        }
+        .help("底部缩略图：点按可切换照片")
+    }
+
+    // MARK: - 顶栏照片信息
+
+    // MARK: - 顶栏视频控件
+
+    /// 顶栏融合是否生效：窗口内浏览视频，且设置里选了「顶栏融合」。
+    private var showsVideoToolbarControls: Bool {
+        embedded && settings.videoControlPlacement == .topIntegrated && (photo?.isVideo ?? false)
+    }
+
+    /// 顶栏播放舱：上行保留地点、拍摄时间、地理位置与序号圆环，下行是进度与时间。
+    private func videoToolbarDeck(_ photo: PhotoItem) -> some View {
+        VStack(spacing: 2) {
+            videoToolbarInfoLine(photo)
+            VideoToolbarProgress(model: videoModel,
+                                 showsRemaining: $videoShowsRemainingTime)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 3)
+        .background {
+            Capsule(style: .continuous)
+                .fill(.regularMaterial)
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    LinearGradient(colors: [Color.primary.opacity(0.16),
+                                            Color.primary.opacity(0.04)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
+        // 工具栏中央的空位有限：内容可以在 240–460 之间伸缩，避免压到左右两端的控件。
+        .frame(minWidth: 240, idealWidth: 380, maxWidth: 460)
+        .help(photo.displayTitle)
+    }
+
+    /// 播放舱第一行：与原先顶栏信息一致，标题 / 实况 / 日期时间 / 地点 / 圆环与序号全部保留。
+    private func videoToolbarInfoLine(_ photo: PhotoItem) -> some View {
+        let title = burstTitle ?? infoTitle(for: photo)
+        let showsLead = title != nil || photo.isLivePhoto
+        return HStack(spacing: 6) {
+            if let title {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .tracking(-0.01)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+
+            if photo.isLivePhoto {
+                liveTag
+            }
+
+            if showsLead {
+                infoSeparator
+            }
+
+            if photo.hasKnownCaptureDate {
+                Text(DateText.dayFormatter.string(from: photo.capturedAt))
+                    .foregroundStyle(Color.primary.opacity(0.82))
+                Text(DateText.timeFormatter.string(from: photo.capturedAt))
+                    .foregroundStyle(Color.primary.opacity(0.62))
+            } else {
+                Text("时间未知")
+                    .foregroundStyle(Color.primary.opacity(0.62))
+            }
+
+            if let place = infoPlaceLine(for: photo) {
+                infoSeparator
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(place)
+                    .foregroundStyle(Color.primary.opacity(0.72))
+                    .lineLimit(1)
+            }
+
+            if let currentIndex {
+                infoSeparator
+                progressRing
+                Text("\((currentIndex + 1).formatted())")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary)
+                Text("/ \(totalCount.formatted())")
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.primary.opacity(0.62))
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .lineLimit(1)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func rotateVideoPlayer() {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            videoQuarterTurns = (videoQuarterTurns + 1) % 4
+        }
+    }
+
+    private func toggleVideoFullScreen() {
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(nil)
+    }
+
+    /// 保存当前帧：与画面朝向一致，由查看器统一保存（顶栏与画面内控制条共用）。
+    private func captureVideoFrame() {
+        guard let photo else { return }
+        let turns = videoQuarterTurns
+        let model = videoModel
+        Task { @MainActor in
+            guard let frame = await model.currentFrameImage() else {
+                store.showToast("无法获取当前帧")
+                return
+            }
+            let image = turns == 0
+                ? frame
+                : (ImageTransform.rotate(frame, degrees: turns * 90) ?? frame)
+            let panel = NSSavePanel()
+            let base = (photo.originalName as NSString).deletingPathExtension
+            panel.nameFieldStringValue = base + "-截图.png"
+            panel.canCreateDirectories = true
+            panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            let rep = NSBitmapImageRep(cgImage: image)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                store.showToast("截图保存失败")
+                return
+            }
+            do {
+                try data.write(to: url)
+                store.showToast("已保存截图")
+            } catch {
+                store.showToast("截图保存失败：\(error.localizedDescription)")
             }
         }
     }
 
-    private func embeddedBar(_ photo: PhotoItem) -> some View {
+    /// 顶栏中部的照片信息：地点 / 实况 / 拍摄时间 / 地理位置 / 序号。
+    /// 单行紧凑排版，高度严格控制在工具栏内，既不裁切也不会把旁边的控件顶大。
+    private func viewerToolbarInfo(_ photo: PhotoItem) -> some View {
+        let title = burstTitle ?? infoTitle(for: photo)
+        let showsLead = title != nil || photo.isLivePhoto
+        return HStack(spacing: 7) {
+            if let title {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .tracking(-0.01)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+
+            if photo.isLivePhoto {
+                liveTag
+            }
+
+            if showsLead {
+                Capsule()
+                    .fill(Color.primary.opacity(0.20))
+                    .frame(width: 1, height: 12)
+            }
+
+            if photo.hasKnownCaptureDate {
+                Text(DateText.dayFormatter.string(from: photo.capturedAt))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.primary.opacity(0.85))
+                    .lineLimit(1)
+
+                Text(DateText.timeFormatter.string(from: photo.capturedAt))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.primary.opacity(0.62))
+                    .lineLimit(1)
+            } else {
+                Text("时间未知")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(0.62))
+                    .lineLimit(1)
+            }
+
+            if let place = infoPlaceLine(for: photo) {
+                infoSeparator
+                HStack(spacing: 2) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text(place)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.72))
+                        .lineLimit(1)
+                }
+            }
+
+            if let currentIndex {
+                infoSeparator
+                progressRing
+                HStack(spacing: 2) {
+                    Text("\((currentIndex + 1).formatted())")
+                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .contentTransition(.numericText())
+                    Text("/ \(totalCount.formatted())")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.primary.opacity(0.62))
+                }
+                .lineLimit(1)
+                .fixedSize()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background {
+            // 工具栏底下可能是深色照片，必须用不透明度更高的材质托底才看得清。
+            Capsule().fill(.regularMaterial)
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.7)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+        .help(photo.displayTitle)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// 实况标记：和地点、时间同一套信息语言，不再依赖画面上的角标。
+    private var liveTag: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "livephoto")
+                .font(.system(size: 8.5, weight: .semibold))
+            Text("实况")
+                .font(.system(size: 9.5, weight: .semibold))
+        }
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1.5)
+        .background(Color.accentColor.opacity(0.13), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.accentColor.opacity(0.20), lineWidth: 0.5)
+        }
+    }
+
+    private var infoSeparator: some View {
+        Circle()
+            .fill(Color.primary.opacity(0.28))
+            .frame(width: 2.5, height: 2.5)
+    }
+
+    private var progressRing: some View {
         ZStack {
-            HStack(spacing: 12) {
+            Circle()
+                .stroke(Color.primary.opacity(0.28), lineWidth: 1.7)
+            Circle()
+                .trim(from: 0, to: progressFraction)
+                .stroke(Color.accentColor,
+                        style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 11, height: 11)
+        .animation(settings.motion.overlay, value: progressFraction)
+    }
+
+    /// 缩放胶囊左侧的小圆环：随放大程度填充，让百分比多一层直觉读数。
+    private var zoomRing: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.accentColor.opacity(0.22), lineWidth: 1.6)
+            Circle()
+                .trim(from: 0, to: zoomRingFraction)
+                .stroke(Color.accentColor,
+                        style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 9, height: 9)
+    }
+
+    /// 放大范围 1x–5x 映射到圆环的 0–1。
+    private var zoomRingFraction: CGFloat {
+        min(1, max(0, (zoom - 1) / 4))
+    }
+
+    /// 连拍标题：与官方「照片」一致，显示整组的有效成员数。
+    private var burstTitle: String? {
+        guard burstMembers.count > 1 else { return nil }
+        return "连拍快照（\(burstMembers.count) 张照片）"
+    }
+
+    /// 连拍顶栏用带秒的时间，与官方「照片」的「09:22:40」一致。
+    private static let burstTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    /// 顶栏主标题：与信息面板 / 网格地点标签同一套层级（街道 → 城市 → 区县 → 省 → 国家）。
+    /// 没有地点信息时返回 nil，顶栏只显示时间与序号，不用文件名冒充标题。
+    private func infoTitle(for photo: PhotoItem) -> String? {
+        photo.placeTitle
+    }
+
+    /// 地点副行：标题已占用街道时补城市 / 区县，标题是城市时补区县或省份。
+    /// 没有地名但有坐标时显示经纬度；完全没有地理信息时整段隐藏。
+    private func infoPlaceLine(for photo: PhotoItem) -> String? {
+        if let subtitle = photo.placeSubtitle { return subtitle }
+        return coordinateText(for: photo)
+    }
+
+    /// 经纬度文案：地名还没解析出来时用它兜底，避免定位段整段消失。
+    private func coordinateText(for photo: PhotoItem) -> String? {
+        guard let latitude = photo.latitude, let longitude = photo.longitude,
+              CoordinateValidator.isValid(latitude: latitude, longitude: longitude) else {
+            return nil
+        }
+        let lat = String(format: "%.2f°%@", abs(latitude), latitude >= 0 ? "N" : "S")
+        let lon = String(format: "%.2f°%@", abs(longitude), longitude >= 0 ? "E" : "W")
+        return "\(lat) · \(lon)"
+    }
+
+    /// 窗口内浏览的工具栏：返回、缩放、拍摄时间 / 序号、操作。
+    @ToolbarContentBuilder
+    private var embeddedToolbar: some ToolbarContent {
+        if let photo {
+            ToolbarItem(placement: .navigation) {
                 Button {
-                    store.closeViewer()
+                    // 视频全屏里「返回」只退出系统全屏：画面继续播放，查看器不关、不回列表。
+                    if viewer.videoImmersiveFullScreen {
+                        FullScreenDiagnostics.log("toolbarBack -> exit fullscreen")
+                        hostWindow?.toggleFullScreen(nil)
+                    } else {
+                        FullScreenDiagnostics.log("toolbarBack -> close viewer")
+                        store.closeViewer()
+                    }
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .frame(width: 26, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
-                .help("返回图库 (Esc)")
-
-                if !photo.isVideo {
-                    HStack(spacing: 6) {
-                        Image(systemName: "minus.magnifyingglass")
-                            .font(.system(size: 9.5))
-                        Slider(value: zoomBinding, in: 1...5)
-                            .controlSize(.mini)
-                            .frame(width: 112)
-                            .accessibilityLabel("缩放照片")
-                        Image(systemName: "plus.magnifyingglass")
-                            .font(.system(size: 9.5))
-                    }
-                    .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 0)
+                .help(viewer.videoImmersiveFullScreen ? "退出全屏 (Esc)" : "返回图库 (Esc)")
             }
 
-            VStack(spacing: 1) {
-                Text(DateText.fullFormatter.string(from: photo.capturedAt))
-                    .font(.system(size: 12, weight: .medium))
-                if let currentIndex {
-                    Text("\(currentIndex + 1) / \(totalCount)")
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(photo.displayTitle)
-                        .font(.system(size: 9.5))
+            // 顶栏融合：播放控制紧跟返回按钮，和工具栏共用同一行。
+            if showsVideoToolbarControls {
+                ToolbarItem(placement: .navigation) {
+                    VideoToolbarTransport(model: videoModel,
+                                          hasPrev: store.hasAdjacentVideo(from: photo.id, delta: -1),
+                                          hasNext: store.hasAdjacentVideo(from: photo.id, delta: 1),
+                                          onPrev: { store.viewerStepVideo(-1) },
+                                          onNext: { store.viewerStepVideo(1) })
+                }
+            }
+
+            // 连拍选择模式：与官方「照片」一致，左上角显示「连拍快照（N张照片）」。
+            if viewer.burstSelectionMode, !burstMembers.isEmpty {
+                ToolbarItem(placement: .navigation) {
+                    Text(burstTitle ?? "连拍快照")
+                        .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
 
-            HStack(spacing: 6) {
-                Spacer(minLength: 0)
-                barButton("info.circle", help: "信息") {
-                    viewer.showInfoPanel.toggle()
-                }
-                ShareLink(items: store.shareURLs) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 13))
-                        .frame(width: 28, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(store.shareURLs.isEmpty)
-                .help("共享")
-                if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
-                    barButton(photo.isFavorite ? "heart.fill" : "heart",
-                              help: photo.isFavorite ? "取消收藏" : "收藏") {
-                        store.toggleFavorite(photo.id)
+            ToolbarItem(placement: .navigation) {
+                // 工具栏里不再放整条缩放滑杆（在玻璃工具栏里会撑成一条空白长条）；
+                // 只在放大后显示一个紧凑的缩放胶囊，点一下回到适应窗口。
+                if zoom > 1.01 {
+                    Button {
+                        resetZoom()
+                    } label: {
+                        // 背景与内容放在同一个固定尺寸的容器里：
+                        // 之前胶囊按内容自适应，工具栏会在缩放时把它压窄，百分比就溢出到胶囊外。
+                        ZStack {
+                            Capsule().fill(Color.accentColor.opacity(0.14))
+                            Capsule().strokeBorder(
+                                LinearGradient(colors: [Color.accentColor.opacity(0.55),
+                                                        Color.accentColor.opacity(0.15)],
+                                               startPoint: .topLeading,
+                                               endPoint: .bottomTrailing),
+                                lineWidth: 0.6)
+                            HStack(spacing: 4) {
+                                zoomRing
+                                Text("\(Int((zoom * 100).rounded()))%")
+                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .fixedSize()
+                            }
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .frame(width: 64, height: 20)
+                        .contentShape(Capsule())
+                        .fixedSize()
                     }
-                    .foregroundStyle(photo.isFavorite ? Color.pink : Color.primary)
+                    .buttonStyle(.plain)
+                    .help("恢复到适应窗口 (0)")
+                    .animation(settings.motion.overlay, value: zoom)
                 }
-                barButton("play.rectangle", help: "幻灯片播放") {
-                    store.presentSlideshow()
-                }
-                .disabled(store.visibleCount == 0)
-                if !photo.isVideo && !photo.isReadOnly {
-                    barButton("slider.horizontal.3", help: "编辑") {
-                        store.openEditor(photo.id)
-                    }
-                }
-                moreMenu(photo)
             }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 44)
-        .background(.bar)
-    }
 
-    private func barButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .frame(width: 28, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    private var zoomBinding: Binding<Double> {
-        Binding(
-            get: { Double(zoom) },
-            set: { newValue in
-                let old = zoom
-                let target = CGFloat(newValue)
-                zoom = target
-                if target <= 1.01 {
-                    offset = .zero
-                    baseOffset = .zero
+            // 地点 / 实况 / 拍摄时间 / 序号：与顶部工具栏同一行；连拍时换成官方的两行信息。
+            ToolbarItem(placement: .principal) {
+                if showsVideoToolbarControls {
+                    videoToolbarDeck(photo)
                 } else {
-                    let ratio = target / max(old, 0.0001)
-                    offset = CGSize(width: offset.width * ratio, height: offset.height * ratio)
-                    baseOffset = offset
+                    principalInfo(photo)
                 }
-                pinchStartZoom = nil
             }
-        )
+
+            ToolbarItemGroup(placement: .primaryAction) {
+                if viewer.burstSelectionMode, !burstMembers.isEmpty {
+                    // 与官方「照片」一致：完成选择只保留「取消 / 完成」两个按钮。
+                    Button("取消") {
+                        endBurstSelection()
+                    }
+                    .help("取消连拍选择")
+
+                    Button("完成") {
+                        endBurstSelection()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .help("完成连拍选择")
+                } else {
+                    if showsVideoToolbarControls {
+                        // 顶栏融合模式（控制条在工具栏）时，音量调节也留在工具栏里。
+                        VideoToolbarVolume(model: videoModel)
+                        VideoToolbarOptions(model: videoModel,
+                                            quarterTurns: videoQuarterTurns,
+                                            onRotate: rotateVideoPlayer,
+                                            onCapture: captureVideoFrame)
+                        VideoDeckButton(icon: "arrow.up.left.and.arrow.down.right",
+                                        help: "全屏 (F)",
+                                        action: toggleVideoFullScreen)
+
+                        // 播放控制与文件操作之间留一道分隔，右侧不再挤成一排。
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.12))
+                            .frame(width: 1, height: 14)
+                            .padding(.horizontal, 3)
+                    }
+
+                    Button {
+                        viewer.showInfoPanel.toggle()
+                    } label: {
+                        Image(systemName: viewer.showInfoPanel ? "info.circle.fill" : "info.circle")
+                    }
+                    .help("信息")
+
+                    // 连拍的帧条只在选择模式浮出，普通浏览时不提供胶片条开关；
+                    // 视频顶栏融合时也收起，给中部播放舱让出宽度。
+                    if burstMembers.isEmpty, !showsVideoToolbarControls {
+                        Button {
+                            settings.viewerFilmstrip.toggle()
+                        } label: {
+                            Image(systemName: "film")
+                        }
+                        .foregroundStyle(settings.viewerFilmstrip ? Color.accentColor : Color.primary)
+                        .help(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图")
+                    }
+
+                    ShareLink(items: store.shareURLs) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .disabled(store.shareURLs.isEmpty)
+                    .help("共享")
+
+                    if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                        Button {
+                            store.toggleFavorite(photo.id)
+                        } label: {
+                            Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
+                        }
+                        .foregroundStyle(photo.isFavorite ? Color.pink : Color.primary)
+                        .help(photo.isFavorite ? "取消收藏" : "收藏")
+                    }
+
+                    if !photo.isVideo, (!photo.isReadOnly || photo.isSystem), store.canScanBeauty {
+                        Button {
+                            store.showBeautyPanel = true
+                        } label: {
+                            Image(systemName: "wand.and.stars")
+                        }
+                        .help("智能美化…")
+                    }
+
+                    if !showsVideoToolbarControls {
+                        Button {
+                            store.presentSlideshow()
+                        } label: {
+                            Image(systemName: "play.rectangle")
+                        }
+                        .disabled(store.visibleCount == 0)
+                        .help("幻灯片播放")
+                    }
+
+                    if burstMembers.count > 1 {
+                        Button {
+                            toggleBurstPlayback()
+                        } label: {
+                            Image(systemName: viewer.burstPlaying ? "pause.fill" : "play.fill")
+                        }
+                        .help(viewer.burstPlaying ? "暂停连拍播放 (P)" : "播放连拍快照 (P)")
+                    }
+
+                    moreMenu(photo)
+
+                    if !photo.isVideo, !photo.isReadOnly {
+                        Button {
+                            store.openEditor(photo.id)
+                        } label: {
+                            Text("编辑")
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(Color.primary.opacity(0.07), in: Capsule())
+                                .overlay {
+                                    Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                                }
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help("编辑照片")
+                    }
+                }
+            }
+        }
+    }
+
+    /// 顶栏中部信息：连拍时按官方「照片」排成两行（标题 / 连拍标签 + 日期 + 组内序号）。
+    @ViewBuilder
+    private func principalInfo(_ photo: PhotoItem) -> some View {
+        if burstMembers.isEmpty {
+            viewerToolbarInfo(photo)
+        } else if viewer.burstSelectionMode {
+            // 选择模式：上行「日期 时间 · i/N」，下行「进行选择」。
+            VStack(spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(DateText.dayFormatter.string(from: photo.capturedAt))
+                    Text(Self.burstTimeFormatter.string(from: photo.capturedAt))
+                    if let currentIndex {
+                        Text("·")
+                        Text("\(currentIndex + 1)/\(burstMembers.count)")
+                            .contentTransition(.numericText())
+                    }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+
+                Text("进行选择")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+            .accessibilityElement(children: .combine)
+        } else {
+            // 普通浏览：上行地点标题，下行「连拍快照（N张照片） · 日期 时间 · i/N」。
+            VStack(spacing: 1) {
+                if let title = infoTitle(for: photo) {
+                    Text(title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .tracking(-0.01)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 5) {
+                    Text(burstTitle ?? "连拍快照")
+                    Text("·")
+                    Text(DateText.dayFormatter.string(from: photo.capturedAt))
+                    Text(Self.burstTimeFormatter.string(from: photo.capturedAt))
+                    if let currentIndex {
+                        Text("·")
+                        Text("\(currentIndex + 1)/\(burstMembers.count)")
+                            .contentTransition(.numericText())
+                    }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// 退出连拍选择模式（取消与完成都只收起选择，不改动照片）。
+    private func endBurstSelection() {
+        viewer.burstSelectionMode = false
+        viewer.burstSelection = []
     }
 
     private func stage(_ photo: PhotoItem) -> some View {
         GeometryReader { proxy in
+            // 角标要打在照片本身上：先按实际显示尺寸算出照片在舞台里的留边，
+            // 竖图 / 宽图两侧或上下的空白区域不能出现「人像」「实况」和定位图钉。
+            let shownForBadges = image ?? animatedImage ?? placeholder
+            let fittedForBadges = shownForBadges.map { fittedSize($0, in: proxy.size) } ?? proxy.size
+            let imageInsetX = max(0, (proxy.size.width - fittedForBadges.width) / 2)
+            let imageInsetY = max(0, (proxy.size.height - fittedForBadges.height) / 2)
+            // 全屏时顶部还有一排 chrome 按钮，角标再往下让一档。
+            let badgeTop = max(imageInsetY + 14, embedded ? 14 : 58)
             ZStack {
                 if photo.isVideo {
-                    VideoPlayerStage(photo: photo)
+                    // 视频只缩放画面本身，播放控件保持原尺寸；放大后同样可以拖动。
+                    VideoPlayerStage(photo: photo,
+                                     model: videoModel,
+                                     quarterTurns: $videoQuarterTurns,
+                                     onCaptureFrame: { captureVideoFrame() },
+                                     transparentBackground: embedded,
+                                     zoom: zoom,
+                                     offset: offset)
+                        .simultaneousGesture(magnifyGesture(stage: proxy.size, fitted: proxy.size))
+                        .simultaneousGesture(panGesture(
+                            stage: proxy.size,
+                            fitted: proxy.size,
+                            bottomGuard: settings.videoControlPlacement == .topIntegrated && embedded ? 0 : 170))
                 } else if livePlaying, let livePlayer {
+                    // 实况就在照片原位播放：尺寸与静态照片完全一致，
+                    // 不走视频播放器，也不显示时长 / 进度 / 播放信息。
+                    let fitted = image.map { fittedSize($0, in: proxy.size) }
                     LivePhotoLayerView(player: livePlayer)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(width: fitted?.width ?? proxy.size.width,
+                               height: fitted?.height ?? proxy.size.height)
+                } else if photo.playsAnimation, let animated = animatedImage {
+                    // 动图在查看器里直接播放，不需要额外的播放按钮。
+                    let fitted = fittedSize(animated, in: proxy.size)
+                    AnimatedImageView(image: animated)
+                        .frame(width: fitted.width, height: fitted.height)
+                        .scaleEffect(zoom)
+                        .offset(offset)
+                        .shadow(color: .black.opacity(embedded ? 0.28 : 0),
+                                radius: embedded ? 20 : 0,
+                                y: embedded ? 8 : 0)
                 } else if let shown = image ?? placeholder {
                     let fitted = fittedSize(shown, in: proxy.size)
                     ZStack {
@@ -254,7 +1020,6 @@ struct PhotoViewerView: View {
                             Image(nsImage: image)
                                 .resizable()
                                 .frame(width: fitted.width, height: fitted.height)
-                                .transition(.opacity)
                         }
                     }
                     .scaleEffect(zoom)
@@ -262,7 +1027,6 @@ struct PhotoViewerView: View {
                     .shadow(color: .black.opacity(embedded ? 0.28 : 0),
                             radius: embedded ? 20 : 0,
                             y: embedded ? 8 : 0)
-                    .animation(settings.motion.overlay, value: imageToken)
                 } else {
                     ProgressView()
                         .controlSize(.large)
@@ -270,8 +1034,10 @@ struct PhotoViewerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { stageSize = proxy.size }
+            .onChange(of: proxy.size) { _, size in stageSize = size }
             .overlay {
-                if !photo.isVideo, let shown = image ?? placeholder, !livePlaying {
+                if !photo.isVideo, let shown = image ?? animatedImage ?? placeholder, !livePlaying {
                     let fitted = fittedSize(shown, in: proxy.size)
                     Color.clear
                         .contentShape(Rectangle())
@@ -286,42 +1052,212 @@ struct PhotoViewerView: View {
                 }
             }
             .clipped()
-            .onHover { hovering in stageHovering = hovering }
-        }
-        .overlay(alignment: .topLeading) {
-            if !photo.isVideo, livePhotoURL(for: photo) != nil {
-                Button {
-                    toggleLivePhoto()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: livePlaying ? "pause.fill" : "livephoto.play")
-                            .font(.system(size: 9.5, weight: .semibold))
-                        Text("实况")
-                            .font(.system(size: 10, weight: .semibold))
+            // 画面角标：连拍「进行选择…」与 RAW / 人像 / 实况角标一起贴在照片左上内侧；
+            // 已识别并命名的人物，名字紧跟角标打在照片上。
+            .overlay(alignment: .topLeading) {
+                let names = showsStageBadges(photo) ? store.personNames(for: photo.id) : []
+                VStack(alignment: .leading, spacing: 6) {
+                    if burstMembers.count > 1, !viewer.burstSelectionMode {
+                        burstSelectBadge
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.ultraThinMaterial, in: Capsule())
+                    if showsStageBadges(photo), hasStageBadgeContent(photo) {
+                        HStack(spacing: 6) {
+                            if photo.isRAWFile {
+                                rawBadge
+                            }
+                            if photo.isPortraitCapture {
+                                portraitBadge
+                                    .allowsHitTesting(false)
+                            }
+                            if livePhotoURL(for: photo) != nil {
+                                Button {
+                                    toggleLivePhoto()
+                                } label: {
+                                    liveStageBadge
+                                }
+                                .buttonStyle(.plain)
+                                .help("播放实况照片 (L)")
+                            }
+                        }
+                    }
+                    if showsStageBadges(photo), !names.isEmpty {
+                        personNameRow(names)
+                    }
                 }
-                .buttonStyle(.plain)
-                .help(livePlaying ? "暂停实况照片 (L)" : "播放实况照片 (L)")
-                .padding(16)
+                .padding(.leading, imageInsetX + 14)
+                .padding(.top, badgeTop)
+            }
+            .overlay(alignment: .topTrailing) {
+                if showsStageBadges(photo), photo.hasLocation {
+                    locationBadge
+                        .padding(.trailing, imageInsetX + 14)
+                        .padding(.top, badgeTop)
+                }
+            }
+            // 连拍选择模式：照片右下角的圆形勾选，与官方「照片」一致，点按勾选当前这一张。
+            .overlay(alignment: .bottomTrailing) {
+                if viewer.burstSelectionMode, !burstMembers.isEmpty {
+                    Button {
+                        store.toggleBurstSelection(photo.id)
+                    } label: {
+                        Image(systemName: viewer.burstSelection.contains(photo.id)
+                              ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 26, weight: .regular))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, imageInsetX + 16)
+                    .padding(.bottom, imageInsetY + 16)
+                    .help(viewer.burstSelection.contains(photo.id) ? "取消勾选这张" : "勾选这张")
+                }
             }
         }
-        .overlay(alignment: .leading) {
-            navButton("chevron.left") { store.viewerStep(-1) }
-                .padding(.leading, 16)
-                .opacity(totalCount > 1 && (stageHovering || image == nil) ? 1 : 0)
-                .disabled(totalCount <= 1)
-                .animation(.easeInOut(duration: 0.16), value: stageHovering)
+    }
+
+    /// 照片本体上的左上角标（RAW / 人像 / 实况）是否有内容。
+    private func hasStageBadgeContent(_ photo: PhotoItem) -> Bool {
+        photo.isRAWFile || photo.isPortraitCapture || livePhotoURL(for: photo) != nil
+    }
+
+    /// 照片本体上的角标只在静态照片、未缩放时出现；实况播放与放大查看时让位给画面。
+    private func showsStageBadges(_ photo: PhotoItem) -> Bool {
+        guard !photo.isVideo, !livePlaying, zoom <= 1.01 else { return false }
+        return hasStageBadgeContent(photo) || photo.hasLocation
+            || !store.personNames(for: photo.id).isEmpty
+    }
+
+    // MARK: - 画面角标
+
+    /// RAW 照片的画面角标：与「人像」「实况」同一套深色胶囊。
+    private var rawBadge: some View {
+        Text("RAW")
+            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3.5)
+            .background(Color.black.opacity(0.38), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+            }
+            .allowsHitTesting(false)
+    }
+
+    /// 已命名人物：一行小胶囊打在照片上，超过 3 人折叠成 +N。
+    private func personNameRow(_ names: [PhotoPersonName]) -> some View {
+        HStack(spacing: 5) {
+            ForEach(names.prefix(3)) { person in
+                HStack(spacing: 3) {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 8, weight: .semibold))
+                    Text(person.name)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.black.opacity(0.38), in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                }
+            }
+            if names.count > 3 {
+                Text("+\(names.count - 3)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.38), in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                    }
+            }
         }
-        .overlay(alignment: .trailing) {
-            navButton("chevron.right") { store.viewerStep(1) }
-                .padding(.trailing, 16)
-                .opacity(totalCount > 1 && (stageHovering || image == nil) ? 1 : 0)
-                .disabled(totalCount <= 1)
-                .animation(.easeInOut(duration: 0.16), value: stageHovering)
+        .allowsHitTesting(false)
+    }
+
+    /// 连拍「进行选择…」：与官方「照片」一致，贴在照片左上角的深色胶囊。
+    private var burstSelectBadge: some View {
+        Button {
+            beginBurstSelection()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "rectangle.dashed")
+                    .font(.system(size: 10.5, weight: .semibold))
+                Text("进行选择…")
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color.black.opacity(0.45), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+            }
+            .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .help("进行选择…")
+    }
+
+    /// 实况照片的画面角标：与「人像」同一套深色胶囊，点击即原位播放。
+    private var liveStageBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: livePlaying ? "pause.fill" : "livephoto.play")
+                .font(.system(size: 9.5, weight: .semibold))
+            Text("实况")
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3.5)
+        .background(Color.black.opacity(0.38), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+        }
+    }
+
+    /// 人像照片的角标，与系统「照片」一致：画面左上角的「人像」胶囊。
+    private var portraitBadge: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "person.fill")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 15, height: 15)
+                .background(Color.white.opacity(0.18), in: Circle())
+            Text("人像")
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Color.black.opacity(0.38), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+        }
+    }
+
+    /// 带定位信息的照片：右上角地图图钉，点击打开信息面板查看地点与地图。
+    private var locationBadge: some View {
+        Button {
+            withAnimation(settings.motion.overlay) { viewer.showInfoPanel = true }
+        } label: {
+            Image(systemName: "mappin.and.ellipse")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 26)
+                .background(Color.black.opacity(0.38),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
+                }
+        }
+        .buttonStyle(.plain)
+        .help("查看位置信息")
+        .accessibilityLabel("查看位置信息")
     }
 
     // MARK: - Zoom math
@@ -381,10 +1317,13 @@ struct PhotoViewerView: View {
             }
     }
 
-    private func panGesture(stage: CGSize, fitted: CGSize) -> some Gesture {
+    private func panGesture(stage: CGSize, fitted: CGSize,
+                            bottomGuard: CGFloat = 0) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 guard zoom > 1 else { return }
+                // 视频底部是播放控件（进度条可拖动），从这一区域开始的拖动留给播放器。
+                if bottomGuard > 0, value.startLocation.y > stage.height - bottomGuard { return }
                 let proposed = CGSize(width: baseOffset.width + value.translation.width,
                                       height: baseOffset.height + value.translation.height)
                 offset = clampedOffset(proposed, stage: stage, fitted: fitted, zoom: zoom)
@@ -442,7 +1381,7 @@ struct PhotoViewerView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(DateText.fullFormatter.string(from: photo.capturedAt))
                         .font(.system(size: 12.5, weight: .medium))
-                    Text(photo.displayTitle)
+                    Text(burstTitle ?? photo.displayTitle)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
@@ -453,6 +1392,13 @@ struct PhotoViewerView: View {
                         store.toggleFavorite(photo.id)
                     }
                     .help(photo.isFavorite ? "取消收藏" : "收藏")
+                }
+
+                if burstMembers.count > 1 {
+                    circleButton(viewer.burstPlaying ? "pause.fill" : "play.fill") {
+                        toggleBurstPlayback()
+                    }
+                    .help(viewer.burstPlaying ? "暂停连拍播放 (P)" : "播放连拍快照 (P)")
                 }
 
                 circleButton("info.circle") {
@@ -484,7 +1430,7 @@ struct PhotoViewerView: View {
                     .help("从云端删除")
                 } else if !photo.isReadOnly {
                     circleButton("trash") {
-                        store.delete([photo.id])
+                        store.confirmDelete([photo.id])
                     }
                     .help("删除")
                 }
@@ -495,26 +1441,64 @@ struct PhotoViewerView: View {
 
             Spacer()
 
-            if totalCount > 1, !photo.isVideo {
-                FilmstripView(items: items, currentID: photo.id) { id in
-                    viewer.viewerID = id
+            if settings.viewerFilmstrip, totalCount > 1, !photo.isVideo,
+               viewer.burstSelectionMode || burstMembers.isEmpty {
+                FilmstripView(items: items,
+                              currentID: photo.id,
+                              selection: viewer.burstSelectionMode && !burstMembers.isEmpty
+                                  ? viewer.burstSelection : nil) { id in
+                    if viewer.burstSelectionMode, !burstMembers.isEmpty {
+                        store.toggleBurstSelection(id)
+                    } else {
+                        viewer.viewerID = id
+                    }
                 }
                 .padding(.bottom, 10)
             }
 
             HStack(spacing: 12) {
-                if !photo.isVideo {
-                    zoomControls
-                    Divider()
-                        .frame(height: 14)
-                        .overlay(.white.opacity(0.18))
-                }
-                if let currentIndex {
-                    Text("\(currentIndex + 1) / \(totalCount)")
+                if viewer.burstSelectionMode, !burstMembers.isEmpty {
+                    Text("已选 \(viewer.burstSelection.count) / \(burstMembers.count)")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.62))
+                        .monospacedDigit()
+                    Button("全选") { store.selectAllBurstMembers() }
+                        .buttonStyle(.plain)
+                    Button {
+                        store.favoriteBurstSelection()
+                    } label: {
+                        Image(systemName: "heart")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewer.burstSelection.isEmpty)
+                    .help("收藏所选")
+                    Button {
+                        confirmBurstKeep = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewer.burstSelection.isEmpty)
+                    .help("保留所选，删除其余")
+                    Button("完成") {
+                        endBurstSelection()
+                    }
+                    .buttonStyle(.plain)
+                    .help("完成连拍选择")
+                } else {
+                    if !photo.isVideo {
+                        zoomControls
+                        Divider()
+                            .frame(height: 14)
+                            .overlay(.white.opacity(0.18))
+                    }
+                    if let currentIndex {
+                        Text("\(currentIndex + 1) / \(totalCount)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
                 }
             }
+            .foregroundStyle(.white.opacity(0.9))
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(.ultraThinMaterial, in: Capsule())
@@ -533,6 +1517,9 @@ struct PhotoViewerView: View {
             Button("导出…") { store.export(photo.id) }
             Button("打印…") { store.printCommand() }
             Button("幻灯片播放") { store.presentSlideshow() }
+            Button(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图") {
+                settings.viewerFilmstrip.toggle()
+            }
             if !photo.isCloud || store.isCurrentCloudSMB {
                 Button("在访达中显示") { store.revealInFinder(photo.id) }
             }
@@ -579,7 +1566,7 @@ struct PhotoViewerView: View {
                 }
                 Divider()
                 Button("删除", role: .destructive) {
-                    store.delete([photo.id])
+                    store.confirmDelete([photo.id])
                 }
             }
         } label: {
@@ -666,10 +1653,10 @@ struct PhotoViewerView: View {
     }
 
     private func handleViewerScroll(_ event: NSEvent) -> Bool {
-        guard viewer.viewerID != nil, viewer.editorID == nil, photo?.isVideo != true else { return false }
+        guard viewer.viewerID != nil, viewer.editorID == nil else { return false }
         guard let window = hostWindow ?? event.window, event.window === window else { return false }
         guard window.attachedSheet == nil else { return false }
-        guard abs(event.scrollingDeltaY) > 0.01 else { return false }
+        guard abs(event.scrollingDeltaY) > 0.01 || abs(event.scrollingDeltaX) > 0.01 else { return false }
 
         // 在胶片条、信息面板、顶部工具栏上滚动时不缩放，避免抢走滚动操作。
         if let content = window.contentView {
@@ -679,6 +1666,19 @@ struct PhotoViewerView: View {
             if viewer.showInfoPanel, point.x > content.bounds.width - 310 { return false }
         }
 
+        // 已放大：双指滚动改为拖动画面（照片和视频一致），边界与鼠标拖动相同。
+        if zoom > 1.001 {
+            let fitted = stageFittedSize()
+            guard fitted.width > 0 else { return false }
+            let proposed = CGSize(width: baseOffset.width + event.scrollingDeltaX,
+                                  height: baseOffset.height + event.scrollingDeltaY)
+            offset = clampedOffset(proposed, stage: stageSize, fitted: fitted, zoom: zoom)
+            baseOffset = offset
+            return true
+        }
+
+        // 未放大：窗口内查看不拦截滚动；全屏时双指滚动仍用于放大。
+        guard !embedded else { return false }
         let delta = event.scrollingDeltaY
         let factor = min(1.3, max(0.72, 1 + delta * 0.02))
         let target = min(5, max(1, zoom * factor))
@@ -692,14 +1692,37 @@ struct PhotoViewerView: View {
         return true
     }
 
+    /// 当前画面的实际显示尺寸：双指拖动时用来限制可移动范围。
+    private func stageFittedSize() -> CGSize {
+        guard stageSize.width > 0, stageSize.height > 0 else { return .zero }
+        guard photo?.isVideo != true,
+              let shown = image ?? animatedImage ?? placeholder else { return stageSize }
+        return fittedSize(shown, in: stageSize)
+    }
+
     private func handleViewerKey(_ event: NSEvent) -> Bool {
         guard let window = hostWindow ?? event.window else { return false }
         guard event.window === window else { return false }
         guard window.attachedSheet == nil else { return false }
+        // 确认卡片打开时，把键盘交给卡片。
+        guard !store.hasPendingConfirmation else { return false }
         guard viewer.viewerID != nil, viewer.editorID == nil, store.activeMemory == nil else { return false }
         guard let photo else { return false }
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // 连拍选择模式：Esc 只退出选择、空格切换当前照片的勾选，都不关闭查看器。
+        if viewer.burstSelectionMode {
+            if event.keyCode == 53 {
+                endBurstSelection()
+                return true
+            }
+            if event.keyCode == 49,
+               flags.intersection([.shift, .option, .command, .control]).isEmpty {
+                store.toggleBurstSelection(photo.id)
+                return true
+            }
+        }
 
         // 照片与视频通用的命令。
         if flags.contains(.command) {
@@ -710,7 +1733,7 @@ struct PhotoViewerView: View {
                     if flags.contains(.option) {
                         store.confirmPermanentDelete([photo.id])
                     } else {
-                        store.delete([photo.id])
+                        store.confirmDelete([photo.id])
                     }
                 }
                 return true
@@ -733,14 +1756,14 @@ struct PhotoViewerView: View {
         }
         // 方向键在多数键盘上会带上 Function / 小键盘标记，不能因此丢弃；
         // 只屏蔽会与系统菜单快捷键冲突的修饰键。
+        // 可自定义快捷键允许 ⌥ / ⌃ / ⇧ 组合，先于这条守卫匹配。
+        if handleCustomShortcut(event, photo: photo) { return true }
+
         guard flags.intersection([.option, .control]).isEmpty else { return false }
 
-        if !photo.isReadOnly || photo.isCloud, event.charactersIgnoringModifiers == "." {
-            store.toggleFavorite(photo.id)
-            return true
-        }
-        if event.charactersIgnoringModifiers?.lowercased() == "i" {
-            viewer.showInfoPanel.toggle()
+        // 连拍：P 播放 / 暂停整组帧序列。
+        if burstMembers.count > 1, event.charactersIgnoringModifiers?.lowercased() == "p" {
+            toggleBurstPlayback()
             return true
         }
 
@@ -754,11 +1777,6 @@ struct PhotoViewerView: View {
         // 视频的方向键、空格等由播放器自行处理。
         guard !photo.isVideo else { return false }
 
-        if photo.isLivePhoto, event.charactersIgnoringModifiers?.lowercased() == "l" {
-            toggleLivePhoto()
-            return true
-        }
-
         switch event.keyCode {
         case 123, 126:
             store.viewerStep(-1)
@@ -767,29 +1785,50 @@ struct PhotoViewerView: View {
             store.viewerStep(1)
             return true
         default:
-            break
-        }
-
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "=", "+":
-            adjustZoom(by: 1.35)
-            return true
-        case "-", "_":
-            adjustZoom(by: 1 / 1.35)
-            return true
-        case "0":
-            resetZoom()
-            return true
-        case "e":
-            guard !photo.isReadOnly else { return false }
-            store.openEditor(photo.id)
-            return true
-        case "f":
-            NSApp.keyWindow?.toggleFullScreen(nil)
-            return true
-        default:
             return false
         }
+    }
+
+    /// 设置 › 快捷键里可自定义的查看器动作。
+    /// 放在修饰键守卫之前，才能支持 ⌥ / ⌃ / ⇧ 组合；⌘ 组合仍留给系统菜单。
+    private func handleCustomShortcut(_ event: NSEvent, photo: PhotoItem) -> Bool {
+        if (!photo.isReadOnly || photo.isCloud),
+           ShortcutStore.matches(event, .viewerFavorite) {
+            store.toggleFavorite(photo.id)
+            return true
+        }
+        if ShortcutStore.matches(event, .viewerInfo) {
+            viewer.showInfoPanel.toggle()
+            return true
+        }
+        if ShortcutStore.matches(event, .viewerZoomIn) {
+            adjustZoom(by: 1.35)
+            return true
+        }
+        if ShortcutStore.matches(event, .viewerZoomOut) {
+            adjustZoom(by: 1 / 1.35)
+            return true
+        }
+        if ShortcutStore.matches(event, .viewerZoomFit) {
+            resetZoom()
+            return true
+        }
+
+        guard !photo.isVideo else { return false }
+
+        if photo.isLivePhoto, ShortcutStore.matches(event, .viewerLivePhoto) {
+            toggleLivePhoto()
+            return true
+        }
+        if !photo.isReadOnly, ShortcutStore.matches(event, .viewerEdit) {
+            store.openEditor(photo.id)
+            return true
+        }
+        if ShortcutStore.matches(event, .viewerFullscreen) {
+            NSApp.keyWindow?.toggleFullScreen(nil)
+            return true
+        }
+        return false
     }
 
     private func circleButton(_ icon: String, action: @escaping () -> Void) -> some View {
@@ -803,22 +1842,6 @@ struct PhotoViewerView: View {
                 }
                 .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
                 .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func navButton(_ icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
-                .background(.black.opacity(0.28), in: Circle())
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay {
-                    Circle().strokeBorder(.white.opacity(0.16), lineWidth: 0.6)
-                }
-                .shadow(color: .black.opacity(0.22), radius: 8, y: 2)
         }
         .buttonStyle(.plain)
     }
@@ -867,6 +1890,74 @@ struct PhotoViewerView: View {
         }
     }
 
+    // MARK: - 连拍快照
+
+    /// 播放 / 暂停连拍：按拍摄顺序逐帧切换，与官方「照片」的连播观感一致。
+    private func toggleBurstPlayback() {
+        if viewer.burstPlaying {
+            stopBurstPlayback()
+            return
+        }
+        guard burstMembers.count > 1 else { return }
+        guard let current = burstMembers.firstIndex(where: { $0.id == viewer.viewerID }) else { return }
+        // 已经在最后一张时从头播放。
+        if current == burstMembers.count - 1, let first = burstMembers.first {
+            viewer.viewerID = first.id
+        }
+        viewer.burstPlaying = true
+        burstPlayTask?.cancel()
+        burstPlayTask = Task { @MainActor in
+            // 约每秒 8 帧：既保留连拍的连续感，也给全尺寸解码留出时间。
+            while !Task.isCancelled, viewer.burstPlaying {
+                guard let position = viewer.burstMembers.firstIndex(where: { $0.id == viewer.viewerID }),
+                      position + 1 < viewer.burstMembers.count else { break }
+                try? await Task.sleep(nanoseconds: 125_000_000)
+                guard !Task.isCancelled, viewer.burstPlaying else { break }
+                let next = position + 1
+                // 预取后两帧，播放时不会每帧都停在占位层。
+                for offset in 1...2 where next + offset < viewer.burstMembers.count {
+                    ImageLoader.prefetchDisplay(for: viewer.burstMembers[next + offset],
+                                                sdr: !settings.viewFullHDR)
+                }
+                viewer.viewerID = viewer.burstMembers[next].id
+            }
+            if viewer.burstPlaying { viewer.burstPlaying = false }
+        }
+    }
+
+    private func stopBurstPlayback() {
+        burstPlayTask?.cancel()
+        burstPlayTask = nil
+        viewer.burstPlaying = false
+    }
+
+    /// 进入「进行选择…」：停掉播放，从空选择开始。
+    private func beginBurstSelection() {
+        stopBurstPlayback()
+        viewer.burstSelection = []
+        viewer.burstSelectionMode = true
+    }
+
+    /// 为窗口内浏览准备一张铺满舞台的缩略图；视频没有解码帧时也能拿到封面帧。
+    /// 系统图库的缩略图可能正在后台生成，未就绪时短暂重试，避免舞台两侧一直是黑的。
+    private func loadBackdrop() async {
+        backdropImage = nil
+        // 设置里关闭背景虚化时不加载模糊底图，翻页少一次缩略图读取。
+        guard settings.viewerBackdrop, let photo else { return }
+        for _ in 0..<6 {
+            guard !Task.isCancelled, store.viewerPhoto?.id == photo.id else { return }
+            let loaded = await PhotoThumbnailLoader.load(photo: photo,
+                                                         purpose: .cover(320),
+                                                         store: store)
+            guard !Task.isCancelled, store.viewerPhoto?.id == photo.id else { return }
+            if let loaded {
+                backdropImage = loaded
+                return
+            }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+        }
+    }
+
     private func load() async {
         stopLivePhoto()
         zoom = 1
@@ -875,16 +1966,19 @@ struct PhotoViewerView: View {
         pinchStartZoom = nil
         guard let photo else {
             image = nil
+            animatedImage = nil
             placeholder = nil
             return
         }
         let fullHDR = settings.viewFullHDR
         if photo.isVideo {
             image = nil
+            animatedImage = nil
             placeholder = nil
         } else {
             // 切换照片时先清掉上一张；占位层直接用网格里已解码的那一档，开图即有内容。
             image = nil
+            animatedImage = nil
             placeholder = ImageLoader.cachedPreview(for: photo)
 
             let target = photo
@@ -914,14 +2008,26 @@ struct PhotoViewerView: View {
                     show(loaded)
                 }
             }
+            // 动图：额外取一份保留全部帧的图像，查看器里打开即循环播放。
+            if target.playsAnimation {
+                let animated: NSImage?
+                if target.isCloud {
+                    animated = await store.cloudAnimatedImage(for: target)
+                } else {
+                    animated = await Task.detached(priority: .userInitiated) {
+                        ImageLoader.animatedImage(for: target)
+                    }.value
+                }
+                guard !Task.isCancelled, viewer.viewerID == target.id else { return }
+                animatedImage = animated
+            }
         }
         prefetchNeighbors(of: photo, fullHDR: fullHDR)
     }
 
-    /// 全尺寸图在占位层上淡入，视觉上不出现“先糊后清”的分辨率跳变。
+    /// 全尺寸图就绪后直接替换占位层：切换照片不做淡入 / 位移，连翻时更干脆。
     private func show(_ newImage: NSImage?) {
         image = newImage
-        imageToken &+= 1
     }
 
     /// 预取前后各两张的快速层，连翻时每一张都能立刻显示。
@@ -957,5 +2063,13 @@ struct PhotoViewerView: View {
             guard !target.isVideo, !target.isCloud else { continue }
             ImageLoader.prefetchDisplay(for: target, sdr: !fullHDR)
         }
+    }
+}
+
+private extension PhotoItem {
+    /// 没有读到任何拍摄日期时 `capturedAt` 会是纪元起点（显示成 1970 年）。
+    /// 顶栏用「时间未知」代替这种异常日期，避免把缺失信息伪装成真实时间。
+    var hasKnownCaptureDate: Bool {
+        capturedAt.timeIntervalSince1970 > 86_400
     }
 }

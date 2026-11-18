@@ -38,9 +38,9 @@
         </dict>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>1.1</string>
+    <string>1.2.0</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.photography</string>
     <key>LSMinimumSystemVersion</key>
@@ -51,11 +51,13 @@
     <dict>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
-        <key>NSAllowsLocalNetworking</key>
-        <true/>
     </dict>
     <key>NSLocalNetworkUsageDescription</key>
     <string>用于发现并连接局域网内的 SMB / WebDAV 服务器（如群晖 NAS）浏览照片和视频。</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>用于把美化结果与清理操作写回系统「照片」图库；全部处理都在本机完成。</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>用于把美化后的照片保存到系统「照片」图库。</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_smb._tcp</string>

@@ -33,6 +33,16 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(showInfoOnOpen, forKey: SettingsKeys.showInfoOnOpen) }
     }
 
+    /// 查看器底部是否显示缩略图胶片条。
+    @Published var viewerFilmstrip: Bool {
+        didSet { UserDefaults.standard.set(viewerFilmstrip, forKey: SettingsKeys.viewerFilmstrip) }
+    }
+
+    /// 查看器是否用当前照片的模糊影像铺满舞台背景（关闭后为纯色，翻页更省资源）。
+    @Published var viewerBackdrop: Bool {
+        didSet { UserDefaults.standard.set(viewerBackdrop, forKey: SettingsKeys.viewerBackdrop) }
+    }
+
     @Published var motion: MotionPreset {
         didSet { UserDefaults.standard.set(motion.rawValue, forKey: SettingsKeys.motion) }
     }
@@ -43,6 +53,16 @@ final class AppSettings: ObservableObject {
 
     @Published var hoverLift: Bool {
         didSet { UserDefaults.standard.set(hoverLift, forKey: SettingsKeys.hoverLift) }
+    }
+
+    /// 新打开的图片列表（照片网格）默认每行几张；已单独调整过的页面保持各自记忆。
+    @Published var defaultGridColumns: Int {
+        didSet { UserDefaults.standard.set(defaultGridColumns, forKey: SettingsKeys.defaultGridColumns) }
+    }
+
+    /// 相簿 / 媒体类型 / 场景 / 更多项目等卡片墙默认每行几个。
+    @Published var defaultCardColumns: Int {
+        didSet { UserDefaults.standard.set(defaultCardColumns, forKey: SettingsKeys.defaultCardColumns) }
     }
 
     @Published var autoPlayVideo: Bool {
@@ -68,6 +88,19 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(loopVideoByDefault, forKey: SettingsKeys.videoLoop) }
     }
 
+    /// 视频查看器里 ↑ / ↓ 快进快退的步长（秒）。
+    @Published var videoSeekStep: Double {
+        didSet { UserDefaults.standard.set(videoSeekStep, forKey: SettingsKeys.videoSeekStep) }
+    }
+
+    /// 视频控制条的位置：底部悬浮，或融合进画面上方的顶栏。
+    @Published var videoControlPlacement: VideoControlPlacement {
+        didSet {
+            UserDefaults.standard.set(videoControlPlacement.rawValue,
+                                      forKey: SettingsKeys.videoControlPlacement)
+        }
+    }
+
     /// 「最近删除」自动清理的保留天数；0 表示不自动清理。（随图库保存）
     @Published var trashRetentionDays: Int {
         didSet { persistLibraryInt(SettingsKeys.trashRetentionDays, trashRetentionDays) }
@@ -83,14 +116,61 @@ final class AppSettings: ObservableObject {
         didSet { persistLibraryFlag(SettingsKeys.importPreserveStructure, importPreserveFolderStructure) }
     }
 
-    /// 系统「照片」图库一次最多载入的项数；0 表示不限制（超大图库不推荐）。（随图库保存）
-    @Published var systemLibraryMaxAssets: Int {
-        didSet { persistLibraryInt(SettingsKeys.systemLibraryMaxAssets, systemLibraryMaxAssets) }
+    /// 导入时跳过字节完全相同的文件。（随图库保存）
+    @Published var importSkipExactDuplicates: Bool {
+        didSet { persistLibraryFlag(SettingsKeys.importSkipDuplicates, importSkipExactDuplicates) }
+    }
+
+    /// 导入完成后重新校验目标文件哈希。（随图库保存）
+    @Published var importVerifyCopies: Bool {
+        didSet { persistLibraryFlag(SettingsKeys.importVerifyCopies, importVerifyCopies) }
     }
 
     /// 网格缩略图上显示的元数据。（随图库保存）
     @Published var metadata: MetadataOptions {
         didSet { persistLibraryJSON(SettingsKeys.metadata, metadata) }
+    }
+
+    // MARK: 影院刮削
+
+    /// 刮削数据源：TMDB（官方 API）或豆瓣（非官方公开接口）。
+    @Published var cinemaProvider: CinemaProvider {
+        didSet { UserDefaults.standard.set(cinemaProvider.rawValue, forKey: SettingsKeys.cinemaProvider) }
+    }
+
+    /// TMDB API Key（v3）或 Read Access Token（v4，以 eyJ 开头）。
+    @Published var cinemaAPIKey: String {
+        didSet { UserDefaults.standard.set(cinemaAPIKey, forKey: SettingsKeys.cinemaAPIKey) }
+    }
+
+    /// 刮削语言，如 zh-CN / en-US / ja-JP。
+    @Published var cinemaLanguage: String {
+        didSet { UserDefaults.standard.set(cinemaLanguage, forKey: SettingsKeys.cinemaLanguage) }
+    }
+
+    /// TMDB API 地址，可替换为镜像 / 代理。
+    @Published var cinemaAPIBase: String {
+        didSet { UserDefaults.standard.set(cinemaAPIBase, forKey: SettingsKeys.cinemaAPIBase) }
+    }
+
+    /// 海报与背景图地址前缀，默认 image.tmdb.org。
+    @Published var cinemaImageBase: String {
+        didSet { UserDefaults.standard.set(cinemaImageBase, forKey: SettingsKeys.cinemaImageBase) }
+    }
+
+    /// 进入影院或扫描完网盘后自动刮削新视频。
+    @Published var cinemaAutoScrape: Bool {
+        didSet { UserDefaults.standard.set(cinemaAutoScrape, forKey: SettingsKeys.cinemaAutoScrape) }
+    }
+
+    /// 豆瓣接口地址，可换成镜像 / 反代前缀。
+    @Published var cinemaDoubanBase: String {
+        didSet { UserDefaults.standard.set(cinemaDoubanBase, forKey: SettingsKeys.cinemaDoubanBase) }
+    }
+
+    /// 可选的豆瓣登录 Cookie，用于降低被限流的概率。
+    @Published var cinemaDoubanCookie: String {
+        didSet { UserDefaults.standard.set(cinemaDoubanCookie, forKey: SettingsKeys.cinemaDoubanCookie) }
     }
 
     init() {
@@ -100,18 +180,35 @@ final class AppSettings: ObservableObject {
         photoOpenMode = PhotoOpenMode(rawValue: defaults.string(forKey: SettingsKeys.photoOpenMode) ?? "") ?? .viewer
         viewerLayout = ViewerLayout(rawValue: defaults.string(forKey: SettingsKeys.viewerLayout) ?? "") ?? .window
         showInfoOnOpen = defaults.bool(forKey: SettingsKeys.showInfoOnOpen)
+        viewerFilmstrip = defaults.object(forKey: SettingsKeys.viewerFilmstrip) as? Bool ?? false
+        viewerBackdrop = defaults.object(forKey: SettingsKeys.viewerBackdrop) as? Bool ?? true
         motion = MotionPreset(rawValue: defaults.string(forKey: SettingsKeys.motion) ?? "") ?? .silky
         cardCornerRadius = defaults.object(forKey: SettingsKeys.cardCornerRadius) as? Double ?? 14
         hoverLift = defaults.object(forKey: SettingsKeys.hoverLift) as? Bool ?? true
+        defaultGridColumns = defaults.object(forKey: SettingsKeys.defaultGridColumns) as? Int ?? 8
+        defaultCardColumns = defaults.object(forKey: SettingsKeys.defaultCardColumns) as? Int ?? 5
         autoPlayVideo = defaults.object(forKey: SettingsKeys.autoPlayVideo) as? Bool ?? true
         autoPlayNextVideo = defaults.object(forKey: SettingsKeys.autoPlayNextVideo) as? Bool ?? true
         viewFullHDR = defaults.object(forKey: SettingsKeys.viewFullHDR) as? Bool ?? true
         muteVideoByDefault = defaults.object(forKey: SettingsKeys.videoMuted) as? Bool ?? false
         loopVideoByDefault = defaults.object(forKey: SettingsKeys.videoLoop) as? Bool ?? false
+        videoSeekStep = defaults.object(forKey: SettingsKeys.videoSeekStep) as? Double ?? 5
+        videoControlPlacement = VideoControlPlacement(
+            rawValue: defaults.string(forKey: SettingsKeys.videoControlPlacement) ?? "") ?? .topIntegrated
+        // 默认豆瓣：免 Key，开箱即可刮削。
+        cinemaProvider = CinemaProvider(rawValue: defaults.string(forKey: SettingsKeys.cinemaProvider) ?? "") ?? .douban
+        cinemaAPIKey = defaults.string(forKey: SettingsKeys.cinemaAPIKey) ?? ""
+        cinemaLanguage = defaults.string(forKey: SettingsKeys.cinemaLanguage) ?? "zh-CN"
+        cinemaAPIBase = defaults.string(forKey: SettingsKeys.cinemaAPIBase) ?? "https://api.themoviedb.org/3"
+        cinemaImageBase = defaults.string(forKey: SettingsKeys.cinemaImageBase) ?? "https://image.tmdb.org/t/p"
+        cinemaAutoScrape = defaults.object(forKey: SettingsKeys.cinemaAutoScrape) as? Bool ?? true
+        cinemaDoubanBase = defaults.string(forKey: SettingsKeys.cinemaDoubanBase) ?? "https://movie.douban.com"
+        cinemaDoubanCookie = defaults.string(forKey: SettingsKeys.cinemaDoubanCookie) ?? ""
         trashRetentionDays = defaults.object(forKey: SettingsKeys.trashRetentionDays) as? Int ?? 30
         importCreateAlbumsFromFolders = defaults.object(forKey: SettingsKeys.importCreateAlbums) as? Bool ?? true
         importPreserveFolderStructure = defaults.object(forKey: SettingsKeys.importPreserveStructure) as? Bool ?? true
-        systemLibraryMaxAssets = defaults.object(forKey: SettingsKeys.systemLibraryMaxAssets) as? Int ?? 100_000
+        importSkipExactDuplicates = defaults.object(forKey: SettingsKeys.importSkipDuplicates) as? Bool ?? true
+        importVerifyCopies = defaults.object(forKey: SettingsKeys.importVerifyCopies) as? Bool ?? true
         if let data = defaults.data(forKey: SettingsKeys.metadata),
            let decoded = try? JSONDecoder().decode(MetadataOptions.self, from: data) {
             metadata = decoded
@@ -135,8 +232,9 @@ final class AppSettings: ObservableObject {
         defer { isApplyingLibraryScope = false }
         importCreateAlbumsFromFolders = libraryBool(SettingsKeys.importCreateAlbums, fallback: true)
         importPreserveFolderStructure = libraryBool(SettingsKeys.importPreserveStructure, fallback: true)
+        importSkipExactDuplicates = libraryBool(SettingsKeys.importSkipDuplicates, fallback: true)
+        importVerifyCopies = libraryBool(SettingsKeys.importVerifyCopies, fallback: true)
         trashRetentionDays = libraryInt(SettingsKeys.trashRetentionDays, fallback: 30)
-        systemLibraryMaxAssets = libraryInt(SettingsKeys.systemLibraryMaxAssets, fallback: 100_000)
         metadata = libraryDecoded(SettingsKeys.metadata, as: MetadataOptions.self) ?? MetadataOptions()
     }
 

@@ -22,9 +22,576 @@ extension LibraryStore {
         cloudVisibleCacheKey = nil
         cloudVisibleCacheValue = []
         cloudDirectoryCache.removeAll()
-        cloudPasswords.removeAll()
+        CloudCredentials.clearCache()
         cloudFavorites = []
+        resetCloudAlbumScan()
         resetCloudInsight()
+    }
+
+    // MARK: - 网盘图库（自动扫描 + 文件夹相簿）
+
+    /// 当前是否正在扫描整个网盘；工具栏与浮层据此显示进度。
+    var isCloudScanning: Bool { cloudModel.scanPhase.isScanning }
+    var cloudScanFolderCount: Int { cloudModel.scanFolderCount }
+    var cloudSelectedFolderPath: String? { cloudModel.selectedFolderPath }
+    var cloudOverviewSection: CloudOverviewSection? { cloudModel.overview }
+    /// 面包屑根节点 ID（百度为 "/"，其余为 ""）。
+    var cloudBreadcrumbRootID: String { cloudBreadcrumbChain.first?.id ?? "" }
+
+    /// 根目录标识：百度用 "/"，其余用 ""。
+    private func cloudRootPath(for mount: CloudMount) -> String {
+        mount.kind == .baidu ? "/" : ""
+    }
+
+    /// 当前选中文件夹的面包屑链（第一项是整个网盘）。
+    var cloudBreadcrumbChain: [CloudCrumb] {
+        guard let mount = cloudMount(for: currentCloudMountID) else { return [] }
+        let rootPath = cloudRootPath(for: mount)
+        let crumbs = [CloudCrumb(id: rootPath, name: mount.name)]
+        guard let selected = cloudModel.selectedFolderPath else { return crumbs }
+        var byPath: [String: CloudScanFolder] = [:]
+        for folder in cloudModel.scanFolders where byPath[folder.path] == nil {
+            byPath[folder.path] = folder
+        }
+        var chain: [CloudScanFolder] = []
+        var cursor: String? = selected
+        while let path = cursor, path != rootPath, let folder = byPath[path] {
+            chain.append(folder)
+            cursor = folder.parentPath
+        }
+        return crumbs + chain.reversed().map { CloudCrumb(id: $0.path, name: $0.name) }
+    }
+
+    /// 侧边栏「相簿」的顶层文件夹（文件夹 = 相簿），带聚合数量与封面。
+    var cloudRootFolders: [CloudFolderNode] {
+        guard let mount = cloudMount(for: currentCloudMountID) else { return [] }
+        let key = [
+            mount.id.uuidString,
+            String(cloudModel.scanFolders.count),
+            String(cloudModel.scanPhotos.count),
+            String(cloudModel.revision)
+        ].joined(separator: "\u{1F}")
+        if cloudFolderTreeCacheKey == key { return cloudFolderTreeCacheValue }
+        let tree = buildCloudFolderTree(rootPath: cloudRootPath(for: mount))
+        cloudFolderTreeCacheKey = key
+        cloudFolderTreeCacheValue = tree
+        return tree
+    }
+
+    private func buildCloudFolderTree(rootPath: String) -> [CloudFolderNode] {
+        var childrenByParent: [String: [CloudScanFolder]] = [:]
+        var parentOf: [String: String] = [:]
+        for folder in cloudModel.scanFolders {
+            parentOf[folder.path] = folder.parentPath
+            guard folder.path != rootPath else { continue }
+            childrenByParent[folder.parentPath, default: []].append(folder)
+        }
+
+        // 照片按目录向上累计，顺便取每个目录最新一张做封面。
+        var counts: [String: Int] = [:]
+        var covers: [String: PhotoItem] = [:]
+        for photo in cloudModel.scanPhotos {
+            guard let path = photo.cloudPath,
+                  let folder = cloudModel.scanMediaFolder[path] else { continue }
+            var cursor: String? = folder
+            while let current = cursor, current != rootPath, parentOf[current] != nil {
+                counts[current, default: 0] += 1
+                if covers[current] == nil { covers[current] = photo }
+                cursor = parentOf[current]
+            }
+        }
+
+        func makeNode(_ folder: CloudScanFolder) -> CloudFolderNode {
+            let children = (childrenByParent[folder.path] ?? [])
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            return CloudFolderNode(path: folder.path,
+                                   name: folder.name,
+                                   parentPath: folder.parentPath,
+                                   photoCount: counts[folder.path] ?? 0,
+                                   cover: covers[folder.path],
+                                   children: children.map(makeNode))
+        }
+
+        return (childrenByParent[rootPath] ?? [])
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map(makeNode)
+    }
+
+    /// 选中一个文件夹相簿；`nil` 表示回到整个网盘。
+    func selectCloudFolder(path: String?) {
+        guard cloudModel.selectedFolderPath != path else { return }
+        cloudModel.selectedFolderPath = path
+        cloudModel.overview = nil
+        cloudModel.scope = .all
+        similarScope = nil
+        selectedPlace = nil
+        cloudVisibleCacheKey = nil
+        cloudScopeCountsCacheKey = nil
+        cloudModel.thumbnailPrefetchTask?.cancel()
+        cloudModel.thumbnailPrefetchTask = nil
+        if let mountID = currentCloudMountID {
+            presentCloudAlbumPhotos(mountID: mountID)
+        }
+    }
+
+    /// 打开挂载的网盘图库：先显示上次扫描快照，再按需在后台续扫。
+    func openCloudAlbum(_ mount: CloudMount) {
+        if cloudModel.scanMountID != mount.id {
+            cancelCloudAlbumScan()
+            cloudModel.scanPhotos = []
+            cloudModel.scanFolders = []
+            cloudModel.scanMediaFolder = [:]
+            cloudModel.scanPhotoPaths = []
+            cloudModel.scanFolderPaths = []
+            cloudModel.thumbnailPrefetchTask?.cancel()
+            cloudModel.thumbnailPrefetchTask = nil
+            cloudModel.pendingPhotoUpdates.removeAll()
+            cloudModel.metadataDirty = false
+            cloudModel.featuresLoadedMountID = nil
+            cloudModel.isLoadingCloudFeatures = false
+            cloudModel.scanSnapshot = nil
+            cloudModel.selectedFolderPath = nil
+            cloudModel.scanMountID = mount.id
+        }
+        cloudPath = cloudRootPath(for: mount)
+        cloudTrail = [CloudCrumb(id: cloudPath, name: mount.name)]
+        cloudFolders = []
+        cloudError = nil
+        cloudLoading = false
+        cloudBusyText = nil
+        cloudModel.overview = nil
+
+        if !cloudModel.scanPhotos.isEmpty {
+            cloudModel.scanMediaCount = cloudModel.scanPhotos.count
+            presentCloudAlbumPhotos(mountID: mount.id)
+        } else if let snapshot = loadCloudAlbumSnapshot(mountID: mount.id) {
+            cloudModel.scanSnapshot = snapshot
+            cloudModel.scanPhotos = snapshot.records.map { albumPhoto(record: $0, mount: mount) }
+            cloudModel.scanFolders = snapshot.folders ?? []
+            var mediaFolders: [String: String] = [:]
+            for record in snapshot.records {
+                if let folder = record.folderPath { mediaFolders[record.path] = folder }
+            }
+            cloudModel.scanMediaFolder = mediaFolders
+            cloudModel.scanPhotoPaths = Set(cloudModel.scanPhotos.compactMap(\.cloudPath))
+            cloudModel.scanFolderPaths = Set(cloudModel.scanFolders.map(\.path))
+            cloudModel.scanFolderCount = snapshot.folderCount
+            cloudModel.scanMediaCount = cloudModel.scanPhotos.count
+            cloudModel.scanTruncated = snapshot.truncated
+            cloudModel.scanPhase = .finished(snapshot.savedAt)
+            presentCloudAlbumPhotos(mountID: mount.id)
+        } else {
+            cloudPhotos = []
+            cloudVisibleCacheKey = nil
+            cloudScopeCountsCacheKey = nil
+            cloudModel.scanPhase = .idle
+        }
+        startCloudAlbumScanIfNeeded(mountID: mount.id)
+    }
+
+    /// 快照超过 10 分钟才自动重扫：反复点同一个网盘不会一直拉目录。
+    private static let cloudAlbumRescanInterval: TimeInterval = 10 * 60
+
+    func startCloudAlbumScanIfNeeded(mountID: UUID) {
+        guard currentCloudMountID == mountID else { return }
+        switch cloudModel.scanPhase {
+        case .scanning:
+            return
+        case .cancelled, .failed:
+            // 用户主动停止 / 上次失败时不自动重启，等他点「重新扫描」。
+            return
+        case .finished(let date):
+            guard Date().timeIntervalSince(date) >= Self.cloudAlbumRescanInterval else { return }
+        case .idle:
+            break
+        }
+        beginCloudAlbumScan(mountID: mountID)
+    }
+
+    /// 重新扫描整个挂载（手动刷新 / 首次进入）。
+    /// - Parameter forceFull: 手动刷新时强制全量，确保能看到文件内容级别的变化；自动重扫允许增量。
+    func beginCloudAlbumScan(mountID: UUID, forceFull: Bool = false) {
+        guard let mount = cloudMount(for: mountID) else { return }
+        cancelCloudAlbumScan()
+        cloudModel.scanMountID = mountID
+        cloudModel.scanPhase = .scanning
+        cloudModel.scanTruncated = false
+
+        // 增量：上一轮完整、未触顶、24 小时内，且快照带目录修改时间。
+        // 只跳过父目录列表里 mtime 未变的子树；任何不确定都会正常扫描。
+        var plan: CloudScanner.IncrementalPlan?
+        if !forceFull,
+           let snapshot = cloudModel.scanSnapshot,
+           let made = Self.makeIncrementalPlan(snapshot) {
+            plan = made
+            cloudModel.scanFolders = snapshot.folders ?? []
+            cloudModel.scanFolderPaths = Set(cloudModel.scanFolders.map(\.path))
+            var mediaFolders = cloudModel.scanMediaFolder
+            for record in snapshot.records {
+                if let folder = record.folderPath { mediaFolders[record.path] = folder }
+            }
+            cloudModel.scanMediaFolder = mediaFolders
+            cloudModel.scanFolderCount = cloudModel.scanFolders.count
+        } else {
+            cloudModel.scanFolders = [CloudScanFolder(path: cloudRootPath(for: mount),
+                                                      name: mount.name,
+                                                      parentPath: "")]
+            cloudModel.scanFolderPaths = Set(cloudModel.scanFolders.map(\.path))
+            cloudModel.scanMediaFolder = [:]
+            cloudModel.scanFolderCount = 0
+        }
+        if cloudModel.scanPhotoPaths.isEmpty, !cloudModel.scanPhotos.isEmpty {
+            cloudModel.scanPhotoPaths = Set(cloudModel.scanPhotos.compactMap(\.cloudPath))
+        }
+        cloudModel.scanSnapshot = nil
+        cloudModel.thumbnailPrefetchTask?.cancel()
+        cloudModel.thumbnailPrefetchTask = nil
+        cloudModel.selectedFolderPath = nil
+        cloudError = nil
+        cloudModel.needsCloudReauth = false
+        cloudModel.scanMediaCount = cloudModel.scanPhotos.count
+        cloudVisibleCacheKey = nil
+        cloudScopeCountsCacheKey = nil
+        cloudFolderTreeCacheKey = nil
+        presentCloudAlbumPhotos(mountID: mountID)
+
+        cloudModel.scanTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await CloudScanner.scan(mount: mount, incremental: plan) { batch, folderCount, mediaCount in
+                self.ingestCloudAlbumBatch(batch,
+                                           mount: mount,
+                                           folderCount: folderCount,
+                                           mediaCount: mediaCount)
+            }
+            guard !Task.isCancelled else { return }
+            self.finishCloudAlbumScan(result: result, mountID: mountID)
+        }
+    }
+
+    /// 把上一轮完整快照转换成增量扫描计划；不满足条件时返回 nil（走全量）。
+    private static func makeIncrementalPlan(_ snapshot: CloudScanSnapshot) -> CloudScanner.IncrementalPlan? {
+        guard snapshot.complete == true,
+              !snapshot.truncated,
+              Date().timeIntervalSince(snapshot.savedAt) < 24 * 3600,
+              let folders = snapshot.folders, !folders.isEmpty,
+              folders.contains(where: { $0.modifiedAt != nil }) else { return nil }
+        var byPath: [String: CloudScanFolder] = [:]
+        var children: [String: [String]] = [:]
+        byPath.reserveCapacity(folders.count)
+        for folder in folders {
+            byPath[folder.path] = folder
+            children[folder.parentPath, default: []].append(folder.path)
+        }
+        var media: [String: [String]] = [:]
+        for record in snapshot.records {
+            guard let folder = record.folderPath else { continue }
+            media[folder, default: []].append(record.path)
+        }
+        return CloudScanner.IncrementalPlan(foldersByPath: byPath,
+                                            childrenByParent: children,
+                                            mediaByFolder: media)
+    }
+
+    func cancelCloudAlbumScan() {
+        cloudModel.scanTask?.cancel()
+        cloudModel.scanTask = nil
+    }
+
+    /// 用户手动停止扫描：保留已发现的媒体，并落一份部分快照供下次打开直接显示。
+    func stopCloudAlbumScan() {
+        cancelCloudAlbumScan()
+        guard cloudModel.scanPhase.isScanning else { return }
+        cloudModel.scanPhase = .cancelled
+        if let mountID = cloudModel.scanMountID {
+            saveCloudAlbumSnapshot(mountID: mountID)
+        }
+    }
+
+    private func ingestCloudAlbumBatch(_ batch: CloudScanner.Batch,
+                                       mount: CloudMount,
+                                       folderCount: Int,
+                                       mediaCount: Int) {
+        guard cloudModel.scanMountID == mount.id,
+              cloudModel.scanPhase.isScanning else { return }
+        cloudModel.scanFolderCount = folderCount
+        registerCloudFolders(batch.folders, container: batch.container, mount: mount)
+        for entry in batch.media {
+            cloudModel.scanMediaFolder[entry.path] = batch.container
+        }
+        guard !batch.media.isEmpty else { return }
+
+        // 增量去重：只用本批与累积集合比较，避免每批都重建整份 scanPhotos 的路径集合。
+        var added: [PhotoItem] = []
+        for entry in batch.media where cloudModel.scanPhotoPaths.insert(entry.path).inserted {
+            added.append(makeCloudPhoto(mount: mount, entry: entry))
+        }
+        guard !added.isEmpty else { return }
+        cloudModel.scanPhotos.append(contentsOf: added)
+        cloudModel.scanMediaCount = cloudModel.scanPhotos.count
+        presentCloudAlbumPhotos(mountID: mount.id)
+    }
+
+    /// 记录扫描到的目录（父目录缺失时按路径补出来，SMB 的扁平结果也能建树）。
+    private func registerCloudFolders(_ folders: [CloudEntry],
+                                      container: String,
+                                      mount: CloudMount) {
+        ensureCloudFolder(path: container, parent: nil, name: nil, mount: mount)
+        var indexByPath: [String: Int] = [:]
+        indexByPath.reserveCapacity(cloudModel.scanFolders.count)
+        for (offset, folder) in cloudModel.scanFolders.enumerated() {
+            indexByPath[folder.path] = offset
+        }
+        for entry in folders {
+            if let offset = indexByPath[entry.path] {
+                // 已存在的目录也要刷新 mtime：否则下一轮增量会一直把它当成"有变化"重复扫描。
+                cloudModel.scanFolders[offset].modifiedAt = entry.modifiedAt
+                cloudModel.scanFolders[offset].name = entry.name
+            } else if cloudModel.scanFolderPaths.insert(entry.path).inserted {
+                indexByPath[entry.path] = cloudModel.scanFolders.count
+                cloudModel.scanFolders.append(CloudScanFolder(path: entry.path,
+                                                              name: entry.name,
+                                                              parentPath: container,
+                                                              modifiedAt: entry.modifiedAt))
+            }
+        }
+        cloudFolderTreeCacheKey = nil
+    }
+
+    private func ensureCloudFolder(path: String,
+                                   parent: String?,
+                                   name: String?,
+                                   mount: CloudMount) {
+        let rootPath = cloudRootPath(for: mount)
+        if cloudModel.scanFolderPaths.contains(path) { return }
+        if path == rootPath {
+            cloudModel.scanFolders.append(CloudScanFolder(path: path,
+                                                          name: mount.name,
+                                                          parentPath: ""))
+            cloudModel.scanFolderPaths.insert(path)
+            return
+        }
+        let resolvedParent = parent ?? CloudScanner.parentPath(of: path)
+        if resolvedParent != rootPath, resolvedParent != path {
+            ensureCloudFolder(path: resolvedParent, parent: nil, name: nil, mount: mount)
+        }
+        guard cloudModel.scanFolderPaths.insert(path).inserted else { return }
+        let fallbackName = path.split(separator: "/").last.map(String.init) ?? "文件夹"
+        cloudModel.scanFolders.append(CloudScanFolder(path: path,
+                                                      name: name ?? fallbackName,
+                                                      parentPath: resolvedParent))
+    }
+
+    private func finishCloudAlbumScan(result: CloudScanner.Result, mountID: UUID) {
+        // 完整扫完（未触顶、没有目录读取失败）才按扫描结果剔除网盘上已删除的项目。
+        if !result.truncated, result.failedFolders == 0, result.folderCount > 0 {
+            let seen = result.mediaPaths
+            cloudModel.scanPhotos.removeAll { !seen.contains($0.cloudPath ?? "") }
+        }
+        // 增量扫描发现某些子树已从远端消失：把目录树与路径 → 目录映射一起清掉。
+        if !result.removedFolderPaths.isEmpty {
+            let removed = result.removedFolderPaths
+            cloudModel.scanFolders.removeAll { folder in
+                removed.contains(folder.path)
+                    || removed.contains(where: { folder.path.hasPrefix($0 + "/") })
+            }
+            cloudModel.scanFolderPaths = Set(cloudModel.scanFolders.map(\.path))
+            cloudModel.scanMediaFolder = cloudModel.scanMediaFolder.filter { _, folder in
+                !removed.contains(folder)
+                    && !removed.contains(where: { folder.hasPrefix($0 + "/") })
+            }
+        }
+        cloudModel.scanFolderCount = result.folderCount
+        cloudModel.scanMediaCount = cloudModel.scanPhotos.count
+        cloudModel.scanTruncated = result.truncated
+        cloudModel.scanPhase = .finished(Date())
+        cloudModel.scanTask = nil
+        cloudModel.scanSnapshot = nil
+        // 扫描期间不再每批全量排序；结束时排一次，快照顺序稳定，省下每批 O(n log n)。
+        cloudModel.scanPhotos.sort { $0.capturedAt > $1.capturedAt }
+        cloudModel.scanPhotoPaths = Set(cloudModel.scanPhotos.compactMap(\.cloudPath))
+        presentCloudAlbumPhotos(mountID: mountID)
+        // 一条都没扫到且有目录报错（常见于授权失效 / 钥匙串拒绝）：把原因显示在相册页顶部。
+        if cloudModel.scanPhotos.isEmpty, let message = result.firstErrorDescription {
+            cloudError = message
+            cloudModel.needsCloudReauth = result.sawAuthError
+            if result.sawAuthError { CloudCredentials.invalidate(for: mountID) }
+        } else {
+            cloudModel.needsCloudReauth = false
+        }
+        saveCloudAlbumSnapshot(mountID: mountID,
+                               complete: !result.truncated
+                                   && result.failedFolders == 0
+                                   && result.folderCount > 0)
+        // 全盘清单摊开后，再补读一批 EXIF，让时间轴按拍摄时间而不是修改时间排列。
+        scanCloudMetadataIfNeeded()
+        if result.truncated {
+            showToast("已扫描 \(result.folderCount) 个文件夹，达到扫描上限；可在「相簿」里查看已扫描的目录")
+        }
+        // 扫描完成后按需补齐这个网盘自己的影院，其它网盘互不影响。
+        if AppSettings.shared.cinemaAutoScrape, !cinemaNeedsConfiguration {
+            Task { [weak self] in await self?.scrapeCinema(for: .mount(mountID)) }
+        }
+    }
+
+    /// 把扫描清单（按当前选中的文件夹相簿筛选）贴到网格。
+    private func presentCloudAlbumPhotos(mountID: UUID) {
+        guard currentCloudMountID == mountID else { return }
+        cloudPhotos = cloudPhotosForSelection()
+        cloudVisibleCacheKey = nil
+        cloudScopeCountsCacheKey = nil
+        cloudFolderTreeCacheKey = nil
+    }
+
+    private func cloudPhotosForSelection() -> [PhotoItem] {
+        guard let selected = cloudModel.selectedFolderPath else { return cloudModel.scanPhotos }
+        let paths = cloudDescendantFolderPaths(of: selected)
+        return cloudModel.scanPhotos.filter { photo in
+            guard let path = photo.cloudPath,
+                  let folder = cloudModel.scanMediaFolder[path] else { return false }
+            return paths.contains(folder)
+        }
+    }
+
+    /// 选中目录及其所有子目录。
+    private func cloudDescendantFolderPaths(of path: String) -> Set<String> {
+        let key = "\(cloudModel.revision)|\(path)|\(cloudModel.scanFolders.count)"
+        if cloudFolderDescendantCacheKey == key { return cloudFolderDescendantCacheValue }
+        var childrenByParent: [String: [String]] = [:]
+        for folder in cloudModel.scanFolders {
+            childrenByParent[folder.parentPath, default: []].append(folder.path)
+        }
+        var result: Set<String> = [path]
+        var queue = [path]
+        while let next = queue.popLast() {
+            for child in childrenByParent[next] ?? [] where result.insert(child).inserted {
+                queue.append(child)
+            }
+        }
+        cloudFolderDescendantCacheKey = key
+        cloudFolderDescendantCacheValue = result
+        return result
+    }
+
+    // MARK: 全盘扫描快照
+
+    private static let cloudAlbumSnapshotKind = "album-scan"
+
+    private func albumSnapshotKey(_ mountID: UUID) -> String {
+        DerivedReportKey.cloud(mountID, "", Self.cloudAlbumSnapshotKind)
+    }
+
+    private func loadCloudAlbumSnapshot(mountID: UUID) -> CloudScanSnapshot? {
+        guard let cached = metadataStore?.loadDerivedReport(key: albumSnapshotKey(mountID)) else {
+            return nil
+        }
+        guard let snapshot = try? JSONDecoder().decode(CloudScanSnapshot.self, from: cached.payload),
+              (snapshot.pathVersion ?? 1) >= Self.cloudSnapshotPathVersion else { return nil }
+        return snapshot
+    }
+
+    /// 网盘条目路径的语义版本：递增会让旧快照失效并触发一次全量重扫。
+    /// 2：修复 WebDAV 子目录里的文件被记成裸文件名（导致播放 404）。
+    private static let cloudSnapshotPathVersion = 2
+
+    private func saveCloudAlbumSnapshot(mountID: UUID, complete: Bool = false) {
+        guard let store = metadataStore, !cloudModel.scanPhotos.isEmpty else { return }
+        let photos = cloudModel.scanPhotos
+        let folders = cloudModel.scanFolders
+        let mediaFolders = cloudModel.scanMediaFolder
+        let folderCount = cloudModel.scanFolderCount
+        let truncated = cloudModel.scanTruncated
+        let key = albumSnapshotKey(mountID)
+        // 两万条记录的映射 + JSON 编码放到后台：扫描刚结束时不占用主线程。
+        Task.detached(priority: .utility) {
+            let records = photos.compactMap {
+                Self.albumRecord(photo: $0, mediaFolders: mediaFolders)
+            }
+            let snapshot = CloudScanSnapshot(savedAt: Date(),
+                                             folderCount: folderCount,
+                                             truncated: truncated,
+                                             records: records,
+                                             folders: folders,
+                                             complete: complete,
+                                             pathVersion: Self.cloudSnapshotPathVersion)
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            store.saveDerivedReport(key: key,
+                                    signature: "scan#\(records.count)",
+                                    payload: data)
+            // 同一会话内的下一次自动重扫也走增量：把新快照留在内存里。
+            await MainActor.run { [weak self] in
+                guard let self,
+                      self.cloudModel.scanMountID == mountID,
+                      !self.cloudModel.scanPhase.isScanning else { return }
+                self.cloudModel.scanSnapshot = snapshot
+            }
+        }
+    }
+
+    /// 影院刮削需要读取扫描快照与快照里的媒体条目（文件内私有实现，这里开一个内部入口）。
+    func cloudAlbumSnapshot(mountID: UUID) -> CloudScanSnapshot? {
+        loadCloudAlbumSnapshot(mountID: mountID)
+    }
+
+    func cloudAlbumPhoto(record: CloudScanRecord, mount: CloudMount) -> PhotoItem {
+        albumPhoto(record: record, mount: mount)
+    }
+
+    private nonisolated static func albumRecord(photo: PhotoItem,
+                                                mediaFolders: [String: String]) -> CloudScanRecord? {
+        guard let path = photo.cloudPath else { return nil }
+        return CloudScanRecord(path: path,
+                               name: photo.originalName,
+                               size: photo.fileSize,
+                               modifiedAt: photo.capturedAt,
+                               width: photo.pixelWidth,
+                               height: photo.pixelHeight,
+                               duration: photo.duration,
+                               remoteID: photo.cloudRemoteID,
+                               thumbnailURL: photo.cloudThumbnailURL,
+                               isVideo: photo.isVideo,
+                               folderPath: mediaFolders[path])
+    }
+
+    private func albumPhoto(record: CloudScanRecord, mount: CloudMount) -> PhotoItem {
+        var entry = CloudEntry(path: record.path,
+                               name: record.name,
+                               isDirectory: false,
+                               size: record.size,
+                               modifiedAt: record.modifiedAt,
+                               contentType: record.isVideo ? "video/mp4" : nil)
+        entry.thumbnailURL = record.thumbnailURL
+        entry.remoteID = record.remoteID
+        entry.pixelWidth = record.width
+        entry.pixelHeight = record.height
+        entry.duration = record.duration
+        return makeCloudPhoto(mount: mount, entry: entry)
+    }
+
+    /// 换库 / 断开挂载时清掉扫描任务与清单。
+    func resetCloudAlbumScan() {
+        cancelCloudAlbumScan()
+        cloudModel.thumbnailPrefetchTask?.cancel()
+        cloudModel.thumbnailPrefetchTask = nil
+        cloudModel.metadataFlushTask?.cancel()
+        cloudModel.metadataFlushTask = nil
+        cloudModel.metadataDirty = false
+        cloudModel.pendingPhotoUpdates.removeAll()
+        cloudModel.featuresLoadedMountID = nil
+        cloudModel.isLoadingCloudFeatures = false
+        cloudModel.scanPhase = .idle
+        cloudModel.scanFolderCount = 0
+        cloudModel.scanMediaCount = 0
+        cloudModel.scanTruncated = false
+        cloudModel.scanPhotos = []
+        cloudModel.scanFolders = []
+        cloudModel.scanMediaFolder = [:]
+        cloudModel.scanPhotoPaths = []
+        cloudModel.scanFolderPaths = []
+        cloudModel.selectedFolderPath = nil
+        cloudModel.scanMountID = nil
+        cloudModel.scanSnapshot = nil
+        cloudFolderTreeCacheKey = nil
+        cloudFolderDescendantCacheKey = nil
     }
 
     func loadCloudMounts() {
@@ -41,24 +608,24 @@ extension LibraryStore {
         metadataStore.setSetting("cloud_mounts", json)
     }
 
-    /// 启动时静默重连已保存的 SMB；NAS 不在线时忽略，等用户点开时再重试。
-    func remountSMBMountsOnLaunch() {
-        let mounts = cloudMounts.filter { $0.kind == .smb }
-        guard !mounts.isEmpty else { return }
-        Task {
-            for mount in mounts {
-                guard let client = SMBClient(mount: mount,
-                                             password: cloudPassword(for: mount.id)) else { continue }
-                _ = try? await client.ensureMounted()
-            }
-        }
+    /// 网盘密码由 `CloudCredentials` 在进程内缓存：目录滚动不会反复读钥匙串，
+    /// 只有第一次连接或认证失败后才重新读取。
+    func cloudPassword(for mountID: UUID) -> String {
+        CloudCredentials.password(for: mountID)
     }
 
-    func cloudPassword(for mountID: UUID) -> String {
-        if let cached = cloudPasswords[mountID] { return cached }
-        let value = CloudCredentials.password(for: mountID)
-        cloudPasswords[mountID] = value
-        return value
+    /// 认证失败说明钥匙串里的密码可能已经过期：丢掉内存缓存，下次点击重新读取。
+    func invalidateCloudPasswordIfNeeded(_ error: Error, mountID: UUID) {
+        if let webdav = error as? WebDAVError, case .unauthorized = webdav {
+            CloudCredentials.invalidate(for: mountID)
+            return
+        }
+        if error is SMBError {
+            let message = error.localizedDescription
+            if message.contains("认证") || message.contains("密码") {
+                CloudCredentials.invalidate(for: mountID)
+            }
+        }
     }
 
     func cloudMount(for id: UUID?) -> CloudMount? {
@@ -91,13 +658,15 @@ extension LibraryStore {
     }
 
     func testCloudConnection(address: String, username: String,
-                             password: String) async -> (ok: Bool, message: String) {
+                             password: String,
+                             trustSelfSigned: Bool = false) async -> (ok: Bool, message: String) {
         if CloudKind.detect(from: address) == .smb {
             return await SMBClient.test(address: address, username: username, password: password)
         }
         guard let client = WebDAVClient(baseURLString: address,
                                         username: username,
-                                        password: password) else {
+                                        password: password,
+                                        allowsSelfSignedCertificate: trustSelfSigned) else {
             return (false, "服务器地址无效，请填写 http(s)://主机:端口/路径")
         }
         do {
@@ -106,14 +675,21 @@ extension LibraryStore {
             let media = entries.filter { !$0.isDirectory && $0.isMedia }.count
             return (true, "连接成功：\(folders) 个文件夹、\(media) 个媒体文件")
         } catch {
-            return (false, "连接失败：\(error.localizedDescription)")
+            let description = error.localizedDescription
+            let isTrustError = description.contains("SSL") || description.contains("TLS")
+                || description.contains("certificate") || description.contains("证书")
+            if isTrustError {
+                return (false, "连接失败：\(description)。HTTPS 地址若使用自签名证书，请勾选「信任自签名证书」。")
+            }
+            return (false, "连接失败：\(description)")
         }
     }
 
     @discardableResult
     func saveCloudMount(existing: CloudMount?, name: String, address: String,
                         username: String, password: String,
-                        kind requestedKind: CloudKind = .webdav) -> String? {
+                        kind requestedKind: CloudKind = .webdav,
+                        trustSelfSigned: Bool = false) -> String? {
         let kind = existing?.kind ?? CloudKind.detect(from: address) ?? requestedKind
         let normalized: String
         let host: String?
@@ -142,10 +718,10 @@ extension LibraryStore {
             mount.name = finalName
             mount.baseURL = normalized
             mount.username = username
+            mount.trustSelfSigned = trustSelfSigned
             cloudMounts[index] = mount
             if !password.isEmpty {
                 CloudCredentials.setPassword(password, for: mount.id)
-                cloudPasswords[mount.id] = password
             }
             if mount.kind == .smb, previousAddress != normalized {
                 SMBClient.unmount(address: previousAddress)
@@ -153,7 +729,7 @@ extension LibraryStore {
             cloudDirectoryCache = cloudDirectoryCache.filter { !$0.key.hasPrefix(mount.id.uuidString) }
             saveCloudMounts()
             if case .cloudMount(let current) = sidebarItem, current == mount.id {
-                loadCloudDirectory(mountID: mount.id, path: cloudPath, force: true)
+                beginCloudAlbumScan(mountID: mount.id)
             }
             showToast("已更新「\(finalName)」")
             return nil
@@ -161,14 +737,25 @@ extension LibraryStore {
 
         let mount = CloudMount(kind: kind, name: finalName,
                                baseURL: normalized, username: username,
-                               scanAll: kind == .smb)
+                               scanAll: kind == .smb,
+                               trustSelfSigned: kind == .webdav && trustSelfSigned)
         cloudMounts.append(mount)
         CloudCredentials.setPassword(password, for: mount.id)
-        cloudPasswords[mount.id] = password
         saveCloudMounts()
         showToast("已添加「\(finalName)」")
         navigate(to: .cloudMount(mount.id))
         return nil
+    }
+
+    /// 只改侧边栏里的显示名称，不动地址、凭据与缓存。
+    func renameCloudMount(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = cloudMounts.firstIndex(where: { $0.id == id }) else { return }
+        guard cloudMounts[index].name != trimmed else { return }
+        cloudMounts[index].name = trimmed
+        saveCloudMounts()
+        showToast("已重命名为「\(trimmed)」")
     }
 
     func removeCloudMount(_ id: UUID) {
@@ -178,8 +765,8 @@ extension LibraryStore {
         cloudMounts.removeAll { $0.id == id }
         CloudCredentials.delete(for: id)
         CloudOAuthStore.deleteToken(mountID: id)
-        cloudPasswords[id] = nil
         if cloudModel.insightMountID == id { resetCloudInsight() }
+        if cloudModel.scanMountID == id { resetCloudAlbumScan() }
         // 清掉该挂载的本地收藏记录，避免残留键越积越多。
         let favoritePrefix = "\(id.uuidString)|"
         if cloudFavorites.contains(where: { $0.hasPrefix(favoritePrefix) }) {
@@ -187,6 +774,10 @@ extension LibraryStore {
             persistCloudFavorites()
         }
         cloudDirectoryCache = cloudDirectoryCache.filter { !$0.key.hasPrefix(id.uuidString) }
+        // 清掉该挂载的持久化缓存：EXIF / 识别 / 特征 / 人物 / 派生报告。
+        metadataStore?.purgeCloudAssets(mountID: id)
+        metadataStore?.purgeCloudPeople(mountID: id)
+        metadataStore?.removeDerivedReports(prefix: DerivedReportKey.cloudMountPrefix(id))
         try? FileManager.default.removeItem(at: LibraryPaths.cloudThumbs.appendingPathComponent(id.uuidString,
                                                                                             isDirectory: true))
         if case .cloudMount(let current) = sidebarItem, current == id {
@@ -199,75 +790,22 @@ extension LibraryStore {
     func openCloudMount(_ id: UUID) {
         guard let mount = cloudMounts.first(where: { $0.id == id }) else { return }
         prepareCloudInsight(for: id)
-        switch mount.kind {
-        case .webdav:
-            openBrowseMount(mount)
-        case .smb:
-            if mount.scanAll {
-                cloudPath = ""
-                cloudTrail = [CloudCrumb(id: "", name: mount.name)]
-                loadCloudTree(mountID: id, rootPath: "", force: true)
-            } else {
-                openBrowseMount(mount)
-            }
-        case .aliyun:
-            cloudTrail = [CloudCrumb(id: "", name: mount.name)]
-            loadCloudDirectory(mountID: id, path: "", force: true)
-        case .baidu:
-            cloudTrail = [CloudCrumb(id: "/", name: mount.name)]
-            loadCloudDirectory(mountID: id, path: "/", force: true)
-        }
+        cloudModel.overview = nil
+        openCloudAlbum(mount)
     }
 
-    func openBrowseMount(_ mount: CloudMount) {
-        let path = mount.lastPath
-        var trail = [CloudCrumb(id: "", name: mount.name)]
-        var accumulated: [String] = []
-        for component in path.split(separator: "/").map(String.init) {
-            accumulated.append(component)
-            trail.append(CloudCrumb(id: accumulated.joined(separator: "/"), name: component))
-        }
-        cloudTrail = trail
-        loadCloudDirectory(mountID: mount.id, path: path)
-    }
-
-    /// 切换 SMB 的「整个共享 / 文件夹」浏览方式。
-    func setCloudScanAll(_ enabled: Bool) {
-        guard case .cloudMount(let id) = sidebarItem,
-              let index = cloudMounts.firstIndex(where: { $0.id == id }),
-              cloudMounts[index].kind == .smb,
-              cloudMounts[index].scanAll != enabled else { return }
-        cloudMounts[index].scanAll = enabled
-        saveCloudMounts()
-        if enabled {
-            cloudPath = ""
-            cloudTrail = [CloudCrumb(id: "", name: cloudMounts[index].name)]
-            loadCloudTree(mountID: id, rootPath: "", force: true)
-        } else {
-            openCloudMount(id)
-        }
-    }
 
     func refreshCloudDirectory() {
-        guard case .cloudMount(let id) = sidebarItem else { return }
-        if isCurrentCloudScanAll {
-            loadCloudTree(mountID: id, rootPath: cloudPath, force: true)
-            return
-        }
-        loadCloudDirectory(mountID: id, path: cloudPath, force: true)
+        guard let id = currentCloudMountID else { return }
+        // 手动刷新走全量：文件内容变化不一定改变父目录 mtime，只有全量能发现。
+        beginCloudAlbumScan(mountID: id, forceFull: true)
     }
 
     func cloudGoUp() {
-        guard case .cloudMount(let id) = sidebarItem, cloudTrail.count > 1 else { return }
-        cloudTrail.removeLast()
-        guard let parent = cloudTrail.last else { return }
-        loadCloudDirectory(mountID: id, path: parent.id)
-    }
-
-    func enterCloudFolder(_ entry: CloudEntry) {
-        guard case .cloudMount(let id) = sidebarItem else { return }
-        cloudTrail.append(CloudCrumb(id: entry.path, name: entry.name))
-        loadCloudDirectory(mountID: id, path: entry.path)
+        guard let selected = cloudModel.selectedFolderPath,
+              let folder = cloudModel.scanFolders.first(where: { $0.path == selected }) else { return }
+        let rootPath = cloudMount(for: currentCloudMountID).map { cloudRootPath(for: $0) } ?? ""
+        selectCloudFolder(path: folder.parentPath == rootPath ? nil : folder.parentPath)
     }
 
     func loadCloudDirectory(mountID: UUID, path: String, force: Bool = false) {
@@ -276,12 +814,17 @@ extension LibraryStore {
         cloudError = nil
         cloudLoadToken += 1
         let token = cloudLoadToken
+        similarScope = nil
+        cloudModel.healthReport = nil
 
         let cacheKey = "\(mountID.uuidString)|\(path)"
         if !force, let cached = cloudDirectoryCache[cacheKey] {
             cloudFolders = cached.folders
-            cloudPhotos = cached.photos
+            cloudPhotos = hydrateCloudCache(photos: cached.photos, mountID: mountID)
+            cloudDirectoryCache[cacheKey] = (cached.folders, cloudPhotos)
             cloudLoading = false
+            restoreCloudDerivedReports(mountID: mountID, path: path)
+            scanCloudMetadataIfNeeded()
             return
         }
 
@@ -298,16 +841,21 @@ extension LibraryStore {
                 let folders = entries
                     .filter { $0.isDirectory }
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                let photos = entries
+                var photos = entries
                     .filter { !$0.isDirectory && $0.isMedia }
                     .map { self.makeCloudPhoto(mount: mount, entry: $0) }
-                    .sorted { $0.capturedAt > $1.capturedAt }
+                // 回填上次落库的 EXIF / 识别 / 特征 / 查看记录，再按拍摄时间排序。
+                photos = self.hydrateCloudCache(photos: photos, mountID: mount.id)
+                photos.sort { $0.capturedAt > $1.capturedAt }
 
                 self.cloudFolders = folders
                 self.cloudPhotos = photos
                 self.cloudDirectoryCache[cacheKey] = (folders, photos)
                 self.cloudLoading = false
                 self.cloudError = nil
+                self.cloudModel.needsCloudReauth = false
+                self.restoreCloudDerivedReports(mountID: mount.id, path: path)
+                self.scanCloudMetadataIfNeeded()
 
                 if mount.kind == .webdav || mount.kind == .smb,
                    let index = self.cloudMounts.firstIndex(where: { $0.id == mountID }),
@@ -319,6 +867,10 @@ extension LibraryStore {
                 guard token == self.cloudLoadToken else { return }
                 self.cloudLoading = false
                 self.cloudError = error.localizedDescription
+                self.invalidateCloudPasswordIfNeeded(error, mountID: mount.id)
+                if let oauth = error as? CloudOAuthError, oauth.requiresReauth {
+                    self.cloudModel.needsCloudReauth = true
+                }
                 self.showToast(error.localizedDescription)
             }
         }
@@ -331,13 +883,18 @@ extension LibraryStore {
         cloudError = nil
         cloudLoadToken += 1
         let token = cloudLoadToken
+        similarScope = nil
+        cloudModel.healthReport = nil
 
         let cacheKey = "\(mountID.uuidString)|tree|\(rootPath)"
         if !force, let cached = cloudDirectoryCache[cacheKey] {
             cloudFolders = []
-            cloudPhotos = cached.photos
+            cloudPhotos = hydrateCloudCache(photos: cached.photos, mountID: mountID)
+            cloudDirectoryCache[cacheKey] = ([], cloudPhotos)
             cloudLoading = false
             cloudBusyText = nil
+            restoreCloudDerivedReports(mountID: mountID, path: rootPath)
+            scanCloudMetadataIfNeeded()
             return
         }
 
@@ -350,20 +907,27 @@ extension LibraryStore {
             do {
                 let entries = try await CloudService.scanTree(mount: mount, path: rootPath)
                 guard token == self.cloudLoadToken else { return }
-                let photos = entries
-                    .map { self.makeCloudPhoto(mount: mount, entry: $0) }
-                    .sorted { $0.capturedAt > $1.capturedAt }
+                var photos = entries.map { self.makeCloudPhoto(mount: mount, entry: $0) }
+                photos = self.hydrateCloudCache(photos: photos, mountID: mount.id)
+                photos.sort { $0.capturedAt > $1.capturedAt }
                 self.cloudFolders = []
                 self.cloudPhotos = photos
                 self.cloudDirectoryCache[cacheKey] = ([], photos)
                 self.cloudBusyText = nil
                 self.cloudLoading = false
                 self.cloudError = nil
+                self.cloudModel.needsCloudReauth = false
+                self.restoreCloudDerivedReports(mountID: mount.id, path: rootPath)
+                self.scanCloudMetadataIfNeeded()
             } catch {
                 guard token == self.cloudLoadToken else { return }
                 self.cloudBusyText = nil
                 self.cloudLoading = false
                 self.cloudError = error.localizedDescription
+                self.invalidateCloudPasswordIfNeeded(error, mountID: mount.id)
+                if let oauth = error as? CloudOAuthError, oauth.requiresReauth {
+                    self.cloudModel.needsCloudReauth = true
+                }
                 self.showToast(error.localizedDescription)
             }
         }
@@ -386,8 +950,14 @@ extension LibraryStore {
         item.cloudPath = entry.path
         item.cloudRemoteID = entry.remoteID
         item.cloudThumbnailURL = entry.thumbnailURL
+        item.cloudRestricted = entry.isRestricted ? true : nil
         item.duration = entry.duration
-        item.isFavorite = cloudFavorites.contains(Self.cloudFavoriteKey(mountID: mount.id, path: entry.path))
+        let keywordKey = Self.cloudFavoriteKey(mountID: mount.id, path: entry.path)
+        item.isFavorite = cloudFavorites.contains(keywordKey)
+        if let tags = cloudKeywords[keywordKey], !tags.isEmpty {
+            item.keywords = tags
+        }
+        item.viewedAt = cloudModel.viewedAt[item.id]
         return item
     }
 
@@ -444,14 +1014,144 @@ extension LibraryStore {
     /// 当前图库自己的网盘收藏（写在该图库的 SQLite settings 表）。
     static let cloudFavoritesSettingKey = "cloud_favorites"
 
+    // MARK: - 云照片的本地关键词（不写回网盘）
+
+    func loadCloudKeywords() {
+        guard let json = metadataStore?.setting(Self.cloudKeywordsSettingKey),
+              let data = json.data(using: .utf8),
+              let map = try? JSONDecoder().decode([String: [String]].self, from: data) else {
+            cloudKeywords = [:]
+            return
+        }
+        cloudKeywords = map
+    }
+
+    func persistCloudKeywords() {
+        guard let data = try? JSONEncoder().encode(cloudKeywords),
+              let json = String(data: data, encoding: .utf8) else { return }
+        metadataStore?.setSetting(Self.cloudKeywordsSettingKey, json)
+    }
+
+    /// 给一批云照片增删关键词：只更新本地记录与当前列表，不修改 NAS 或网盘上的文件。
+    func updateCloudKeywords(_ ids: Set<UUID>,
+                             mutate: (inout [String]) -> Bool) {
+        guard !ids.isEmpty else { return }
+        var changed = false
+        var list = cloudPhotos
+        for index in list.indices where ids.contains(list[index].id) {
+            guard let mountID = list[index].cloudMountID,
+                  let path = list[index].cloudPath else { continue }
+            let key = Self.cloudFavoriteKey(mountID: mountID, path: path)
+            var tags = cloudKeywords[key] ?? []
+            guard mutate(&tags) else { continue }
+            changed = true
+            if tags.isEmpty {
+                cloudKeywords.removeValue(forKey: key)
+                list[index].keywords = nil
+            } else {
+                cloudKeywords[key] = tags
+                list[index].keywords = tags
+            }
+        }
+        guard changed else { return }
+        cloudPhotos = list
+        for photo in list where ids.contains(photo.id) {
+            updateCachedCloudPhoto(photo)
+        }
+        persistCloudKeywords()
+        cloudScopeCountsCacheKey = nil
+        cloudVisibleCacheKey = nil
+        cloudModel.metadataRevision += 1
+    }
+
+    /// 当前图库自己的网盘关键词（写在该图库的 SQLite settings 表）。
+    static let cloudKeywordsSettingKey = "cloud_keywords"
+
     func applyCloudPixelSize(photoID: UUID, size: CGSize) {
         guard let index = cloudPhotos.firstIndex(where: { $0.id == photoID }) else { return }
         let width = Int(size.width)
         let height = Int(size.height)
         guard cloudPhotos[index].pixelWidth != width || cloudPhotos[index].pixelHeight != height else { return }
-        cloudPhotos[index].pixelWidth = width
-        cloudPhotos[index].pixelHeight = height
-        updateCachedCloudPhoto(cloudPhotos[index])
+        var photo = cloudPhotos[index]
+        photo.pixelWidth = width
+        photo.pixelHeight = height
+        enqueueCloudPhotoUpdate(photo)
+    }
+
+    /// 缩略图尺寸 / EXIF 等"非结构性"更新先入队，0.4 秒内合并成一次列表写入。
+    /// 直接改 `cloudPhotos` 会触发 @Published，让整页网格、月份分桶与范围计数每张图都重算。
+    func enqueueCloudPhotoUpdate(_ photo: PhotoItem) {
+        cloudModel.pendingPhotoUpdates[photo.id] = photo
+        updateCachedCloudPhoto(photo)
+        markCloudMetadataChanged()
+    }
+
+    /// 标记派生缓存需要失效，并安排一次合并刷新。
+    func markCloudMetadataChanged() {
+        cloudModel.metadataDirty = true
+        guard cloudModel.metadataFlushTask == nil else { return }
+        cloudModel.metadataFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self else { return }
+            self.cloudModel.metadataFlushTask = nil
+            self.flushCloudMetadata()
+        }
+    }
+
+    /// 把排队中的元数据更新一次性写回列表：只触发一次发布与一次缓存失效。
+    func flushCloudMetadata() {
+        let pending = cloudModel.pendingPhotoUpdates
+        cloudModel.pendingPhotoUpdates.removeAll(keepingCapacity: true)
+        if !pending.isEmpty {
+            var list = cloudPhotos
+            var indexByID: [UUID: Int] = [:]
+            indexByID.reserveCapacity(list.count)
+            for (offset, photo) in list.enumerated() { indexByID[photo.id] = offset }
+            var changed = false
+            for (id, photo) in pending {
+                guard let offset = indexByID[id] else { continue }
+                list[offset] = photo
+                changed = true
+            }
+            if changed { cloudPhotos = list }
+        }
+        guard cloudModel.metadataDirty else { return }
+        cloudModel.metadataDirty = false
+        cloudModel.metadataRevision += 1
+        cloudScopeCountsCacheKey = nil
+        cloudVisibleCacheKey = nil
+    }
+
+    /// 预取云缩略图：只处理尚未命中内存 / 磁盘缓存的头部若干张。
+    /// 单任务顺序执行，给屏幕上正在请求的格子留出网络与并发额度。
+    /// 返回的任务可由视图的 `.task` 取消（离开网盘 / 切换目录时停止）。
+    @discardableResult
+    func prefetchCloudThumbnails(for photos: [PhotoItem], limit: Int = 60) -> Task<Void, Never>? {
+        cloudModel.thumbnailPrefetchTask?.cancel()
+        cloudModel.thumbnailPrefetchTask = nil
+        guard !photos.isEmpty, limit > 0 else { return nil }
+        var targets: [PhotoItem] = []
+        targets.reserveCapacity(limit)
+        for photo in photos.prefix(limit) {
+            guard photo.isCloud else { continue }
+            if ImageLoader.cachedCloudThumbnail(for: photo) != nil { continue }
+            if let mountID = photo.cloudMountID, let path = photo.cloudPath,
+               ThumbnailFileIndex.shared.exists(path: CloudPaths.thumbnailURL(mountID: mountID,
+                                                                             path: path).path) {
+                continue
+            }
+            targets.append(photo)
+        }
+        guard !targets.isEmpty else { return nil }
+        let task = Task { [weak self] in
+            for photo in targets {
+                if Task.isCancelled { return }
+                _ = await self?.cloudThumbnail(for: photo)
+                await Task.yield()
+            }
+        }
+        cloudModel.thumbnailPrefetchTask = task
+        return task
     }
 
     func applyCloudDuration(photoID: UUID, duration: Double) {
@@ -470,15 +1170,40 @@ extension LibraryStore {
         }
     }
 
+    /// 云缩略图快速层：只读内存与磁盘，绝不发起网络请求。
+    /// 目标图生成时已经顺手写了一份 192px 小图，滚动到这里时可以立即出图。
+    func cloudQuickThumbnail(for photo: PhotoItem, maxPixel: CGFloat) async -> NSImage? {
+        if let cached = ImageLoader.cachedCloudThumbnail(for: photo) { return cached }
+        if let cached = ImageLoader.cachedGridImage(for: photo, maxPixel: maxPixel) { return cached }
+        guard let mountID = photo.cloudMountID, let path = photo.cloudPath else { return nil }
+        let url = CloudPaths.quickThumbnailURL(mountID: mountID, path: path)
+        guard ThumbnailFileIndex.shared.exists(path: url.path) else { return nil }
+        let image = await Task.detached(priority: .utility) {
+            ImageLoader.decodeThumbnailFile(at: url, maxPixel: maxPixel)
+        }.value
+        if let image {
+            ImageLoader.storeGridThumbnail(image, for: photo, maxPixel: maxPixel)
+        }
+        return image
+    }
+
     /// 按需加载：优先使用服务端缩略图；WebDAV 走 EXIF 区间探测，避免整目录原图下行。
     func cloudThumbnail(for photo: PhotoItem) async -> NSImage? {
         if let cached = ImageLoader.cachedCloudThumbnail(for: photo) {
             return cached
         }
-        if let remote = photo.cloudThumbnailURL, !remote.isEmpty,
-           let image = await CloudImageFetcher.thumbnail(for: photo, urlString: remote) {
-            ImageLoader.cacheCloudThumbnail(image, for: photo)
-            return image
+        if let remote = photo.cloudThumbnailURL, !remote.isEmpty {
+            // 夸克的缩略图地址可能在 CDN 后面，仍带上 Cookie / Referer 更稳妥。
+            var headers: [String: String] = [:]
+            if let mount = cloudMount(for: photo.cloudMountID), mount.kind == .quark {
+                headers = QuarkDrive.headers(cookie: cloudPassword(for: mount.id))
+            }
+            if let image = await CloudImageFetcher.thumbnail(for: photo,
+                                                             urlString: remote,
+                                                             headers: headers) {
+                ImageLoader.cacheCloudThumbnail(image, for: photo)
+                return image
+            }
         }
         guard let mount = cloudMount(for: photo.cloudMountID),
               mount.kind == .webdav || mount.kind == .smb else { return nil }
@@ -496,8 +1221,49 @@ extension LibraryStore {
         return image
     }
 
+    /// 云端动图：下载完整文件后保留全部帧播放。
+    /// 只对动图调用，并限制体积，避免为了播放误拉超大文件。
+    func cloudAnimatedImage(for photo: PhotoItem) async -> NSImage? {
+        guard photo.playsAnimation, photo.isCloud else { return nil }
+        guard photo.fileSize > 0, photo.fileSize <= 80 * 1024 * 1024 else { return nil }
+        guard let mount = cloudMount(for: photo.cloudMountID),
+              let path = photo.cloudPath else { return nil }
+
+        if mount.kind == .smb, let client = SMBClient(mount: mount, password: cloudPassword(for: mount.id)) {
+            _ = try? await client.ensureMounted()
+            guard let url = client.fileURL(path: path) else { return nil }
+            return await Task.detached(priority: .userInitiated) {
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return NSImage(data: data)
+            }.value
+        }
+
+        if mount.kind == .webdav, let client = CloudService.webdavClient(mount) {
+            guard let data = try? await client.data(path: path) else { return nil }
+            return await Task.detached(priority: .userInitiated) {
+                NSImage(data: data)
+            }.value
+        }
+
+        guard let resource = await cloudStream(for: photo) else { return nil }
+        var request = URLRequest(url: resource.url,
+                                 cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: 60)
+        for (key, value) in resource.headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        guard let (data, _) = try? await URLSession.shared.data(for: request) else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            NSImage(data: data)
+        }.value
+    }
+
     func cloudDisplayImage(for photo: PhotoItem) async -> NSImage? {
-        guard let mount = cloudMount(for: photo.cloudMountID) else { return nil }
+        guard let mount = cloudMount(for: photo.cloudMountID) else {
+            Diagnostics.record("云端原图缺少挂载 \(photo.originalName) "
+                               + "mount=\(photo.cloudMountID?.uuidString ?? "-")")
+            return nil
+        }
         if let cached = ImageLoader.cachedCloudFullImage(for: photo) {
             return cached
         }
@@ -516,6 +1282,7 @@ extension LibraryStore {
         }
         guard let resource = await cloudStream(for: photo),
               let image = await CloudImageFetcher.fullImage(photo: photo, resource: resource) else {
+            Diagnostics.record("云端原图获取失败 [\(mount.kind.rawValue)] \(photo.cloudPath ?? "-")")
             return nil
         }
         ImageLoader.cacheCloudFullImage(image, for: photo)
@@ -523,8 +1290,21 @@ extension LibraryStore {
     }
 
     func cloudStream(for photo: PhotoItem) async -> CloudStreamResource? {
-        guard let mount = cloudMount(for: photo.cloudMountID) else { return nil }
-        return try? await CloudService.stream(mount: mount, photo: photo)
+        try? await cloudStreamOrThrow(for: photo)
+    }
+
+    /// 与 `cloudStream` 相同，但保留失败原因：播放器需要把「授权失效 / 缺少文件 ID / 直链获取失败」
+    /// 之类的具体错误展示出来，而不是统一显示「无法定位视频文件」。
+    func cloudStreamOrThrow(for photo: PhotoItem) async throws -> CloudStreamResource {
+        guard let mount = cloudMount(for: photo.cloudMountID) else {
+            throw CloudOAuthError.api("找不到对应的网盘连接，请在侧边栏重新连接")
+        }
+        do {
+            return try await CloudService.stream(mount: mount, photo: photo)
+        } catch {
+            Diagnostics.record("云端直链获取失败 [\(mount.kind.rawValue)] \(photo.cloudPath ?? "-")：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func downloadCloudItem(_ photo: PhotoItem, to url: URL) async throws {
@@ -594,7 +1374,8 @@ extension LibraryStore {
         guard let mount = cloudMounts.first(where: { $0.id == mountID }) else { return nil }
         return WebDAVClient(baseURLString: mount.baseURL,
                             username: mount.username,
-                            password: cloudPassword(for: mount.id))
+                            password: cloudPassword(for: mount.id),
+                            allowsSelfSignedCertificate: mount.trustSelfSigned)
     }
 
     func requestCloudRename(_ photoID: UUID) {
@@ -690,6 +1471,10 @@ extension LibraryStore {
                 guard let path = item.cloudPath else { continue }
                 do {
                     try await client.delete(path: path)
+                    // 删除成功后再清本地缩略图缓存（磁盘 + 内存），避免残留文件与残影。
+                    try? FileManager.default.removeItem(
+                        at: CloudPaths.thumbnailURL(mountID: item.cloudMountID ?? mountID, path: path))
+                    ImageLoader.invalidate(photo: item)
                 } catch {
                     failed += 1
                 }

@@ -19,7 +19,8 @@ let package = Package(
             path: "Sources/PhotosClone",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
-                .linkedFramework("NetFS")
+                .linkedFramework("NetFS"),
+                .linkedFramework("Photos")
             ]
         ),
         // 命令行工具链（无 Xcode）不提供 XCTest，这里用可执行 target 做断言检查。

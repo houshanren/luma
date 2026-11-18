@@ -272,13 +272,19 @@ enum ImportService {
     static func writeJPEG(_ image: CGImage, to url: URL, quality: CGFloat = 0.92) {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL,
-                                                               UTType.jpeg.identifier as CFString, 1, nil) else {
+        // 先编码到内存，再原子替换目标文件：网格与内容识别线程可能同时在读同一张缩略图，
+        // 直接写目标路径会让它们读到写了一半的 JPEG。
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data as CFMutableData,
+                                                                 UTType.jpeg.identifier as CFString, 1, nil) else {
             return
         }
         CGImageDestinationAddImage(destination, image,
                                    [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        CGImageDestinationFinalize(destination)
+        guard CGImageDestinationFinalize(destination) else { return }
+        try? (data as Data).write(to: url, options: .atomic)
+        // 写入成功即登记到缩略图索引，网格读取时不再对每个格子做磁盘 stat。
+        ThumbnailFileIndex.shared.recordWrite(url: url)
     }
 
     /// 导入窗口的预览缩略图：视频走临时帧，图片直接快速解码。

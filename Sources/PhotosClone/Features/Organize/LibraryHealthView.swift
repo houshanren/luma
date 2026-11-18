@@ -5,30 +5,44 @@ struct LibraryHealthView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: AppSettings
     @State private var confirmDeleteDuplicates = false
+    @State private var confirmDeleteSystemDuplicates = false
 
-    private var report: LibraryHealthReport? { store.healthReport }
+    private var report: LibraryHealthReport? {
+        guard store.healthReportMatchesCurrentScope else { return nil }
+        return store.healthReport
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 20) {
+                    if store.isScanningHealth {
+                        scanProgress
+                    }
 
-                if store.isScanningHealth {
-                    scanProgress
-                } else if let report {
-                    summary(report)
-                    cards(report)
-                    similarSection(report)
-                    footer(report)
-                } else {
-                    emptyState
+                    if let report {
+                        // 扫描过程中就展示已产出的结果，完成后自动补齐相似连拍。
+                        summary(report)
+                        if store.isSystemScope {
+                            systemCards(report)
+                        } else {
+                            cards(report)
+                        }
+                        similarSection(report)
+                        if !store.isScanningHealth && !store.isFinalizingHealth {
+                            footer(report)
+                        }
+                    } else if !store.isScanningHealth {
+                        emptyState
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 48)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 20)
-            .padding(.bottom, 48)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .task { store.restoreCachedHealthReportIfNeeded() }
         .confirmationDialog("把相似备选移入最近删除？",
                             isPresented: $confirmDeleteDuplicates,
                             titleVisibility: .visible) {
@@ -40,53 +54,25 @@ struct LibraryHealthView: View {
         } message: {
             Text("会保留每组里最清晰的一张，其余 \(store.similarDuplicatePhotos.count) 张移入「最近删除」，可在 30 天内恢复。")
         }
+        .confirmationDialog("把相似备选移入「照片」的最近删除？",
+                            isPresented: $confirmDeleteSystemDuplicates,
+                            titleVisibility: .visible) {
+            Button("移入最近删除", role: .destructive) {
+                Task { await store.deleteSystemDuplicatesViaPhotoKit() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会保留每组里最清晰的一张，其余 \(store.similarDuplicatePhotos.count) 张移入系统「照片」的最近删除，30 天内可在「照片」中恢复。")
+        }
     }
 
     // MARK: - 头部
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("图库体检")
-                    .font(.system(size: 27, weight: .bold))
-                Text("在本机检查模糊照片、相似连拍与过大视频，不上传任何内容")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if store.isScanningHealth {
-                Button("停止") { store.cancelHealthScan() }
-                    .controlSize(.small)
-                    .help("停止本次体检")
-            } else {
-                Button {
-                    store.showBeautyPanel = true
-                } label: {
-                    Label("智能美化", systemImage: "wand.and.stars")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .controlSize(.small)
-                .disabled(!store.canScanBeauty)
-                .help("按画面偏差推荐可批量美化的照片")
-
-                Button {
-                    store.scanLibraryHealth()
-                } label: {
-                    Label(report == nil ? "开始体检" : "重新体检", systemImage: "stethoscope")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .controlSize(.small)
-                .disabled(!store.canScanHealth)
-                .help("扫描当前图库的照片质量与重复内容")
-            }
-        }
-    }
 
     private var scanProgress: some View {
         VStack(alignment: .leading, spacing: 8) {
             ProgressView(value: store.healthScanProgress)
                 .progressViewStyle(.linear)
-            Text("正在检查照片清晰度… \(Int(store.healthScanProgress * 100))%")
+            Text("正在检查照片清晰度… \(Int(store.healthScanProgress * 100))% · 结果会实时更新")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
@@ -117,15 +103,16 @@ struct LibraryHealthView: View {
     // MARK: - 总览与卡片
 
     private func summary(_ report: LibraryHealthReport) -> some View {
-        HStack(spacing: 12) {
+        let analyzing = store.isScanningHealth || store.isFinalizingHealth
+        return HStack(spacing: 12) {
             metric(title: "可腾出空间",
-                   value: formatFileSize(report.reclaimableBytes),
+                   value: analyzing ? "分析中" : formatFileSize(report.reclaimableBytes),
                    icon: "internaldrive")
             metric(title: "可能模糊",
                    value: "\(report.blurry.count) 张",
                    icon: "camera.metering.unknown")
             metric(title: "相似备选",
-                   value: "\(report.similarDuplicatePhotos.count) 张",
+                   value: analyzing ? "分析中" : "\(report.similarDuplicatePhotos.count) 张",
                    icon: "square.on.square")
             metric(title: "已检查",
                    value: "\(report.scannedCount) 张",
@@ -159,7 +146,9 @@ struct LibraryHealthView: View {
             healthCard(id: "blurry",
                        title: "可能模糊",
                        count: report.blurry.count,
-                       subtitle: report.blurry.isEmpty ? "没有发现明显模糊的照片" : "清晰度偏低，建议逐张确认",
+                       subtitle: store.isScanningHealth
+                           ? "已发现 \(report.blurry.count) 张，仍在检查…"
+                           : (report.blurry.isEmpty ? "没有发现明显模糊的照片" : "清晰度偏低，建议逐张确认"),
                        icon: "camera.metering.unknown",
                        samples: Array(report.blurry.prefix(4).map(\.photo)),
                        action: report.blurry.isEmpty ? nil : { store.navigate(to: .blurry) })
@@ -167,9 +156,11 @@ struct LibraryHealthView: View {
             healthCard(id: "similar",
                        title: "相似连拍",
                        count: report.similarGroups.count,
-                       subtitle: report.similarGroups.isEmpty
-                           ? "需要先在「场景」里分析照片内容"
-                           : "\(report.similarDuplicatePhotos.count) 张备选，可腾出 \(formatFileSize(report.reclaimableBytes))",
+                       subtitle: (store.isScanningHealth || store.isFinalizingHealth)
+                           ? "正在归并相似连拍，完成后自动更新"
+                           : (report.similarGroups.isEmpty
+                              ? "需要先在「场景」里分析照片内容"
+                              : "\(report.similarDuplicatePhotos.count) 张备选，可腾出 \(formatFileSize(report.reclaimableBytes))"),
                        icon: "square.on.square",
                        samples: Array(report.similarDuplicatePhotos.prefix(4)),
                        action: report.similarGroups.isEmpty ? nil : { store.navigate(to: .similarDuplicates) })
@@ -199,6 +190,46 @@ struct LibraryHealthView: View {
                        icon: "sparkles",
                        samples: [],
                        action: store.pendingAnalysisCount == 0 ? nil : { store.analyzeIntelligence() })
+        }
+    }
+
+    /// 系统图库只读：只展示检查结果，不提供清理 / 删除入口。
+    private func systemCards(_ report: LibraryHealthReport) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 250, maximum: 360), spacing: 14)],
+                  alignment: .leading, spacing: 14) {
+            healthCard(id: "blurry",
+                       title: "可能模糊",
+                       count: report.blurry.count,
+                       subtitle: store.isScanningHealth
+                           ? "已发现 \(report.blurry.count) 张，仍在检查…"
+                           : (report.blurry.isEmpty ? "没有发现明显模糊的照片" : "清晰度偏低，建议到「照片」中确认"),
+                       icon: "camera.metering.unknown",
+                       samples: Array(report.blurry.prefix(4).map(\.photo)),
+                       action: nil)
+
+            healthCard(id: "similar",
+                       title: "相似连拍",
+                       count: report.similarGroups.count,
+                       subtitle: (store.isScanningHealth || store.isFinalizingHealth)
+                           ? "正在归并相似连拍，完成后自动更新"
+                           : (report.similarGroups.isEmpty
+                              ? "没有发现相似连拍"
+                              : (store.canDeleteSystemPhotos
+                                 ? "\(report.similarDuplicatePhotos.count) 张备选，可移入「照片」的最近删除"
+                                 : "\(report.similarDuplicatePhotos.count) 张备选，可在「照片」中合并")),
+                       icon: "square.on.square",
+                       samples: Array(report.similarDuplicatePhotos.prefix(4)),
+                       action: (store.canDeleteSystemPhotos && !report.similarDuplicatePhotos.isEmpty)
+                           ? { confirmDeleteSystemDuplicates = true }
+                           : nil)
+
+            healthCard(id: "videos",
+                       title: "过大视频",
+                       count: report.largeVideos.count,
+                       subtitle: "单个视频超过 \(formatFileSize(LibraryHealthTuning.largeVideoBytes))",
+                       icon: "film.stack",
+                       samples: Array(report.largeVideos.prefix(4)),
+                       action: nil)
         }
     }
 
@@ -268,9 +299,11 @@ struct LibraryHealthView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("查看全部备选") { store.navigate(to: .similarDuplicates) }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11.5))
+                    if !store.isSystemScope {
+                        Button("查看全部备选") { store.navigate(to: .similarDuplicates) }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11.5))
+                    }
                 }
 
                 VStack(spacing: 8) {
@@ -279,6 +312,14 @@ struct LibraryHealthView: View {
                     }
                 }
             }
+        } else if store.isScanningHealth || store.isFinalizingHealth {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("正在归并相似连拍，完成后会在这里按组列出保留项")
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -323,7 +364,11 @@ struct LibraryHealthView: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
             Spacer()
-            if !store.similarDuplicatePhotos.isEmpty {
+            if store.isSystemScope {
+                Text("系统图库只读：只做检查与预览，清理请到「照片」中操作。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+            } else if !store.similarDuplicatePhotos.isEmpty {
                 Button {
                     confirmDeleteDuplicates = true
                 } label: {

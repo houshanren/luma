@@ -27,12 +27,12 @@ enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    var icon: String {
+    var brand: CloudBrand {
         switch self {
-        case .aliyun: return "cloud"
-        case .baidu: return "cloud.fill"
-        case .quark: return "square.stack.3d.up.fill"
-        case .pan115: return "externaldrive.fill"
+        case .aliyun: return .aliyun
+        case .baidu: return .baidu
+        case .quark: return .quark
+        case .pan115: return .pan115
         }
     }
 
@@ -127,8 +127,9 @@ enum AlistProvider: String, CaseIterable, Identifiable {
 // MARK: - 向导流程
 
 enum CloudWizardFlow: String, CaseIterable, Identifiable {
-    case aliyun
+    case aliyunCookie
     case baidu
+    case quark
     case smb
     case webdav
     case alist
@@ -137,8 +138,9 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .aliyun: return "阿里云盘"
+        case .aliyunCookie: return "阿里云盘"
         case .baidu: return "百度网盘"
+        case .quark: return "夸克网盘"
         case .smb: return "SMB 共享"
         case .webdav: return "WebDAV"
         case .alist: return "AList 聚合"
@@ -147,8 +149,9 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .aliyun: return "官方 OAuth · 服务端缩略图 / 转码播放"
+        case .aliyunCookie: return "浏览器 Cookie · 免开发者应用"
         case .baidu: return "官方 OAuth · 直链播放"
+        case .quark: return "浏览器 Cookie · 直连浏览与播放"
         case .smb: return "群晖 / TrueNAS · 只读浏览"
         case .webdav: return "填地址与账号，直连 NAS"
         case .alist: return "夸克 / 115 / 其他网盘"
@@ -157,18 +160,30 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .aliyun: return "cloud"
+        case .aliyunCookie: return "cloud"
         case .baidu: return "cloud.fill"
+        case .quark: return "square.stack.3d.up.fill"
         case .smb: return "network"
         case .webdav: return "externaldrive.connected.to.line.below"
         case .alist: return "wand.and.stars"
         }
     }
 
+    /// 官方网盘的品牌图标；SMB / WebDAV / AList 用系统符号。
+    var brand: CloudBrand? {
+        switch self {
+        case .aliyunCookie: return .aliyun
+        case .baidu: return .baidu
+        case .quark: return .quark
+        case .smb, .webdav, .alist: return nil
+        }
+    }
+
     var kind: CloudKind? {
         switch self {
-        case .aliyun: return .aliyun
+        case .aliyunCookie: return nil
         case .baidu: return .baidu
+        case .quark: return .quark
         case .smb: return .smb
         case .webdav: return .webdav
         case .alist: return nil
@@ -177,11 +192,15 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
 
     var steps: [String] {
         switch self {
-        case .aliyun, .baidu: return ["应用凭据", "授权登录", "完成"]
+        case .baidu: return ["应用凭据", "授权登录", "完成"]
+        case .aliyunCookie, .quark: return ["粘贴 Cookie", "确认添加"]
         case .smb, .webdav: return ["填写连接", "确认添加"]
         case .alist: return ["选择网盘", "连接 AList", "在 AList 中添加", "确认"]
         }
     }
 
-    var requiresDeveloperApp: Bool { self == .aliyun || self == .baidu }
+    /// 走浏览器 Cookie / 令牌的接入方式。
+    var usesCookie: Bool { self == .aliyunCookie || self == .quark }
+
+    var requiresDeveloperApp: Bool { self == .baidu }
 }

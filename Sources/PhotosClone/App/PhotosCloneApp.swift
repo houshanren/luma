@@ -31,6 +31,10 @@ struct PhotosCloneApp: App {
         }
     }
 
+    private var canEditMetadataCommand: Bool {
+        !store.commandTargetIDs.isEmpty && store.canEditMetadataWorkflow
+    }
+
     var body: some Scene {
         // 单窗口：不再允许新建第二个主窗口；关掉主窗口即退出（见 LumaAppDelegate）。
         Window("拾光", id: "main") {
@@ -45,6 +49,17 @@ struct PhotosCloneApp: App {
         .defaultSize(width: 1360, height: 860)
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button(store.undoActionName.map { "撤销\($0)" } ?? "撤销") {
+                    store.performUndoCommand()
+                }
+                .keyboardShortcut("z", modifiers: [.command])
+
+                Button(store.redoActionName.map { "重做\($0)" } ?? "重做") {
+                    store.performRedoCommand()
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .newItem) {
                 Button("新建相簿") {
                     store.showNewAlbumSheet = true
@@ -127,7 +142,7 @@ struct PhotosCloneApp: App {
                     store.navigateUp()
                 }
                 .keyboardShortcut("[", modifiers: [.command])
-                .disabled(store.navigationParent == nil)
+                .disabled(!store.canNavigateUp)
 
                 Divider()
 
@@ -230,6 +245,41 @@ struct PhotosCloneApp: App {
                 .keyboardShortcut("k", modifiers: [.command])
                 .disabled(store.commandTargetIDs.isEmpty || (store.isReadOnlyScope && !store.canEditNativeOverlay))
 
+                Menu("评分") {
+                    Button("无评分") { store.setRatingCurrent(0) }
+                        .keyboardShortcut("0", modifiers: [.option])
+                    Divider()
+                    ForEach(1...5, id: \.self) { value in
+                        Button("\(value) 星") { store.setRatingCurrent(value) }
+                            .keyboardShortcut(KeyEquivalent(Character("\(value)")), modifiers: [.option])
+                    }
+                }
+                .disabled(!canEditMetadataCommand)
+
+                Menu("旗标") {
+                    Button("留用") { store.setFlagCurrent(.pick) }
+                        .keyboardShortcut("p", modifiers: [.option])
+                    Button("排除") { store.setFlagCurrent(.reject) }
+                        .keyboardShortcut("x", modifiers: [.option])
+                    Divider()
+                    Button("清除旗标") { store.setFlagCurrent(.none) }
+                }
+                .disabled(!canEditMetadataCommand)
+
+                Menu("色标") {
+                    Button("红色") { store.setColorLabelCurrent(.red) }
+                        .keyboardShortcut("6", modifiers: [.option])
+                    Button("黄色") { store.setColorLabelCurrent(.yellow) }
+                        .keyboardShortcut("7", modifiers: [.option])
+                    Button("绿色") { store.setColorLabelCurrent(.green) }
+                        .keyboardShortcut("8", modifiers: [.option])
+                    Button("蓝色") { store.setColorLabelCurrent(.blue) }
+                        .keyboardShortcut("9", modifiers: [.option])
+                    Divider()
+                    Button("清除色标") { store.setColorLabelCurrent(.none) }
+                }
+                .disabled(!canEditMetadataCommand)
+
                 Button("批量更改…") {
                     store.presentBatchChange()
                 }
@@ -253,7 +303,7 @@ struct PhotosCloneApp: App {
                 Divider()
 
                 Button("移到最近删除") {
-                    store.delete(store.commandTargetIDs)
+                    store.confirmDelete(store.commandTargetIDs)
                 }
                 .disabled(store.commandTargetIDs.isEmpty
                           || store.isReadOnlyScope
@@ -274,14 +324,22 @@ struct PhotosCloneApp: App {
                 Divider()
 
                 Button("图库体检") {
-                    store.navigate(to: .health)
+                    if store.isCloudScope {
+                        store.setCloudScope(.health)
+                    } else if store.isSystemScope {
+                        store.navigate(to: .systemHealth)
+                    } else {
+                        store.navigate(to: .health)
+                    }
                 }
-                .disabled(store.isSystemScope || store.isCloudScope)
 
                 Button("值得重看") {
-                    store.navigate(to: .revisit)
+                    if store.isCloudScope {
+                        store.setCloudScope(.revisit)
+                    } else {
+                        store.navigate(to: store.isSystemScope ? .systemRevisit : .revisit)
+                    }
                 }
-                .disabled(store.isSystemScope || store.isCloudScope)
             }
             CommandGroup(after: .toolbar) {
                 Button("搜索") {
@@ -296,6 +354,14 @@ struct PhotosCloneApp: App {
 
                 Button("智能助手…") {
                     store.showAIAssistant = true
+                }
+
+                Button("问一问") {
+                    store.navigate(to: .ask)
+                }
+
+                Button("标签治理") {
+                    store.navigate(to: .tagGovernance)
                 }
 
                 Button("智能美化…") {
@@ -333,6 +399,21 @@ struct PhotosCloneApp: App {
                 }
                 .disabled(!store.isGridScopeForCommands)
 
+                Menu("相簿显示方式") {
+                    ForEach(AlbumDisplayStyle.allCases) { style in
+                        Toggle(isOn: Binding(
+                            get: { store.albumDisplayStyle == style },
+                            set: { isOn in
+                                guard isOn else { return }
+                                store.albumDisplayStyle = style
+                            }
+                        )) {
+                            Label(style.title, systemImage: style.icon)
+                        }
+                    }
+                }
+                .disabled(!store.isAlbumOverviewScope)
+
                 Menu("元数据") {
                     Toggle("标题", isOn: $settings.metadata.title)
                     Toggle("拍摄日期", isOn: $settings.metadata.capturedDate)
@@ -356,6 +437,10 @@ struct PhotosCloneApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 .disabled(store.viewerID == nil)
 
+                Toggle("显示底部缩略图", isOn: $settings.viewerFilmstrip)
+                    .keyboardShortcut("t", modifiers: [.command, .option])
+                    .disabled(store.viewerID == nil)
+
                 Button("显示/隐藏边栏") {
                     NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)),
                                      to: nil, from: nil)
@@ -363,17 +448,17 @@ struct PhotosCloneApp: App {
                 .keyboardShortcut("s", modifiers: [.control, .command])
 
                 Button("放大缩略图") {
-                    withAnimation { store.thumbSize = min(LibraryStore.thumbSizeRange.upperBound, store.thumbSize + 16) }
+                    withAnimation { store.zoomStep(1) }
                 }
                 .keyboardShortcut("=", modifiers: [.command])
 
                 Button("缩小缩略图") {
-                    withAnimation { store.thumbSize = max(LibraryStore.thumbSizeRange.lowerBound, store.thumbSize - 16) }
+                    withAnimation { store.zoomStep(-1) }
                 }
                 .keyboardShortcut("-", modifiers: [.command])
 
                 Button("恢复默认缩略图大小") {
-                    withAnimation { store.thumbSize = 132 }
+                    withAnimation { store.resetZoom() }
                 }
                 .keyboardShortcut("0", modifiers: [.command])
             }
@@ -391,6 +476,16 @@ struct PhotosCloneApp: App {
         }
         .defaultSize(width: 900, height: 640)
         .windowResizability(.contentMinSize)
+
+        // 图库选择器是独立小窗口（对齐系统「照片」的选取图库）：
+        // 打开期间主窗口整窗隐藏（含窗口框架），选定或取消后由 RootView 恢复。
+        Window("选取图库", id: "libraryPicker") {
+            LibraryPickerView()
+                .environmentObject(store)
+                .tint(settings.accentColor)
+                .accentColor(settings.accentColor)
+        }
+        .windowResizability(.contentSize)
 
         Settings {
             SettingsView()
@@ -420,5 +515,38 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
         guard let existing = others.first else { return }
         existing.activate(options: [.activateAllWindows])
         NSApp.terminate(nil)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Diagnostics.install()
+        // 文本框里兼容 Windows 的 Ctrl+C / Ctrl+V 粘贴习惯。
+        ControlKeyTextShortcuts.install()
+        guard let path = ProcessInfo.processInfo.environment["LUMA_SNAPSHOT"] else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+                  let view = window.contentView else {
+                try? Data("no-window".utf8).write(to: URL(fileURLWithPath: path + ".marker"))
+                return
+            }
+            if let image = CGWindowListCreateImage(.null,
+                                                   .optionIncludingWindow,
+                                                   CGWindowID(window.windowNumber),
+                                                   [.boundsIgnoreFraming, .bestResolution]) {
+                let rep = NSBitmapImageRep(cgImage: image)
+                if let data = rep.representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: path))
+                }
+            }
+            // 退路：直接渲染内容视图，不依赖屏幕录制权限。
+            if !FileManager.default.fileExists(atPath: path),
+               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                if let data = rep.representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: path))
+                }
+            }
+            try? Data("captured".utf8).write(to: URL(fileURLWithPath: path + ".marker"))
+        }
     }
 }

@@ -136,6 +136,81 @@ struct PhotoInfoContent: View {
                 }
             }
 
+            section("整理") {
+                HStack(spacing: 4) {
+                    Text("评分")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 62, alignment: .leading)
+                    ForEach(1...5, id: \.self) { value in
+                        Button {
+                            store.setRating(photo.starRating == value ? 0 : value, ids: [photo.id])
+                        } label: {
+                            Image(systemName: value <= photo.starRating ? "star.fill" : "star")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(value <= photo.starRating ? Color.yellow : Color.secondary.opacity(0.55))
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(value) 星")
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 6) {
+                    Text("旗标")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 62, alignment: .leading)
+                    ForEach(PhotoFlag.allCases) { flag in
+                        Button {
+                            store.setFlag(photo.pickFlag == flag ? .none : flag, ids: [photo.id])
+                        } label: {
+                            Image(systemName: flag.icon)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(photo.pickFlag == flag ? flag.color : Color.secondary)
+                                .frame(width: 24, height: 22)
+                                .background(
+                                    photo.pickFlag == flag ? flag.color.opacity(0.14) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(flag.title)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 6) {
+                    Text("色标")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 62, alignment: .leading)
+                    ForEach(PhotoColorLabel.allCases) { label in
+                        Button {
+                            store.setColorLabel(photo.labelColor == label ? .none : label, ids: [photo.id])
+                        } label: {
+                            Circle()
+                                .fill(label.color)
+                                .frame(width: 13, height: 13)
+                                .overlay {
+                                    Circle()
+                                        .strokeBorder(
+                                            photo.labelColor == label ? Color.primary : Color.white.opacity(0.55),
+                                            lineWidth: photo.labelColor == label ? 2 : 0.8
+                                        )
+                                }
+                                .frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .help(label.title)
+                        .disabled(label == .none)
+                        .opacity(label == .none ? 0 : 1)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .disabled(!store.canEditMetadataWorkflow)
+
             if hasCameraInfo {
                 section("相机") {
                     if let make = photo.make, let model = photo.model, !model.hasPrefix(make) {
@@ -153,14 +228,15 @@ struct PhotoInfoContent: View {
 
             if let locationText, photo.hasLocation {
                 section("位置") {
-                    let place = PlaceClusterBuilder.key(for: photo)
-                    if place.title != locationText {
-                        row("地点", place.title)
+                    // 与查看器顶栏、网格地点标签共用同一套层级与回退顺序。
+                    let placeTitle = photo.placeTitle
+                    if let placeTitle, placeTitle != locationText {
+                        row("地点", placeTitle)
                     }
                     if let country = photo.placeCountry {
                         row("国家/地区", country)
                     }
-                    if let province = photo.placeProvince, province != place.title {
+                    if let province = photo.placeProvince, province != placeTitle {
                         row("省份", province)
                     }
                     if let city = photo.placeCity {
@@ -185,13 +261,20 @@ struct PhotoInfoContent: View {
                 }
             }
 
-            let smartScenes = store.sceneTitles(for: photo.id)
+            let smartScenes = store.sceneTitles(for: photo)
+            let smartTags = store.photoTagTitles(for: photo)
             let smartText = store.ocrText(for: photo.id)
-            if !smartScenes.isEmpty || smartText != nil
+            if !smartScenes.isEmpty || !smartTags.isEmpty || smartText != nil
                 || (store.analysisIndex[photo.id] == nil && store.canAnalyzeIntelligence && !photo.isVideo) {
                 section("智能标签") {
+                    if !smartTags.isEmpty {
+                        row("画面", smartTags.prefix(10).joined(separator: " · "))
+                    }
                     if !smartScenes.isEmpty {
                         row("场景", smartScenes.joined(separator: " · "))
+                    }
+                    if let landmark = store.landmarkName(for: photo) {
+                        row("地标", landmark)
                     }
                     if let smartText {
                         row("文字", String(smartText.prefix(220)))
@@ -209,7 +292,31 @@ struct PhotoInfoContent: View {
 
             if !photo.tags.isEmpty {
                 section("关键词") {
-                    row("关键词", photo.tags.joined(separator: "、"))
+                    // 用 `/` 分隔的路径按层级缩进展示；父级只作为结构，不重复写成多个标签。
+                    ForEach(photo.tags.sorted(), id: \.self) { path in
+                        let depth = PhotoItem.keywordDepth(path)
+                        let components = PhotoItem.keywordComponents(path)
+                        HStack(spacing: 6) {
+                            if depth > 0 {
+                                Spacer()
+                                    .frame(width: CGFloat(depth) * 12)
+                            }
+                            Image(systemName: depth == 0 ? "folder" : "tag")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text(PhotoItem.keywordLeaf(path))
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                            if components.count > 1 {
+                                Text(components.dropLast().joined(separator: " / "))
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .help(path)
+                    }
                 }
             }
 

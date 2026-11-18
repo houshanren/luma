@@ -11,6 +11,7 @@ enum CloudKind: String, Codable {
     case smb
     case aliyun
     case baidu
+    case quark
 
     var title: String {
         switch self {
@@ -18,20 +19,59 @@ enum CloudKind: String, Codable {
         case .smb: return "SMB 共享"
         case .aliyun: return "阿里云盘"
         case .baidu: return "百度网盘"
+        case .quark: return "夸克网盘"
         }
     }
 
     /// 只有 WebDAV 允许写入；SMB 与官方网盘均为只读。
     var supportsWrite: Bool { self == .webdav }
 
-    /// 需要 OAuth 令牌的官方网盘。
+    /// 需要 OAuth 令牌的官方网盘（夸克使用浏览器 Cookie）。
     var usesOAuth: Bool { self == .aliyun || self == .baidu }
+
+    /// 侧边栏与确认卡片共用的图标。
+    var symbolName: String {
+        switch self {
+        case .webdav: return "externaldrive.connected.to.line.below"
+        case .smb: return "network"
+        case .aliyun: return "cloud"
+        case .baidu: return "cloud.fill"
+        case .quark: return "square.stack.3d.up.fill"
+        }
+    }
+
+    /// 官方网盘的品牌图标；WebDAV / SMB 没有对应产品。
+    var brand: CloudBrand? {
+        switch self {
+        case .webdav, .smb: return nil
+        case .aliyun: return .aliyun
+        case .baidu: return .baidu
+        case .quark: return .quark
+        }
+    }
+
+    /// 重新连接时走的向导流程。
+    var wizardFlow: CloudWizardFlow {
+        switch self {
+        case .webdav: return .webdav
+        case .smb: return .smb
+        case .aliyun: return .aliyunCookie
+        case .baidu: return .baidu
+        case .quark: return .quark
+        }
+    }
 
     /// 根据用户输入的地址推断接入类型。
     static func detect(from address: String) -> CloudKind? {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return trimmed.hasPrefix("smb://") ? .smb : nil
     }
+}
+
+/// 网盘账号的鉴权方式：官方 OAuth 或浏览器 Cookie / 令牌。
+enum CloudAuthMode: String, Codable {
+    case oauth
+    case cookie
 }
 
 /// 面包屑节点。WebDAV 用相对路径，阿里云盘用 file_id，百度网盘用绝对路径。
@@ -52,10 +92,15 @@ struct CloudMount: Identifiable, Codable, Hashable {
     var lastPath: String = ""
     /// SMB 专用：是否递归扫描整个共享，而不是按文件夹浏览。
     var scanAll: Bool = false
+    /// WebDAV 专用：是否信任自签名证书（常见于 NAS 的 HTTPS 端口）。
+    var trustSelfSigned: Bool = false
+    /// 鉴权方式：默认官方 OAuth；Cookie 模式不需要开发者应用。
+    var authMode: CloudAuthMode = .oauth
 
     init(id: UUID = UUID(), kind: CloudKind = .webdav, name: String,
          baseURL: String = "", username: String = "", remoteDriveID: String? = nil,
-         createdAt: Date = Date(), lastPath: String = "", scanAll: Bool = false) {
+         createdAt: Date = Date(), lastPath: String = "", scanAll: Bool = false,
+         trustSelfSigned: Bool = false, authMode: CloudAuthMode = .oauth) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -65,6 +110,8 @@ struct CloudMount: Identifiable, Codable, Hashable {
         self.createdAt = createdAt
         self.lastPath = lastPath
         self.scanAll = scanAll
+        self.trustSelfSigned = trustSelfSigned
+        self.authMode = authMode
     }
 
     init(from decoder: Decoder) throws {
@@ -78,6 +125,8 @@ struct CloudMount: Identifiable, Codable, Hashable {
         createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? Date()
         lastPath = (try? container.decode(String.self, forKey: .lastPath)) ?? ""
         scanAll = (try? container.decodeIfPresent(Bool.self, forKey: .scanAll)) ?? false
+        trustSelfSigned = (try? container.decodeIfPresent(Bool.self, forKey: .trustSelfSigned)) ?? false
+        authMode = (try? container.decodeIfPresent(CloudAuthMode.self, forKey: .authMode)) ?? .oauth
     }
 }
 
@@ -118,6 +167,72 @@ struct CloudNameRequest: Identifiable {
     }
 }
 
+/// 网盘全盘扫描状态。
+enum CloudScanPhase: Equatable {
+    case idle
+    case scanning
+    case finished(Date)
+    case cancelled
+    case failed(String)
+
+    var isScanning: Bool {
+        if case .scanning = self { return true }
+        return false
+    }
+}
+
+/// 扫描到的目录：在侧边栏里映射成相簿（文件夹 = 相簿）。
+struct CloudScanFolder: Codable, Hashable, Identifiable {
+    var path: String
+    var name: String
+    var parentPath: String
+    /// 扫描时父目录列表返回的修改时间：下一轮增量扫描据此判断子树是否变化。
+    var modifiedAt: Date? = nil
+
+    var id: String { path }
+}
+
+/// 侧边栏「相簿」里的一层文件夹节点：带聚合数量与封面（取最新一张）。
+struct CloudFolderNode: Identifiable {
+    var path: String
+    var name: String
+    var parentPath: String
+    var photoCount: Int
+    var cover: PhotoItem?
+    var children: [CloudFolderNode]
+
+    var id: String { path }
+}
+
+/// 全盘扫描快照里的一条媒体记录：只存轻量字段，恢复时再换算成 `PhotoItem`。
+struct CloudScanRecord: Codable {
+    var path: String
+    var name: String
+    var size: Int64
+    var modifiedAt: Date?
+    var width: Int?
+    var height: Int?
+    var duration: Double?
+    var remoteID: String?
+    var thumbnailURL: String?
+    var isVideo: Bool
+    /// 所属目录（用于恢复后按文件夹相簿筛选）。
+    var folderPath: String?
+}
+
+/// 某个网盘挂载的全盘扫描结果（落当前图库的 `derived_reports`，重开即可先显示）。
+struct CloudScanSnapshot: Codable {
+    var savedAt: Date
+    var folderCount: Int
+    var truncated: Bool
+    var records: [CloudScanRecord]
+    var folders: [CloudScanFolder]?
+    /// 上一轮是否完整扫完（未触顶、无目录失败、未取消）：只有完整快照才能用于增量扫描。
+    var complete: Bool? = nil
+    /// 路径语义版本：老版本 WebDAV 子目录条目只存文件名，快照需要作废重扫。
+    var pathVersion: Int? = nil
+}
+
 /// WebDAV 目录中的一项。
 struct CloudEntry: Identifiable, Hashable {
     let path: String
@@ -137,6 +252,8 @@ struct CloudEntry: Identifiable, Hashable {
     var pixelWidth: Int?
     var pixelHeight: Int?
     var duration: Double?
+    /// 服务端标记为受限内容（夸克 risk_type ≠ 0 / ban）：播放与下载接口都会拒绝。
+    var isRestricted = false
 
     var isVideo: Bool {
         if let contentType, contentType.lowercased().hasPrefix("video/") { return true }

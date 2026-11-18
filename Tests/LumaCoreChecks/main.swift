@@ -197,7 +197,9 @@ if let leg = nearby.legs.first {
     expect(leg.cameraDistance < 500, "近距离行程把镜头压到街区尺度")
     expect(leg.pitch >= 45, "街区行程使用大俯仰角")
     expect(leg.caption.contains("米"), "近距离行程给出米级文案")
-    expect(leg.duration >= 0.5 && leg.duration <= 1.2, "近距离行程时长适中")
+    expect(leg.duration >= 1.5 && leg.duration <= 2.0, "近距离行程保留可辨认的移动过程")
+    expectClose(CGFloat(leg.distance / leg.cameraDistance / leg.duration), 0.24,
+                accuracy: 0.001, "近距离行程使用统一视觉速度")
 }
 
 let flight = FootprintPlanner.plan(samples: [
@@ -210,6 +212,8 @@ if let leg = flight.legs.first {
     expect(leg.pitch <= 35, "长距离航段压低俯仰角")
     expect(leg.heading > 300 || leg.heading < 20, "北京在杭州北方，朝向接近正北")
     expect(leg.duration <= 2.5, "长距离航段有最长时长上限")
+    expectClose(CGFloat(leg.distance / leg.cameraDistance / leg.duration), 0.24,
+                accuracy: 0.001, "跨城与街区保持一致的画面速度")
 }
 
 let samePlaceLongStay = FootprintPlanner.plan(samples: [
@@ -271,6 +275,149 @@ let oneDegree = FootprintPlanner.overviewDistance(of: [
 expect(oneDegree > 150_000, "全览镜头覆盖整段范围")
 
 expect(FootprintPlanner.plan(samples: []).isEmpty, "没有样本时返回空计划")
+
+// MARK: - 连续巡航时间轴
+
+let veryShort = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300, "a", "起点"),
+    sample(2_000, 30.26036, 120.1300, "b", "附近")
+])
+expectEqual(veryShort.stops.count, 2, "约四十米且时间断开的照片保留为两站")
+expect(veryShort.legs.first?.duration ?? 0 >= 0.85, "极短行程也有最短可辨认时长")
+
+let cruisePlan = FootprintPlanner.plan(samples: [
+    sample(0, 30.2600, 120.1300, "a", "第一站"),
+    sample(600, 30.2620, 120.1300, "b", "第二站"),
+    sample(660, 30.2620, 120.1300, "b", "第二站"),
+    sample(1_500, 30.2640, 120.1300, "c", "第三站"),
+    sample(1_560, 30.2640, 120.1300, "c", "第三站")
+])
+let cruise = FootprintCruiseTimeline(plan: cruisePlan)
+let expectedDuration = cruisePlan.legs.reduce(0) { $0 + $1.duration + $1.dwell }
+expectClose(CGFloat(cruise.totalDuration), CGFloat(expectedDuration),
+            accuracy: 0.0001, "总时长包含所有行进与旅拍停留")
+
+if let firstLeg = cruisePlan.legs.first {
+    let middle = cruise.frame(at: firstLeg.duration * 0.5)
+    expectClose(CGFloat(middle.legFraction), 0.5, accuracy: 0.0001,
+                "行进段中点使用未经缓动的线性比例")
+    expectEqual(middle.head,
+                FootprintPlanner.interpolate(from: cruisePlan.stops[0].point,
+                                             to: cruisePlan.stops[1].point,
+                                             fraction: 0.5),
+                "光点与线性行程比例同步")
+
+    let arrival = cruise.frame(at: firstLeg.duration)
+    let dwelling = cruise.frame(at: firstLeg.duration + firstLeg.dwell * 0.5)
+    expect(arrival.isDwelling, "抵达照片较多的站点后进入旅拍停留")
+    expectEqual(dwelling.head, cruisePlan.stops[1].point, "停留期间光点保持不动")
+    expectClose(CGFloat(dwelling.dwellFraction), 0.5, accuracy: 0.0001,
+                "停留进度也在统一时间轴中")
+
+    let departure = cruise.frame(at: cruise.time(atStop: 1))
+    expectEqual(arrival.cameraCenter, departure.cameraCenter, "跨段时镜头中心不跳变")
+    expectClose(CGFloat(arrival.cameraDistance), CGFloat(departure.cameraDistance),
+                accuracy: 0.0001, "跨段时镜头高度连续")
+    expectClose(CGFloat(arrival.pitch), CGFloat(departure.pitch),
+                accuracy: 0.0001, "跨段时俯仰角连续")
+    expectClose(CGFloat(arrival.heading), CGFloat(departure.heading),
+                accuracy: 0.0001, "跨段时航向连续")
+    expectEqual(arrival.head, departure.head, "跨段时光点位置连续")
+    expect(!departure.isDwelling, "停留结束后直接进入下一段行进")
+}
+
+expectClose(CGFloat(cruise.time(atStop: 0)), 0, accuracy: 0.0001,
+            "首站映射到时间轴起点")
+if let lastLeg = cruisePlan.legs.last {
+    expectClose(CGFloat(cruise.time(atStop: cruisePlan.stops.count - 1)),
+                CGFloat(cruise.totalDuration - lastLeg.dwell),
+                accuracy: 0.0001, "末站映射到抵达时刻而非整个时间轴末尾")
+    let finalDwell = cruise.frame(at: cruise.totalDuration - lastLeg.dwell * 0.5)
+    expect(finalDwell.isDwelling, "末尾旅拍停留不会提前结束旅程")
+}
+let completed = cruise.frame(at: cruise.totalDuration)
+expect(completed.isComplete, "时间轴末尾返回完成状态")
+expectEqual(completed.head, cruisePlan.stops.last?.point, "完成时光点停在最后一站")
+
+let wrapPlan = FootprintPlanner.plan(samples: [
+    sample(0, 30.0, 120.0, "a", "起点"),
+    sample(600, 30.01, 119.999, "b", "西北"),
+    sample(1_200, 30.02, 120.0, "c", "东北")
+])
+let wrapCruise = FootprintCruiseTimeline(plan: wrapPlan)
+if wrapPlan.legs.count == 2 {
+    let middle = wrapCruise.frame(at: wrapCruise.time(atStop: 1) + wrapPlan.legs[1].duration * 0.5)
+    expect(middle.heading > 350 || middle.heading < 10, "跨段航向走最短圆弧，不从三百五十度反转半圈")
+}
+
+let emptyCruise = FootprintCruiseTimeline(plan: FootprintPlanner.plan(samples: []))
+expectEqual(emptyCruise.totalDuration, 0, "空计划时间轴为零时长")
+expect(emptyCruise.frame(at: 0).isComplete, "空计划直接完成")
+let singleCruise = FootprintCruiseTimeline(plan: merged)
+expectEqual(singleCruise.totalDuration, 0, "单站计划没有行进时长")
+expect(singleCruise.frame(at: 0).isComplete, "单站计划直接完成")
+expectEqual(singleCruise.frame(at: 0).head, merged.stops.first?.point, "单站光点固定在唯一站点")
+
+// MARK: - 票据 / 证件文字判定
+
+expect(DocumentText.isValidChineseID("11010519491231002X"), "合法 18 位身份证号（校验位 X）")
+expect(!DocumentText.isValidChineseID("110105194912310021"), "校验位错误时不算合法")
+expect(!DocumentText.isValidChineseID("11010519491231002"), "位数不足不算合法")
+expect(!DocumentText.isValidChineseID("11010519491331002X"), "出生月份非法不算合法")
+expect(DocumentText.isValidChineseID("１１０１０５１９４９１２３１００２Ｘ"), "全角数字先归一化成 ASCII 再校验")
+
+expect(DocumentText.looksLikeIDCard("姓名 张三\n公民身份号码 11010519491231002X\n签发机关 北京市公安局"),
+       "身份证字段名 + 合法号码")
+expect(DocumentText.looksLikeIDCard("居民身份证"), "只出现证件标题也判定为证件")
+expect(!DocumentText.looksLikeIDCard("请把身份证拍照发我"), "聊天截图里的「身份证」不算证件")
+
+expect(DocumentText.looksLikeInvoice("增值税电子普通发票\n发票代码 011002100311\n价税合计 ¥99.00"),
+       "发票强特征词命中")
+expect(!DocumentText.looksLikeInvoice("今天去景区买了门票，收据放在包里"), "普通票据不算发票")
+expect(!DocumentText.looksLikeInvoice(""), "空文本不算发票")
+
+// MARK: - 地标表
+
+expectEqual(LandmarkCatalog.nearest(latitude: 39.9163, longitude: 116.3972)?.name, "故宫",
+            "坐标命中故宫")
+expectEqual(LandmarkCatalog.nearest(latitude: 30.2431, longitude: 120.1487)?.name, "西湖",
+            "坐标命中西湖")
+expect(LandmarkCatalog.nearest(latitude: 0, longitude: 0) == nil, "没有地标的海域返回 nil")
+expect(LandmarkCatalog.nearest(latitude: 30.0, longitude: 120.0) == nil,
+       "距离西湖约 27 公里超过半径不算命中")
+expectEqual(LandmarkCatalog.match(placeText: "浙江省杭州市西湖风景名胜区")?.name, "西湖",
+            "POI 文字命中西湖")
+expectEqual(LandmarkCatalog.match(placeText: "台北故宫博物院")?.name, "台北故宫博物院",
+            "同时含「故宫」时取最长命中")
+expectEqual(LandmarkCatalog.match(placeText: "北京市东城区景山前街4号 故宫")?.name, "故宫",
+            "地址里的故宫可命中")
+expect(LandmarkCatalog.match(placeText: "浦东新区张江路") == nil, "普通地址不命中地标")
+if let palace = LandmarkCatalog.match(placeText: "故宫") {
+    expect(LandmarkCatalog.distance(latitude: 39.9163, longitude: 116.3972, to: palace) < 1,
+           "与地标同坐标时距离为 0")
+}
+
+// MARK: - 感知哈希
+
+let flatGray = Array(repeating: UInt8(128), count: 9 * 8)
+expectEqual(PerceptualHash.dHash(grayscale: flatGray), 0, "纯色图 dHash 为 0")
+
+var decreasing: [UInt8] = []
+var increasing: [UInt8] = []
+for index in 0..<(9 * 8) {
+    let column = index % 9
+    decreasing.append(UInt8(255 - column * 20))
+    increasing.append(UInt8(column * 20))
+}
+expectEqual(PerceptualHash.dHash(grayscale: decreasing), Int64(bitPattern: UInt64.max),
+            "每行从左到右递减时 64 位全为 1")
+expectEqual(PerceptualHash.dHash(grayscale: increasing), 0, "每行从左到右递增时 64 位全为 0")
+expectEqual(PerceptualHash.hammingDistance(0, 0), 0, "相同哈希距离为 0")
+expectEqual(PerceptualHash.hammingDistance(0, Int64(bitPattern: UInt64.max)), 64,
+            "全 0 与全 1 距离为 64")
+expect(PerceptualHash.isSimilar(0, 0b1111111111), "10 位以内视为相似")
+expect(!PerceptualHash.isSimilar(0, Int64(bitPattern: 0b11111111111)), "超过阈值不相似")
+expect(PerceptualHash.dHash(grayscale: [0, 1, 2]) == nil, "灰度数据不足返回 nil")
 
 // MARK: - 结果
 

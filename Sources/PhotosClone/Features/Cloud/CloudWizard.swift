@@ -16,6 +16,8 @@ struct CloudSetupWizardView: View {
     // OAuth
     @State var clientID = ""
     @State var clientSecret = ""
+    /// 百度网盘：AppID，仅用于授权链接的 device_id。
+    @State var clientAppID = ""
     @State var isBusy = false
     @State var isAuthorizing = false
     @State var showManualCode = false
@@ -25,6 +27,7 @@ struct CloudSetupWizardView: View {
     @State var address = ""
     @State var username = ""
     @State var password = ""
+    @State var trustSelfSigned = false
     @State var networkVerified = false
     @State var smbAddress = ""
     @State var smbUsername = ""
@@ -47,6 +50,22 @@ struct CloudSetupWizardView: View {
     @State var browseFoldersError: String?
     @State var browseToken = 0
 
+    // WebDAV 子目录筛选
+    /// 选中接入的子目录层级（相对测试地址的根），为空表示接入当前全部。
+    @State var webdavSubPath = ""
+    @State var webdavBrowseFolders: [String] = []
+    @State var isLoadingWebDAVFolders = false
+    @State var webdavBrowseError: String?
+    @State var webdavBrowseToken = 0
+    @State var webdavFiltersFolders = false
+
+    // 浏览器 Cookie（阿里云盘 / 夸克网盘）
+    @State var cookieText = ""
+    @State var cookieVerified = false
+
+    /// 添加到侧边栏时显示的名称；留空则用各接入方式的默认名。
+    @State var mountName = ""
+
     // AList
     @State var alistProvider: AlistProvider = .aliyun
     @State var alistAddress = "http://127.0.0.1:5244"
@@ -67,7 +86,7 @@ struct CloudSetupWizardView: View {
     private var canContinue: Bool {
         guard let flow else { return false }
         switch flow {
-        case .aliyun, .baidu:
+        case .baidu:
             if step == 0 {
                 return !clientID.trimmingCharacters(in: .whitespaces).isEmpty
                     && !clientSecret.trimmingCharacters(in: .whitespaces).isEmpty
@@ -77,6 +96,8 @@ struct CloudSetupWizardView: View {
             return step == 0 ? smbVerified : true
         case .webdav:
             return step == 0 ? networkVerified : true
+        case .aliyunCookie, .quark:
+            return step == 0 ? cookieVerified : true
         case .alist:
             switch step {
             case 1: return alistVerified
@@ -151,15 +172,19 @@ struct CloudSetupWizardView: View {
 
     private var headerSubtitle: String {
         guard let flow else {
-            return "统一入口：官方 OAuth、SMB、WebDAV、AList 聚合"
+            return "统一入口：Cookie 直连、官方 OAuth、SMB、WebDAV、AList 聚合"
         }
         switch flow {
-        case .aliyun, .baidu:
+        case .baidu:
             return "首次需要在开放平台创建一个应用，之后只需在浏览器登录"
         case .smb:
             return "群晖 / TrueNAS / Windows 共享，只读浏览"
         case .webdav:
             return "群晖 / TrueNAS / 任意 WebDAV 服务"
+        case .aliyunCookie:
+            return "用浏览器登录凭据换取令牌，不需要开发者资质"
+        case .quark:
+            return "粘贴浏览器 Cookie，不需要开发者资质"
         case .alist:
             return "不需要开发者资质，由 AList 完成各网盘授权"
         }
@@ -171,12 +196,14 @@ struct CloudSetupWizardView: View {
     private var content: some View {
         if let flow {
             switch flow {
-            case .aliyun, .baidu:
+            case .baidu:
                 oauthContent(flow: flow)
             case .smb:
                 smbContent
             case .webdav:
                 webdavContent
+            case .aliyunCookie, .quark:
+                cookieContent
             case .alist:
                 alistContent
             }
@@ -189,7 +216,7 @@ struct CloudSetupWizardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("选择接入方式")
                 .font(.system(size: 13, weight: .semibold))
-            Text("官方 OAuth 体验最好（服务端缩略图、转码播放），但需要一次性创建应用；SMB、WebDAV 与 AList 不需要。")
+            Text("百度网盘走官方 OAuth，需要一次性创建应用；阿里云盘与夸克直接用浏览器 Cookie 接入，SMB、WebDAV 与 AList 同样不需要开发者资质。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -202,10 +229,14 @@ struct CloudSetupWizardView: View {
                         select(item)
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: item.icon)
-                                .font(.system(size: 20))
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: 26)
+                            if let brand = item.brand {
+                                CloudBrandIcon(brand: brand, size: 26)
+                            } else {
+                                Image(systemName: item.icon)
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 26)
+                            }
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
                                     .font(.system(size: 12.5, weight: .medium))
@@ -275,20 +306,24 @@ struct CloudSetupWizardView: View {
 
     private func primaryTitle(_ flow: CloudWizardFlow) -> String {
         switch flow {
-        case .aliyun, .baidu: return "完成"
-        case .smb, .webdav: return "添加"
+        case .baidu: return "完成"
+        case .smb, .webdav, .quark, .aliyunCookie: return "添加"
         case .alist: return "测试并添加"
         }
     }
 
     private func primaryAction(_ flow: CloudWizardFlow) {
         switch flow {
-        case .aliyun, .baidu:
+        case .baidu:
             close()
         case .smb:
             addSMB()
         case .webdav:
             addWebDAV()
+        case .quark:
+            addQuark()
+        case .aliyunCookie:
+            addAliyunCookie()
         case .alist:
             addAList()
         }
@@ -303,6 +338,9 @@ struct CloudSetupWizardView: View {
         statusIsError = false
         networkVerified = false
         smbVerified = false
+        cookieVerified = false
+        mountName = ""
+        if !flow.usesCookie { cookieText = "" }
         if flow == .smb {
             // 已有 SMB 连接时复用账号与钥匙串密码，不必再输一次。
             prefillSMBAccount()
@@ -316,9 +354,11 @@ struct CloudSetupWizardView: View {
         } else {
             cancelSMBDiscovery()
         }
+        resetWebDAVBrowse()
         if let kind = flow.kind, let saved = CloudOAuthStore.credentials(for: kind) {
             clientID = saved.clientID
             clientSecret = saved.clientSecret
+            clientAppID = saved.appID ?? ""
         }
     }
 

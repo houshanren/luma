@@ -23,8 +23,11 @@ enum LibraryPaths {
     static var backups: URL { root.appendingPathComponent("resources/backups", isDirectory: true) }
     static var cloud: URL { root.appendingPathComponent("cloud", isDirectory: true) }
     static var cloudThumbs: URL { cloud.appendingPathComponent("thumbs", isDirectory: true) }
-    /// 系统图库缩略图缓存：跟着当前图库走，切换图库时互不共享。
-    static var systemThumbs: URL { root.appendingPathComponent("resources/system-thumbs", isDirectory: true) }
+    /// 系统图库缩略图缓存：同样放本机，避免为每个格子往图库所在（可能很慢的）磁盘写文件。
+    /// 官方 derivative 仍然直接复用，这里只存按格子尺寸生成的小图。
+    static var systemThumbs: URL {
+        applicationRoot.appendingPathComponent("resources/system-thumbs", isDirectory: true)
+    }
     /// 官方「照片」图库自己生成好的 derivative 目录（缩略图与视频封面帧）。
     /// 直接复用这些 JPEG，可以避免为每个格子解码 HEIC / RAW / 视频原文件。
     static func systemDerivatives(libraryURL: URL) -> URL {
@@ -33,8 +36,25 @@ enum LibraryPaths {
 
     /// 官方 derivative 的路径规则：`resources/derivatives/<UUID 首字符>/<UUID>_1_105_c.jpeg`。
     /// 视频没有 `_1_105_c`，官方只保留一张 `_1_102_o.jpeg` 封面帧。
-    static func systemDerivativePath(libraryURL: URL, assetID: UUID, isVideo: Bool) -> String {
+    /// 共享相簿（scopes/cloudsharing）的项目不在库根 derivatives 下：
+    /// 图片只有一张 500px 级别的 `_4_5005_c`，视频优先用本机已缓存的 `poster.JPG`。
+    static func systemDerivativePath(libraryURL: URL, assetID: UUID, isVideo: Bool,
+                                     directory: String? = nil) -> String {
         let key = assetID.uuidString
+        if let directory, directory.contains("/") {
+            let scoped = libraryURL.appendingPathComponent("scopes/cloudsharing", isDirectory: true)
+            if isVideo {
+                let poster = scoped.appendingPathComponent("data/\(directory)/\(key).poster.JPG")
+                if FileManager.default.fileExists(atPath: poster.path) {
+                    return poster.path
+                }
+            }
+            return scoped
+                .appendingPathComponent("resources/derivatives/masters", isDirectory: true)
+                .appendingPathComponent(String(key.prefix(1)), isDirectory: true)
+                .appendingPathComponent("\(key)_4_5005_c.jpeg")
+                .path
+        }
         let directory = systemDerivatives(libraryURL: libraryURL)
             .appendingPathComponent(String(key.prefix(1)), isDirectory: true)
         let name = isVideo ? "\(key)_1_102_o.jpeg" : "\(key)_1_105_c.jpeg"
@@ -44,8 +64,46 @@ enum LibraryPaths {
     static var systemLibraryCacheDir: URL {
         root.appendingPathComponent("resources/system-cache", isDirectory: true)
     }
+
+    /// 索引库固定写在本机应用目录，而不是图库所在磁盘：
+    /// 系统图库常在外置盘上，边读几十 GB 的 Photos.sqlite 边把索引写回同一块盘，
+    /// 会退化成随机读写，构建和翻页都会慢到不可用。
+    static var systemIndexCacheDir: URL {
+        applicationRoot.appendingPathComponent("resources/system-index", isDirectory: true)
+    }
+
+    /// 系统图库的只读索引库：百万级图库不再把整库装进内存，网格与计数按窗口查询它。
+    /// 按系统图库路径哈希命名，同一 App 图库可缓存多个系统图库的索引。
+    static func systemIndexFile(for libraryURL: URL) -> URL? {
+        guard root != applicationRoot || containerLibraryURL != nil else { return nil }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in libraryURL.standardizedFileURL.path.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return systemIndexCacheDir
+            .appendingPathComponent("SystemIndex-\(String(hash, radix: 16)).sqlite")
+    }
     static var metadataFile: URL { databaseDir.appendingPathComponent("PhotosClone.sqlite") }
     static var libraryFile: URL { applicationRoot.appendingPathComponent("Library.json") }
+
+    /// 拾光写进某个图库容器的旁挂数据：叠加元数据库、索引 / 快照缓存、缩略图与转码缓存。
+    /// 刻意不包含 Apple 自己的 `Photos.sqlite`、`originals`、`resources/derivatives`、`resources/renders`。
+    static func sidecarArtifacts(in library: URL) -> [URL] {
+        let database = library.appendingPathComponent("database", isDirectory: true)
+        let resources = library.appendingPathComponent("resources", isDirectory: true)
+        return [
+            database.appendingPathComponent("PhotosClone.sqlite"),
+            database.appendingPathComponent("PhotosClone.sqlite-wal"),
+            database.appendingPathComponent("PhotosClone.sqlite-shm"),
+            resources.appendingPathComponent("system-cache", isDirectory: true),
+            resources.appendingPathComponent("system-thumbs", isDirectory: true),
+            resources.appendingPathComponent("transcodes", isDirectory: true),
+            resources.appendingPathComponent("backups", isDirectory: true),
+            library.appendingPathComponent("cloud", isDirectory: true),
+            legacySidecarPath(for: library)
+        ]
+    }
 
     private static var legacyOriginals: URL { applicationRoot.appendingPathComponent("Originals", isDirectory: true) }
     private static var legacyThumbs: URL { applicationRoot.appendingPathComponent("Thumbnails", isDirectory: true) }

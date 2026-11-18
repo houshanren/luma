@@ -16,7 +16,8 @@ struct PhotoMosaicView: View {
                         if index < photos.count {
                             PhotoThumbnailView(photo: photos[index])
                         } else {
-                            Color.black.opacity(0.18)
+                            // 缺图占位用语义色，浅色下不会出现深灰黑块。
+                            Color.primary.opacity(0.06)
                         }
                     }
                     .frame(width: cellWidth, height: geo.size.height)
@@ -102,14 +103,6 @@ struct CollectionsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("精选集")
-                        .font(.system(size: 27, weight: .bold))
-                    Text("智能汇总你的照片、视频与编辑成果")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-
                 if let hero = throwbackHero {
                     throwbackBanner(hero)
                 }
@@ -319,7 +312,7 @@ struct CollectionsView: View {
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 Image(systemName: card.icon)
                     .font(.system(size: 44, weight: .ultraLight))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(.primary.opacity(0.55))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 PhotoMosaicView(photos: card.photos)
@@ -379,14 +372,9 @@ struct AlbumsOverviewView: View {
     @State private var hoveredKey: String?
     @State private var dropTargetAlbumID: UUID?
 
-    /// 卡片宽度跟随工具栏缩放（56…360 pt）映射到约 130…640 pt。
-    private var baseCardWidth: CGFloat {
-        min(640, max(130, CGFloat(store.thumbSize) * 2.2))
-    }
-
+    /// 卡片墙每行列数：默认尺寸下 5 个，随工具栏缩放变化。
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = min(baseCardWidth, max(150, proxy.size.width - 48))
             let liveByID = livePhotoIndex
             let childFolders = visibleFolders
             let childAlbums = visibleAlbums
@@ -396,21 +384,38 @@ struct AlbumsOverviewView: View {
 
                     if childFolders.isEmpty && childAlbums.isEmpty {
                         emptyState
-                    } else {
-                        let folderCovers = folderCoverMap(childFolders, liveByID: liveByID)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth),
-                                                     spacing: 22, alignment: .top)],
+                    } else if store.albumDisplayStyle == .grid {
+                        let folderPhotos = folderPhotosMap(childFolders, liveByID: liveByID)
+                        // 按可用宽度均分列宽，默认铺满窗口，不让右侧留空。
+                        let spacing: CGFloat = 22
+                        let available = max(0, proxy.size.width - 48)
+                        let maxFit = max(1, Int((available + spacing) / (120 + spacing)))
+                        let columnCount = min(store.cardColumns, maxFit)
+                        let itemWidth = max(120, (available - spacing * CGFloat(columnCount - 1)) / CGFloat(columnCount))
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+                                                 count: columnCount),
                                   alignment: .leading,
                                   spacing: 26) {
                             ForEach(childFolders) { folder in
-                                folderCard(folder, width: cardWidth,
-                                           photo: folderCovers[folder.id])
+                                folderCard(folder, width: itemWidth,
+                                           photos: folderPhotos[folder.id] ?? [])
                             }
                             ForEach(childAlbums) { album in
-                                albumCard(album, width: cardWidth,
+                                albumCard(album, width: itemWidth,
                                           photo: albumCover(album, liveByID: liveByID))
                             }
                         }
+                    } else if store.albumDisplayStyle == .list {
+                        listLayout(childFolders: childFolders,
+                                   childAlbums: childAlbums,
+                                   folderPhotos: folderPhotosMap(childFolders, liveByID: liveByID),
+                                   liveByID: liveByID,
+                                   width: proxy.size.width)
+                    } else {
+                        collageLayout(childFolders: childFolders,
+                                      childAlbums: childAlbums,
+                                      folderPhotos: folderPhotosMap(childFolders, liveByID: liveByID),
+                                      liveByID: liveByID)
                     }
                 }
                 .padding(.horizontal, 24)
@@ -419,6 +424,7 @@ struct AlbumsOverviewView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .animation(settings.motion.layout, value: store.albumDisplayStyle)
         .sheet(item: $namePrompt) { payload in
             NamePromptSheet(payload: payload)
                 .environmentObject(store)
@@ -426,26 +432,13 @@ struct AlbumsOverviewView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(folderName ?? "相簿")
-                    .font(.system(size: 27, weight: .bold))
-                Text("\(visibleAlbums.count) 个相簿, \(visibleFolders.count) 个文件夹")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if folderID != nil {
-                Button {
-                    navigateUp()
-                } label: {
-                    Label(parentTitle, systemImage: "chevron.left")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(.plain)
+        HStack(alignment: .center, spacing: 10) {
+            // 页面标题与返回层级已由窗口工具栏统一展示，这里只保留数量与操作。
+            Text("\(visibleAlbums.count) 个相簿, \(visibleFolders.count) 个文件夹")
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .help("返回\(parentTitle)")
-            }
+            Spacer()
+            displayStyleMenu
             Menu {
                 Button("新建相簿") { namePrompt = .newAlbum(folderID: folderID) }
                 Button("新建文件夹") { namePrompt = .newFolder(parentID: folderID) }
@@ -458,26 +451,8 @@ struct AlbumsOverviewView: View {
         }
     }
 
-    private var folderName: String? {
-        guard let folderID else { return nil }
-        return store.folders.first(where: { $0.id == folderID })?.name
-    }
-
-    private var parentTitle: String {
-        guard let folderID,
-              let folder = store.folders.first(where: { $0.id == folderID }),
-              let parentID = folder.parentID else { return "所有相簿" }
-        return store.folders.first(where: { $0.id == parentID })?.name ?? "所有相簿"
-    }
-
-    private func navigateUp() {
-        guard let folderID,
-              let folder = store.folders.first(where: { $0.id == folderID }) else { return }
-        if let parentID = folder.parentID {
-            store.navigate(to: .folder(parentID))
-        } else {
-            store.navigate(to: .allAlbums)
-        }
+    private var displayStyleMenu: some View {
+        AlbumDisplayStyleMenu()
     }
 
     private var emptyState: some View {
@@ -527,28 +502,192 @@ struct AlbumsOverviewView: View {
         return nil
     }
 
-    /// 文件夹封面取自身与所有子文件夹中第一个相簿的封面。
-    private func folderCoverMap(_ folders: [AlbumFolder],
-                                liveByID: [UUID: PhotoItem]) -> [UUID: PhotoItem] {
-        var result: [UUID: PhotoItem] = [:]
+    /// 文件夹封面：从子树的相簿里取最多 4 张，用于四宫格缩略图。
+    private func folderPhotosMap(_ folders: [AlbumFolder],
+                                 liveByID: [UUID: PhotoItem]) -> [UUID: [PhotoItem]] {
+        var result: [UUID: [PhotoItem]] = [:]
         for folder in folders {
             let folderIDs = store.folderSubtreeIDs(folder.id)
+            var photos: [PhotoItem] = []
             for album in store.albums where album.folderID.map({ folderIDs.contains($0) }) ?? false {
-                if let cover = albumCover(album, liveByID: liveByID) {
-                    result[folder.id] = cover
-                    break
+                for photo in albumPhotos(album, liveByID: liveByID, limit: 4) where photos.count < 4 {
+                    if !photos.contains(where: { $0.id == photo.id }) { photos.append(photo) }
                 }
+                if photos.count >= 4 { break }
             }
+            result[folder.id] = photos
         }
         return result
     }
 
+    // MARK: - 列表 / 拼贴墙
+
+    /// 相簿封面照片：用户指定封面优先，最多取 4 张用于列表与拼贴墙的拼贴。
+    private func albumPhotos(_ album: Album,
+                             liveByID: [UUID: PhotoItem],
+                             limit: Int = 4) -> [PhotoItem] {
+        var result: [PhotoItem] = []
+        if let coverID = album.coverPhotoID, let cover = liveByID[coverID] {
+            result.append(cover)
+        }
+        for id in album.photoIDs where result.count < limit {
+            if id == album.coverPhotoID { continue }
+            if let photo = liveByID[id] { result.append(photo) }
+        }
+        return result
+    }
+
+    private func albumPhotoCount(_ album: Album, liveByID: [UUID: PhotoItem]) -> Int {
+        album.photoIDs.reduce(0) { total, id in total + (liveByID[id] == nil ? 0 : 1) }
+    }
+
+    private func folderAlbumCount(_ folder: AlbumFolder) -> Int {
+        let ids = store.folderSubtreeIDs(folder.id)
+        return store.albums.reduce(0) { total, album in
+            guard let folderID = album.folderID, ids.contains(folderID) else { return total }
+            return total + 1
+        }
+    }
+
+    private func listLayout(childFolders: [AlbumFolder],
+                            childAlbums: [Album],
+                            folderPhotos: [UUID: [PhotoItem]],
+                            liveByID: [UUID: PhotoItem],
+                            width: CGFloat) -> some View {
+        let spacing: CGFloat = 28
+        let available = max(240, width - 48)
+        let columns = max(1, min(6, Int((available + spacing) / (300 + spacing))))
+        let itemWidth = (available - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        let thumb = min(160, max(64, CGFloat(store.thumbSize) * 0.75))
+        return LazyVGrid(columns: Array(repeating: GridItem(.fixed(itemWidth),
+                                                            spacing: spacing,
+                                                            alignment: .leading),
+                                       count: columns),
+                         alignment: .leading,
+                         spacing: 24) {
+            ForEach(childFolders) { folder in
+                folderListRow(folder, photo: folderPhotos[folder.id]?.first, thumb: thumb)
+            }
+            ForEach(childAlbums) { album in
+                albumListRow(album,
+                             cover: albumCover(album, liveByID: liveByID),
+                             liveByID: liveByID,
+                             thumb: thumb)
+            }
+        }
+    }
+
+    private func collageLayout(childFolders: [AlbumFolder],
+                               childAlbums: [Album],
+                               folderPhotos: [UUID: [PhotoItem]],
+                               liveByID: [UUID: PhotoItem]) -> some View {
+        // 拼贴墙的方块跟随工具栏缩放（56…360 → 120…320）。
+        let tile = min(320, max(120, CGFloat(store.thumbSize) * 1.7))
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: tile, maximum: tile),
+                                            spacing: 10, alignment: .top)],
+                         alignment: .leading,
+                         spacing: 10) {
+            ForEach(childFolders) { folder in
+                folderCollageTile(folder, photos: folderPhotos[folder.id] ?? [], side: tile)
+            }
+            ForEach(childAlbums) { album in
+                albumCollageTile(album,
+                                 photos: albumPhotos(album, liveByID: liveByID),
+                                 liveByID: liveByID,
+                                 side: tile)
+            }
+        }
+    }
+
+    private func folderListRow(_ folder: AlbumFolder, photo: PhotoItem?, thumb: CGFloat) -> some View {
+        AlbumOverviewRow(title: folder.name,
+                         subtitle: folderAlbumCount(folder).formatted(),
+                         cover: photo,
+                         placeholder: .folder,
+                         side: thumb,
+                         action: { store.navigate(to: .folder(folder.id)) },
+                         menu: { folderMenuItems(folder) })
+            .accessibilityLabel("文件夹 \(folder.name)")
+    }
+
+    private func albumListRow(_ album: Album,
+                              cover: PhotoItem?,
+                              liveByID: [UUID: PhotoItem],
+                              thumb: CGFloat) -> some View {
+        let count = albumPhotoCount(album, liveByID: liveByID)
+        return AlbumOverviewRow(title: album.name,
+                                subtitle: count.formatted(),
+                                cover: cover,
+                                placeholder: .album,
+                                side: thumb,
+                                highlighted: dropTargetAlbumID == album.id,
+                                action: { store.navigate(to: .album(album.id)) },
+                                menu: { albumMenuItems(album) })
+            .onDrop(of: [.plainText], isTargeted: albumDropBinding(album)) { providers in
+                PhotoDrag.loadIDs(from: providers) { ids in
+                    guard !ids.isEmpty else { return }
+                    store.addToAlbum(album.id, photoIDs: Set(ids))
+                }
+                return true
+            }
+            .accessibilityLabel("相簿 \(album.name)")
+    }
+
+    private func folderCollageTile(_ folder: AlbumFolder, photos: [PhotoItem], side: CGFloat) -> some View {
+        AlbumOverviewTile(title: folder.name,
+                          subtitle: "\(folderAlbumCount(folder)) 个相簿",
+                          photos: photos,
+                          placeholder: .folder,
+                          side: side,
+                          isFolder: true,
+                          action: { store.navigate(to: .folder(folder.id)) },
+                          menu: { folderMenuItems(folder) })
+            .accessibilityLabel("文件夹 \(folder.name)")
+    }
+
+    private func albumCollageTile(_ album: Album,
+                                  photos: [PhotoItem],
+                                  liveByID: [UUID: PhotoItem],
+                                  side: CGFloat) -> some View {
+        let count = albumPhotoCount(album, liveByID: liveByID)
+        return AlbumOverviewTile(title: album.name,
+                                 subtitle: "\(count) 项",
+                                 photos: photos,
+                                 placeholder: .album,
+                                 side: side,
+                                 isFolder: false,
+                                 highlighted: dropTargetAlbumID == album.id,
+                                 action: { store.navigate(to: .album(album.id)) },
+                                 menu: { albumMenuItems(album) })
+            .onDrop(of: [.plainText], isTargeted: albumDropBinding(album)) { providers in
+                PhotoDrag.loadIDs(from: providers) { ids in
+                    guard !ids.isEmpty else { return }
+                    store.addToAlbum(album.id, photoIDs: Set(ids))
+                }
+                return true
+            }
+            .accessibilityLabel("相簿 \(album.name)")
+    }
+
+    private func albumDropBinding(_ album: Album) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetAlbumID == album.id },
+            set: { targeted in
+                if targeted {
+                    dropTargetAlbumID = album.id
+                } else if dropTargetAlbumID == album.id {
+                    dropTargetAlbumID = nil
+                }
+            }
+        )
+    }
+
     // MARK: - 卡片
 
-    private func folderCard(_ folder: AlbumFolder, width: CGFloat, photo: PhotoItem?) -> some View {
+    private func folderCard(_ folder: AlbumFolder, width: CGFloat, photos: [PhotoItem]) -> some View {
         let key = "folder-\(folder.id.uuidString)"
         return VStack(alignment: .leading, spacing: 8) {
-            AlbumCoverImage(photo: photo, side: width, style: .folder)
+            FolderMosaicImage(photos: photos, side: width)
                 .frame(width: width, height: max(120, width * 0.7))
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay {
@@ -570,15 +709,43 @@ struct AlbumsOverviewView: View {
             store.navigate(to: .folder(folder.id))
         }
         .contextMenu {
-            Button("打开文件夹") { store.navigate(to: .folder(folder.id)) }
-            Divider()
-            Button("新建相簿…") { namePrompt = .newAlbum(folderID: folder.id) }
-            Button("新建子文件夹…") { namePrompt = .newFolder(parentID: folder.id) }
-            Divider()
-            Button("重命名文件夹…") { namePrompt = .renameFolder(folder.id, current: folder.name) }
-            Button("删除文件夹", role: .destructive) { store.deleteFolder(folder.id) }
+            folderMenuItems(folder)
         }
         .accessibilityLabel("文件夹 \(folder.name)")
+    }
+
+    /// 文件夹卡片的右键菜单：网格 / 列表 / 拼贴墙共用。
+    @ViewBuilder
+    private func folderMenuItems(_ folder: AlbumFolder) -> some View {
+        Button("打开文件夹") { store.navigate(to: .folder(folder.id)) }
+        Divider()
+        Button("新建相簿…") { namePrompt = .newAlbum(folderID: folder.id) }
+        Button("新建子文件夹…") { namePrompt = .newFolder(parentID: folder.id) }
+        Divider()
+        Button("重命名文件夹…") { namePrompt = .renameFolder(folder.id, current: folder.name) }
+        Button("删除文件夹", role: .destructive) { store.deleteFolder(folder.id) }
+    }
+
+    /// 相簿卡片的右键菜单：网格 / 列表 / 拼贴墙共用。
+    @ViewBuilder
+    private func albumMenuItems(_ album: Album) -> some View {
+        Button("打开相簿") { store.navigate(to: .album(album.id)) }
+        Button("重命名相簿…") {
+            namePrompt = .renameAlbum(album.id, current: album.name)
+        }
+        Menu("移到文件夹") {
+            Button("相簿顶层") { store.moveAlbum(album.id, toFolder: nil) }
+            if !store.folderOptions.isEmpty { Divider() }
+            ForEach(store.folderOptions) { option in
+                Button(option.path) { store.moveAlbum(album.id, toFolder: option.id) }
+            }
+        }
+        if album.coverPhotoID != nil {
+            Divider()
+            Button("恢复自动封面") { store.setAlbumCover(nil, for: album.id) }
+        }
+        Divider()
+        Button("删除相簿", role: .destructive) { store.deleteAlbum(album.id) }
     }
 
     private func albumCard(_ album: Album, width: CGFloat, photo: PhotoItem?) -> some View {
@@ -604,16 +771,7 @@ struct AlbumsOverviewView: View {
         .onHover { hovering in
             hoveredKey = hovering ? key : (hoveredKey == key ? nil : hoveredKey)
         }
-        .onDrop(of: [.plainText], isTargeted: Binding(
-            get: { dropTargetAlbumID == album.id },
-            set: { targeted in
-                if targeted {
-                    dropTargetAlbumID = album.id
-                } else if dropTargetAlbumID == album.id {
-                    dropTargetAlbumID = nil
-                }
-            }
-        )) { providers in
+        .onDrop(of: [.plainText], isTargeted: albumDropBinding(album)) { providers in
             PhotoDrag.loadIDs(from: providers) { ids in
                 guard !ids.isEmpty else { return }
                 store.addToAlbum(album.id, photoIDs: Set(ids))
@@ -624,23 +782,7 @@ struct AlbumsOverviewView: View {
             store.navigate(to: .album(album.id))
         }
         .contextMenu {
-            Button("打开相簿") { store.navigate(to: .album(album.id)) }
-            Button("重命名相簿…") {
-                namePrompt = .renameAlbum(album.id, current: album.name)
-            }
-            Menu("移到文件夹") {
-                Button("相簿顶层") { store.moveAlbum(album.id, toFolder: nil) }
-                if !store.folderOptions.isEmpty { Divider() }
-                ForEach(store.folderOptions) { option in
-                    Button(option.path) { store.moveAlbum(album.id, toFolder: option.id) }
-                }
-            }
-            if album.coverPhotoID != nil {
-                Divider()
-                Button("恢复自动封面") { store.setAlbumCover(nil, for: album.id) }
-            }
-            Divider()
-            Button("删除相簿", role: .destructive) { store.deleteAlbum(album.id) }
+            albumMenuItems(album)
         }
         .accessibilityLabel("相簿 \(album.name)")
     }
@@ -671,11 +813,7 @@ struct SystemFolderOverviewView: View {
 
     @State private var hoveredKey: String?
 
-    /// 卡片宽度跟随工具栏缩放（56…360 pt）映射到约 130…640 pt，与「所有相簿」一致。
-    private var baseCardWidth: CGFloat {
-        min(640, max(130, CGFloat(store.thumbSize) * 2.2))
-    }
-
+    /// 卡片墙每行列数：默认尺寸下 5 个，与「所有相簿」一致。
     private var entries: [SystemSidebarEntry] {
         if let folderID { return store.systemChildren(of: folderID) }
         return store.systemChildren(of: nil)
@@ -702,23 +840,67 @@ struct SystemFolderOverviewView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = min(baseCardWidth, max(150, proxy.size.width - 48))
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     header
 
                     if entries.isEmpty {
                         emptyState
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth),
-                                                     spacing: 22, alignment: .top)],
+                    } else if store.albumDisplayStyle == .grid {
+                        // 按可用宽度均分列宽，默认铺满窗口，不让右侧留空。
+                        let spacing: CGFloat = 22
+                        let available = max(0, proxy.size.width - 48)
+                        let maxFit = max(1, Int((available + spacing) / (120 + spacing)))
+                        let columnCount = min(store.cardColumns, maxFit)
+                        let itemWidth = max(120, (available - spacing * CGFloat(columnCount - 1)) / CGFloat(columnCount))
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+                                                 count: columnCount),
                                   alignment: .leading,
                                   spacing: 26) {
-                            ForEach(childFolders) { child in
-                                folderCard(child, width: cardWidth)
+                            // 按侧边栏的原始顺序混排文件夹与相簿，保证两个入口看到的排序一致。
+                            ForEach(entries) { entry in
+                                switch entry {
+                                case .folder(let child):
+                                    folderCard(child, width: itemWidth)
+                                case .album(let album):
+                                    albumCard(album, width: itemWidth)
+                                }
                             }
-                            ForEach(childAlbums) { album in
-                                albumCard(album, width: cardWidth)
+                        }
+                    } else if store.albumDisplayStyle == .list {
+                        let spacing: CGFloat = 28
+                        let available = max(240, proxy.size.width - 48)
+                        let columns = max(1, min(6, Int((available + spacing) / (300 + spacing))))
+                        let itemWidth = (available - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+                        let thumb = min(160, max(64, CGFloat(store.thumbSize) * 0.75))
+                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(itemWidth),
+                                                                     spacing: spacing,
+                                                                     alignment: .leading),
+                                                 count: columns),
+                                  alignment: .leading,
+                                  spacing: 24) {
+                            ForEach(entries) { entry in
+                                switch entry {
+                                case .folder(let child):
+                                    folderListRow(child, thumb: thumb)
+                                case .album(let album):
+                                    albumListRow(album, thumb: thumb)
+                                }
+                            }
+                        }
+                    } else {
+                        let tile = min(320, max(120, CGFloat(store.thumbSize) * 1.7))
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: tile, maximum: tile),
+                                                     spacing: 10, alignment: .top)],
+                                  alignment: .leading,
+                                  spacing: 10) {
+                            ForEach(entries) { entry in
+                                switch entry {
+                                case .folder(let child):
+                                    folderCollageTile(child, side: tile)
+                                case .album(let album):
+                                    albumCollageTile(album, side: tile)
+                                }
                             }
                         }
                     }
@@ -729,52 +911,19 @@ struct SystemFolderOverviewView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .animation(settings.motion.layout, value: store.albumDisplayStyle)
     }
 
     // MARK: - 头部
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(folder?.name ?? "相簿")
-                    .font(.system(size: 27, weight: .bold))
-                Text("\(childAlbums.count) 个相簿, \(childFolders.count) 个子文件夹")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
+        HStack(alignment: .center, spacing: 10) {
+            // 标题与返回层级由窗口工具栏统一展示，这里只保留数量与显示方式。
+            Text("\(childAlbums.count) 个相簿, \(childFolders.count) 个文件夹")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
             Spacer()
-            Button {
-                navigateUp()
-            } label: {
-                Label(parentTitle, systemImage: "chevron.left")
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("返回\(parentTitle)")
-        }
-    }
-
-    private var parentTitle: String {
-        guard let folder,
-              let parentID = folder.parent,
-              let parent = store.systemFolders.first(where: { $0.id == parentID }) else {
-            return store.systemLibraryName ?? "所有项目"
-        }
-        return parent.name
-    }
-
-    private func navigateUp() {
-        guard let folder else {
-            // 根层「相簿」总览：返回系统图库的所有项目。
-            store.navigate(to: .systemLibrary)
-            return
-        }
-        if let parentID = folder.parent,
-           store.systemFolders.contains(where: { $0.id == parentID }) {
-            store.navigate(to: .systemFolder(parentID))
-        } else {
-            store.navigate(to: .systemLibrary)
+            AlbumDisplayStyleMenu()
         }
     }
 
@@ -797,40 +946,44 @@ struct SystemFolderOverviewView: View {
 
     // MARK: - 封面
 
-    private func firstPhoto(in ids: [UUID]) -> PhotoItem? {
-        for id in ids {
-            if let photo = store.systemPhoto(id: id), photo.deletedAt == nil, !photo.isHidden {
-                return photo
-            }
-        }
-        return nil
-    }
-
     private func albumCover(_ album: SystemAlbumInfo) -> PhotoItem? {
-        firstPhoto(in: album.assetIDs)
+        store.systemAlbumPreviewPhotos(album.id, limit: 1).first
     }
 
     /// 子文件夹封面取自身与更深层中第一个有内容的相簿；限制递归深度，避免遍历异常结构。
     private func folderCover(_ id: Int64, depth: Int = 0) -> PhotoItem? {
-        guard depth < 4 else { return nil }
+        folderPhotos(id, limit: 1, depth: depth).first
+    }
+
+    /// 文件夹的四宫格封面：从自身与更深层相簿里取最多 4 张；限制递归深度。
+    private func folderPhotos(_ id: Int64, limit: Int = 4, depth: Int = 0) -> [PhotoItem] {
+        guard limit > 0, depth < 4 else { return [] }
+        var result: [PhotoItem] = []
         for entry in store.systemChildren(of: id) {
             switch entry {
             case .album(let album):
-                if let photo = albumCover(album) { return photo }
+                for photo in albumPhotos(album, limit: limit) where result.count < limit {
+                    if !result.contains(where: { $0.id == photo.id }) { result.append(photo) }
+                }
             case .folder(let child):
-                if let photo = folderCover(child.id, depth: depth + 1) { return photo }
+                for photo in folderPhotos(child.id, limit: limit, depth: depth + 1) where result.count < limit {
+                    if !result.contains(where: { $0.id == photo.id }) { result.append(photo) }
+                }
             }
+            if result.count >= limit { break }
         }
-        return nil
+        return result
     }
 
     // MARK: - 卡片
 
     private func folderCard(_ child: SystemFolderInfo, width: CGFloat) -> some View {
         let key = "folder-\(child.id)"
+        let photos = folderPhotos(child.id)
         return cardBody(key: key,
                         title: child.name,
-                        cover: folderCover(child.id),
+                        cover: photos.first,
+                        photos: photos,
                         placeholder: .folder,
                         width: width) {
             store.navigate(to: .systemFolder(child.id))
@@ -856,15 +1009,100 @@ struct SystemFolderOverviewView: View {
         .accessibilityLabel("相簿 \(album.name)")
     }
 
+    // MARK: - 列表 / 拼贴墙
+
+    /// 相簿封面照片：最多取 4 张用于列表与拼贴墙的拼贴（只读系统图库）。
+    private func albumPhotos(_ album: SystemAlbumInfo, limit: Int = 4) -> [PhotoItem] {
+        store.systemAlbumPreviewPhotos(album.id, limit: limit)
+    }
+
+    /// 文件夹子树里的相簿数量（限制递归深度，避免异常结构）。
+    private func folderAlbumCount(_ id: Int64, depth: Int = 0) -> Int {
+        guard depth < 4 else { return 0 }
+        return store.systemChildren(of: id).reduce(0) { total, entry in
+            switch entry {
+            case .album:
+                return total + 1
+            case .folder(let child):
+                return total + folderAlbumCount(child.id, depth: depth + 1)
+            }
+        }
+    }
+
+    private func folderListRow(_ child: SystemFolderInfo, thumb: CGFloat) -> some View {
+        AlbumOverviewRow(title: child.name,
+                         subtitle: folderAlbumCount(child.id).formatted(),
+                         cover: folderCover(child.id),
+                         placeholder: .folder,
+                         side: thumb,
+                         action: { store.navigate(to: .systemFolder(child.id)) },
+                         menu: {
+                             Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                             Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+                         })
+            .accessibilityLabel("文件夹 \(child.name)")
+    }
+
+    private func albumListRow(_ album: SystemAlbumInfo, thumb: CGFloat) -> some View {
+        AlbumOverviewRow(title: album.name,
+                         subtitle: store.systemAlbumPhotoCount(album.id).formatted(),
+                         cover: albumCover(album),
+                         placeholder: .album,
+                         side: thumb,
+                         action: { store.navigate(to: .systemAlbum(album.id)) },
+                         menu: {
+                             Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                             Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+                         })
+            .accessibilityLabel("相簿 \(album.name)")
+    }
+
+    private func folderCollageTile(_ child: SystemFolderInfo, side: CGFloat) -> some View {
+        AlbumOverviewTile(title: child.name,
+                          subtitle: "\(folderAlbumCount(child.id)) 个相簿",
+                          photos: folderPhotos(child.id),
+                          placeholder: .folder,
+                          side: side,
+                          isFolder: true,
+                          action: { store.navigate(to: .systemFolder(child.id)) },
+                          menu: {
+                              Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                              Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+                          })
+            .accessibilityLabel("文件夹 \(child.name)")
+    }
+
+    private func albumCollageTile(_ album: SystemAlbumInfo, side: CGFloat) -> some View {
+        AlbumOverviewTile(title: album.name,
+                          subtitle: "\(store.systemAlbumPhotoCount(album.id)) 项",
+                          photos: albumPhotos(album),
+                          placeholder: .album,
+                          side: side,
+                          isFolder: false,
+                          action: { store.navigate(to: .systemAlbum(album.id)) },
+                          menu: {
+                              Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                              Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+                          })
+            .accessibilityLabel("相簿 \(album.name)")
+    }
+
     private func cardBody<MenuContent: View>(key: String,
                                              title: String,
                                              cover: PhotoItem?,
+                                             photos: [PhotoItem] = [],
                                              placeholder: AlbumPlaceholderStyle,
                                              width: CGFloat,
                                              action: @escaping () -> Void,
                                              @ViewBuilder contextMenu: () -> MenuContent) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            AlbumCoverImage(photo: cover, side: width, style: placeholder)
+            Group {
+                if photos.count >= 2 {
+                    FolderMosaicImage(photos: photos, side: width)
+                } else {
+                    AlbumCoverImage(photo: cover, side: width, style: placeholder)
+                }
+            }
                 .frame(width: width, height: max(120, width * 0.7))
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay {
@@ -900,7 +1138,6 @@ struct MediaTypesOverviewView: View {
         let keys = (system ? MediaTypeKey.allCases : MediaTypeKey.localCases)
             .filter { (summary.counts[$0] ?? 0) > 0 }
         CategoryOverviewView(
-            heading: "媒体类型",
             entries: keys.map { key in
                 CategoryOverviewEntry(id: key.rawValue,
                                       title: key.title,
@@ -918,28 +1155,36 @@ struct MediaTypesOverviewView: View {
     }
 }
 
-/// 场景总览：卡片墙展示端侧分析出的场景分类（侧边栏「场景」分区头点开）。
+/// 场景总览：卡片墙展示端侧识别出的场景分类（本地图库用落库结果，系统图库用内存结果）。
 struct ScenesOverviewView: View {
     @EnvironmentObject private var store: LibraryStore
 
     var body: some View {
         let summary = store.sceneSummary
         let categories = SceneCatalog.categories.filter { (summary.counts[$0.id] ?? 0) > 0 }
+        let system = store.isSystemScope
+        let analyzed = system ? store.systemAnalyzedCount : store.analyzedCount
+        let analyzing = system ? store.isAnalyzingSystemContent : store.isAnalyzingIntelligence
         CategoryOverviewView(
-            heading: "场景",
             entries: categories.map { category in
                 CategoryOverviewEntry(id: category.id,
                                       title: category.title,
                                       icon: category.icon,
                                       count: summary.counts[category.id] ?? 0,
                                       cover: summary.covers[category.id],
-                                      item: .scene(category.id))
+                                      item: system ? .systemScene(category.id) : .scene(category.id))
             },
             emptyIcon: "sparkles",
-            emptyTitle: store.analyzedCount == 0 ? "还没有分析照片内容" : "未识别到常见场景",
+            emptyTitle: analyzed == 0 ? "还没有识别照片内容" : "未识别到常见场景",
             emptyMessage: "识别场景与照片中的文字，全部在本机完成。",
-            emptyActionTitle: store.isAnalyzingIntelligence ? nil : "分析照片内容…",
-            emptyAction: { store.analyzeIntelligence() }
+            emptyActionTitle: analyzing ? nil : (system ? "识别照片内容…" : "分析照片内容…"),
+            emptyAction: {
+                if system {
+                    store.analyzeSystemContent()
+                } else {
+                    store.analyzeIntelligence()
+                }
+            }
         )
     }
 }
@@ -956,7 +1201,6 @@ private struct CategoryOverviewEntry: Identifiable {
 
 /// 分类卡片墙：媒体类型与场景共用（数量、封面均由 Store 汇总好）。
 private struct CategoryOverviewView: View {
-    let heading: String
     let entries: [CategoryOverviewEntry]
     let emptyIcon: String
     let emptyTitle: String
@@ -968,33 +1212,31 @@ private struct CategoryOverviewView: View {
     @EnvironmentObject private var settings: AppSettings
     @State private var hoveredKey: String?
 
-    /// 卡片宽度跟随工具栏缩放（56…360 pt）映射到约 130…640 pt。
-    private var baseCardWidth: CGFloat {
-        min(640, max(130, CGFloat(store.thumbSize) * 2.2))
-    }
-
+    /// 卡片墙每行列数：默认尺寸下 5 个，随工具栏缩放变化。
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = min(baseCardWidth, max(150, proxy.size.width - 48))
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(heading)
-                            .font(.system(size: 27, weight: .bold))
-                        Text("\(entries.count) 个分类")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
+                    // 标题由窗口工具栏统一展示，这里只保留分类数量。
+                    Text("\(entries.count) 个分类")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
 
                     if entries.isEmpty {
                         emptyState
                     } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth),
-                                                     spacing: 22, alignment: .top)],
+                        // 按可用宽度均分列宽，默认铺满窗口，不让右侧留空。
+                        let spacing: CGFloat = 22
+                        let available = max(0, proxy.size.width - 48)
+                        let maxFit = max(1, Int((available + spacing) / (120 + spacing)))
+                        let columnCount = min(store.cardColumns, maxFit)
+                        let itemWidth = max(120, (available - spacing * CGFloat(columnCount - 1)) / CGFloat(columnCount))
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+                                                 count: columnCount),
                                   alignment: .leading,
                                   spacing: 26) {
                             ForEach(entries) { entry in
-                                card(entry, width: cardWidth)
+                                card(entry, width: itemWidth)
                             }
                         }
                     }
@@ -1083,19 +1325,23 @@ struct MoreItemsOverviewView: View {
 
     private var entries: [Entry] {
         if system {
+            // 与「拾光 › 更多项目」同一顺序与图标；最近查看 / 值得重看为系统图库独有入口。
             return [
                 Entry(id: "favorites", title: "个人收藏", icon: "heart.fill", item: .systemFavorites),
                 Entry(id: "trash", title: "最近删除", icon: "trash", item: .systemTrash),
-                Entry(id: "duplicates", title: "重复项目", icon: "square.on.square", item: .systemDuplicates),
-                Entry(id: "handwriting", title: "手写", icon: "pencil.tip", item: .systemHandwriting),
-                Entry(id: "illustrations", title: "插图", icon: "scribble.variable", item: .systemIllustrations),
                 Entry(id: "recentlySaved", title: "最近保存", icon: "square.and.arrow.down", item: .systemRecentlySaved),
                 Entry(id: "recentlyViewed", title: "最近查看", icon: "eye", item: .systemRecentlyViewed),
                 Entry(id: "recentlyEdited", title: "最近编辑", icon: "slider.horizontal.3", item: .systemEdited),
                 Entry(id: "imports", title: "导入项目", icon: "square.and.arrow.down.on.square", item: .systemImports),
+                Entry(id: "ocr", title: "包含文字", icon: "text.viewfinder", item: .systemOcrTexts),
+                Entry(id: "keywords", title: "关键词", icon: "tag", item: .systemKeywords),
+                Entry(id: "ratings", title: "整理", icon: "square.grid.2x2", item: .systemRatings),
+                Entry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath", item: .systemRevisit),
+                Entry(id: "health", title: "图库体检", icon: "stethoscope", item: .systemHealth),
                 Entry(id: "map", title: "地图", icon: "map", item: .systemMap),
                 Entry(id: "places", title: "位置", icon: "mappin.and.ellipse", item: .systemPlaces),
-                Entry(id: "people", title: "人物", icon: "person.2", item: .systemPeople),
+                Entry(id: "people", title: "人物", icon: "person.crop.square", item: .systemPeople),
+                Entry(id: "duplicates", title: "重复项目", icon: "square.on.square", item: .systemDuplicates),
                 Entry(id: "hidden", title: "已隐藏", icon: "eye.slash", item: .systemHidden)
             ]
         }
@@ -1106,6 +1352,8 @@ struct MoreItemsOverviewView: View {
             Entry(id: "recentlyEdited", title: "最近编辑", icon: "slider.horizontal.3", item: .recentlyEdited),
             Entry(id: "imports", title: "导入项目", icon: "square.and.arrow.down.on.square", item: .imports),
             Entry(id: "ocr", title: "包含文字", icon: "text.viewfinder", item: .ocrTexts),
+            Entry(id: "keywords", title: "关键词", icon: "tag", item: .keywords),
+            Entry(id: "ratings", title: "整理", icon: "square.grid.2x2", item: .ratings),
             Entry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath", item: .revisit),
             Entry(id: "health", title: "图库体检", icon: "stethoscope", item: .health),
             Entry(id: "map", title: "地图", icon: "map", item: .map),
@@ -1116,29 +1364,27 @@ struct MoreItemsOverviewView: View {
         ]
     }
 
-    private var baseCardWidth: CGFloat {
-        min(640, max(200, CGFloat(store.thumbSize) * 2.2))
-    }
-
     var body: some View {
         GeometryReader { proxy in
-            let cardWidth = min(baseCardWidth, max(200, proxy.size.width - 48))
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("更多项目")
-                            .font(.system(size: 27, weight: .bold))
-                        Text("\(entries.count) 个入口")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
+                    // 标题由窗口工具栏统一展示，这里只保留入口数量。
+                    Text("\(entries.count) 个入口")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
 
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth),
-                                                 spacing: 14, alignment: .top)],
+                    // 按可用宽度均分列宽，默认铺满窗口。
+                    let spacing: CGFloat = 22
+                    let available = max(0, proxy.size.width - 48)
+                    let maxFit = max(1, Int((available + spacing) / (120 + spacing)))
+                    let columnCount = min(store.cardColumns, maxFit)
+                    let itemWidth = max(120, (available - spacing * CGFloat(columnCount - 1)) / CGFloat(columnCount))
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+                                             count: columnCount),
                               alignment: .leading,
-                              spacing: 14) {
+                              spacing: 26) {
                         ForEach(entries) { entry in
-                            card(entry, width: cardWidth)
+                            card(entry, width: itemWidth)
                         }
                     }
                 }
@@ -1152,32 +1398,33 @@ struct MoreItemsOverviewView: View {
 
     private func card(_ entry: Entry, width: CGFloat) -> some View {
         let key = entry.id
-        return HStack(spacing: 10) {
-            Image(systemName: entry.icon)
-                .font(.system(size: 21, weight: .regular))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 32)
-            Text(entry.title)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
+        let cover = store.moreItemsCover(for: entry.item)
+        return VStack(alignment: .leading, spacing: 8) {
+            // 与媒体类型 / 场景一致：优先展示该入口的第一张照片缩略图，没有照片时退回图标。
+            AlbumCoverImage(photo: cover, side: width, style: .icon(entry.icon))
+                .frame(width: width, height: max(120, width * 0.7))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(hoveredKey == key ? 0.18 : 0), radius: 14, y: 6)
+                .scaleEffect(hoveredKey == key && settings.hoverLift ? settings.motion.hoverScale : 1)
+                .animation(settings.motion.hover, value: hoveredKey)
+
+            HStack(spacing: 5) {
+                Image(systemName: entry.icon)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(entry.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 2)
         }
-        .padding(.horizontal, 14)
-        .frame(width: width, height: 68)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.primary.opacity(0.05)))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(hoveredKey == key ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.08),
-                              lineWidth: hoveredKey == key ? 1.2 : 0.5)
-        }
-        .shadow(color: .black.opacity(hoveredKey == key ? 0.14 : 0), radius: 10, y: 4)
-        .scaleEffect(hoveredKey == key && settings.hoverLift ? settings.motion.hoverScale : 1)
-        .animation(settings.motion.hover, value: hoveredKey)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(width: width, alignment: .leading)
+        .contentShape(Rectangle())
         .onHover { hovering in
             hoveredKey = hovering ? key : (hoveredKey == key ? nil : hoveredKey)
         }
@@ -1186,6 +1433,29 @@ struct MoreItemsOverviewView: View {
         }
         .help(entry.title)
         .accessibilityLabel(entry.title)
+    }
+}
+
+/// 系统图库「导入项目」：按官方导入会话（Photos.sqlite 的 `ZGENERICALBUM.ZKIND = 1506`）展示。
+/// 与媒体类型 / 场景总览共用同一套卡片墙，标题留给窗口工具栏，内容区不再重复大标题。
+struct ImportSessionsOverviewView: View {
+    @EnvironmentObject private var store: LibraryStore
+
+    var body: some View {
+        let sessions = store.systemImportSessions
+        CategoryOverviewView(
+            entries: sessions.map { session in
+                CategoryOverviewEntry(id: "\(session.id)",
+                                      title: DateText.fullFormatter.string(from: session.createdAt),
+                                      icon: "square.and.arrow.down.on.square",
+                                      count: session.count,
+                                      cover: store.systemImportSessionCover(session.id),
+                                      item: .systemImportSession(session.id))
+            },
+            emptyIcon: "square.and.arrow.down.on.square",
+            emptyTitle: "还没有导入记录",
+            emptyMessage: "从相机或存储卡导入照片后，每次导入会显示为一个批次。"
+        )
     }
 }
 
@@ -1306,7 +1576,9 @@ struct SystemLibrariesOverviewView: View {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: ref.path)])
             }
             Divider()
-            Button("断开连接", role: .destructive) { store.removeSystemLibrary(ref.path) }
+            Button("断开连接", role: .destructive) {
+                store.confirmRemoveSystemLibrary(path: ref.path, name: ref.name)
+            }
         }
         .help(ref.path)
         .accessibilityLabel("系统图库 \(ref.name)")
@@ -1319,103 +1591,182 @@ struct CloudStoragesOverviewView: View {
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
     @State private var hoveredID: UUID?
-
-    private var baseCardWidth: CGFloat {
-        min(640, max(240, CGFloat(store.thumbSize) * 2.2))
-    }
+    @State private var renamingMount: CloudMount?
+    @State private var renameText = ""
 
     var body: some View {
-        GeometryReader { proxy in
-            let cardWidth = min(baseCardWidth, max(240, proxy.size.width - 48))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("网络存储")
-                            .font(.system(size: 27, weight: .bold))
-                        Text("\(cloud.mounts.count) 个已接入存储")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                header
 
-                    if cloud.mounts.isEmpty {
-                        emptyState
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth),
-                                                     spacing: 18, alignment: .top)],
-                                  alignment: .leading,
-                                  spacing: 20) {
-                            ForEach(cloud.mounts) { mount in
-                                card(mount, width: cardWidth)
-                            }
+                if cloud.mounts.isEmpty {
+                    emptyState
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 272, maximum: 340),
+                                                 spacing: 16, alignment: .top)],
+                              alignment: .leading,
+                              spacing: 16) {
+                        ForEach(cloud.mounts) { mount in
+                            card(mount)
                         }
                     }
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
-                .padding(.bottom, 48)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.horizontal, 26)
+            .padding(.top, 22)
+            .padding(.bottom, 48)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .alert("重命名网络存储", isPresented: renamePresented) {
+            TextField("名称", text: $renameText)
+            Button("取消", role: .cancel) { renamingMount = nil }
+            Button("保存") {
+                if let mount = renamingMount {
+                    store.renameCloudMount(mount.id, to: renameText)
+                }
+                renamingMount = nil
+            }
+        } message: {
+            Text("只修改显示名称，不会影响网盘上的内容。")
+        }
+    }
+
+    private var renamePresented: Binding<Bool> {
+        Binding(get: { renamingMount != nil },
+                set: { if !$0 { renamingMount = nil } })
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("网络存储")
+                    .font(.system(size: 27, weight: .bold))
+                Text("\(cloud.mounts.count) 个已接入存储 · 点击卡片进入浏览")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            Button {
+                store.presentCloudWizard()
+            } label: {
+                Label("接入存储", systemImage: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 0.8)
+                    }
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("通过向导接入 WebDAV、SMB 共享或网盘")
         }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "externaldrive.badge.icloud")
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 74, height: 74)
+                Image(systemName: "externaldrive.badge.icloud")
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(Color.accentColor)
+            }
             Text("还没有网络存储")
                 .font(.system(size: 17, weight: .semibold))
             Text("通过向导接入 WebDAV、SMB 共享或阿里云盘 / 百度网盘。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            Button("网盘接入向导…") { store.presentCloudWizard() }
-                .padding(.top, 4)
+                .multilineTextAlignment(.center)
+            Button {
+                store.presentCloudWizard()
+            } label: {
+                Label("网盘接入向导", systemImage: "wand.and.stars")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 0.8)
+                    }
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 80)
+        .padding(.vertical, 56)
+        .padding(.horizontal, 24)
+        .lumaGlassCard(cornerRadius: 22)
     }
 
-    private func card(_ mount: CloudMount, width: CGFloat) -> some View {
+    private func card(_ mount: CloudMount) -> some View {
         let isCurrent = store.sidebarItem == .cloudMount(mount.id)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Image(systemName: icon(for: mount.kind))
-                    .font(.system(size: 23, weight: .regular))
-                    .foregroundStyle(Color.accentColor)
-                Spacer(minLength: 0)
-                if isCurrent {
-                    Text(cloud.loading ? "读取中" : "已打开")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.14), in: Capsule())
+        let hovering = hoveredID == mount.id
+        let tint = tint(for: mount.kind)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                iconBadge(mount, tint: tint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(mount.name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+                    Text(mount.kind.title)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+                Spacer(minLength: 4)
+                statusBadge(isCurrent: isCurrent)
             }
 
-            Text(mount.name)
-                .font(.system(size: 13.5, weight: .semibold))
-                .lineLimit(1)
-            Text(subtitle(for: mount))
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            Spacer(minLength: 16)
+
+            HStack(spacing: 6) {
+                Image(systemName: "link")
+                    .font(.system(size: 9.5, weight: .medium))
+                Text(address(for: mount))
+                    .font(.system(size: 10.5))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(.tertiary)
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 0.8)
+                .padding(.vertical, 11)
+
+            HStack(spacing: 5) {
+                Text(isCurrent ? "正在浏览" : "打开")
+                    .font(.system(size: 11, weight: .semibold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .offset(x: hovering ? 2 : 0, y: hovering ? -1 : 0)
+                Spacer(minLength: 6)
+                Text(createdText(mount))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
         }
-        .padding(14)
-        .frame(width: width, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.primary.opacity(0.05)))
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lumaGlassCard(cornerRadius: 18)
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(hoveredID == mount.id ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.08),
-                              lineWidth: hoveredID == mount.id ? 1.2 : 0.5)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(borderColor(isCurrent: isCurrent, hovering: hovering),
+                              lineWidth: isCurrent ? 1.2 : 0.8)
         }
-        .scaleEffect(hoveredID == mount.id && settings.hoverLift ? settings.motion.hoverScale : 1)
-        .animation(settings.motion.hover, value: hoveredID)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onHover { hovering in
-            hoveredID = hovering ? mount.id : (hoveredID == mount.id ? nil : hoveredID)
+        .scaleEffect(hovering && settings.hoverLift ? settings.motion.hoverScale : 1)
+        .animation(settings.motion.hover, value: hovering)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onHover { isHovering in
+            hoveredID = isHovering ? mount.id : (hoveredID == mount.id ? nil : hoveredID)
         }
         .onTapGesture {
             store.navigate(to: .cloudMount(mount.id))
@@ -1429,43 +1780,176 @@ struct CloudStoragesOverviewView: View {
                     store.navigate(to: .cloudMount(mount.id))
                 }
             }
-            Button(mount.kind.usesOAuth ? "重新授权…" : "编辑连接…") {
-                if mount.kind.usesOAuth {
-                    store.presentCloudWizard(flow: mount.kind == .aliyun ? .aliyun : .baidu)
-                } else {
+            Button(connectionActionTitle(for: mount)) {
+                if mount.kind == .webdav || mount.kind == .smb {
                     store.presentCloudSheet(mount)
+                } else {
+                    store.presentCloudWizard(flow: mount.kind.wizardFlow)
                 }
             }
+            Button("重命名…") {
+                renameText = mount.name
+                renamingMount = mount
+            }
             Divider()
-            Button("断开连接", role: .destructive) { store.removeCloudMount(mount.id) }
+            Button("断开连接", role: .destructive) { store.confirmRemoveCloudMount(mount.id) }
         }
         .help(subtitle(for: mount))
         .accessibilityLabel("网络存储 \(mount.name)")
     }
 
-    private func subtitle(for mount: CloudMount) -> String {
-        mount.kind.title + " · " + (mount.baseURL.isEmpty ? mount.lastPath : mount.baseURL)
+    private func iconBadge(_ mount: CloudMount, tint: Color) -> some View {
+        Group {
+            if let brand = mount.kind.brand {
+                CloudBrandIcon(brand: brand, size: 42)
+                    .shadow(color: tint.opacity(0.28), radius: 8, y: 3)
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .fill(LinearGradient(colors: [tint.opacity(0.95), tint.opacity(0.55)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.white.opacity(0.30), Color.clear],
+                                             startPoint: .topLeading, endPoint: .center))
+                    Image(systemName: mount.kind.symbolName)
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: tint.opacity(0.5), radius: 6, y: 2)
+                }
+                .frame(width: 42, height: 42)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.8)
+                }
+                .shadow(color: tint.opacity(0.32), radius: 8, y: 3)
+            }
+        }
     }
 
-    private func icon(for kind: CloudKind) -> String {
+    @ViewBuilder
+    private func statusBadge(isCurrent: Bool) -> some View {
+        if isCurrent {
+            HStack(spacing: 4) {
+                if cloud.loading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 5, height: 5)
+                }
+                Text(cloud.loading ? "读取中" : "已打开")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.accentColor.opacity(0.14), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.6)
+            }
+        } else {
+            Text("已接入")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.06), in: Capsule())
+        }
+    }
+
+    private func borderColor(isCurrent: Bool, hovering: Bool) -> Color {
+        if isCurrent { return Color.accentColor.opacity(0.55) }
+        return hovering ? Color.accentColor.opacity(0.30) : Color.clear
+    }
+
+    private func address(for mount: CloudMount) -> String {
+        let detail = (mount.baseURL.isEmpty ? mount.lastPath : mount.baseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? "点击进入浏览云端目录" : detail
+    }
+
+    private func createdText(_ mount: CloudMount) -> String {
+        "接入于 " + DateText.monthFormatter.string(from: mount.createdAt)
+    }
+
+    private func tint(for kind: CloudKind) -> Color {
         switch kind {
-        case .webdav: return "externaldrive.connected.to.line.below"
-        case .smb: return "network"
-        case .aliyun: return "cloud"
-        case .baidu: return "cloud.fill"
+        case .webdav: return Color(red: 0.32, green: 0.74, blue: 0.82)
+        case .smb: return Color(red: 0.52, green: 0.58, blue: 0.96)
+        case .aliyun: return Color(red: 1.00, green: 0.60, blue: 0.30)
+        case .baidu: return Color(red: 0.26, green: 0.54, blue: 0.98)
+        case .quark: return Color(red: 0.44, green: 0.50, blue: 1.00)
+        }
+    }
+
+    private func subtitle(for mount: CloudMount) -> String {
+        let detail = (mount.baseURL.isEmpty ? mount.lastPath : mount.baseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? mount.kind.title : "\(mount.kind.title) · \(detail)"
+    }
+
+    private func connectionActionTitle(for mount: CloudMount) -> String {
+        switch mount.kind {
+        case .webdav, .smb: return "编辑连接…"
+        case .quark, .aliyun: return "更新 Cookie…"
+        case .baidu: return "重新授权…"
         }
     }
 }
 
 /// 无封面时的占位样式：相簿 / 文件夹 / 分类图标。
-private enum AlbumPlaceholderStyle {
+enum AlbumPlaceholderStyle {
     case album
     case folder
     case icon(String)
 }
 
-/// 相簿 / 文件夹卡片封面：单张图片铺满整张卡片；没有可用照片时显示占位插画。
-private struct AlbumCoverImage: View {
+/// 文件夹封面：2×2 四宫格，每张图各占 25% 面积；不足 4 张的空位用浅色占位。
+/// 只有 1 张时直接铺满，避免整块缩略图只亮一小格。
+private struct FolderMosaicImage: View {
+    let photos: [PhotoItem]
+    var side: CGFloat = 220
+
+    var body: some View {
+        if photos.isEmpty {
+            AlbumPlaceholderArt(style: .folder)
+        } else if photos.count == 1, let photo = photos.first {
+            PhotoThumbnailView(photo: photo, purpose: .cover(side))
+        } else {
+            GeometryReader { proxy in
+                let gap: CGFloat = 1.5
+                let cellWidth = max(1, (proxy.size.width - gap) / 2)
+                let cellHeight = max(1, (proxy.size.height - gap) / 2)
+                VStack(spacing: gap) {
+                    HStack(spacing: gap) {
+                        cell(0, width: cellWidth, height: cellHeight)
+                        cell(1, width: cellWidth, height: cellHeight)
+                    }
+                    HStack(spacing: gap) {
+                        cell(2, width: cellWidth, height: cellHeight)
+                        cell(3, width: cellWidth, height: cellHeight)
+                    }
+                }
+            }
+            .background(Color.secondary.opacity(0.08))
+        }
+    }
+
+    @ViewBuilder
+    private func cell(_ index: Int, width: CGFloat, height: CGFloat) -> some View {
+        if index < photos.count {
+            PhotoThumbnailView(photo: photos[index], purpose: .cover(min(width, height)))
+                .frame(width: width, height: height)
+                .clipped()
+        } else {
+            Color.secondary.opacity(0.08)
+                .frame(width: width, height: height)
+        }
+    }
+}
+
+/// 相簿卡片封面：单张图片铺满整张卡片；没有可用照片时显示占位插画。
+struct AlbumCoverImage: View {
     let photo: PhotoItem?
     var side: CGFloat = 220
     var style: AlbumPlaceholderStyle = .album
@@ -1476,6 +1960,258 @@ private struct AlbumCoverImage: View {
         } else {
             AlbumPlaceholderArt(style: style)
         }
+    }
+}
+
+/// 相簿总览的展示形式切换（网格 / 列表 / 拼贴墙），与「显示 › 相簿显示方式」共用同一个设置。
+private struct AlbumDisplayStyleMenu: View {
+    @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var settings: AppSettings
+
+    var body: some View {
+        Menu {
+            ForEach(AlbumDisplayStyle.allCases) { style in
+                Toggle(isOn: Binding(
+                    get: { store.albumDisplayStyle == style },
+                    set: { isOn in
+                        guard isOn else { return }
+                        withAnimation(settings.motion.layout) { store.albumDisplayStyle = style }
+                    }
+                )) {
+                    Label(style.title, systemImage: style.icon)
+                }
+            }
+        } label: {
+            Image(systemName: store.albumDisplayStyle.icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(store.albumDisplayStyle == .grid ? Color.primary : Color.accentColor)
+                .frame(width: 26, height: 22)
+                .background {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(store.albumDisplayStyle == .grid
+                              ? Color.clear
+                              : Color.accentColor.opacity(0.18))
+                }
+                .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("相簿显示方式：网格 / 列表 / 拼贴墙")
+        .accessibilityLabel("相簿显示方式")
+        .accessibilityValue(store.albumDisplayStyle.title)
+    }
+}
+
+/// 相簿总览列表项：方形封面 + 名称 + 数量，与系统「照片」的列表视图一致（本地与系统图库共用）。
+private struct AlbumOverviewRow<MenuContent: View>: View {
+    let title: String
+    let subtitle: String
+    let cover: PhotoItem?
+    let placeholder: AlbumPlaceholderStyle
+    let side: CGFloat
+    var highlighted: Bool = false
+    let action: () -> Void
+    let menu: MenuContent
+
+    @State private var hovering = false
+
+    init(title: String,
+         subtitle: String,
+         cover: PhotoItem?,
+         placeholder: AlbumPlaceholderStyle,
+         side: CGFloat,
+         highlighted: Bool = false,
+         action: @escaping () -> Void,
+         @ViewBuilder menu: () -> MenuContent) {
+        self.title = title
+        self.subtitle = subtitle
+        self.cover = cover
+        self.placeholder = placeholder
+        self.side = side
+        self.highlighted = highlighted
+        self.action = action
+        self.menu = menu()
+    }
+
+    private var corner: CGFloat { max(10, side * 0.2) }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Group {
+                if let cover {
+                    PhotoThumbnailView(photo: cover, purpose: .cover(side))
+                } else {
+                    AlbumPlaceholderArt(style: placeholder)
+                }
+            }
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 15, weight: .medium))
+                    .lineLimit(2)
+                Text(subtitle)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(6)
+        .background {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(Color.primary.opacity(highlighted ? 0.10 : (hovering ? 0.04 : 0)))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .strokeBorder(highlighted ? Color.accentColor : Color.clear,
+                              lineWidth: highlighted ? 2 : 0)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: action)
+        .contextMenu { menu }
+    }
+}
+
+/// 相簿总览拼贴墙方块：无边封面拼贴 + 渐变叠字（本地与系统图库共用）。
+private struct AlbumOverviewTile<MenuContent: View>: View {
+    @EnvironmentObject private var settings: AppSettings
+
+    let title: String
+    let subtitle: String
+    let photos: [PhotoItem]
+    let placeholder: AlbumPlaceholderStyle
+    let side: CGFloat
+    let isFolder: Bool
+    var highlighted: Bool = false
+    let action: () -> Void
+    let menu: MenuContent
+
+    @State private var hovering = false
+
+    init(title: String,
+         subtitle: String,
+         photos: [PhotoItem],
+         placeholder: AlbumPlaceholderStyle,
+         side: CGFloat,
+         isFolder: Bool,
+         highlighted: Bool = false,
+         action: @escaping () -> Void,
+         @ViewBuilder menu: () -> MenuContent) {
+        self.title = title
+        self.subtitle = subtitle
+        self.photos = photos
+        self.placeholder = placeholder
+        self.side = side
+        self.isFolder = isFolder
+        self.highlighted = highlighted
+        self.action = action
+        self.menu = menu()
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            AlbumCollageCover(photos: photos, side: side, style: placeholder)
+                .frame(width: side, height: side)
+
+            LinearGradient(colors: [.clear, .black.opacity(0.78)],
+                           startPoint: .center, endPoint: .bottom)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: isFolder ? "folder.fill" : "rectangle.stack.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.85))
+                    Text(title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .lineLimit(1)
+                }
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white)
+            .padding(11)
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(highlighted ? Color.accentColor : Color.primary.opacity(0.08),
+                              lineWidth: highlighted ? 2 : 0.5)
+        }
+        .shadow(color: .black.opacity(hovering ? 0.22 : 0), radius: 14, y: 6)
+        .scaleEffect(hovering && settings.hoverLift ? settings.motion.hoverScale : 1)
+        .animation(settings.motion.hover, value: hovering)
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: action)
+        .contextMenu { menu }
+    }
+}
+
+/// 相簿总览在列表 / 拼贴墙下的拼贴封面：1 张铺满，2 张左右分栏，3 张左大右二，4 张 2×2。
+private struct AlbumCollageCover: View {
+    let photos: [PhotoItem]
+    let side: CGFloat
+    var style: AlbumPlaceholderStyle = .album
+
+    private var items: [PhotoItem] { Array(photos.prefix(4)) }
+
+    var body: some View {
+        if items.isEmpty {
+            AlbumPlaceholderArt(style: style)
+        } else {
+            GeometryReader { geo in
+                let gap: CGFloat = 1.5
+                Group {
+                    switch items.count {
+                    case 1:
+                        cell(items[0])
+                    case 2:
+                        HStack(spacing: gap) {
+                            cell(items[0])
+                            cell(items[1])
+                        }
+                    case 3:
+                        HStack(spacing: gap) {
+                            cell(items[0])
+                            VStack(spacing: gap) {
+                                cell(items[1])
+                                cell(items[2])
+                            }
+                        }
+                    default:
+                        VStack(spacing: gap) {
+                            HStack(spacing: gap) {
+                                cell(items[0])
+                                cell(items[1])
+                            }
+                            HStack(spacing: gap) {
+                                cell(items[2])
+                                cell(items[3])
+                            }
+                        }
+                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
+            }
+        }
+    }
+
+    private func cell(_ photo: PhotoItem) -> some View {
+        PhotoThumbnailView(photo: photo, purpose: .cover(side / 2))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
     }
 }
 
@@ -1656,8 +2392,11 @@ private struct FolderBackShape: Shape {
 
 struct PeopleView: View {
     @EnvironmentObject private var store: LibraryStore
-    @State private var hoveredID: Int64?
     @State private var pinchBase: Double?
+    @State private var detailMode: PersonDetailMode = .summary
+    @State private var insight: PersonInsight?
+    @State private var heroAvatar: NSImage?
+    @State private var collapseProgress: CGFloat = 0
 
     var body: some View {
         if store.isSystemScope {
@@ -1691,45 +2430,78 @@ struct PeopleView: View {
 
     private var overview: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .bottom, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("人物与宠物")
-                        .font(.system(size: 28, weight: .bold))
-                    Text("来自系统图库的端侧识别结果 · \(people.count) 位")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 26)
-            .padding(.top, 20)
-            .padding(.bottom, 16)
-
             if people.isEmpty {
                 emptyState
+            } else if filteredPeople.isEmpty {
+                filterEmptyState
             } else {
+                systemPeopleBar
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: cardSize, maximum: cardSize * 1.35),
                                                  spacing: cardSize * 0.16, alignment: .top)],
                               alignment: .leading,
                               spacing: cardSize * 0.2) {
-                        ForEach(people) { person in
-                            PersonCardView(person: person,
-                                           avatarSize: cardSize * 0.94,
-                                           isHovered: hoveredID == person.id)
+                        ForEach(filteredPeople) { person in
+                            PersonCardView(person: person, avatarSize: cardSize * 0.94, style: store.peopleDisplayStyle)
                                 .onTapGesture { store.openPerson(person) }
-                                .onHover { hovering in
-                                    hoveredID = hovering ? person.id : (hoveredID == person.id ? nil : hoveredID)
-                                }
                         }
                     }
                     .padding(.horizontal, 26)
-                    .padding(.top, 4)
+                    .padding(.top, 16)
                     .padding(.bottom, 56)
                 }
                 .simultaneousGesture(pinchGesture)
             }
         }
+    }
+
+    /// 按当前聚合筛选得到的人物；宠物不参与「已命名 / 待命名」。
+    /// 「全部」时平铺展示，不再按命名状态分节；只有选了筛选才收窄集合。
+    private var filteredPeople: [SystemPersonInfo] {
+        switch store.peopleFilter {
+        case .all: return people
+        case .named: return people.filter { !$0.isUnnamed && !$0.isPet }
+        case .unnamed: return people.filter { $0.isUnnamed && !$0.isPet }
+        case .pets: return people.filter(\.isPet)
+        }
+    }
+
+    /// 系统图库的人物由官方识别，这里只提供「刷新读取结果」的入口。
+    private var systemPeopleBar: some View {
+        HStack(spacing: 10) {
+            Text("由 macOS「照片」在端侧识别，拾光只读引用")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Spacer()
+            Button {
+                store.refreshSystemPeople()
+            } label: {
+                Label("刷新识别结果", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("重新读取官方「照片」图库里的人物与宠物")
+        }
+        .padding(.horizontal, 26)
+        .padding(.top, 10)
+    }
+
+    /// 当前聚合筛选没有结果时的占位；与「图库为空」区分开，避免误以为识别失败。
+    private var filterEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: store.peopleFilter.icon)
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(.secondary)
+            Text(store.peopleFilter.emptyTitle)
+                .font(.system(size: 16, weight: .semibold))
+            Text(store.peopleFilter.emptyHint)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 400)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, 40)
     }
 
     private var emptyState: some View {
@@ -1749,7 +2521,7 @@ struct PeopleView: View {
                 }
                 Text("人物与宠物")
                     .font(.system(size: 22, weight: .semibold))
-                Text("连接 macOS 官方「照片」图库后，这里会显示官方端侧已命名的人物与宠物；识别始终在本机完成，本 App 不会上传任何照片。")
+                Text("连接 macOS 官方「照片」图库后，这里会显示官方端侧识别出的人物与宠物（含尚未命名的聚类）；识别始终在本机完成，本 App 不会上传任何照片。")
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -1761,6 +2533,15 @@ struct PeopleView: View {
                     featureChip(icon: "photo.on.rectangle", title: "只读引用")
                 }
                 .padding(.top, 4)
+
+                Button {
+                    store.refreshSystemPeople()
+                } label: {
+                    Label("刷新识别结果", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .padding(.top, 4)
             }
             .padding(30)
         }
@@ -1769,43 +2550,103 @@ struct PeopleView: View {
     private func personDetail(_ person: SystemPersonInfo) -> some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Button {
-                        store.closePerson()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .frame(width: 30, height: 30)
-                            .background(Color.primary.opacity(0.07), in: Circle())
-                            .contentShape(Circle())
+                PersonDetailHero(name: person.name,
+                                 subtitle: insight?.subtitle ?? "正在整理这段影像…",
+                                 avatar: heroAvatar,
+                                 isPet: person.isPet,
+                                 cover: insight?.coverPhoto
+                                    ?? person.keyAssetID.flatMap { store.anyPhoto(id: $0) },
+                                 mode: detailMode,
+                                 collapse: detailMode == .map ? 1 : collapseProgress,
+                                 onBack: { store.closePerson() },
+                                 onModeChange: { newMode in
+                                     withAnimation(.snappy(duration: 0.26)) { detailMode = newMode }
+                                 })
+
+                if detailMode == .map {
+                    // 地图档：页头收成一条紧凑栏，剩下的空间全部交给地图。
+                    PersonMapPanel(source: .system(person), name: person.name)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            PersonScrollTracker(coordinateSpace: "systemPersonScroll")
+                            if detailMode == .summary {
+                                if let insight {
+                                    PersonInsightSummaryView(insight: insight, name: person.name)
+                                } else {
+                                    insightLoading.frame(height: 360)
+                                }
+                            } else {
+                                allPhotos(availableWidth: proxy.size.width,
+                                          fillHeight: proxy.size.height)
+                            }
+                        }
+                        .id(detailMode)
                     }
-                    .buttonStyle(.plain)
-                    .help("返回人物")
-                    .accessibilityLabel("返回人物")
-
-                    PersonAvatarView(person: person, size: 42)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(person.name)
-                            .font(.system(size: 21, weight: .bold))
-                        Text("\(store.visiblePhotos.count.formatted()) 张照片")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
+                    .coordinateSpace(name: "systemPersonScroll")
+                    .onPreferenceChange(PersonScrollOffsetKey.self) { offset in
+                        let value = min(1, max(0, offset / 180))
+                        if abs(value - collapseProgress) > 0.004 {
+                            collapseProgress = value
+                        }
                     }
-
-                    Spacer()
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 18)
-                .padding(.bottom, 12)
-
-                ScrollView {
-                    SquarePhotoGrid(photos: store.visiblePhotos, availableWidth: proxy.size.width)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 50)
                 }
             }
         }
+        .task(id: person.id) {
+            detailMode = .summary
+            collapseProgress = 0
+            insight = nil
+            let request = PersonAvatarLoader.request(for: person, size: 84)
+            heroAvatar = PersonAvatarLoader.cached(request)
+            if heroAvatar == nil {
+                heroAvatar = await PersonAvatarLoader.load(request, store: store)
+            }
+            let loaded = await store.systemPersonInsightAsync(for: person)
+            if !Task.isCancelled, store.selectedPerson?.id == person.id {
+                insight = loaded
+            }
+        }
+        .onChange(of: store.selectedPerson?.id) { _, _ in
+            detailMode = .summary
+            collapseProgress = 0
+            insight = nil
+        }
+    }
+
+    private var insightLoading: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("正在整理这段影像故事…")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 「全部」：瀑布流拼贴，卡片保留原始比例并常驻投影。
+    private func allPhotos(availableWidth: CGFloat, fillHeight: CGFloat) -> some View {
+        LazyVStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("全部影像")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("\(store.visibleCount.formatted()) 张")
+                    .font(.system(size: 10.5))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 26)
+            .padding(.top, 18)
+
+            MasonryPhotoGrid(photos: store.visiblePhotos,
+                             availableWidth: availableWidth,
+                             targetWidth: CGFloat(store.thumbSize) * 1.25)
+        }
+        .padding(.bottom, 56)
+        .photoMarqueeSelection(fillHeight: fillHeight)
     }
 
     private func featureChip(icon: String, title: String) -> some View {
@@ -1824,16 +2665,33 @@ struct PeopleView: View {
 
 private struct PersonAvatarView: View {
     @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var settings: AppSettings
     let person: SystemPersonInfo
     let size: CGFloat
+    /// 头像形状：圆形或圆角方形；默认圆形（详情页等场景沿用圆形）。
+    var style: PeopleDisplayStyle = .circle
+
+    @State private var image: NSImage?
+
+    private var request: PersonAvatarRequest {
+        PersonAvatarLoader.request(for: person, size: size)
+    }
+
+    /// 裁切形状：圆角方形沿用全局卡片圆角设置。
+    private var shape: AnyShape {
+        switch style {
+        case .circle: AnyShape(Circle())
+        case .roundedSquare: AnyShape(RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous))
+        }
+    }
 
     var body: some View {
         ZStack {
-            Circle()
+            shape
                 .fill(LinearGradient(colors: [Color.accentColor.opacity(0.45), Color.accentColor.opacity(0.25)],
                                      startPoint: .topLeading,
                                      endPoint: .bottomTrailing))
-            if let image = avatarImage {
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
@@ -1844,19 +2702,17 @@ private struct PersonAvatarView: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(Circle())
+        .clipShape(shape)
         .overlay {
-            Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
+            shape.stroke(Color.white.opacity(0.18), lineWidth: 0.8)
         }
-    }
-
-    private var avatarImage: NSImage? {
-        if let data = person.cropData, let image = NSImage(data: data) {
-            return image
+        .task(id: request) {
+            if let cached = PersonAvatarLoader.cached(request) {
+                image = cached
+                return
+            }
+            image = await PersonAvatarLoader.load(request, store: store)
         }
-        guard let id = person.keyAssetID ?? person.assetIDs.first,
-              let photo = store.anyPhoto(id: id) else { return nil }
-        return ImageLoader.gridThumbnail(for: photo, maxPixel: 256)
     }
 }
 
@@ -1865,11 +2721,14 @@ private struct PersonCardView: View {
     let person: SystemPersonInfo
     /// 头像直径，随工具栏缩放变化。
     var avatarSize: CGFloat = 124
-    let isHovered: Bool
+    /// 头像形状（圆形 / 圆角方形），随当前图库保存。
+    var style: PeopleDisplayStyle = .circle
+    /// 悬停状态留在卡片内部：上千人的列表不应该因为一次 hover 重排整个网格。
+    @State private var isHovered = false
 
     var body: some View {
         VStack(spacing: 10) {
-            PersonAvatarView(person: person, size: avatarSize)
+            PersonAvatarView(person: person, size: avatarSize, style: style)
                 .shadow(color: .black.opacity(isHovered ? 0.25 : 0.10),
                         radius: isHovered ? 14 : 6,
                         y: isHovered ? 7 : 3)
@@ -1883,5 +2742,6 @@ private struct PersonCardView: View {
         .scaleEffect(isHovered ? 1.02 : 1)
         .animation(.snappy(duration: 0.18), value: isHovered)
         .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
     }
 }

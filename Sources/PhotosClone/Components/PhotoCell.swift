@@ -12,11 +12,13 @@ struct PhotoCell: View {
     var cornerRadius: CGFloat?
     /// 常驻投影：让卡片从背景里浮起来（瀑布流使用）。
     var elevated: Bool = false
-    /// 悬停放大倍率；瀑布流会放大得更明显，突出当前卡片。
-    var hoverScale: CGFloat?
+    /// 非图库网格（地图 / 地点 / 卡片墙）打开查看器时的顺序基准，用于序号、总数与左右翻页。
+    var viewerContext: [PhotoItem]?
     @State private var image: NSImage?
     @State private var didLoad = false
     @State private var isHovering = false
+    /// 鼠标在格子里的位置：让悬停高光跟着指针走，画面不位移也能有玻璃质感。
+    @State private var hoverPoint: CGPoint?
 
     private var isSelected: Bool { selectionModel.ids.contains(photo.id) }
 
@@ -41,9 +43,30 @@ struct PhotoCell: View {
         selectionModel.ids.contains(photo.id) && !selectionModel.ids.isEmpty ? selectionModel.ids : [photo.id]
     }
 
+    /// 悬停提示：鼠标停在缩略图上就能确认文件名、拍摄时间与规格，不用打开信息面板。
+    private var hoverHelpText: String {
+        var parts: [String] = [photo.displayFilename,
+                               DateText.dayFormatter.string(from: photo.capturedAt)]
+        if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+            parts.append("\(photo.pixelWidth)×\(photo.pixelHeight)")
+        }
+        if photo.fileSize > 0 {
+            parts.append(formatFileSize(photo.fileSize))
+        }
+        if photo.isVideo, let duration = photo.duration, duration > 0 {
+            parts.append(formatDuration(duration))
+        }
+        return parts.joined(separator: " · ")
+    }
+
     /// 按设置打开：查看器 / 编辑器 / 系统默认应用。
     private func openPhotoBySettings() {
-        store.openPhoto(photo.id, by: settings.photoOpenMode)
+        // 地图 / 地点 / 卡片墙这类网格自带顺序，查看器序号与翻页以它为准。
+        if let viewerContext, settings.photoOpenMode == .viewer {
+            store.openViewer(photo.id, context: viewerContext)
+        } else {
+            store.openPhoto(photo.id, by: settings.photoOpenMode)
+        }
     }
 
     // MARK: 元数据浮层
@@ -76,10 +99,10 @@ struct PhotoCell: View {
         if metadata.camera, let camera = photo.model ?? photo.make {
             chips.append(PhotoMetadataChip(id: "camera", icon: "camera", text: camera))
         }
-        if metadata.location, photo.hasLocation {
+        if metadata.location, let place = photo.placeTitle {
             chips.append(PhotoMetadataChip(id: "place",
                                            icon: "mappin.and.ellipse",
-                                           text: PlaceClusterBuilder.key(for: photo).title))
+                                           text: place))
         }
         if metadata.capturedDate {
             chips.append(PhotoMetadataChip(id: "date",
@@ -113,7 +136,7 @@ struct PhotoCell: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .shadow(color: .black.opacity(0.65), radius: 2, y: 0.5)
-                    .padding(.leading, isSelected || isHovering ? 22 : 0)
+                    .padding(.leading, isHovering ? 22 : 0)
             }
             Spacer(minLength: 0)
             if width >= 110 {
@@ -159,6 +182,12 @@ struct PhotoCell: View {
         .clipped()
     }
 
+    /// 悬停时描边高光跟随指针方向，形成一圈会「追光」的边缘。
+    private var hoverRimAngle: Angle {
+        guard let point = hoverPoint, width > 0, height > 0 else { return .degrees(-45) }
+        return .radians(atan2(Double(point.y - height / 2), Double(point.x - width / 2)))
+    }
+
     var body: some View {
         ZStack {
             // 占位：柔和的灰阶渐变，避免加载时出现一整块死灰。
@@ -174,6 +203,9 @@ struct PhotoCell: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: width, height: height)
+                    .scaleEffect(isHovering ? 1.03 : 1)
+                    .brightness(isHovering ? 0.07 : 0)
+                    .saturation(isHovering ? 1.08 : 1)
                     .clipped()
                     .transition(.opacity)
             } else if didLoad {
@@ -184,6 +216,29 @@ struct PhotoCell: View {
                 ProgressView()
                     .controlSize(.small)
                     .tint(.secondary)
+            }
+
+            // 悬停质感：轻微放大提亮 + 斜向玻璃反光 + 跟随指针的柔和高光。
+            if isHovering {
+                LinearGradient(colors: [Color.white.opacity(0.20),
+                                        .clear,
+                                        Color.black.opacity(0.10)],
+                               startPoint: .topLeading,
+                               endPoint: .bottomTrailing)
+                    .blendMode(.softLight)
+                    .allowsHitTesting(false)
+
+                GeometryReader { proxy in
+                    let point = hoverPoint ?? CGPoint(x: proxy.size.width / 2,
+                                                      y: proxy.size.height / 2)
+                    RadialGradient(colors: [Color.white.opacity(0.34), .clear],
+                                   center: UnitPoint(x: min(max(point.x / max(proxy.size.width, 1), 0), 1),
+                                                     y: min(max(point.y / max(proxy.size.height, 1), 0), 1)),
+                                   startRadius: 0,
+                                   endRadius: max(proxy.size.width, proxy.size.height) * 0.9)
+                        .blendMode(.softLight)
+                }
+                .allowsHitTesting(false)
             }
 
             if settings.metadata.hasTextOverlay {
@@ -239,26 +294,82 @@ struct PhotoCell: View {
                 .allowsHitTesting(false)
             }
 
-            // 选中态已由强调色描边表达，这里只在悬停时给一个可选中的提示圆。
-            if isHovering && !isSelected {
-                VStack {
-                    HStack {
-                        Circle()
-                            .fill(Color.white.opacity(0.78))
-                            .frame(width: 20, height: 20)
-                            .overlay {
-                                Circle().strokeBorder(.white.opacity(0.5), lineWidth: 0.8)
-                            }
-                            .shadow(color: .black.opacity(0.22), radius: 2, y: 1)
-                        Spacer()
-                    }
-                    Spacer()
+            // 色标：左侧细条，不遮挡画面；与评分 / 旗标共同构成整理状态。
+            if photo.labelColor != .none {
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(photo.labelColor.color)
+                        .frame(width: 3)
+                    Spacer(minLength: 0)
                 }
-                .padding(6)
+                .allowsHitTesting(false)
             }
+
+            // 评分 / 旗标：左下角小胶囊，避免与右下角视频时长冲突。
+            if photo.starRating > 0 || photo.pickFlag != .none {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 4) {
+                        if photo.starRating > 0 {
+                            HStack(spacing: 1.5) {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 7.5, weight: .semibold))
+                                Text("\(photo.starRating)")
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .monospacedDigit()
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2.5)
+                            .background(.black.opacity(0.44), in: Capsule())
+                        }
+                        if photo.pickFlag != .none {
+                            Image(systemName: photo.pickFlag.icon)
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(3.5)
+                                .background(photo.pickFlag.color.opacity(0.82), in: Circle())
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(6)
+                }
+                .allowsHitTesting(false)
+            }
+
+            // 选中态只保留强调色描边，不再叠加勾选角标。
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .overlay {
+            // 常驻发丝边；悬停时换成跟随指针方向的强调色渐变描边，并带一圈柔和光晕。
+            if isHovering && !isSelected {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(
+                        AngularGradient(colors: [
+                            Color.white.opacity(0.85),
+                            settings.accentColor.opacity(0.85),
+                            Color.white.opacity(0.25),
+                            settings.accentColor.opacity(0.55),
+                            Color.white.opacity(0.85)
+                        ], center: .center, angle: hoverRimAngle),
+                        lineWidth: 1.6
+                    )
+                    .shadow(color: settings.accentColor.opacity(0.45), radius: 6)
+                    .allowsHitTesting(false)
+            } else {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+            }
+        }
+        .overlay(alignment: .top) {
+            // 顶部 1px 高光，模拟玻璃边缘受光；只在悬停时出现，不做扫光动画。
+            LinearGradient(colors: [.white.opacity(isHovering ? 0.45 : 0), .clear],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 1)
+                .padding(.horizontal, corner + 2)
+                .allowsHitTesting(false)
+        }
         .overlay {
             if isSelected {
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
@@ -273,10 +384,7 @@ struct PhotoCell: View {
                     .strokeBorder(.white.opacity(0.35), lineWidth: 0.8)
             }
         }
-        .scaleEffect(isHovering && settings.hoverLift ? (hoverScale ?? settings.motion.hoverScale) : 1)
-        .modifier(PhotoCellShadow(hovered: isHovering && settings.hoverLift,
-                                  selected: isSelected,
-                                  elevated: elevated))
+        .modifier(PhotoCellShadow(selected: isSelected, elevated: elevated))
         .animation(settings.motion.hover, value: isHovering)
         .animation(.easeOut(duration: 0.18), value: image != nil)
         .contentShape(Rectangle())
@@ -285,8 +393,15 @@ struct PhotoCell: View {
         } preview: {
             PhotoDragPreview(image: image, count: actionIDs.count)
         }
-        .onHover { hovering in
-            isHovering = hovering
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let point):
+                hoverPoint = point
+                if !isHovering { isHovering = true }
+            case .ended:
+                isHovering = false
+                hoverPoint = nil
+            }
         }
         .onTapGesture(count: 2) {
             openPhotoBySettings()
@@ -322,7 +437,8 @@ struct PhotoCell: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(photo.displayTitle)
         .accessibilityValue(accessibilityValueText)
-        .accessibilityHint("单击打开；按住 ⌘ 或 ⇧ 单击可多选")
+        .accessibilityHint("单击选择；双击打开；按住 ⌘ 或 ⇧ 单击可多选")
+        .help(hoverHelpText)
         .task(id: gridLoadKey) {
             didLoad = false
             let loaded = await PhotoThumbnailLoader.load(photo: photo,
@@ -336,7 +452,6 @@ struct PhotoCell: View {
             if let loaded { image = loaded }
             didLoad = true
         }
-        .help(photo.originalName)
     }
 
 }
@@ -346,33 +461,75 @@ struct PhotoContextMenu: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var selectionModel: SelectionModel
     let photo: PhotoItem
+    /// 右键目标：点击的项目在选区里时是整选区，否则只有这一项（由 `PhotoCell` 计算）。
     let actionIDs: Set<UUID>
 
+    /// 导出 / 旋转 / 打印等仍以「选区」为入参的方法，先同步一次选区。
+    private func selectTargets() {
+        selectionModel.ids = actionIDs
+    }
+
     var body: some View {
+        // 菜单文案按整选区状态显示，多选时不会出现「收藏」却实际批量取消的错觉。
+        let flags = store.selectionCommonFlags(actionIDs)
         if photo.isSystem {
             Button("打开") {
                 store.openViewer(photo.id)
             }
+            if !photo.isVideo {
+                Button("查找相似照片") {
+                    store.findSimilarPhotos(to: photo.id)
+                }
+            }
             // 当前图库就是官方「照片」图库时，拾光可以补充元数据（只写拾光数据库）。
             if store.canEditNativeOverlay {
-                Button(photo.isFavorite ? "取消收藏" : "收藏") {
-                    selectionModel.ids = [photo.id]
-                    store.toggleFavoriteSelection()
+                Button(flags.allFavorite ? "取消收藏" : "收藏") {
+                    store.toggleFavorite(ids: actionIDs)
                 }
-                Button(photo.isHidden ? "取消隐藏" : "隐藏") {
-                    selectionModel.ids = [photo.id]
-                    store.setHidden([photo.id], hidden: !photo.isHidden)
+                Button(flags.allHidden ? "取消隐藏" : "隐藏") {
+                    store.setHidden(actionIDs, hidden: !flags.allHidden)
                 }
                 Button("添加关键词…") {
-                    selectionModel.ids = [photo.id]
+                    selectTargets()
                     store.showKeywordManager = true
                 }
+                if store.canEditMetadataWorkflow {
+                    PhotoMetadataMenu(photo: photo, actionIDs: actionIDs)
+                }
             }
-            Button("导出…") {
-                store.export(photo.id)
+            // 官方库作为当前图库时，相簿的增删改与照片归入都通过 PhotoKit 写回「照片」。
+            if store.canManageSystemAlbums {
+                if !store.systemAlbums.isEmpty || !store.systemFolders.isEmpty {
+                    // 与侧边栏同一棵树、同一顺序：文件夹展开成子菜单，相簿按图库原始顺序排列。
+                    Menu("加入相簿") {
+                        SystemAlbumMenuItems(parent: nil, ids: actionIDs)
+                    }
+                }
+                if case .systemAlbum(let albumID) = store.sidebarItem {
+                    Divider()
+                    Button("移出此相簿") {
+                        store.removeSystemPhotos(actionIDs, fromSystemAlbum: albumID)
+                    }
+                    Button("移到最前") {
+                        store.moveSystemPhotos(actionIDs, inSystemAlbum: albumID, toTop: true)
+                    }
+                    Button("移到最后") {
+                        store.moveSystemPhotos(actionIDs, inSystemAlbum: albumID, toTop: false)
+                    }
+                }
+            }
+            if actionIDs.count > 1 {
+                Button("导出所选到文件夹…") {
+                    selectTargets()
+                    store.presentBatchExport()
+                }
+            } else {
+                Button("导出…") {
+                    store.export(photo.id)
+                }
             }
             Button("在访达中显示") {
-                store.revealInFinder(photo.id)
+                store.revealInFinder(ids: actionIDs)
             }
             if !photo.isVideo {
                 Button("设为桌面背景") {
@@ -381,15 +538,24 @@ struct PhotoContextMenu: View {
             }
             Divider()
             Button("导入到我的图库") {
-                selectionModel.ids = [photo.id]
+                selectTargets()
                 store.importSystemSelectionToLibrary()
             }
         } else if photo.isCloud {
             Button("打开") {
                 store.openViewer(photo.id)
             }
-            Button(photo.isFavorite ? "取消收藏" : "收藏") {
-                store.toggleFavorite(photo.id)
+            if !photo.isVideo {
+                Button("查找相似照片") {
+                    store.findSimilarPhotos(to: photo.id)
+                }
+            }
+            Button(flags.allFavorite ? "取消收藏" : "收藏") {
+                store.toggleFavorite(ids: actionIDs)
+            }
+            Button("添加关键词…") {
+                selectTargets()
+                store.showKeywordManager = true
             }
             if store.isCurrentCloudWritable {
                 Button("重命名…") {
@@ -398,7 +564,7 @@ struct PhotoContextMenu: View {
             }
             if actionIDs.count > 1 {
                 Button("导出所选到文件夹…") {
-                    selectionModel.ids = actionIDs
+                    selectTargets()
                     store.presentBatchExport()
                 }
             } else {
@@ -407,7 +573,7 @@ struct PhotoContextMenu: View {
                 }
             }
             Button("幻灯片播放") {
-                selectionModel.ids = actionIDs
+                selectTargets()
                 store.presentSlideshow()
             }
             if !photo.isVideo {
@@ -416,7 +582,7 @@ struct PhotoContextMenu: View {
                 }
             }
             Button("打印…") {
-                selectionModel.ids = actionIDs
+                selectTargets()
                 store.printCommand()
             }
             if store.isCurrentCloudSMB {
@@ -435,15 +601,15 @@ struct PhotoContextMenu: View {
             if store.isCurrentCloudWritable {
                 Divider()
                 Button("从云端删除…", role: .destructive) {
-                    store.confirmDeleteCloud([photo.id])
+                    store.confirmDeleteCloud(actionIDs)
                 }
             }
         } else if photo.isDeleted {
             Button("恢复") {
-                store.restore([photo.id])
+                store.restore(actionIDs)
             }
             Button("永久删除…", role: .destructive) {
-                store.confirmPermanentDelete([photo.id])
+                store.confirmPermanentDelete(actionIDs)
             }
         } else {
             Button("打开") {
@@ -454,16 +620,13 @@ struct PhotoContextMenu: View {
                     store.findSimilarPhotos(to: photo.id)
                 }
             }
-            Button(photo.isFavorite ? "取消收藏" : "收藏") {
-                store.toggleFavorite(photo.id)
+            Button(flags.allFavorite ? "取消收藏" : "收藏") {
+                store.toggleFavorite(ids: actionIDs)
             }
             Menu("添加到相簿") {
-                ForEach(store.albumsSorted) { album in
-                    Button(album.name) {
-                        store.addToAlbum(album.id, photoIDs: [photo.id])
-                    }
-                }
-                if store.albums.isEmpty {
+                // 与侧边栏一致：文件夹 → 子文件夹 → 相簿，名称按本地排序。
+                LocalAlbumMenuItems(parentFolderID: nil, ids: actionIDs)
+                if store.albums.isEmpty, store.folders.isEmpty {
                     Text("暂无相簿")
                 } else {
                     Divider()
@@ -483,12 +646,15 @@ struct PhotoContextMenu: View {
                     }
                 }
             }
-            Button(photo.isHidden ? "取消隐藏" : "隐藏") {
-                store.setHidden([photo.id], hidden: !photo.isHidden)
+            Button(flags.allHidden ? "取消隐藏" : "隐藏") {
+                store.setHidden(actionIDs, hidden: !flags.allHidden)
             }
             Button("添加关键词…") {
-                selectionModel.ids = [photo.id]
+                selectTargets()
                 store.showKeywordManager = true
+            }
+            if store.canEditMetadataWorkflow {
+                PhotoMetadataMenu(photo: photo, actionIDs: actionIDs)
             }
             if !photo.isVideo {
                 Button("压缩…") {
@@ -502,12 +668,13 @@ struct PhotoContextMenu: View {
             }
             if actionIDs.count > 1 {
                 Button("导出所选到文件夹…") {
+                    selectTargets()
                     store.presentBatchExport()
                 }
             }
             if !photo.isReadOnly {
                 Button("批量更改…") {
-                    selectionModel.ids = actionIDs
+                    selectTargets()
                     store.presentBatchChange()
                 }
             }
@@ -528,32 +695,34 @@ struct PhotoContextMenu: View {
                 }
                 Menu("旋转") {
                     Button("向右旋转") {
-                        selectionModel.ids = actionIDs
+                        selectTargets()
                         store.rotateCommand(clockwise: true)
                     }
                     Button("向左旋转") {
-                        selectionModel.ids = actionIDs
+                        selectTargets()
                         store.rotateCommand(clockwise: false)
                     }
                 }
             }
             Button("复制照片") {
-                selectionModel.ids = actionIDs
+                selectTargets()
                 store.duplicateCommand()
             }
             Button("打印…") {
-                selectionModel.ids = actionIDs
+                selectTargets()
                 store.printCommand()
             }
             Button("幻灯片播放") {
-                selectionModel.ids = actionIDs
+                selectTargets()
                 store.presentSlideshow()
             }
-            Button("导出…") {
-                store.export(photo.id)
+            if actionIDs.count == 1 {
+                Button("导出…") {
+                    store.export(photo.id)
+                }
             }
             Button("在访达中显示") {
-                store.revealInFinder(photo.id)
+                store.revealInFinder(ids: actionIDs)
             }
             if !photo.isVideo {
                 Button("设为桌面背景") {
@@ -562,27 +731,87 @@ struct PhotoContextMenu: View {
             }
             Divider()
             Button("删除", role: .destructive) {
-                store.delete([photo.id])
+                store.confirmDelete(actionIDs)
             }
         }
     }
 }
 
-/// 网格中只在悬停/选中时添加阴影；瀑布流卡片（`elevated`）常驻一层轻投影，
+/// 评分 / 旗标 / 色标的右键子菜单。系统图库作为当前图库时写入拾光叠加数据。
+struct PhotoMetadataMenu: View {
+    @EnvironmentObject private var store: LibraryStore
+    let photo: PhotoItem
+    let actionIDs: Set<UUID>
+
+    var body: some View {
+        Menu("评分") {
+            Button {
+                store.setRating(0, ids: actionIDs)
+            } label: {
+                if photo.starRating == 0 {
+                    Label("无评分", systemImage: "checkmark")
+                } else {
+                    Text("无评分")
+                }
+            }
+            Divider()
+            ForEach(1...5, id: \.self) { value in
+                Button {
+                    store.setRating(value, ids: actionIDs)
+                } label: {
+                    if photo.starRating == value {
+                        Label("\(value) 星", systemImage: "checkmark")
+                    } else {
+                        Label("\(value) 星", systemImage: "star.fill")
+                    }
+                }
+            }
+        }
+
+        Menu("旗标") {
+            ForEach(PhotoFlag.allCases) { flag in
+                Button {
+                    store.setFlag(flag, ids: actionIDs)
+                } label: {
+                    if photo.pickFlag == flag {
+                        Label(flag.title, systemImage: "checkmark")
+                    } else {
+                        Label(flag.title, systemImage: flag.icon)
+                    }
+                }
+            }
+        }
+
+        Menu("色标") {
+            ForEach(PhotoColorLabel.allCases) { label in
+                Button {
+                    store.setColorLabel(label, ids: actionIDs)
+                } label: {
+                    if photo.labelColor == label {
+                        Label(label.title, systemImage: "checkmark")
+                    } else {
+                        Label(label.title, systemImage: "circle.fill")
+                            .foregroundStyle(label.color)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 网格中只在选中时添加强调阴影；瀑布流卡片（`elevated`）常驻一层轻投影，
 /// 让卡片从背景里浮起来，可见数量由 Lazy 容器限制，不会整库离屏合成。
+/// 悬停不改变缩放 / 阴影，避免网格里鼠标划过时卡片跳动。
 private struct PhotoCellShadow: ViewModifier {
-    let hovered: Bool
     let selected: Bool
     var elevated: Bool = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if hovered || selected || elevated {
+        if selected || elevated {
             content
-                .shadow(color: .black.opacity(hovered ? 0.18 : (elevated ? 0.12 : 0)),
-                        radius: hovered ? 8 : 6,
-                        y: hovered ? 3 : 2)
-                .shadow(color: selected ? Color.accentColor.opacity(0.28) : .clear, radius: 6, y: 1)
+                .shadow(color: .black.opacity(elevated ? 0.12 : 0), radius: 6, y: 2)
+                .shadow(color: selected ? Color.accentColor.opacity(0.40) : .clear, radius: 11, y: 2)
         } else {
             content
         }
@@ -607,4 +836,68 @@ struct PhotoFramePreferenceKey: PreferenceKey {
 /// 框选用的单元格位置缓存。用引用类型保存，更新时不触发视图重排。
 final class PhotoFrameCache {
     var frames: [UUID: CGRect] = [:]
+}
+
+// MARK: - 「加入相簿」的层级菜单
+
+/// 系统图库的「加入相簿」子菜单：与侧边栏同一棵树、同一排序（文件夹与相簿按图库原始顺序混排）。
+/// 空文件夹不展示，避免菜单里出现点不进去的分支。
+private struct SystemAlbumMenuItems: View {
+    @EnvironmentObject private var store: LibraryStore
+
+    let parent: Int64?
+    let ids: Set<UUID>
+
+    var body: some View {
+        let entries = store.systemChildren(of: parent).filter { entry in
+            guard case .folder(let folder) = entry else { return true }
+            return !store.systemChildren(of: folder.id).isEmpty
+        }
+        if entries.isEmpty {
+            Text("没有可用的相簿").disabled(true)
+        } else {
+            ForEach(entries) { entry in
+                switch entry {
+                case .folder(let folder):
+                    Menu {
+                        SystemAlbumMenuItems(parent: folder.id, ids: ids)
+                    } label: {
+                        Label(folder.name, systemImage: "folder")
+                    }
+                case .album(let album):
+                    Button(album.name) {
+                        store.addSystemPhotos(ids, toSystemAlbum: album.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 本地图库的「添加到相簿」子菜单：文件夹先于相簿，名称按本地排序，与侧边栏一致。
+private struct LocalAlbumMenuItems: View {
+    @EnvironmentObject private var store: LibraryStore
+
+    let parentFolderID: UUID?
+    let ids: Set<UUID>
+
+    var body: some View {
+        let folders = store.childFolders(of: parentFolderID)
+        let albums = store.albums(in: parentFolderID)
+        ForEach(folders) { folder in
+            Menu {
+                LocalAlbumMenuItems(parentFolderID: folder.id, ids: ids)
+            } label: {
+                Label(folder.name, systemImage: "folder")
+            }
+        }
+        ForEach(albums) { album in
+            Button(album.name) {
+                store.addToAlbum(album.id, photoIDs: ids)
+            }
+        }
+        if folders.isEmpty, albums.isEmpty {
+            Text("这个文件夹里还没有相簿").disabled(true)
+        }
+    }
 }

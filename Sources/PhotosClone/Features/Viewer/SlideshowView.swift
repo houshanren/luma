@@ -56,7 +56,10 @@ struct SlideshowView: View {
             .padding(18)
         }
         .onAppear {
-            if store.isPagedScope {
+            if store.isSystemPagedScope {
+                pagedCurrent = store.selection.first.flatMap { store.anyPhoto(id: $0) }
+                    ?? store.systemWindowPhotos.first
+            } else if store.isPagedScope {
                 pagedCurrent = store.selection.first.flatMap { store.anyPhoto(id: $0) }
                     ?? store.windowPhotos.first
                 if pagedCurrent == nil, let query = store.pagedQuery {
@@ -199,6 +202,17 @@ struct SlideshowView: View {
     }
 
     private func advance(_ delta: Int) {
+        if store.isSystemPagedScope, let id = current?.id,
+           let query = store.systemPagedQuery, let systemIndex = store.systemIndex {
+            guard let next = systemIndex.neighbor(of: id, delta: delta > 0 ? 1 : -1, in: query) else {
+                return
+            }
+            withAnimation(.easeInOut(duration: 0.28)) {
+                pagedCurrent = next
+            }
+            progress = 0
+            return
+        }
         if store.isPagedScope, let id = current?.id, let query = store.pagedQuery {
             guard let next = store.metadataStore?.neighbor(of: id, delta: delta > 0 ? 1 : -1, in: query) else {
                 return
@@ -257,6 +271,19 @@ struct SlideshowView: View {
             }
             if flags.contains(.command) {
                 return event
+            }
+            // 可自定义快捷键允许 ⌥ / ⌃ / ⇧ 组合。
+            if ShortcutStore.matches(event, .slideshowPrevious) {
+                advance(-1)
+                return nil
+            }
+            if ShortcutStore.matches(event, .slideshowNext) {
+                advance(1)
+                return nil
+            }
+            if ShortcutStore.matches(event, .slideshowToggle) {
+                isPlaying.toggle()
+                return nil
             }
             guard flags.intersection([.option, .control]).isEmpty else { return event }
 

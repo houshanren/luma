@@ -68,9 +68,16 @@ enum SQLiteValue {
 
 final class SQLiteDatabase {
     private var handle: OpaquePointer?
+    /// 系统 libsqlite3 以 THREADSAFE=2（multi-thread）编译：同一个连接禁止跨线程并发使用。
+    /// 索引库会被主线程（计数、地点、侧边栏）和多个后台 Task 同时查询，
+    /// 并发操作同一 handle 会写坏连接内部的 lookaside / 内存分配，
+    /// 表现为 sqlite3RunParser 里的随机 SIGSEGV / SIGBUS。这里把所有入口串行化。
+    private let lock = NSRecursiveLock()
     let path: String
 
-    init(path: String, readonly: Bool) throws {
+    /// `wal` 只对可写库有效：索引是一次性构建、之后只读打开，
+    /// 必须保持普通回滚日志模式，否则 WAL 旁路文件一旦没跟着主文件走，只读连接会全部查询失败。
+    init(path: String, readonly: Bool, wal: Bool = true) throws {
         self.path = path
         let flags: Int32 = readonly
             ? SQLITE_OPEN_READONLY
@@ -84,11 +91,13 @@ final class SQLiteDatabase {
         }
         sqlite3_busy_timeout(handle, 3000)
         if !readonly {
-            try execute("PRAGMA journal_mode=WAL;")
+            if wal { try execute("PRAGMA journal_mode=WAL;") }
             try execute("PRAGMA synchronous=NORMAL;")
         } else {
-            // 只读库：加大页缓存，减少大图库扫描时的磁盘读取。
-            sqlite3_exec(handle, "PRAGMA cache_size=-65536; PRAGMA temp_store=MEMORY;", nil, nil, nil)
+            // 只读库：加大页缓存并启用 mmap，减少大图库（几十 GB）扫描时的随机磁盘读取。
+            sqlite3_exec(handle,
+                         "PRAGMA cache_size=-131072; PRAGMA temp_store=MEMORY; PRAGMA mmap_size=536870912;",
+                         nil, nil, nil)
         }
     }
 
@@ -99,6 +108,8 @@ final class SQLiteDatabase {
     }
 
     func execute(_ sql: String, _ binds: [Any?] = []) throws {
+        lock.lock()
+        defer { lock.unlock() }
         let statement = try prepare(sql, binds)
         defer { sqlite3_finalize(statement) }
         var result = sqlite3_step(statement)
@@ -111,6 +122,8 @@ final class SQLiteDatabase {
     }
 
     func query(_ sql: String, _ binds: [Any?] = []) throws -> [[String: SQLiteValue]] {
+        lock.lock()
+        defer { lock.unlock() }
         let statement = try prepare(sql, binds)
         defer { sqlite3_finalize(statement) }
 
@@ -138,7 +151,33 @@ final class SQLiteDatabase {
         return rows
     }
 
+    /// 批量执行同一条 INSERT：只准备一次语句，逐行绑定后重置。
+    /// 百万级索引写入时，反复 prepare 会成为主要开销。
+    func executeMany(_ sql: String, rows: [[Any?]]) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw SQLiteError.prepare(String(cString: sqlite3_errmsg(handle)))
+        }
+        defer { sqlite3_finalize(statement) }
+        for row in rows {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            for (index, bind) in row.enumerated() {
+                bindValue(bind, at: Int32(index + 1), statement: statement)
+            }
+            let result = sqlite3_step(statement)
+            guard result == SQLITE_DONE else {
+                throw SQLiteError.step(String(cString: sqlite3_errmsg(handle)))
+            }
+        }
+    }
+
     func transaction(_ block: () throws -> Void) throws {
+        lock.lock()
+        defer { lock.unlock() }
         try execute("BEGIN IMMEDIATE;")
         do {
             try block()
@@ -152,6 +191,8 @@ final class SQLiteDatabase {
     /// 逐行读取，避免一次性把所有行物化成字典（大图库可省下大量内存）。
     func forEachRow(_ sql: String, _ binds: [Any?] = [],
                     _ body: ([String: SQLiteValue]) throws -> Void) throws {
+        lock.lock()
+        defer { lock.unlock() }
         let statement = try prepare(sql, binds)
         defer { sqlite3_finalize(statement) }
 
@@ -187,29 +228,32 @@ final class SQLiteDatabase {
         }
 
         for (index, bind) in binds.enumerated() {
-            let position = Int32(index + 1)
-            switch bind {
-            case nil:
-                sqlite3_bind_null(statement, position)
-            case let value as Bool:
-                sqlite3_bind_int(statement, position, value ? 1 : 0)
-            case let value as String:
-                sqlite3_bind_text(statement, position, value, -1, SQLITE_TRANSIENT)
-            case let value as Int:
-                sqlite3_bind_int64(statement, position, Int64(value))
-            case let value as Int64:
-                sqlite3_bind_int64(statement, position, value)
-            case let value as Double:
-                sqlite3_bind_double(statement, position, value)
-            case let value as Data:
-                _ = value.withUnsafeBytes { buffer in
-                    sqlite3_bind_blob(statement, position, buffer.baseAddress, Int32(value.count), SQLITE_TRANSIENT)
-                }
-            default:
-                sqlite3_bind_text(statement, position, String(describing: bind!), -1, SQLITE_TRANSIENT)
-            }
+            bindValue(bind, at: Int32(index + 1), statement: statement)
         }
         return statement
+    }
+
+    private func bindValue(_ bind: Any?, at position: Int32, statement: OpaquePointer) {
+        switch bind {
+        case nil:
+            sqlite3_bind_null(statement, position)
+        case let value as Bool:
+            sqlite3_bind_int(statement, position, value ? 1 : 0)
+        case let value as String:
+            sqlite3_bind_text(statement, position, value, -1, SQLITE_TRANSIENT)
+        case let value as Int:
+            sqlite3_bind_int64(statement, position, Int64(value))
+        case let value as Int64:
+            sqlite3_bind_int64(statement, position, value)
+        case let value as Double:
+            sqlite3_bind_double(statement, position, value)
+        case let value as Data:
+            _ = value.withUnsafeBytes { buffer in
+                sqlite3_bind_blob(statement, position, buffer.baseAddress, Int32(value.count), SQLITE_TRANSIENT)
+            }
+        default:
+            sqlite3_bind_text(statement, position, String(describing: bind!), -1, SQLITE_TRANSIENT)
+        }
     }
 
     private func value(statement: OpaquePointer, column: Int32) -> SQLiteValue {

@@ -9,6 +9,8 @@ enum CloudOAuthError: LocalizedError {
     case missingCredentials
     case unsupportedProvider
     case notAuthorized
+    /// 钥匙串里的条目存在，但当前 App 无权读取（重新签名 / ACL 变化时会出现）。
+    case keychainDenied(OSStatus)
     case invalidCallback
     case stateMismatch
     case cancelled
@@ -21,12 +23,25 @@ enum CloudOAuthError: LocalizedError {
         case .missingCredentials: return "请先填写该平台的 AppID / AppSecret"
         case .unsupportedProvider: return "该接入方式不支持此操作"
         case .notAuthorized: return "尚未授权或授权已失效，请重新登录"
+        case .keychainDenied(let status):
+            return "钥匙串里有授权，但当前 App 无权读取（错误码 \(status)）。"
+                + "如果是 App 重新签名导致，请在系统弹窗里选择「始终允许」；否则点「重新登录」重新写入授权。"
         case .invalidCallback: return "授权回调无效，请重试"
         case .stateMismatch: return "授权校验失败（state 不一致），请重试"
         case .cancelled: return "已取消授权"
         case .timeout: return "等待授权超时，请重新发起"
         case .token(let message): return "获取令牌失败：\(message)"
         case .api(let message): return "接口请求失败：\(message)"
+        }
+    }
+
+    /// 需要用户重新登录（或允许钥匙串访问）才能继续的错误。
+    var requiresReauth: Bool {
+        switch self {
+        case .notAuthorized, .keychainDenied:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -36,6 +51,8 @@ enum CloudOAuthError: LocalizedError {
 struct CloudClientCredentials: Codable {
     var clientID: String
     var clientSecret: String
+    /// 百度网盘专用：AppID 仅作为授权链接的 device_id，可留空。
+    var appID: String? = nil
 }
 
 struct CloudToken: Codable {
@@ -51,42 +68,149 @@ enum CloudOAuthStore {
     /// 旧版包标识时期使用的 Keychain service，仅用于一次性迁移。
     private static let legacyService = "com.lijialong.photosclone.oauth"
 
+    /// 进程内令牌缓存：每次点击目录都会请求令牌，但不必每次都读钥匙串。
+    private static let cacheLock = NSLock()
+    private static var tokenCache: [UUID: CloudToken] = [:]
+
+    /// 钥匙串读取结果：区分「确实没有」和「条目存在但无权读取」，后者要提示用户允许访问而不是重新登录。
+    enum ReadOutcome {
+        case data(Data)
+        case missing
+        case denied(OSStatus)
+    }
+
+    enum TokenLoadResult {
+        case token(CloudToken)
+        case missing
+        case denied(OSStatus)
+    }
+
+    enum CredentialsLoadResult {
+        case credentials(CloudClientCredentials)
+        case missing
+        case denied(OSStatus)
+    }
+
     static func credentials(for kind: CloudKind) -> CloudClientCredentials? {
-        guard let data = read(account: "client.\(kind.rawValue)") else { return nil }
-        return try? JSONDecoder().decode(CloudClientCredentials.self, from: data)
+        if case .credentials(let value) = credentialsResult(for: kind) { return value }
+        return nil
+    }
+
+    static func credentialsResult(for kind: CloudKind) -> CredentialsLoadResult {
+        let account = "client.\(kind.rawValue)"
+        if let data = CloudSecretStore.data(for: account) {
+            guard let credentials = try? JSONDecoder().decode(CloudClientCredentials.self, from: data) else {
+                return .missing
+            }
+            return .credentials(credentials)
+        }
+        switch migrateLegacy(account: account) {
+        case .missing:
+            return .missing
+        case .denied(let status):
+            return .denied(status)
+        case .data(let data):
+            CloudSecretStore.set(data, for: account)
+            guard let credentials = try? JSONDecoder().decode(CloudClientCredentials.self, from: data) else {
+                return .missing
+            }
+            return .credentials(credentials)
+        }
     }
 
     static func saveCredentials(_ credentials: CloudClientCredentials, for kind: CloudKind) {
         guard let data = try? JSONEncoder().encode(credentials) else { return }
-        write(data, account: "client.\(kind.rawValue)")
+        let account = "client.\(kind.rawValue)"
+        CloudSecretStore.mark("legacy-oauth.\(account)")
+        CloudSecretStore.set(data, for: account)
     }
 
     static func token(mountID: UUID) -> CloudToken? {
-        guard let data = read(account: "token.\(mountID.uuidString)") else { return nil }
-        return try? JSONDecoder().decode(CloudToken.self, from: data)
+        if case .token(let value) = tokenResult(mountID: mountID) { return value }
+        return nil
+    }
+
+    static func tokenResult(mountID: UUID) -> TokenLoadResult {
+        cacheLock.lock()
+        if let cached = tokenCache[mountID] {
+            cacheLock.unlock()
+            return .token(cached)
+        }
+        cacheLock.unlock()
+
+        let account = "token.\(mountID.uuidString)"
+        if let data = CloudSecretStore.data(for: account) {
+            guard let token = try? JSONDecoder().decode(CloudToken.self, from: data) else {
+                return .missing
+            }
+            cacheLock.lock()
+            tokenCache[mountID] = token
+            cacheLock.unlock()
+            return .token(token)
+        }
+
+        // 旧版本的令牌在钥匙串里：迁入加密文件后就不再访问钥匙串。
+        switch migrateLegacy(account: account) {
+        case .missing:
+            return .missing
+        case .denied(let status):
+            return .denied(status)
+        case .data(let data):
+            CloudSecretStore.set(data, for: account)
+            guard let token = try? JSONDecoder().decode(CloudToken.self, from: data) else {
+                return .missing
+            }
+            cacheLock.lock()
+            tokenCache[mountID] = token
+            cacheLock.unlock()
+            return .token(token)
+        }
     }
 
     static func saveToken(_ token: CloudToken, mountID: UUID) {
         guard let data = try? JSONEncoder().encode(token) else { return }
-        write(data, account: "token.\(mountID.uuidString)")
+        let account = "token.\(mountID.uuidString)"
+        CloudSecretStore.mark("legacy-oauth.\(account)")
+        CloudSecretStore.set(data, for: account)
+        cacheLock.lock()
+        tokenCache[mountID] = token
+        cacheLock.unlock()
     }
 
     static func deleteToken(mountID: UUID) {
-        remove(account: "token.\(mountID.uuidString)")
+        let account = "token.\(mountID.uuidString)"
+        CloudSecretStore.mark("legacy-oauth.\(account)")
+        CloudSecretStore.remove(account)
+        cacheLock.lock()
+        tokenCache[mountID] = nil
+        cacheLock.unlock()
     }
 
-    private static func read(account: String) -> Data? {
-        if let data = read(service: service, account: account) {
-            return data
+    /// 旧钥匙串条目只尝试迁移一次：标记后无论成功与否都不再读取，避免每次启动弹授权框。
+    private static func migrateLegacy(account: String) -> ReadOutcome {
+        let flag = "legacy-oauth.\(account)"
+        guard !CloudSecretStore.isMarked(flag) else { return .missing }
+        let outcome = readLegacyKeychain(account: account)
+        // 屏幕锁定之类导致的临时不可交互不算用户拒绝，下次还能再试。
+        if case .denied(let status) = outcome, status == errSecInteractionNotAllowed {
+            return outcome
         }
-        // 旧 service 里的令牌迁移到新 service，避免升级后需要重新授权。
-        guard let legacy = read(service: legacyService, account: account) else { return nil }
-        write(legacy, account: account)
-        remove(service: legacyService, account: account)
-        return legacy
+        CloudSecretStore.mark(flag)
+        return outcome
     }
 
-    private static func read(service: String, account: String) -> Data? {
+    private static func readLegacyKeychain(account: String) -> ReadOutcome {
+        switch readLegacy(service: service, account: account) {
+        case .data(let data):
+            return .data(data)
+        case .denied(let status):
+            return .denied(status)
+        case .missing:
+            return readLegacy(service: legacyService, account: account)
+        }
+    }
+
+    private static func readLegacy(service: String, account: String) -> ReadOutcome {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -95,37 +219,14 @@ enum CloudOAuthStore {
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        return item as? Data
-    }
-
-    private static func write(_ data: Data, account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let attributes: [String: Any] = [kSecValueData as String: data]
-        if SecItemUpdate(query as CFDictionary, attributes as CFDictionary) == errSecItemNotFound {
-            var addition = query
-            addition[kSecValueData as String] = data
-            addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(addition as CFDictionary, nil)
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess else {
+            NSLog("LumaKeychain: 读取 %@/%@ 失败 status=%d", service, account, status)
+            return .denied(status)
         }
-    }
-
-    private static func remove(account: String) {
-        remove(service: service, account: account)
-        remove(service: legacyService, account: account)
-    }
-
-    private static func remove(service: String, account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
+        guard let data = item as? Data else { return .missing }
+        return .data(data)
     }
 }
 
@@ -523,16 +624,22 @@ enum BaiduOAuth {
     }
     static let scopes = "basic,netdisk"
 
-    static func authorizeURL(clientID: String, redirectURI: String, state: String) -> URL? {
+    /// client_id 必须是应用的 AppKey（API Key），不是 AppID；
+    /// device_id 填 AppID，软件类应用可留空。
+    static func authorizeURL(clientID: String, appID: String?,
+                             redirectURI: String, state: String) -> URL? {
         var components = URLComponents(string: oauthBase + "/oauth/2.0/authorize")
-        components?.queryItems = [
+        var items = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
-            URLQueryItem(name: "scope", value: scopes),
-            URLQueryItem(name: "device_id", value: clientID),
-            URLQueryItem(name: "state", value: state)
+            URLQueryItem(name: "scope", value: scopes)
         ]
+        if let appID, !appID.isEmpty {
+            items.append(URLQueryItem(name: "device_id", value: appID))
+        }
+        items.append(URLQueryItem(name: "state", value: state))
+        components?.queryItems = items
         return components?.url
     }
 
@@ -589,13 +696,29 @@ enum BaiduOAuth {
         return entries
     }
 
+    /// 视频 / 音频流地址：dlink 之外补上 access_token，避免部分账号的直链要求鉴权参数。
+    static func streamURL(fsID: String, accessToken: String) async throws -> URL {
+        let dlink = try await downloadURL(fsID: fsID, accessToken: accessToken)
+        guard var components = URLComponents(url: dlink, resolvingAgainstBaseURL: false) else {
+            return dlink
+        }
+        var items = components.queryItems ?? []
+        if !items.contains(where: { $0.name == "access_token" }) {
+            items.append(URLQueryItem(name: "access_token", value: accessToken))
+            components.queryItems = items
+        }
+        return components.url ?? dlink
+    }
+
     static func downloadURL(fsID: String, accessToken: String) async throws -> URL {
         var components = URLComponents(string: panBase + "/rest/2.0/xpan/multimedia")
         components?.queryItems = [
             URLQueryItem(name: "method", value: "filemetas"),
             URLQueryItem(name: "access_token", value: accessToken),
             URLQueryItem(name: "fsids", value: "[\(fsID)]"),
-            URLQueryItem(name: "dlink", value: "1")
+            URLQueryItem(name: "thumb", value: "1"),
+            URLQueryItem(name: "dlink", value: "1"),
+            URLQueryItem(name: "extra", value: "1")
         ]
         guard let url = components?.url else { throw CloudOAuthError.api("地址无效") }
         let object = try await getJSON(url)
@@ -603,9 +726,18 @@ enum BaiduOAuth {
         guard errno == 0 else {
             throw CloudOAuthError.api((object["errmsg"] as? String) ?? "errno \(errno)")
         }
-        let info = object["info"] as? [[String: Any]] ?? []
-        guard let dlink = info.first?["dlink"] as? String,
+        // 百度实际把文件信息放在 `list` 里（部分文档写作 `info`），两种都要兼容，
+        // 否则直链永远解析不到，图片只能看到缩略图、视频完全无法播放。
+        let items = (object["list"] as? [[String: Any]])
+            ?? (object["info"] as? [[String: Any]])
+            ?? []
+        guard let dlink = items.first?["dlink"] as? String,
+              !dlink.isEmpty,
               let result = URL(string: dlink) else {
+            let keys = object.keys.sorted().joined(separator: ",")
+            let itemErrno = (items.first?["errno"] as? NSNumber)?.intValue ?? 0
+            Diagnostics.record("百度直链缺失 fs_id=\(fsID) errno=\(errno) itemErrno=\(itemErrno) "
+                               + "errmsg=\(object["errmsg"] ?? "-") keys=\(keys)")
             throw CloudOAuthError.api("未获取到下载地址")
         }
         return result
@@ -715,6 +847,10 @@ enum CloudService {
             let token = try await accessToken(for: mount)
             return try await BaiduOAuth.list(dir: containerID.isEmpty ? "/" : containerID,
                                              accessToken: token)
+        case .quark:
+            return try await QuarkDrive.list(cookie: try quarkCookie(for: mount),
+                                             folderID: containerID,
+                                             mountID: mount.id)
         }
     }
 
@@ -732,8 +868,18 @@ enum CloudService {
     static func stream(mount: CloudMount, photo: PhotoItem) async throws -> CloudStreamResource {
         switch mount.kind {
         case .webdav:
-            guard let client = webdavClient(mount),
-                  let url = client.fileURL(path: photo.cloudPath ?? "") else {
+            guard let client = webdavClient(mount) else {
+                throw CloudOAuthError.api("WebDAV 地址无效")
+            }
+            let path = photo.cloudPath ?? ""
+            // 视频优先用最新目录里的真实 href 定位：挂载点前缀、编码或服务端别名差异都会让拼接地址 404。
+            if photo.isVideo {
+                if let resolved = (try? await client.resolveFileURL(path: path)) ?? nil {
+                    return CloudStreamResource(url: resolved, headers: client.requestHeaders)
+                }
+                Diagnostics.record("WebDAV 最新目录中未找到 \(path)，回退拼接地址")
+            }
+            guard let url = client.fileURL(path: path) else {
                 throw CloudOAuthError.api("WebDAV 地址无效")
             }
             return CloudStreamResource(url: url, headers: client.requestHeaders)
@@ -752,37 +898,93 @@ enum CloudService {
                   let fileID = photo.cloudPath else {
                 throw CloudOAuthError.api("缺少文件 ID")
             }
+            // 阿里云盘的下载 / 转码地址只对带官方 Referer 与 UA 的请求放行。
+            let headers = ["User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 Luma/1.0",
+                           "Referer": "https://www.alipan.com/"]
             if photo.isVideo,
                let videoURL = try? await AliyunOAuth.videoURL(driveID: driveID,
                                                               fileID: fileID,
                                                               accessToken: token) {
-                return CloudStreamResource(url: videoURL, headers: [:])
+                return CloudStreamResource(url: videoURL, headers: headers)
             }
             let url = try await AliyunOAuth.downloadURL(driveID: driveID,
                                                         fileID: fileID,
                                                         accessToken: token)
-            return CloudStreamResource(url: url, headers: [:])
+            return CloudStreamResource(url: url, headers: headers)
         case .baidu:
             let token = try await accessToken(for: mount)
             guard let fsID = photo.cloudRemoteID else {
-                throw CloudOAuthError.api("缺少文件 ID")
+                throw CloudOAuthError.api("缺少文件 ID（fs_id），请刷新该目录后重试")
             }
-            let url = try await BaiduOAuth.downloadURL(fsID: fsID, accessToken: token)
-            return CloudStreamResource(url: url, headers: ["User-Agent": "pan.baidu.com"])
+            let url = try await BaiduOAuth.streamURL(fsID: fsID, accessToken: token)
+            return CloudStreamResource(url: url,
+                                       headers: ["User-Agent": "pan.baidu.com",
+                                                 "Referer": "https://pan.baidu.com/"])
+        case .quark:
+            guard let fid = photo.cloudPath ?? photo.cloudRemoteID, !fid.isEmpty else {
+                throw CloudOAuthError.api("缺少文件 ID（fid），请刷新该目录后重试")
+            }
+            // 夸克对风险内容会在列表接口就给出 risk_type，转码与直链接口都会直接拒绝，
+            // 提前拦截避免用户看到 "invalid file" 这类无法理解的原始报错。
+            if photo.cloudRestricted == true {
+                throw CloudOAuthError.api(QuarkDrive.restrictedFileMessage)
+            }
+            let cookie = try quarkCookie(for: mount)
+            let headers = QuarkDrive.headers(cookie: cookie)
+            if photo.isVideo {
+                do {
+                    if let playURL = try await QuarkDrive.videoPlayURL(fid: fid,
+                                                                       cookie: cookie,
+                                                                       mountID: mount.id) {
+                        // 转码地址是签名 CDN 链接，直接交给 AVPlayer。
+                        return CloudStreamResource(url: playURL, headers: headers)
+                    }
+                } catch {
+                    Diagnostics.record("Quark 转码播放地址获取失败 fid=\(fid)：\(error.localizedDescription)")
+                }
+            }
+            let url = try await QuarkDrive.downloadURL(fid: fid, cookie: cookie, mountID: mount.id)
+            return CloudStreamResource(url: url, headers: headers)
         }
     }
 
+    /// 夸克网盘用浏览器 Cookie 鉴权：缺失时直接提示重新登录，而不是发一次空请求。
+    static func quarkCookie(for mount: CloudMount) throws -> String {
+        let cookie = QuarkDrive.normalizedCookie(CloudCredentials.password(for: mount.id))
+        guard !cookie.isEmpty else { throw CloudOAuthError.notAuthorized }
+        return cookie
+    }
+
     static func accessToken(for mount: CloudMount) async throws -> String {
+        // 阿里云盘的 Cookie 模式：用 refresh_token 换开放平台令牌，不走自建应用。
+        if mount.kind == .aliyun, mount.authMode == .cookie {
+            return try await aliyunCookieToken(for: mount).accessToken
+        }
         guard mount.kind.usesOAuth else { throw CloudOAuthError.unsupportedProvider }
-        guard let stored = CloudOAuthStore.token(mountID: mount.id) else {
+        let stored: CloudToken
+        switch CloudOAuthStore.tokenResult(mountID: mount.id) {
+        case .token(let value):
+            stored = value
+        case .missing:
             throw CloudOAuthError.notAuthorized
+        case .denied(let status):
+            throw CloudOAuthError.keychainDenied(status)
         }
         if stored.expiresAt > Date().addingTimeInterval(60) {
             return stored.accessToken
         }
-        guard let refresh = stored.refreshToken,
-              let credentials = CloudOAuthStore.credentials(for: mount.kind) else {
+        guard let refresh = stored.refreshToken else {
             throw CloudOAuthError.notAuthorized
+        }
+        let credentials: CloudClientCredentials
+        switch CloudOAuthStore.credentialsResult(for: mount.kind) {
+        case .credentials(let value):
+            credentials = value
+        case .missing:
+            throw CloudOAuthError.notAuthorized
+        case .denied(let status):
+            throw CloudOAuthError.keychainDenied(status)
         }
         let updated: CloudToken
         switch mount.kind {
@@ -794,7 +996,7 @@ enum CloudService {
             updated = try await BaiduOAuth.refresh(clientID: credentials.clientID,
                                                    clientSecret: credentials.clientSecret,
                                                    refreshToken: refresh)
-        case .webdav, .smb:
+        case .webdav, .smb, .quark:
             throw CloudOAuthError.unsupportedProvider
         }
         var merged = updated
@@ -805,10 +1007,29 @@ enum CloudService {
         return merged.accessToken
     }
 
+    /// Cookie 模式：令牌过期后用钥匙串里的 refresh_token 重新换取，并保存轮换后的令牌。
+    static func aliyunCookieToken(for mount: CloudMount) async throws -> CloudToken {
+        if case .token(let stored) = CloudOAuthStore.tokenResult(mountID: mount.id),
+           stored.expiresAt > Date().addingTimeInterval(60) {
+            return stored
+        }
+        let raw = CloudCredentials.password(for: mount.id)
+        guard !raw.isEmpty else { throw CloudOAuthError.notAuthorized }
+        var token = try await AliyunCookieAuth.token(from: raw)
+        if let refresh = token.refreshToken, !refresh.isEmpty {
+            // refresh_token 会轮换：写回钥匙串，下次过期仍能换取。
+            CloudCredentials.setPassword(refresh, for: mount.id)
+        }
+        token.driveID = mount.remoteDriveID
+        CloudOAuthStore.saveToken(token, mountID: mount.id)
+        return token
+    }
+
     static func webdavClient(_ mount: CloudMount) -> WebDAVClient? {
         WebDAVClient(baseURLString: mount.baseURL,
                      username: mount.username,
-                     password: CloudCredentials.password(for: mount.id))
+                     password: CloudCredentials.password(for: mount.id),
+                     allowsSelfSignedCertificate: mount.trustSelfSigned)
     }
 
     static func smbClient(_ mount: CloudMount) -> SMBClient? {
@@ -819,17 +1040,47 @@ enum CloudService {
 // MARK: - 服务端缩略图下载
 
 enum CloudImageFetcher {
-    static func thumbnail(for photo: PhotoItem, urlString: String) async -> NSImage? {
+    /// 服务端缩略图同样限流：否则滚动时会同时打出几十个 CDN 请求。
+    private static let gate = CloudConcurrencyGate(limit: 4)
+
+    static func thumbnail(for photo: PhotoItem, urlString: String,
+                          headers: [String: String] = [:]) async -> NSImage? {
         guard let mountID = photo.cloudMountID, let path = photo.cloudPath,
               let url = URL(string: urlString) else { return nil }
         let cacheURL = CloudPaths.thumbnailURL(mountID: mountID, path: path)
         if let image = NSImage(contentsOf: cacheURL) { return image }
 
+        let key = cacheURL.path
+        // 刚失败过的项目 60 秒内不再重复请求。
+        if await CloudThumbnailFailureCache.shared.isFailing(key) { return nil }
+
+        await gate.acquire()
+        let image = await downloadThumbnail(url: url, headers: headers, cacheURL: cacheURL,
+                                            mountID: mountID, path: path)
+        await gate.release()
+
+        if image == nil {
+            await CloudThumbnailFailureCache.shared.markFailure(key)
+        } else {
+            await CloudThumbnailFailureCache.shared.clear(key)
+        }
+        return image
+    }
+
+    private static func downloadThumbnail(url: URL, headers: [String: String],
+                                          cacheURL: URL, mountID: UUID, path: String) async -> NSImage? {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
         request.setValue("image/*", forHTTPHeaderField: "Accept")
-        guard let (data, response) = try? await session.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode ?? 0 == 200,
-              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard let (data, response) = try? await session.data(for: request) else { return nil }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200,
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            logThumbnailFailure(url: url, status: status)
+            return nil
+        }
 
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -843,7 +1094,25 @@ enum CloudImageFetcher {
         try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         ImportService.writeJPEG(cgImage, to: cacheURL, quality: 0.9)
+        // 顺手产出快速层：网格滚动时先出 192px 小图，不必等 900px 解码。
+        if let quick = ImageTransform.downscale(cgImage, maxPixel: ImageLoader.gridQuickPixel) {
+            ImportService.writeJPEG(quick,
+                                    to: CloudPaths.quickThumbnailURL(mountID: mountID, path: path),
+                                    quality: 0.75)
+        }
         return NSImage(contentsOf: cacheURL)
+    }
+
+    /// 每次启动只记录一次缩略图失败，避免刷屏；包含域名与状态码，便于判断是鉴权还是 CDN 问题。
+    private static let thumbnailFailureLock = NSLock()
+    private static var loggedThumbnailFailure = false
+
+    private static func logThumbnailFailure(url: URL, status: Int) {
+        thumbnailFailureLock.lock()
+        defer { thumbnailFailureLock.unlock() }
+        guard !loggedThumbnailFailure else { return }
+        loggedThumbnailFailure = true
+        Diagnostics.record("缩略图下载失败 host=\(url.host ?? "-") status=\(status)")
     }
 
     static func fullImage(photo: PhotoItem, resource: CloudStreamResource) async -> NSImage? {
@@ -853,9 +1122,19 @@ enum CloudImageFetcher {
         for (key, value) in resource.headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        guard let (data, response) = try? await session.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode ?? 0 == 200,
-              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard let (data, response) = try? await session.data(for: request) else {
+            Diagnostics.record("云端原图请求失败 \(photo.originalName) host=\(resource.url.host ?? "-")")
+            return nil
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200,
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            let head = String(decoding: data.prefix(120), as: UTF8.self)
+                .replacingOccurrences(of: "\n", with: " ")
+            Diagnostics.record("云端原图解码失败 \(photo.originalName) host=\(resource.url.host ?? "-") "
+                               + "status=\(status) bytes=\(data.count) head=\(head)")
+            return nil
+        }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -863,7 +1142,13 @@ enum CloudImageFetcher {
             kCGImageSourceShouldCacheImmediately: true
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            Diagnostics.record("云端原图缩略解码失败 \(photo.originalName) bytes=\(data.count)")
             return nil
+        }
+        // 直链若被服务端换成缩略图，尺寸会明显偏小：记录下来便于定位。
+        if max(cgImage.width, cgImage.height) < 1600 {
+            Diagnostics.record("云端原图偏小 \(photo.originalName)：\(cgImage.width)x\(cgImage.height) "
+                               + "bytes=\(data.count) status=\(status)")
         }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }

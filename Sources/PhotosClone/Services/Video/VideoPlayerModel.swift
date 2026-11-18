@@ -15,8 +15,6 @@ final class VideoPlayerModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isPipAvailable = false
     @Published private(set) var isPipActive = false
-    @Published private(set) var resolutionText: String?
-    @Published private(set) var codecText: String?
 
     @Published var speed: Double = 1
     @Published var volume: Double = 1 {
@@ -71,6 +69,7 @@ final class VideoPlayerModel: ObservableObject {
     }
 
     deinit {
+        player.pause()
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
         }
@@ -87,10 +86,9 @@ final class VideoPlayerModel: ObservableObject {
                 let seconds = time.seconds
                 if seconds.isFinite { self.currentTime = max(0, seconds) }
                 guard let item = self.player.currentItem else { return }
-                if self.duration <= 0 {
-                    let value = CMTimeGetSeconds(item.duration)
-                    if value.isFinite, value > 0 { self.duration = value }
-                }
+                // 边下边播的 HLS 时长会随分片写入增长，取较大值更新进度条上限。
+                let value = CMTimeGetSeconds(item.duration)
+                if value.isFinite, value > self.duration { self.duration = value }
                 if let range = item.loadedTimeRanges.last?.timeRangeValue {
                     let end = CMTimeGetSeconds(CMTimeAdd(range.start, range.duration))
                     if end.isFinite {
@@ -104,19 +102,20 @@ final class VideoPlayerModel: ObservableObject {
 
     func load(url: URL, options: [String: Any] = [:], probe: VideoProbe,
               autoplay: Bool = true, loop: Bool = false, muted: Bool = false) {
+        load(asset: AVURLAsset(url: url, options: options), probe: probe,
+             autoplay: autoplay, loop: loop, muted: muted)
+    }
+
+    /// 直接装载 AVAsset：PhotoKit 返回的云端 / 共享相簿素材没有本地文件 URL。
+    func load(asset: AVAsset, probe: VideoProbe,
+              autoplay: Bool = true, loop: Bool = false, muted: Bool = false) {
         resetForNewItem()
         duration = probe.duration
-        if probe.size.width > 0, probe.size.height > 0 {
-            resolutionText = "\(Int(probe.size.width)) × \(Int(probe.size.height))"
-        } else {
-            resolutionText = nil
-        }
-        codecText = probe.codec
         isLooping = loop
         isMuted = muted
         pendingAutoplay = autoplay
 
-        let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
+        let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 3
         observe(item)
         player.replaceCurrentItem(with: item)
@@ -148,10 +147,8 @@ final class VideoPlayerModel: ObservableObject {
                 switch status {
                 case .readyToPlay:
                     self.errorMessage = nil
-                    if self.duration <= 0 {
-                        let value = CMTimeGetSeconds(item.duration)
-                        if value.isFinite, value > 0 { self.duration = value }
-                    }
+                    let value = CMTimeGetSeconds(item.duration)
+                    if value.isFinite, value > self.duration { self.duration = value }
                     if self.pendingAutoplay {
                         self.pendingAutoplay = false
                         self.play()

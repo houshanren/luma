@@ -465,7 +465,7 @@ extension LibraryStore {
         }
 
         if canEditNativeOverlay {
-            let systemIDs = Set(rawIDs.filter { systemPhotoIndex[$0] != nil })
+            let systemIDs = Set(rawIDs.filter { isSystemPhotoID($0) })
             if !systemIDs.isEmpty {
                 setSystemFavorite(favorite, ids: systemIDs)
                 touched += systemIDs.count
@@ -526,8 +526,8 @@ extension LibraryStore {
         }
 
         if canEditNativeOverlay {
-            for id in rawIDs where systemPhotoIndex[id] != nil {
-                var list = systemPhotoIndex[id]?.keywords ?? []
+            for id in rawIDs where isSystemPhotoID(id) {
+                var list = systemPhoto(id: id)?.keywords ?? []
                 var added = false
                 for keyword in keywords where !list.contains(keyword) {
                     list.append(keyword)
@@ -570,8 +570,8 @@ extension LibraryStore {
         }
 
         if canEditNativeOverlay {
-            for id in rawIDs where systemPhotoIndex[id] != nil {
-                let list = systemPhotoIndex[id]?.keywords ?? []
+            for id in rawIDs where isSystemPhotoID(id) {
+                let list = systemPhoto(id: id)?.keywords ?? []
                 let filtered = list.filter { !keywords.contains($0) }
                 guard filtered.count != list.count else { continue }
                 setSystemKeywords(filtered, ids: [id])
@@ -750,7 +750,10 @@ extension LibraryStore {
     /// 检索范围：跟随当前范围（本地 / 系统图库 / 网盘）。
     private func aiSearchSource() -> [PhotoItem] {
         if isCloudScope { return cloudVisiblePhotos }
-        if isSystemScope { return systemPhotos }
+        if isSystemScope {
+            // 索引模式不常驻整库：检索限定在当前窗口（已在界面上展示的内容）。
+            return systemIndex != nil ? systemWindowPhotos : systemPhotos
+        }
         return photos
     }
 
@@ -843,7 +846,7 @@ extension LibraryStore {
 
             if nameMap == nil {
                 var map: [String: [UUID]] = [:]
-                for list in [photos, systemPhotos, cloudPhotos] {
+                for list in [photos, systemPhotos, systemWindowPhotos, cloudPhotos] {
                     for photo in list {
                         map[photo.originalName.lowercased(), default: []].append(photo.id)
                         map[photo.filename.lowercased(), default: []].append(photo.id)

@@ -5,6 +5,9 @@ enum NamePromptKind {
     case newFolder(parentID: UUID?)
     case renameAlbum(UUID)
     case renameFolder(UUID)
+    /// 官方「照片」图库的相簿写回（PhotoKit）。
+    case newSystemAlbum
+    case renameSystemAlbum(Int64)
 }
 
 struct NamePromptPayload: Identifiable {
@@ -32,6 +35,16 @@ struct NamePromptPayload: Identifiable {
     static func renameFolder(_ id: UUID, current: String) -> NamePromptPayload {
         NamePromptPayload(kind: .renameFolder(id),
                           title: "重命名文件夹", actionTitle: "重命名", initialText: current)
+    }
+
+    static func newSystemAlbum() -> NamePromptPayload {
+        NamePromptPayload(kind: .newSystemAlbum,
+                          title: "新建相簿（写入「照片」）", actionTitle: "创建", initialText: "")
+    }
+
+    static func renameSystemAlbum(_ id: Int64, current: String) -> NamePromptPayload {
+        NamePromptPayload(kind: .renameSystemAlbum(id),
+                          title: "重命名相簿（写入「照片」）", actionTitle: "重命名", initialText: current)
     }
 }
 
@@ -79,6 +92,10 @@ struct NamePromptSheet: View {
             store.renameAlbum(id, to: name)
         case .renameFolder(let id):
             store.renameFolder(id, to: name)
+        case .newSystemAlbum:
+            store.createSystemAlbum(named: name)
+        case .renameSystemAlbum(let id):
+            store.renameSystemAlbum(id, to: name)
         }
         dismiss()
     }

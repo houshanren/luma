@@ -39,7 +39,7 @@ public struct BeautyStats: Equatable, Sendable {
 }
 
 /// 智能美化给出的调整量，单位与编辑器滑块一致。
-public struct BeautyAdvice: Equatable, Sendable {
+public struct BeautyAdvice: Equatable, Sendable, Codable {
     public var exposure = 0.0
     public var brightness = 0.0
     public var contrast = 0.0

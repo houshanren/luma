@@ -359,6 +359,18 @@ extension LibraryStore {
         NSWorkspace.shared.activateFileViewerSelecting([LibraryPaths.exportURL(for: photo)])
     }
 
+    /// 在访达中显示多张照片（多选右键菜单使用）；云端项目需要先导出。
+    func revealInFinder(ids: Set<UUID>) {
+        let urls = ids.compactMap { anyPhoto(id: $0) }
+            .filter { !$0.isCloud }
+            .map { LibraryPaths.exportURL(for: $0) }
+        guard !urls.isEmpty else {
+            showToast("云端项目请使用「导出」保存到本地")
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
     /// SMB 已由系统挂载为本地文件系统，直接返回文件 URL；其它网盘返回 nil。
     func cloudLocalFileURL(_ photo: PhotoItem) async -> URL? {
         guard photo.isCloud,

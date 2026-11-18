@@ -8,12 +8,11 @@ struct SystemCollectionsView: View {
 
     @State private var cards: [SystemCollectionSummary.Card] = []
     @State private var isBuilding = true
+    @State private var hoveredID: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                header
-
                 if isBuilding {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -28,10 +27,15 @@ struct SystemCollectionsView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 48)
                 } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 340), spacing: 14)],
-                              alignment: .leading, spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 268, maximum: 380), spacing: 16)],
+                              alignment: .leading, spacing: 16) {
                         ForEach(cards) { card in
                             cardView(card)
+                                .onHover { hovering in
+                                    hoveredID = hovering
+                                        ? card.id
+                                        : (hoveredID == card.id ? nil : hoveredID)
+                                }
                         }
                     }
                 }
@@ -46,50 +50,65 @@ struct SystemCollectionsView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("精选集")
-                .font(.system(size: 27, weight: .bold))
-            Text("汇总「\(store.systemLibraryName ?? "系统照片图库")」自己的收藏、视频、截屏等内容（只读）")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-    }
-
+    /// 与拾光「精选集」同一套卡片：拼贴封面 + 渐变叠字 + 左上角图标徽标。
     private func cardView(_ card: SystemCollectionSummary.Card) -> some View {
         Button {
             store.navigate(to: card.target)
         } label: {
-            VStack(alignment: .leading, spacing: 9) {
-                ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                    if card.samples.isEmpty {
-                        Image(systemName: card.icon)
-                            .font(.system(size: 26, weight: .light))
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        PhotoMosaicView(photos: card.samples)
-                            .clipShape(RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous))
-                    }
-                }
-                .frame(height: 118)
-                .clipShape(RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous))
-
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+            ZStack(alignment: .bottomLeading) {
+                if card.samples.isEmpty {
+                    LinearGradient(colors: [card.tint.opacity(0.55), card.tint.opacity(0.12)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
                     Image(systemName: card.icon)
-                        .font(.system(size: 11))
-                        .foregroundStyle(card.tint)
-                    Text(card.title)
-                        .font(.system(size: 12.5, weight: .semibold))
-                    Spacer(minLength: 0)
-                    Text(card.subtitle)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 44, weight: .ultraLight))
+                        .foregroundStyle(.primary.opacity(0.55))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    PhotoMosaicView(photos: card.samples)
                 }
+
+                LinearGradient(colors: [.clear, .black.opacity(0.72)],
+                               startPoint: .center, endPoint: .bottom)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(card.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(card.subtitle)
+                        .font(.system(size: 11.5))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+                .padding(14)
+
+                VStack {
+                    HStack {
+                        Image(systemName: card.icon)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white)
+                            .padding(7)
+                            .background(.black.opacity(0.28), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay {
+                                Circle().strokeBorder(card.tint.opacity(0.55), lineWidth: 0.8)
+                            }
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(12)
             }
-            .contentShape(Rectangle())
+            .frame(height: 186)
+            .clipShape(RoundedRectangle(cornerRadius: settings.cardRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: settings.cardRadius)
+                    .strokeBorder(Color.white.opacity(hoveredID == card.id ? 0.35 : 0.08), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(hoveredID == card.id ? 0.24 : 0.18),
+                    radius: hoveredID == card.id ? 14 : 10, y: hoveredID == card.id ? 6 : 4)
+            .scaleEffect(hoveredID == card.id && settings.hoverLift ? settings.motion.hoverScale : 1)
+            .animation(settings.motion.hover, value: hoveredID)
+            .contentShape(RoundedRectangle(cornerRadius: settings.cardRadius))
         }
         .buttonStyle(.plain)
         .help("查看系统图库的\(card.title)")
@@ -97,17 +116,23 @@ struct SystemCollectionsView: View {
 
     private func rebuild() async {
         if cards.isEmpty { isBuilding = true }
-        let photos = store.systemPhotos
-        let cutoff = LibraryStore.recentlySavedCutoff
-        guard !photos.isEmpty else {
-            cards = []
-            isBuilding = false
-            return
+        let snapshot: SystemCollectionSnapshot
+        if store.systemIndex != nil {
+            // 索引模式：按分类各查一次聚合与 4 张样本，放到后台避免卡主线程。
+            snapshot = await store.systemCollectionSnapshotAsync()
+        } else {
+            let photos = store.systemPhotos
+            let cutoff = LibraryStore.recentlySavedCutoff
+            guard !photos.isEmpty else {
+                cards = []
+                isBuilding = false
+                return
+            }
+            snapshot = await Task.detached(priority: .utility) {
+                SystemCollectionSummary.snapshot(from: photos, savedCutoff: cutoff)
+            }.value
         }
-        let summary = await Task.detached(priority: .utility) {
-            SystemCollectionSummary.build(from: photos, savedCutoff: cutoff)
-        }.value
-        cards = summary.cards
+        cards = SystemCollectionSummary.cards(from: snapshot)
         isBuilding = false
     }
 }
@@ -129,60 +154,48 @@ enum SystemCollectionSummary {
         let cards: [Card]
     }
 
-    static func build(from photos: [PhotoItem], savedCutoff: Date) -> Result {
-        var favorites = Bucket()
-        var videos = Bucket()
-        var selfies = Bucket()
-        var panoramas = Bucket()
-        var screenshots = Bucket()
-        var recentlySaved = Bucket()
-        var edited = Bucket()
-
+    static func snapshot(from photos: [PhotoItem], savedCutoff: Date) -> SystemCollectionSnapshot {
+        var result = SystemCollectionSnapshot()
         for photo in photos {
             guard photo.deletedAt == nil, !photo.isHidden else { continue }
-            if photo.isFavorite { favorites.add(photo) }
-            if photo.isVideo { videos.add(photo) }
-            if !photo.isVideo, photo.kind == .selfie { selfies.add(photo) }
-            if photo.kind == .panorama { panoramas.add(photo) }
-            if photo.kind == .screenshot { screenshots.add(photo) }
-            if photo.addedAt >= savedCutoff { recentlySaved.add(photo) }
-            if !photo.isVideo, photo.editedAt != nil || photo.hasEdits { edited.add(photo) }
+            func add(_ key: String) {
+                result.counts[key, default: 0] += 1
+                if (result.samples[key]?.count ?? 0) < 4 {
+                    result.samples[key, default: []].append(photo)
+                }
+            }
+            if photo.isFavorite { add("favorites") }
+            if photo.isVideo { add("videos") }
+            if !photo.isVideo, photo.kind == .selfie { add("selfies") }
+            if photo.kind == .panorama { add("panoramas") }
+            if photo.kind == .screenshot { add("screenshots") }
+            if photo.addedAt >= savedCutoff { add("recentlySaved") }
+            if !photo.isVideo, photo.editedAt != nil || photo.hasEdits { add("edited") }
         }
+        return result
+    }
 
-        let cards: [Card] = [
-            make("favorites", "个人收藏", "项", "heart.fill", .pink, .systemFavorites, favorites),
-            make("videos", "视频", "个", "video.fill", .purple, .systemVideos, videos),
-            make("selfies", "自拍", "项", "person.crop.square", .orange, .systemSelfies, selfies),
-            make("panoramas", "全景照片", "项", "pano", .indigo, .systemPanoramas, panoramas),
-            make("screenshots", "截屏", "项", "camera.viewfinder", .teal, .systemScreenshots, screenshots),
-            make("recentlySaved", "最近保存", "项", "square.and.arrow.down", .blue, .systemRecentlySaved, recentlySaved),
-            make("edited", "最近编辑", "项", "slider.horizontal.3", .gray, .systemEdited, edited)
+    /// 把汇总快照映射成卡片（数量与样本均来自快照）。
+    static func cards(from snapshot: SystemCollectionSnapshot) -> [Card] {
+        let definitions: [(String, String, String, String, Color, SidebarItem)] = [
+            ("favorites", "个人收藏", "项", "heart.fill", .pink, .systemFavorites),
+            ("videos", "视频", "个", "video.fill", .purple, .systemVideos),
+            ("selfies", "自拍", "项", "person.crop.square", .orange, .systemSelfies),
+            ("panoramas", "全景照片", "项", "pano", .indigo, .systemPanoramas),
+            ("screenshots", "截屏", "项", "camera.viewfinder", .teal, .systemScreenshots),
+            ("recentlySaved", "最近保存", "项", "square.and.arrow.down", .blue, .systemRecentlySaved),
+            ("edited", "最近编辑", "项", "slider.horizontal.3", .gray, .systemEdited)
         ]
-        .filter { $0.count > 0 }
-
-        return Result(cards: cards)
-    }
-
-    private static func make(_ id: String,
-                             _ title: String,
-                             _ unit: String,
-                             _ icon: String,
-                             _ tint: Color,
-                             _ target: SidebarItem,
-                             _ bucket: Bucket) -> Card {
-        Card(id: id, title: title,
-             subtitle: "\(bucket.count) \(unit)",
-             icon: icon, count: bucket.count,
-             samples: bucket.samples, target: target, tint: tint)
-    }
-
-    private struct Bucket {
-        var count = 0
-        var samples: [PhotoItem] = []
-
-        mutating func add(_ photo: PhotoItem) {
-            count += 1
-            if samples.count < 4 { samples.append(photo) }
+        return definitions.map { definition in
+            let count = snapshot.counts[definition.0] ?? 0
+            return Card(id: definition.0,
+                        title: definition.1,
+                        subtitle: "\(count) \(definition.2)",
+                        icon: definition.3,
+                        count: count,
+                        samples: snapshot.samples[definition.0] ?? [],
+                        target: definition.5,
+                        tint: definition.4)
         }
     }
 }

@@ -26,7 +26,7 @@ struct ImportSheetView: View {
             footer
         }
         .frame(minWidth: 680, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
-        .background(.background)
+        .background { LumaAmbientBackground(intensity: 0.6) }
         .onAppear {
             guard !candidates.isEmpty else {
                 dismissWindow(id: "import")
@@ -34,6 +34,10 @@ struct ImportSheetView: View {
             }
             if selectedIDs.isEmpty {
                 selectedIDs = Set(candidates.map { $0.id })
+            }
+            // 从相簿里发起导入时，默认就把新项目加进这个相簿，避免「导入完了相簿里看不到」。
+            if targetAlbumID == nil, let current = store.currentAlbumID {
+                targetAlbumID = current
             }
         }
     }
@@ -283,6 +287,34 @@ struct ImportSheetView: View {
                 .disabled(!settings.importCreateAlbumsFromFolders)
                 .opacity(settings.importCreateAlbumsFromFolders ? 1 : 0.45)
 
+                Divider()
+
+                Toggle(isOn: $settings.importSkipExactDuplicates) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("跳过完全重复的文件")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("导入前计算 SHA-256；与图库或本批次已有文件完全相同时不复制。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+
+                Toggle(isOn: $settings.importVerifyCopies) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("导入后校验文件完整性")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("复制完成后重新计算目标文件哈希，确认写入没有损坏。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+
                 if candidates.contains(where: { !$0.isDirectory }) {
                     Divider()
                     Text("直接选择的照片会导入图库，不会创建相簿。")
@@ -328,6 +360,21 @@ struct ImportSheetView: View {
                     Text("已导入 \(progress.importedCount.formatted()) 项")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
+                    if progress.skippedDuplicates > 0 {
+                        Text("· 跳过重复 \(progress.skippedDuplicates)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.orange)
+                    }
+                    if progress.failedCount > 0 {
+                        Text("· 失败 \(progress.failedCount)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.red)
+                    }
+                    if progress.verifiedCount > 0 {
+                        Text("· 已校验 \(progress.verifiedCount)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.green)
+                    }
                     Button("隐藏窗口") {
                         dismissWindow(id: "import")
                     }
@@ -375,6 +422,8 @@ struct ImportSheetView: View {
         options.createAlbumsFromFolders = settings.importCreateAlbumsFromFolders
         options.preserveFolderStructure = settings.importPreserveFolderStructure
         options.targetAlbumID = targetAlbumID
+        options.skipExactDuplicates = settings.importSkipExactDuplicates
+        options.verifyCopies = settings.importVerifyCopies
         store.startImport(selectedIDs: selectedIDs, importAll: importAll, options: options)
     }
 }

@@ -11,6 +11,7 @@ extension LibraryStore {
         if let similarScope { return "与「\(similarScope.title)」相似" }
         switch sidebarItem {
         case .library: return "图库"
+        case .cinema: return "影院"
         case .collections: return "精选集"
         case .favorites: return "个人收藏"
         case .recentlySaved: return "最近保存"
@@ -25,6 +26,10 @@ extension LibraryStore {
         case .mediaTypes: return "媒体类型"
         case .scenes: return "场景"
         case .moreItems: return "更多项目"
+        case .keywords:
+            return selectedKeyword.map { "关键词：#\($0)" } ?? "关键词"
+        case .ask: return "问一问"
+        case .tagGovernance: return "标签治理"
         case .album(let id): return albums.first(where: { $0.id == id })?.name ?? "相簿"
         case .smartAlbum(let id): return smartAlbums.first(where: { $0.id == id })?.name ?? "智能相簿"
         case .folder(let id): return folders.first(where: { $0.id == id })?.name ?? "文件夹"
@@ -38,6 +43,7 @@ extension LibraryStore {
         case .ocrTexts: return "包含文字"
         case .scene(let id): return SceneCatalog.category(id: id)?.title ?? "场景"
         case .health: return "图库体检"
+        case .ratings, .flags, .colorLabels: return "整理工作室"
         case .blurry: return "可能模糊"
         case .similarDuplicates: return "相似备选"
         case .largeVideos: return "过大视频"
@@ -48,6 +54,8 @@ extension LibraryStore {
         case .systemAlbums: return "相簿"
         case .systemMediaTypes: return "媒体类型"
         case .systemMoreItems: return "更多项目"
+        case .systemKeywords:
+            return selectedKeyword.map { "关键词：#\($0)" } ?? "关键词"
         case .systemLibraries: return "系统图库"
         case .cloudStorages: return "网络存储"
         case .systemAlbum(let id): return systemAlbums.first(where: { $0.id == id })?.name ?? "系统相簿"
@@ -61,6 +69,11 @@ extension LibraryStore {
         case .systemSelfies: return "自拍"
         case .systemLivePhotos: return "实况照片"
         case .systemPanoramas: return "全景照片"
+        case .systemLongExposure: return "长曝光"
+        case .systemTimelapse: return "延时摄影"
+        case .systemCinematic: return "电影效果"
+        case .systemSpatial: return "空间"
+        case .systemBursts: return "连拍快照"
         case .systemSlowMotion: return "慢动作"
         case .systemScreenRecordings: return "录屏"
         case .systemAnimated: return "动图"
@@ -68,19 +81,37 @@ extension LibraryStore {
         case .systemEdited: return "最近编辑"
         case .systemRecentlyViewed: return "最近查看"
         case .systemDuplicates: return "重复项目"
-        case .systemHandwriting: return "手写"
-        case .systemIllustrations: return "插图"
         case .systemRecentlySaved: return "最近保存"
         case .systemImports: return "导入项目"
+        case .systemImportSession: return "导入项目"
+        case .systemRevisit: return "值得重看"
+        case .systemHealth: return "图库体检"
+        case .systemRatings, .systemFlags, .systemColorLabels: return "整理工作室"
+        case .systemScenes: return "场景"
+        case .systemScene(let id): return SceneCatalog.category(id: id)?.title ?? "场景"
+        case .systemOcrTexts: return "包含文字"
         case .systemMap: return "地图"
         case .systemPlaces: return "位置"
-        case .systemPeople: return "人物与宠物"
-        case .cloudMount(let id): return cloudMounts.first(where: { $0.id == id })?.name ?? "网络存储"
+        case .systemPeople: return "人物"
+        case .cloudMount(let id):
+            if let section = cloudModel.overview { return section.title }
+            if let path = cloudModel.selectedFolderPath,
+               let folder = cloudModel.scanFolders.first(where: { $0.path == path }) {
+                return folder.name
+            }
+            return cloudMounts.first(where: { $0.id == id })?.name ?? "网络存储"
+        case .cloudCinema(let id):
+            return cloudMounts.first(where: { $0.id == id }).map { "\($0.name) · 影院" } ?? "影院"
         }
     }
 
     var isSystemScope: Bool {
         sidebarItem.isSystemScope
+    }
+
+    /// 系统图库是否走「索引直连」：没有本地索引，年 / 月总览按快照 + 范围样本渲染。
+    var isDirectSystemIndex: Bool {
+        systemIndex?.direct != nil
     }
 
     /// 当前范围的上一级（用于工具栏「返回」与相簿链路）：没有上一级时返回 nil。
@@ -118,17 +149,108 @@ extension LibraryStore {
             return (.systemLibrary, systemLibraryName ?? "所有项目")
         case .allAlbums, .mediaTypes, .scenes, .moreItems:
             return (.library, "图库")
-        case .systemAlbums, .systemMediaTypes, .systemMoreItems:
+        case .systemAlbums, .systemMediaTypes, .systemMoreItems, .systemScenes:
             return (.systemLibrary, systemLibraryName ?? "所有项目")
+        case .systemHealth:
+            return (.systemLibrary, systemLibraryName ?? "所有项目")
+        case .systemScene:
+            return (.systemScenes, "场景")
+        case .systemImportSession:
+            return (.systemImports, "导入项目")
+        case .keywords:
+            return selectedKeyword != nil ? (.keywords, "关键词") : (.moreItems, "更多项目")
+        case .systemKeywords:
+            return selectedKeyword != nil ? (.systemKeywords, "关键词") : (.systemMoreItems, "更多项目")
         default:
             return nil
         }
     }
 
-    /// 回到当前相簿 / 文件夹的上一级。
+    /// 回到当前相簿 / 文件夹 / 网盘目录的上一级。
     func navigateUp() {
+        if case .cloudMount = sidebarItem {
+            if cloudModel.overview != nil {
+                showCloudOverview(nil)
+            } else {
+                cloudGoUp()
+            }
+            return
+        }
         guard let parent = navigationParent else { return }
         navigate(to: parent.item)
+    }
+
+    /// 「返回上一级」是否可用：网盘目录链与分类总览也算一层。
+    var canNavigateUp: Bool {
+        if case .cloudMount = sidebarItem {
+            return cloudModel.overview != nil || cloudModel.selectedFolderPath != nil
+        }
+        return navigationParent != nil
+    }
+
+    // MARK: - 相簿层级面包屑
+
+    /// 当前相簿 / 文件夹的完整层级（从「所有相簿」到当前项），顶部工具栏据此显示面包屑。
+    var albumBreadcrumbs: [AlbumBreadcrumb] {
+        switch sidebarItem {
+        case .allAlbums:
+            return [AlbumBreadcrumb(id: "local.root", title: "所有相簿", item: .allAlbums)]
+        case .folder(let id):
+            return [AlbumBreadcrumb(id: "local.root", title: "所有相簿", item: .allAlbums)]
+                + localFolderChain(upTo: id)
+        case .album(let id):
+            guard let album = albums.first(where: { $0.id == id }) else { return [] }
+            return [AlbumBreadcrumb(id: "local.root", title: "所有相簿", item: .allAlbums)]
+                + localFolderChain(upTo: album.folderID)
+                + [AlbumBreadcrumb(id: "local.album.\(id)", title: album.name, item: .album(id))]
+        case .smartAlbum(let id):
+            guard let album = smartAlbums.first(where: { $0.id == id }) else { return [] }
+            return [AlbumBreadcrumb(id: "local.root", title: "所有相簿", item: .allAlbums),
+                    AlbumBreadcrumb(id: "local.smart.\(id)", title: album.name, item: .smartAlbum(id))]
+        case .systemAlbums:
+            return [AlbumBreadcrumb(id: "sys.root", title: "所有相簿", item: .systemAlbums)]
+        case .systemFolder(let id):
+            return [AlbumBreadcrumb(id: "sys.root", title: "所有相簿", item: .systemAlbums)]
+                + systemFolderChain(upTo: id)
+        case .systemAlbum(let id):
+            guard let album = systemAlbum(id: id) else { return [] }
+            return [AlbumBreadcrumb(id: "sys.root", title: "所有相簿", item: .systemAlbums)]
+                + systemFolderChain(upTo: album.parentFolder)
+                + [AlbumBreadcrumb(id: "sys.album.\(id)", title: album.name, item: .systemAlbum(id))]
+        default:
+            return []
+        }
+    }
+
+    /// 从一个文件夹向上收集祖先（含自身），带循环保护。
+    private func localFolderChain(upTo folderID: UUID?) -> [AlbumBreadcrumb] {
+        var crumbs: [AlbumBreadcrumb] = []
+        guard folderID != nil else { return crumbs }
+        let byID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
+        var current = folderID
+        var hops = 0
+        while let id = current, hops < 64, let folder = byID[id] {
+            crumbs.insert(AlbumBreadcrumb(id: "local.folder.\(id)", title: folder.name, item: .folder(id)),
+                          at: 0)
+            current = folder.parentID
+            hops += 1
+        }
+        return crumbs
+    }
+
+    private func systemFolderChain(upTo folderID: Int64?) -> [AlbumBreadcrumb] {
+        var crumbs: [AlbumBreadcrumb] = []
+        guard folderID != nil else { return crumbs }
+        let byID = Dictionary(uniqueKeysWithValues: systemFolders.map { ($0.id, $0) })
+        var current = folderID
+        var hops = 0
+        while let id = current, hops < 64, let folder = byID[id] {
+            crumbs.insert(AlbumBreadcrumb(id: "sys.folder.\(id)", title: folder.name, item: .systemFolder(id)),
+                          at: 0)
+            current = folder.parent
+            hops += 1
+        }
+        return crumbs
     }
 
     /// 当前图库就是官方「照片」图库：拾光作为它的增强层，主界面直接展示这个库自己的照片，
@@ -136,6 +258,12 @@ extension LibraryStore {
     var isNativeContainer: Bool {
         guard let url = LibraryPaths.containerLibraryURL else { return false }
         return LibraryPaths.isNativeLibrary(url)
+    }
+
+    /// 原生系统图库的缩略图优先交给系统「照片」（已有缩略图 + 可预取 + 支持 iCloud 资源）。
+    /// 其它图库（外接 .photoslibrary、拾光本地库）继续走本地 derivative 解码。
+    var usesPhotoKitThumbnails: Bool {
+        isSystemScope && isNativeContainer && PhotoKitThumbnailProvider.shared.isAvailable
     }
 
     var isCloudScope: Bool {
@@ -146,11 +274,14 @@ extension LibraryStore {
     /// 当前是否是照片网格页面（用于菜单项的可用状态）。
     var isGridScopeForCommands: Bool {
         switch sidebarItem {
+        case .keywords, .systemKeywords:
+            // 关键词总览是卡片墙；进入某个关键词后是照片列表。
+            return selectedKeyword != nil
         case .collections, .map, .places, .systemMap, .systemPlaces, .systemPeople,
              .allAlbums, .folder, .systemFolder, .people, .cloudMount, .duplicates,
-             .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
+             .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .systemDuplicates:
+             .systemDuplicates, .systemImports, .systemHealth, .health:
             return false
         default:
             return true
@@ -159,22 +290,42 @@ extension LibraryStore {
 
     var isReadOnlyScope: Bool { isSystemScope || isCloudScope }
 
+    /// 当前是否是相簿总览页面（「所有相簿」与文件夹层级）。
+    var isAlbumOverviewScope: Bool {
+        switch sidebarItem {
+        case .allAlbums, .folder, .systemFolder, .systemAlbums: return true
+        default: return false
+        }
+    }
+
     /// 只有「图库」这一层需要年/月时间轴总览，相簿与文件夹保持普通网格。
     var isTimelineScope: Bool {
         sidebarItem == .library || sidebarItem == .systemLibrary
+    }
+
+    /// 「个人收藏」使用独立的浏览方式（全部 / 年 / 类型）。
+    var isFavoritesScope: Bool {
+        sidebarItem == .favorites || sidebarItem == .systemFavorites
+    }
+
+    /// 「图库」页与官方「照片」一致：新照片在底部，进入时先看最新，
+    /// 向上滚动翻看更早的照片。系统图库与本地拾光图库适用；
+    /// 筛选 / 搜索 / 其它排序时仍按普通降序展示。
+    /// 网络存储的网格由 `CloudBrowserView` 自己按月分段、最新在上，不套用底部时间轴。
+    var timelineShowsNewestAtBottom: Bool {
+        guard grouping == .all, sortKey == .capturedAt, !sortAscending,
+              photoFilter == .all, keywordFilter == nil, !hasMetadataFilters,
+              selectedPlace == nil, selectedPerson == nil, similarScope == nil,
+              searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if isSystemScope { return isTimelineScope && isSystemPagedScope }
+        if isCloudScope { return false }
+        return sidebarItem == .library
     }
 
     var isCurrentCloudWritable: Bool {
         guard case .cloudMount(let id) = sidebarItem,
               let mount = cloudMounts.first(where: { $0.id == id }) else { return false }
         return mount.kind.supportsWrite
-    }
-
-    /// 当前 SMB 挂载是否以「整个共享」方式递归扫描。
-    var isCurrentCloudScanAll: Bool {
-        guard case .cloudMount(let id) = sidebarItem,
-              let mount = cloudMounts.first(where: { $0.id == id }) else { return false }
-        return mount.kind == .smb && mount.scanAll
     }
 
     /// 当前挂载是否为 SMB：系统已把它挂成 /Volumes 下的本地文件系统，可复用系统应用与访达。
@@ -186,6 +337,30 @@ extension LibraryStore {
 
     /// 媒体类型总览：数量与封面一次遍历算完（本地 / 系统图库共用）。
     var mediaTypeSummary: MediaTypeSummary {
+        // 系统图库索引模式：直接读索引聚合，不遍历整库。
+        if isSystemScope, let index = systemIndex {
+            let key = "sys-\(systemIndexSignature)-\(photoKitLongExposureIDs?.count ?? -1)-\(photoKitCinematicIDs?.count ?? -1)"
+            if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
+            var summary = index.mediaTypeSummary(overrides: buildSystemQuery(scope: .all))
+            // 长曝光 / 电影效果由 PhotoKit 智能相簿提供 ID，这里按索引汇总数量与封面。
+            for (type, scope) in [(MediaTypeKey.longExposure, SystemQueryScope.longExposures),
+                                  (MediaTypeKey.cinematic, SystemQueryScope.cinematics)] {
+                let ids = type == .longExposure ? photoKitLongExposureIDs : photoKitCinematicIDs
+                guard let ids, !ids.isEmpty else { continue }
+                var query = buildSystemQuery(scope: scope)
+                query.filter = .all
+                query.tokens = []
+                query.overlayKeywordIDs = nil
+                let count = index.summary(query).total
+                guard count > 0 else { continue }
+                summary.counts[type] = count
+                summary.covers[type] = index.page(query, offset: 0, limit: 1).first
+            }
+            summary.covers = summary.covers.mapValues { applySystemOverlay($0) }
+            mediaTypeSummaryCacheKey = key
+            mediaTypeSummaryCacheValue = summary
+            return summary
+        }
         let key = "\(contentRevision)-\(isSystemScope)"
         if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
         var summary = MediaTypeSummary()
@@ -199,12 +374,83 @@ extension LibraryStore {
                 }
             }
         }
+        // 小图库走内存快照时，长曝光 / 电影效果仍需按 PhotoKit 智能相簿的 ID 汇总。
+        if isSystemScope {
+            for (type, ids) in [(MediaTypeKey.longExposure, photoKitLongExposureIDs),
+                                (MediaTypeKey.cinematic, photoKitCinematicIDs)] {
+                guard let ids, !ids.isEmpty else { continue }
+                let matched = source.filter { $0.deletedAt == nil && !$0.isHidden && ids.contains($0.id) }
+                guard let cover = matched.first else { continue }
+                summary.counts[type] = matched.count
+                summary.covers[type] = cover
+            }
+        }
         mediaTypeSummaryCacheKey = key
         mediaTypeSummaryCacheValue = summary
         return summary
     }
 
+    /// 当前图库身份卡的数据：系统图库索引模式下内存里的 `photos` 只有当前窗口，
+    /// 不能再用它数总数，否则设置页会显示 0。
+    struct LibraryStats {
+        var photos = 0
+        var videos = 0
+        var albums = 0
+        var folders = 0
+        var systemLibraries = 0
+    }
+
+    var libraryStats: LibraryStats {
+        var stats = LibraryStats()
+        if isNativeContainer, let index = systemIndex {
+            let totals = index.activeMediaTotals()
+            stats.photos = totals.photos
+            stats.videos = totals.videos
+            stats.albums = systemAlbums.count
+            stats.folders = systemFolders.count
+        } else if isNativeContainer {
+            // 索引还没就绪：先用已扫描到的系统图库项目兜底。
+            let visible = systemPhotos.lazy.filter { $0.deletedAt == nil && !$0.isHidden }
+            stats.photos = visible.filter { !$0.isVideo }.count
+            stats.videos = visible.filter { $0.isVideo }.count
+            stats.albums = systemAlbums.count
+            stats.folders = systemFolders.count
+        } else {
+            let visible = photos.lazy.filter { $0.deletedAt == nil && !$0.isHidden }
+            stats.photos = visible.filter { !$0.isVideo }.count
+            stats.videos = visible.filter { $0.isVideo }.count
+            stats.albums = albums.count
+            stats.folders = folders.count
+        }
+        // 当前图库本身就是系统「照片」图库时，系统图库数量也要把它算进去。
+        stats.systemLibraries = systemLibraries.count + (isNativeContainer ? 1 : 0)
+        return stats
+    }
+
+    /// 身份卡封面：系统图库索引模式按索引取第一张，内存里没有整库照片对象。
+    var libraryCoverPhoto: PhotoItem? {
+        if isNativeContainer, let index = systemIndex {
+            return index.page(buildSystemQuery(scope: .all), offset: 0, limit: 1)
+                .first
+                .map { applySystemOverlay($0) }
+        }
+        let visible = photos.filter { $0.deletedAt == nil && !$0.isHidden }
+        return visible.first(where: { !$0.isVideo }) ?? visible.first
+    }
+
     func photos(for item: SidebarItem) -> [PhotoItem] {
+        // 地点详情：聚类自带的照片就是屏幕上这一组，直接作为可见列表，
+        // 查看器翻页、序号与底部胶片条才会和地点页显示的一致。
+        if let place = selectedPlace {
+            return place.photos.filter { $0.deletedAt == nil && !$0.isHidden }
+        }
+        // 系统图库索引模式：内存只有已加载窗口，整库范围/排序由 SystemIndex 完成。
+        if isSystemPagedScope {
+            if let similarScope {
+                return systemWindowPhotos.filter { similarScope.ids.contains($0.id) }
+            }
+            return systemWindowPhotos
+        }
         let live = photos.filter { $0.deletedAt == nil && !$0.isHidden }
         switch item {
         case .library, .collections, .allAlbums, .people, .imports:
@@ -225,8 +471,9 @@ extension LibraryStore {
             return revisitPhotos
         case .systemLibrary:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
-        case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
-             .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages:
+        case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
+             .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
+             .systemHealth, .ask, .tagGovernance, .cinema, .cloudCinema:
             // 总览页只展示分类卡片，不返回照片。
             return []
         case .systemFavorites:
@@ -251,6 +498,22 @@ extension LibraryStore {
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.kind == .panorama }
         case .systemSlowMotion:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isSlowMotion }
+        case .systemTimelapse:
+            return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isTimelapse }
+        case .systemBursts:
+            // 按组展示代表照片：键照片 + 单成员组自身，与官方「照片」及索引 / 直连口径一致。
+            let burstMembers = systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isBurstItem }
+            let groupCounts = Dictionary(grouping: burstMembers, by: { $0.burstGroupID ?? "" })
+                .mapValues(\.count)
+            return burstMembers.filter { $0.isBurstKeyPhoto || (groupCounts[$0.burstGroupID ?? ""] ?? 0) == 1 }
+        case .systemLongExposure:
+            let ids = photoKitLongExposureIDs ?? []
+            return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && ids.contains($0.id) }
+        case .systemCinematic:
+            let ids = photoKitCinematicIDs ?? []
+            return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && ids.contains($0.id) }
+        case .systemSpatial:
+            return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isSpatial }
         case .systemScreenRecordings:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isScreenRecording }
         case .systemAnimated:
@@ -270,14 +533,38 @@ extension LibraryStore {
             }
         case .systemDuplicates:
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isDuplicateItem }
-        case .systemHandwriting, .systemIllustrations:
-            return []
         case .systemRecentlySaved:
             return systemPhotos.filter {
                 $0.deletedAt == nil && !$0.isHidden && $0.addedAt >= Self.recentlySavedCutoff
             }
-        case .systemImports:
-            return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden && $0.isDeviceImport }
+        case .systemImports, .systemImportSession:
+            // 「导入项目」是会话列表；单次会话由系统索引分页查询。
+            return []
+        case .systemRevisit:
+            let now = Date()
+            let captureCutoff = now.addingTimeInterval(-LibraryHealthTuning.revisitCaptureAge)
+            let viewCutoff = now.addingTimeInterval(-LibraryHealthTuning.revisitViewAge)
+            return systemPhotos.filter { photo in
+                guard photo.deletedAt == nil, !photo.isHidden else { return false }
+                guard photo.capturedAt < captureCutoff else { return false }
+                guard let viewedAt = photo.viewedAt else { return true }
+                return viewedAt < viewCutoff
+            }
+        case .systemScene(let id):
+            guard let category = SceneCatalog.category(id: id) else { return [] }
+            // 只遍历已识别的照片，避免为了场景范围扫描整个系统图库。
+            return systemAnalysisIndex.compactMap { photoID, analysis in
+                guard let photo = systemPhoto(id: photoID),
+                      photo.deletedAt == nil, !photo.isHidden else { return nil }
+                return SceneCatalog.matches(category, analysis: analysis, photo: photo) ? photo : nil
+            }
+        case .systemOcrTexts:
+            return systemAnalysisIndex.compactMap { photoID, analysis in
+                guard !analysis.text.isEmpty,
+                      let photo = systemPhoto(id: photoID),
+                      photo.deletedAt == nil, !photo.isHidden else { return nil }
+                return photo
+            }
         case .systemMap:
             return systemPhotos.filter {
                 $0.deletedAt == nil && !$0.isHidden && $0.hasLocation
@@ -310,6 +597,9 @@ extension LibraryStore {
             return live.filter { $0.addedAt >= limit }
         case .duplicates:
             return duplicateGroups.flatMap(\.photos)
+        case .keywords, .systemKeywords:
+            // 总览是卡片墙；进入某个关键词后返回该词下的照片列表。
+            return selectedKeyword.map { keywordPhotos($0) } ?? []
         case .map:
             return live.filter { $0.hasLocation }
         case .places:
@@ -348,11 +638,91 @@ extension LibraryStore {
             return live.filter { photoIDs.contains($0.id) }
         case .trash:
             return photos.filter { $0.deletedAt != nil }
+        case .ratings, .flags, .colorLabels,
+             .systemRatings, .systemFlags, .systemColorLabels:
+            // 整理工作室自带分布与筛选网格，不走普通照片范围。
+            return []
         }
     }
 
     var basePhotos: [PhotoItem] {
         photos(for: sidebarItem)
+    }
+
+    // MARK: - 总览卡片封面
+
+    /// 「更多项目」卡片封面：每个入口取该范围的第一张照片。
+    /// 系统图库索引库直接查 SQL，本地库按入口语义先命中先返回；结果按内容版本缓存。
+    func moreItemsCover(for item: SidebarItem) -> PhotoItem? {
+        let token = "\(contentRevision)|\(systemIndexSignature)|\(isSystemScope)"
+        if moreItemsCoverToken != token {
+            moreItemsCoverToken = token
+            moreItemsCoverCache.removeAll()
+            moreItemsCoverMissing.removeAll()
+        }
+        if let cover = moreItemsCoverCache[item] { return cover }
+        if moreItemsCoverMissing.contains(item) { return nil }
+        let cover = resolveMoreItemsCover(item)
+        if let cover {
+            moreItemsCoverCache[item] = cover
+        } else {
+            moreItemsCoverMissing.insert(item)
+        }
+        return cover
+    }
+
+    private func resolveMoreItemsCover(_ item: SidebarItem) -> PhotoItem? {
+        if isSystemScope {
+            // 人物 / 体检 / 导入项目没有可查询的单张照片范围，保留图标卡片。
+            if item == .systemPeople || item == .systemHealth || item == .systemImports {
+                return nil
+            }
+            if item == .systemKeywords {
+                guard let first = keywordOptions.first else { return nil }
+                return keywordCover(for: first.name)
+            }
+            if let scope = item.systemQueryScope, let index = systemIndex {
+                return index.page(cachedSystemQuery(scope), offset: 0, limit: 1).first
+            }
+            return photos(for: item).first
+        }
+        func first(_ predicate: (PhotoItem) -> Bool) -> PhotoItem? {
+            for photo in photos where predicate(photo) { return photo }
+            return nil
+        }
+        switch item {
+        case .favorites:
+            return first { $0.deletedAt == nil && !$0.isHidden && $0.isFavorite }
+        case .trash:
+            return first { $0.deletedAt != nil }
+        case .recentlySaved:
+            return first {
+                $0.deletedAt == nil && !$0.isHidden && $0.addedAt >= Self.recentlySavedCutoff
+            }
+        case .recentlyEdited:
+            return first { $0.deletedAt == nil && !$0.isHidden && ($0.hasEdits || $0.editedAt != nil) }
+        case .imports:
+            return first { $0.deletedAt == nil && !$0.isHidden && $0.importBatchID != nil }
+        case .ocrTexts:
+            return first {
+                $0.deletedAt == nil && !$0.isHidden && !(analysisIndex[$0.id]?.text.isEmpty ?? true)
+            }
+        case .revisit:
+            return revisitPhotos.first
+        case .health:
+            return blurryPhotos.first
+        case .map, .places:
+            return first { $0.deletedAt == nil && !$0.isHidden && $0.hasLocation }
+        case .hidden:
+            return first { $0.deletedAt == nil && $0.isHidden }
+        case .duplicates:
+            return duplicateGroups.first?.photos.first
+        case .keywords:
+            guard let first = keywordOptions.first else { return nil }
+            return keywordCover(for: first.name)
+        default:
+            return nil
+        }
     }
 
     func matchesFilter(_ photo: PhotoItem, albumPhotoIDs: Set<UUID>) -> Bool {
@@ -438,16 +808,22 @@ extension LibraryStore {
             DateText.yearFormatter.string(from: photo.capturedAt),
             formatFileSize(photo.fileSize)
         ]
-        // 端侧分析结果：场景标签 + OCR 文字。网盘照片的识别结果只在内存里。
-        let analysis = analysisIndex[photo.id] ?? (photo.isCloud ? cloudModel.analysis[photo.id] : nil)
+        // 端侧分析结果：场景标签 + OCR 文字。网盘与系统图库的识别结果只在内存里。
+        let analysis = analysisIndex[photo.id]
+            ?? (photo.isCloud ? cloudModel.analysis[photo.id] : nil)
+            ?? (photo.isSystem ? systemAnalysisIndex[photo.id] : nil)
         if let analysis, !analysis.searchBlob.isEmpty {
             parts.append(analysis.searchBlob)
         }
         let haystack = parts.joined(separator: " ").lowercased()
+        // 单个自然语言查询（如「海边日落」「吃火锅」）用本地模型扩展出的标准标签兜底。
+        let semanticHit = query.tokens.count == 1 && !semanticSearchTags.isEmpty
+            && semanticSearchTags.contains { haystack.contains($0.lowercased()) }
+        if semanticHit { return true }
         return query.tokens.allSatisfy { token in
             if haystack.contains(token) { return true }
-            // 中文口语查询扩展成 Vision 英文场景标签（如「海边」→ beach / seashore）。
-            return SceneCatalog.searchLabels(for: token).contains { haystack.contains($0) }
+            // 中文口语查询扩展成标准标签 / 旧版 Vision 英文标签。
+            return SceneCatalog.searchLabels(for: token).contains { haystack.contains($0.lowercased()) }
         }
     }
 
@@ -457,19 +833,42 @@ extension LibraryStore {
             String(cloudModel.revision),
             String(describing: cloudModel.scope),
             String(cloudModel.analysis.count),
+            String(cloudModel.metadataRevision),
+            String(cloudModel.people.count),
+            similarScope?.sourceID.uuidString ?? "",
+            String(similarScope?.ids.count ?? 0),
             searchText,
+            searchScope.rawValue,
             photoFilter.rawValue,
+            String(ratingFilter),
+            flagFilter?.rawValue ?? "",
+            colorLabelFilter?.rawValue ?? "",
             sortKey.rawValue,
             String(sortAscending)
         ].joined(separator: "\u{1F}")
         if cloudVisibleCacheKey == key { return cloudVisibleCacheValue }
         var items = cloudPhotos.filter { !$0.isHidden }
-        if cloudModel.scope != .all {
-            let scope = cloudModel.scope
+        switch cloudModel.scope {
+        case .all:
+            break
+        case .people:
+            // 一次构建人物照片集合，避免逐张照片重复展开人物列表。
+            let ids = Set(cloudPeople.flatMap { $0.assetIDs })
+            items = items.filter { ids.contains($0.id) }
+        case .duplicates:
+            let ids = cloudDuplicatePhotoIDs
+            items = items.filter { ids.contains($0.id) }
+        case let scope:
             items = items.filter { cloudPhoto($0, matches: scope) }
+        }
+        if let similarScope {
+            items = items.filter { similarScope.ids.contains($0.id) }
         }
         if photoFilter != .all {
             items = items.filter { matchesFilter($0, albumPhotoIDs: []) }
+        }
+        if hasMetadataFilters {
+            items = items.filter { matchesMetadataFilters($0) }
         }
         let query = currentSearchQuery
         if !query.isEmpty {
@@ -484,30 +883,52 @@ extension LibraryStore {
 
     /// 影响 `visiblePhotos` 的状态指纹；筛选、排序、搜索等变化都会换 key。
     var visibleStateKey: String {
-        [
-            String(contentRevision),
-            String(windowRevision),
-            String(describing: sidebarItem),
-            searchText,
-            String(analysisIndex.count),
-            photoFilter.rawValue,
-            keywordFilter ?? "",
-            selectedPlace?.id ?? "",
-            selectedPerson.map { String($0.id) } ?? "",
-            sortKey.rawValue,
-            String(sortAscending),
-            String(cloudModel.revision),
-            String(describing: cloudModel.scope),
-            String(cloudModel.analysis.count),
-            String(isLoadingSystemLibrary),
-            // 端侧分析会改变搜索/场景/OCR 的命中结果，必须参与缓存失效（避免分析过程中反复重算全库）。
-            String((searchText.isEmpty && !isAnalysisScope) ? 0 : analysisIndex.count),
-            similarScope?.sourceID.uuidString ?? "",
-            String(similarScope?.ids.count ?? 0)
-        ].joined(separator: "\u{1F}")
+        var parts: [String] = []
+        parts.append(String(contentRevision))
+        parts.append(String(windowRevision))
+        parts.append(String(describing: sidebarItem))
+        parts.append(selectedKeyword ?? "")
+        parts.append(searchText)
+        parts.append(semanticSearchTags.joined(separator: "|"))
+        parts.append(searchScope.rawValue)
+        parts.append(String(analysisIndex.count))
+        parts.append(photoFilter.rawValue)
+        parts.append(keywordFilter ?? "")
+        parts.append(String(ratingFilter))
+        parts.append(flagFilter?.rawValue ?? "")
+        parts.append(colorLabelFilter?.rawValue ?? "")
+        parts.append(selectedPlace?.id ?? "")
+        parts.append(selectedPerson.map { String($0.id) } ?? "")
+        parts.append(sortKey.rawValue)
+        parts.append(String(sortAscending))
+        parts.append(String(cloudModel.revision))
+        parts.append(String(describing: cloudModel.scope))
+        parts.append(String(cloudModel.analysis.count))
+        parts.append(String(cloudModel.metadataRevision))
+        parts.append(String(cloudModel.people.count))
+        parts.append(String(isLoadingSystemLibrary))
+        // 端侧分析会改变搜索/场景/OCR 的命中结果，必须参与缓存失效（避免分析过程中反复重算全库）。
+        parts.append(String((searchText.isEmpty && !isAnalysisScope) ? 0 : analysisIndex.count))
+        // 系统图库的识别结果只在内存里，同样影响场景 / 包含文字范围。
+        parts.append(String(isSystemScope ? systemAnalysisIndex.count : 0))
+        parts.append(similarScope?.sourceID.uuidString ?? "")
+        parts.append(String(similarScope?.ids.count ?? 0))
+        parts.append(systemIndexSignature)
+        parts.append(String(systemWindowRevision))
+        parts.append(String(hasLoadedSystemWindow))
+        parts.append(selectedFavoriteBucket?.id ?? "")
+        parts.append(favoritesDigestLoadedToken)
+        return parts.joined(separator: "\u{1F}")
     }
 
     var visiblePhotos: [PhotoItem] {
+        // 系统图库：索引分页窗口。
+        if isSystemPagedScope {
+            if let similarScope {
+                return systemWindowPhotos.filter { similarScope.ids.contains($0.id) }
+            }
+            return systemWindowPhotos
+        }
         // 大图库：筛选/排序在 SQLite 完成，这里只返回已加载的窗口。
         if isPagedScope { return windowPhotos }
         // 大图库（数十万项）筛选 + 排序开销很大，这里按关键状态缓存结果。
@@ -519,10 +940,32 @@ extension LibraryStore {
         return value
     }
 
+    /// 网格滚动时按 id 查拍摄时间（顶栏日期范围）；随可见集合缓存，避免逐帧遍历全库。
+    var photoDateLookup: [UUID: Date] {
+        let key = visibleStateKey
+        if dateLookupCacheKey == key { return dateLookupCache }
+        let items = visiblePhotos
+        var map: [UUID: Date] = [:]
+        map.reserveCapacity(items.count)
+        for item in items { map[item.id] = item.capturedAt }
+        dateLookupCacheKey = key
+        dateLookupCache = map
+        return map
+    }
+
     func computeVisiblePhotos() -> [PhotoItem] {
         // 网络存储的筛选、搜索与排序已经在 `cloudVisiblePhotos` 中完成。
         if isCloudScope { return basePhotos }
-        var items = basePhotos
+        // 收藏汇总下钻：数据源是汇总时载入的完整收藏列表，不再依赖分页窗口。
+        var items: [PhotoItem]
+        if isFavoritesScope, let bucket = selectedFavoriteBucket {
+            items = favoritesDigestSource.filter { bucket.matches($0) }
+        } else if !isSystemScope, searchScope == .global, !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // 全局搜索：从全库出发，不受当前视图范围限制。
+            items = photos
+        } else {
+            items = basePhotos
+        }
         if photoFilter != .all {
             let albumPhotoIDs: Set<UUID>
             if isSystemScope {
@@ -532,8 +975,13 @@ extension LibraryStore {
             }
             items = items.filter { matchesFilter($0, albumPhotoIDs: albumPhotoIDs) }
         }
+        if hasMetadataFilters {
+            items = items.filter { matchesMetadataFilters($0) }
+        }
         if let selectedPlace {
-            items = items.filter { PlaceClusterBuilder.key(for: $0).id == selectedPlace.id }
+            items = items.filter {
+                PlaceClusterBuilder.key(for: $0, granularity: placeGranularity).id == selectedPlace.id
+            }
         }
         if let selectedPerson {
             let ids = Set(selectedPerson.assetIDs)
@@ -566,6 +1014,10 @@ extension LibraryStore {
             return items.sorted {
                 (positions[$0.id] ?? Int.max) < (positions[$1.id] ?? Int.max)
             }
+        case .places, .systemPlaces:
+            // 地点详情沿用聚类自带的顺序，与地点页照片墙保持一致；
+            // 概览页没有照片，仍按全局排序。
+            return selectedPlace == nil ? sortedByCurrentKey(items) : items
         default:
             // 扫描过程中先按数据库顺序展示，结束后再统一排序，避免反复排序超大数组。
             if isLoadingSystemLibrary, isSystemScope {
@@ -613,8 +1065,8 @@ extension LibraryStore {
             return items.sorted { compareStrings($0.model ?? $0.make ?? "", $1.model ?? $1.make ?? "") }
         case .place:
             return items.sorted {
-                compareStrings(PlaceClusterBuilder.key(for: $0).title,
-                               PlaceClusterBuilder.key(for: $1).title)
+                compareStrings(PlaceClusterBuilder.key(for: $0, granularity: placeGranularity).title,
+                               PlaceClusterBuilder.key(for: $1, granularity: placeGranularity).title)
             }
         case .duration:
             return items.sorted { ascending ? ($0.duration ?? 0) < ($1.duration ?? 0)
@@ -645,8 +1097,8 @@ extension LibraryStore {
     func computeSections() -> [PhotoSection] {
         let items = visiblePhotos
         guard !items.isEmpty else { return [] }
-        // 「导入项目」按导入批次分段。
-        if sidebarItem == .imports {
+        // 「导入项目」按导入批次分段；系统图库没有批次号，按导入（加入库）日期分组，展示与拾光一致。
+        if sidebarItem == .imports || sidebarItem == .systemImports {
             return importSections(from: items)
         }
         // 只有图库才按年/月分段；相簿、文件夹、智能项目一律单段普通网格。
@@ -770,6 +1222,10 @@ extension LibraryStore {
 
     var viewerPhoto: PhotoItem? {
         guard let viewerID else { return nil }
+        // 影院打开的视频可能不在当前网盘目录里，直接使用快照。
+        if let cinemaPlaybackPhoto, cinemaPlaybackPhoto.id == viewerID {
+            return cinemaPlaybackPhoto
+        }
         // 查看器 body 会多次读取当前照片，缓存一次避免重复线性查找。
         if let cache = viewerPhotoCache, cache.id == viewerID, cache.revision == contentRevision {
             return cache.photo
@@ -859,9 +1315,28 @@ extension LibraryStore {
     }
 
     var geoPhotos: [PhotoItem] {
+        // 网盘照片的 GPS 来自 EXIF，读取后与本地照片共用同一套地图 / 位置视图。
+        if isCloudScope { return cloudGeoPhotos }
+        // 系统图库索引模式：地图取全部带位置的照片，统计与地点数不做截断。
+        if isSystemScope, let index = systemIndex {
+            let key = "sys-\(systemIndexSignature)"
+            if systemGeoCacheKey == key { return systemGeoCache }
+            let photos = index.photosWithLocation()
+                .map { applySystemOverlay($0) }
+                .filter { $0.hasLocation }
+            systemGeoCacheKey = key
+            systemGeoCache = photos
+            return photos
+        }
+        if geoPhotosCacheKey == contentRevision {
+            return geoPhotosCacheValue
+        }
         let source = isSystemScope
             ? systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
             : photos.filter { $0.deletedAt == nil && !$0.isHidden }
-        return source.filter { $0.hasLocation }
+        let result = source.filter { $0.hasLocation }
+        geoPhotosCacheKey = contentRevision
+        geoPhotosCacheValue = result
+        return result
     }
 }

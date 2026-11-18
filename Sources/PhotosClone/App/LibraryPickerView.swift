@@ -17,7 +17,8 @@ struct LibraryEntry: Identifiable {
     }
 }
 
-/// 按住 Option 启动时弹出的图库选择器（对齐系统「照片」的选取图库）。
+/// 图库选择器（独立窗口，对齐系统「照片」的选取图库）：按住 Option 启动时自动弹出，
+/// 打开期间主窗口整窗隐藏；由 RootView 监听 `showLibraryPicker` 负责开窗与恢复。
 struct LibraryPickerView: View {
     @EnvironmentObject private var store: LibraryStore
     @State private var entries: [LibraryEntry] = []
@@ -95,6 +96,10 @@ struct LibraryPickerView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                 Spacer()
+                Button("取消") {
+                    close()
+                }
+                .keyboardShortcut(.cancelAction)
                 Button("新建…") {
                     store.presentNewLibraryPanel()
                 }
@@ -111,6 +116,13 @@ struct LibraryPickerView: View {
         .onAppear {
             reload()
         }
+        .onDisappear {
+            // 直接关闭窗口（红叉）等价于「取消」：此时标志仍为 true，走取消分支。
+            // 正常的选取 / 取消路径都会先清 `showLibraryPicker`，不会落到这里。
+            if store.showLibraryPicker {
+                close()
+            }
+        }
     }
 
     private func reload() {
@@ -122,7 +134,25 @@ struct LibraryPickerView: View {
 
     private func choose() {
         guard let entry = selectedEntry else { return }
-        store.activateLibrary(entry.url)
+        // 先收起窗口（清标志会让 RootView 关掉本窗口并恢复主窗口），再把切换放到下一帧：
+        // 图库切换里的同步读写不会拖住关闭动作。`activateLibrary` 会解除启动占位。
+        store.showLibraryPicker = false
+        DispatchQueue.main.async {
+            store.activateLibrary(entry.url)
+        }
+    }
+
+    private func close() {
+        // 启动时弹出的面板被取消：回到原来的图库；普通面板只关闭自己。
+        let reopen = store.libraryPickerOnLaunch ? LibraryPaths.containerLibraryURL : nil
+        store.showLibraryPicker = false
+        if let reopen {
+            DispatchQueue.main.async {
+                store.activateLibrary(reopen)
+            }
+        } else {
+            store.libraryPickerOnLaunch = false
+        }
     }
 
     private static func format(_ date: Date?) -> String {

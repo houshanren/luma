@@ -2,7 +2,7 @@ import Foundation
 import LumaCore
 
 /// 一张照片的美化候选。只存 id 与建议，避免把 `PhotoItem` 复制一份后界面状态过期。
-struct BeautyCandidate: Identifiable {
+struct BeautyCandidate: Identifiable, Codable {
     let photoID: UUID
     let advice: BeautyAdvice
 
@@ -10,8 +10,8 @@ struct BeautyCandidate: Identifiable {
 }
 
 /// 推荐分组：把「偏暗 / 偏亮 / 偏灰 / 偏色 / 偏软」分开，方便按同一套参数批量处理。
-struct BeautyGroup: Identifiable {
-    enum Kind: String, CaseIterable {
+struct BeautyGroup: Identifiable, Codable {
+    enum Kind: String, CaseIterable, Codable {
         case dark
         case bright
         case flat
@@ -56,8 +56,8 @@ struct BeautyGroup: Identifiable {
     var count: Int { candidates.count }
 }
 
-/// 一次「智能美化」扫描的结果，只存在内存里，不新增数据库表。
-struct BeautyReport {
+/// 一次「智能美化」扫描的结果；按范围签名写入当前图库的 `derived_reports`，重开面板可直接回填。
+struct BeautyReport: Codable {
     let scannedAt: Date
     let scannedCount: Int
     let groups: [BeautyGroup]

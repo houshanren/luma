@@ -30,6 +30,12 @@ struct PhotoMapView: View {
     @State private var showKeySheet = false
     @State private var keyDraft = ""
     @State private var showFootprint = false
+    /// 当前可视区域与视野内统计：左上角数字、网格与足迹回放范围都跟着缩放更新。
+    @State private var viewport: MKCoordinateRegion?
+    @State private var viewportPlaceCount = 0
+    @State private var viewportPhotoCount = 0
+    @State private var viewportPhotos: [PhotoItem] = []
+    @State private var footprintPhotos: [PhotoItem] = []
     @AppStorage("map.style") private var styleRaw = MapStyleMode.map.rawValue
     @AppStorage("map.provider") private var providerRaw = MapProvider.apple.rawValue
     @AppStorage("map.baiduAccessKey") private var baiduKey = ""
@@ -48,18 +54,25 @@ struct PhotoMapView: View {
                 ZStack {
                     if style == .grid {
                         GeometryReader { proxy in
-                            MapPlaceGridView(photos: photos, availableWidth: proxy.size.width)
+                            MapPlaceGridView(photos: scopedPhotos,
+                                             scopeKey: viewportScopeKey,
+                                             availableWidth: proxy.size.width,
+                                             emptyText: gridEmptyText)
                         }
                         .background(Color(nsColor: .windowBackgroundColor))
                         .transition(.opacity)
                     } else {
-                        MapCanvasView(clusters: clusters,
+                        MapCanvasView(photos: photos,
+                                      dataVersion: store.placeClusterVersion,
                                       provider: provider,
                                       style: style,
                                       baiduKey: baiduKey,
-                                      controller: camera) { id in
-                            store.openViewer(id)
-                        }
+                                      controller: camera,
+                                      onOpen: { id in
+                                          store.openViewer(id, context: scopedPhotos)
+                                      },
+                                      onRegionChange: updateViewport,
+                                      preferredRegion: viewport)
                         .ignoresSafeArea()
                     }
 
@@ -69,8 +82,6 @@ struct PhotoMapView: View {
                             if style != .grid {
                                 footprintButton
                             }
-                            Spacer(minLength: 8)
-                            styleSwitcher
                             Spacer(minLength: 8)
                             providerMenu
                         }
@@ -90,8 +101,9 @@ struct PhotoMapView: View {
                     }
 
                     if showFootprint {
-                        FootprintPlaybackView(photos: photos) {
+                        FootprintPlaybackView(photos: footprintPhotos) {
                             showFootprint = false
+                            footprintPhotos = []
                         }
                         .transition(.opacity)
                         .zIndex(6)
@@ -107,30 +119,221 @@ struct PhotoMapView: View {
                     }
                     store.resolveMissingPlacesIfNeeded()
                 }
+                .onChange(of: store.contentRevision) { _, _ in
+                    if let viewport { updateViewport(viewport) }
+                }
             }
         }
+    }
+
+    // MARK: - 视野统计
+
+    /// 地图缩放 / 平移后重算「视野内」的地点与照片数量，并记录这一片照片供网格使用。
+    private func updateViewport(_ region: MKCoordinateRegion) {
+        viewport = region
+
+        // 视野已经覆盖全部地点（默认的整库视角）：直接用整库口径，不必逐张扫描。
+        if Self.region(region, coversAllOf: clusters) {
+            viewportPlaceCount = clusters.count
+            viewportPhotoCount = photos.count
+            viewportPhotos = photos
+            return
+        }
+
+        var places = 0
+        var visible: [PhotoItem] = []
+        visible.reserveCapacity(min(photos.count, 2_048))
+        for cluster in clusters {
+            // 先用簇的包围盒剔除整片不在视野内的地点，放大后只扫视野附近的照片。
+            guard Self.region(region, intersects: cluster) else { continue }
+            var inside = 0
+            for photo in cluster.photos {
+                guard let latitude = photo.latitude, let longitude = photo.longitude else { continue }
+                if Self.region(region, contains: latitude, longitude: longitude) {
+                    inside += 1
+                    visible.append(photo)
+                }
+            }
+            if inside > 0 {
+                places += 1
+            }
+        }
+        // 视口覆盖整库时回到总量口径，避免边界浮点误差让数字来回抖。
+        if visible.count >= photos.count {
+            viewportPlaceCount = clusters.count
+            viewportPhotoCount = photos.count
+            viewportPhotos = photos
+        } else {
+            viewportPlaceCount = places
+            viewportPhotoCount = visible.count
+            viewportPhotos = visible
+        }
+    }
+
+    /// 视野是否覆盖全部地点的包围盒（快速判断，避免大图库在整库视角下逐张扫描）。
+    private static func region(_ region: MKCoordinateRegion,
+                               coversAllOf clusters: [PlaceCluster]) -> Bool {
+        guard let first = clusters.first else { return false }
+        var minLat = first.minLatitude
+        var maxLat = first.maxLatitude
+        var minLon = first.minLongitude
+        var maxLon = first.maxLongitude
+        for cluster in clusters.dropFirst() {
+            minLat = min(minLat, cluster.minLatitude)
+            maxLat = max(maxLat, cluster.maxLatitude)
+            minLon = min(minLon, cluster.minLongitude)
+            maxLon = max(maxLon, cluster.maxLongitude)
+        }
+        guard minLat.isFinite, maxLat.isFinite, minLon.isFinite, maxLon.isFinite,
+              region.span.latitudeDelta.isFinite, region.span.longitudeDelta.isFinite else {
+            return false
+        }
+        if region.span.latitudeDelta < 180 {
+            let latitudeHalf = region.span.latitudeDelta / 2 + 0.0001
+            guard abs(minLat - region.center.latitude) <= latitudeHalf,
+                  abs(maxLat - region.center.latitude) <= latitudeHalf else { return false }
+        }
+        if region.span.longitudeDelta >= 360 { return true }
+        guard maxLon - minLon <= region.span.longitudeDelta else { return false }
+        return containsLongitude(region, longitude: minLon)
+            && containsLongitude(region, longitude: maxLon)
+    }
+
+    /// 簇的包围盒是否与视野相交（允许保守误判，但不能漏掉视野内的照片）。
+    private static func region(_ region: MKCoordinateRegion,
+                               intersects cluster: PlaceCluster) -> Bool {
+        guard cluster.minLatitude.isFinite, cluster.maxLatitude.isFinite,
+              cluster.minLongitude.isFinite, cluster.maxLongitude.isFinite else { return false }
+        let latitudeHalf = region.span.latitudeDelta / 2 + 0.0001
+        if cluster.maxLatitude < region.center.latitude - latitudeHalf
+            || cluster.minLatitude > region.center.latitude + latitudeHalf {
+            return false
+        }
+        if region.span.longitudeDelta >= 360 { return true }
+        let longitudeHalf = min(180, region.span.longitudeDelta / 2 + 0.0001)
+        // 取簇经度范围内离视野中心最近的一点，用环绕角距判断是否落在视野经度窗口内。
+        let center = normalizedLongitude(region.center.longitude)
+        let nearest = min(max(center, cluster.minLongitude), cluster.maxLongitude)
+        return angularDelta(nearest, center) <= longitudeHalf
+    }
+
+    private static func containsLongitude(_ region: MKCoordinateRegion, longitude: Double) -> Bool {
+        angularDelta(longitude, normalizedLongitude(region.center.longitude))
+            <= region.span.longitudeDelta / 2 + 0.0001
+    }
+
+    private static func normalizedLongitude(_ longitude: Double) -> Double {
+        guard longitude.isFinite else { return 0 }
+        var value = longitude.truncatingRemainder(dividingBy: 360)
+        if value > 180 { value -= 360 }
+        if value < -180 { value += 360 }
+        return value
+    }
+
+    private static func angularDelta(_ lhs: Double, _ rhs: Double) -> Double {
+        var delta = abs(lhs - rhs)
+        if delta > 180 { delta = 360 - delta }
+        return delta
+    }
+
+
+    private static func region(_ region: MKCoordinateRegion,
+                               contains latitude: Double,
+                               longitude: Double) -> Bool {
+        guard latitude.isFinite, longitude.isFinite,
+              region.span.latitudeDelta.isFinite, region.span.longitudeDelta.isFinite else { return false }
+        guard abs(latitude - region.center.latitude) <= region.span.latitudeDelta / 2 + 0.0001 else {
+            return false
+        }
+        var delta = abs(longitude - region.center.longitude)
+        if delta > 180 { delta = 360 - delta }
+        return delta <= region.span.longitudeDelta / 2 + 0.0001
+    }
+
+    private var isViewportFiltered: Bool {
+        guard viewport != nil else { return false }
+        return viewportPhotoCount < photos.count
+    }
+
+    /// 网格 / 足迹回放共用同一份「当前视野」照片。
+    private var scopedPhotos: [PhotoItem] {
+        isViewportFiltered ? viewportPhotos : photos
+    }
+
+    /// 视野指纹：网格据此重算行程段（不看照片数量，避免换一片区域却复用旧分组）。
+    private var viewportScopeKey: String {
+        guard isViewportFiltered, let viewport else { return "all" }
+        return String(format: "%.4f|%.4f|%.4f|%.4f",
+                      viewport.center.latitude,
+                      viewport.center.longitude,
+                      viewport.span.latitudeDelta,
+                      viewport.span.longitudeDelta)
+    }
+
+    private var gridEmptyText: String {
+        isViewportFiltered ? "当前视野内没有带位置的照片，缩小地图或点「显示全部位置」再看看。"
+                           : "这些照片还没有可用的地点信息。"
+    }
+
+    private var legendText: String {
+        if isViewportFiltered {
+            return "视野内 \(viewportPlaceCount) 个地点 · \(viewportPhotoCount.formatted()) 张照片"
+        }
+        return "\(clusters.count) 个地点 · \(photos.count.formatted()) 张照片"
+    }
+
+    /// 足迹回放只播当前视野里的照片：缩放后站点与图钉数量一起变化。
+    private func openFootprint() {
+        let scoped = scopedPhotos
+        guard !scoped.isEmpty else { return }
+        footprintPhotos = scoped
+        showFootprint = true
     }
 
     // MARK: - 浮层
 
     private var legendBadge: some View {
-        HStack(spacing: 7) {
-            Image(systemName: style == .grid ? "mappin.circle" : "mappin.and.ellipse")
-                .font(.system(size: 11))
-            Text("\(clusters.count) 个地点 · \(photos.count.formatted()) 张照片")
-                .font(.system(size: 11.5, weight: .medium))
+        Button {
+            resetScope()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: style == .grid ? "mappin.circle" : "mappin.and.ellipse")
+                    .font(.system(size: 11))
+                Text(legendText)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .contentTransition(.numericText())
+                    .animation(settings.motion.hover, value: legendText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.regularMaterial, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+            }
+            .contentShape(Capsule())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(.regularMaterial, in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+        .buttonStyle(.plain)
+        .help(isViewportFiltered
+              ? "地图、网格与足迹回放都在这个视野内；点击回到整库范围"
+              : "整库地点与照片数量")
+    }
+
+    /// 回到整库范围：地图重新适配全部地点，网格与足迹回放也回到全部照片。
+    private func resetScope() {
+        guard isViewportFiltered else { return }
+        if style == .grid {
+            viewport = nil
+            viewportPhotos = []
+            viewportPlaceCount = 0
+            viewportPhotoCount = 0
+        } else {
+            camera.fit(clusters)
         }
     }
 
     private var footprintButton: some View {
         Button {
-            showFootprint = true
+            openFootprint()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "play.circle")
@@ -147,36 +350,10 @@ struct PhotoMapView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help("按时间顺序把照片地点播成一条足迹")
-    }
-
-    private var styleSwitcher: some View {
-        HStack(spacing: 2) {
-            ForEach(MapStyleMode.allCases) { mode in
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) { styleRaw = mode.rawValue }
-                } label: {
-                    Text(mode.title)
-                        .font(.system(size: 11.5, weight: style == mode ? .semibold : .regular))
-                        .foregroundStyle(style == mode ? .primary : .secondary)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 6)
-                        .background {
-                            if style == mode {
-                                Capsule().fill(Color.primary.opacity(0.16))
-                            }
-                        }
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(3)
-        .background(.regularMaterial, in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+        .disabled(isViewportFiltered && viewportPhotoCount == 0)
+        .help(isViewportFiltered
+              ? "按时间顺序把当前视野内的 \(viewportPhotoCount) 张照片播成一条足迹"
+              : "按时间顺序把照片地点播成一条足迹")
     }
 
     private var providerMenu: some View {
@@ -235,7 +412,7 @@ struct PhotoMapView: View {
                 gridSizeButton(icon: "minus", help: "缩小网格", delta: -16)
                 Divider().frame(width: 18)
                 Button {
-                    withAnimation(settings.motion.layout) { store.thumbSize = 132 }
+                    withAnimation(settings.motion.layout) { store.resetThumbSizeToDefault() }
                 } label: {
                     Image(systemName: "scope")
                         .font(.system(size: 11.5, weight: .medium))
@@ -475,11 +652,11 @@ struct SystemLibraryInfoView: View {
     @EnvironmentObject private var store: LibraryStore
 
     private var visiblePhotos: [PhotoItem] {
-        store.systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
+        store.geoPhotos
     }
 
     private var geoPhotos: [PhotoItem] {
-        visiblePhotos.filter { $0.latitude != nil && $0.longitude != nil }
+        visiblePhotos
     }
 
     var body: some View {

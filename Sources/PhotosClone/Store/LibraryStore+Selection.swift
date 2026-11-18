@@ -32,18 +32,63 @@ extension LibraryStore {
 
     /// 键盘方向键移动选择；delta 为正表示向后（右/下）。
     func moveSelection(by delta: Int) {
+        // 「相似照片」是过滤后的固定集合：选择只在屏幕上这份列表里移动。
+        if similarScope != nil {
+            let items = visiblePhotos
+            guard !items.isEmpty else { return }
+            guard let current = selection.first.flatMap({ id in
+                items.firstIndex(where: { $0.id == id })
+            }) else {
+                selection = [items[0].id]
+                selectionAnchorID = items[0].id
+                viewerIndexCache = nil
+                return
+            }
+            let next = min(items.count - 1, max(0, current + delta))
+            guard next != current else { return }
+            selection = [items[next].id]
+            selectionAnchorID = items[next].id
+            viewerIndexCache = nil
+            return
+        }
+        // 系统图库索引：位置与相邻项都由索引给出，跨越未加载窗口也能继续移动。
+        if isSystemPagedScope, let query = systemPagedQuery, let index = systemIndex,
+           let currentID = selection.first {
+            let total = visibleCount
+            guard total > 0 else { return }
+            let current = viewerQueryIndex(of: currentID)
+            if abs(delta) == 1 {
+                guard !(current == 0 && delta < 0), !(current == total - 1 && delta > 0) else { return }
+                guard let target = index.neighbor(of: currentID, delta: delta, in: query) else { return }
+                selection = [target.id]
+                selectionAnchorID = target.id
+                // 网格里移动选择不预写下标：窗口可能在移动过程中重新锚定，
+                // 写下去的错误序号会一直留到打开查看器之后。
+                viewerIndexCache = nil
+                revealInWindow(target.id)
+                return
+            }
+            let nextIndex = current.map { min(total - 1, max(0, $0 + delta)) }
+                ?? (delta >= 0 ? 0 : total - 1)
+            guard let target = index.page(query, offset: nextIndex, limit: 1).first else { return }
+            selection = [target.id]
+            selectionAnchorID = target.id
+            viewerIndexCache = nil
+            revealInWindow(target.id)
+            return
+        }
         // 大图库：位置与目标都由 SQLite 给出，跨越未加载的窗口也能继续移动。
         if isPagedScope, let query = pagedQuery, let store = metadataStore {
             let total = visibleCount
             guard total > 0 else { return }
-            let current = selection.first.flatMap { viewerIndex(of: $0) }
+            let current = selection.first.flatMap { viewerQueryIndex(of: $0) }
             // 单步移动走 keyset 查询，长按方向键不会有 O(偏移量) 的开销。
             if let current, abs(delta) == 1, let currentID = selection.first {
                 guard !(current == 0 && delta < 0), !(current == total - 1 && delta > 0) else { return }
                 guard let target = store.neighbor(of: currentID, delta: delta, in: query) else { return }
                 selection = [target.id]
                 selectionAnchorID = target.id
-                viewerIndexCache = ViewerIndexCache(key: pagedKey, id: target.id, index: current + delta)
+                viewerIndexCache = nil
                 revealInWindow(target.id)
                 return
             }
@@ -52,7 +97,7 @@ extension LibraryStore {
             guard let target = store.photo(atOffset: nextIndex, in: query) else { return }
             selection = [target.id]
             selectionAnchorID = target.id
-            viewerIndexCache = ViewerIndexCache(key: pagedKey, id: target.id, index: nextIndex)
+            viewerIndexCache = nil
             revealInWindow(target.id)
             return
         }
@@ -75,6 +120,14 @@ extension LibraryStore {
 
     /// 让分页窗口包含指定照片：已加载就直接滚动，否则重新取目标附近的一页。
     func revealInWindow(_ id: UUID) {
+        if isSystemPagedScope {
+            if systemWindowPhotos.contains(where: { $0.id == id }) {
+                scrollTargetID = id
+            } else {
+                focusWindow(on: id)
+            }
+            return
+        }
         if windowPhotos.contains(where: { $0.id == id }) {
             scrollTargetID = id
         } else {
@@ -97,6 +150,20 @@ extension LibraryStore {
     }
 
     func selectAll() {
+        // 系统图库：全选目标是「当前范围的全部照片」，而不是已经加载的分页窗口。
+        if isSystemPagedScope, let query = systemPagedQuery, let index = systemIndex {
+            Task {
+                // 几十万条 UUID 的读取与建集合都放在后台，避免全选瞬间卡住界面。
+                let result = await Task.detached(priority: .userInitiated) {
+                    let ids = index.allIDs(query)
+                    return (ids, Set(ids))
+                }.value
+                guard let first = result.0.first else { return }
+                selection = result.1
+                selectionAnchorID = first
+            }
+            return
+        }
         // 大图库只取 id 列，避免为了全选把全部照片读进内存。
         if isPagedScope, let query = pagedQuery, let store = metadataStore {
             Task {
@@ -133,33 +200,64 @@ extension LibraryStore {
             return
         }
         guard !isSystemScope, let index = photos.firstIndex(where: { $0.id == id }) else { return }
+        let beforePhotos = photoSnapshot([id])
         photos[index].isFavorite.toggle()
         save()
+        recordUndo(photos[index].isFavorite ? "设为收藏" : "取消收藏", beforePhotos: beforePhotos)
     }
 
     func toggleFavoriteSelection() {
+        toggleFavorite(ids: selection)
+    }
+
+    /// 一组项目是否全部已收藏 / 已隐藏：右键菜单文案用。
+    /// 逐项调用 `anyPhoto` 在大选区下是 O(n²)，这里按来源各遍历一次。
+    func selectionCommonFlags(_ ids: Set<UUID>) -> (allFavorite: Bool, allHidden: Bool) {
+        guard !ids.isEmpty else { return (false, false) }
+        var remaining = ids
+        var allFavorite = true
+        var allHidden = true
+
+        func consume(_ photo: PhotoItem) {
+            remaining.remove(photo.id)
+            if !photo.isFavorite { allFavorite = false }
+            if !photo.isHidden { allHidden = false }
+        }
+        for photo in photos where remaining.contains(photo.id) {
+            consume(photo)
+        }
+        for photo in cloudPhotos where remaining.contains(photo.id) {
+            consume(photo)
+        }
+        for id in remaining {
+            guard let item = systemPhoto(id: id) else { continue }
+            consume(item)
+        }
+        return (allFavorite, allHidden)
+    }
+
+    /// 对一组项目切换收藏（右键多选 / 菜单 / 工具栏共用）。
+    /// 全部已收藏时取消收藏，否则统一设为收藏。
+    func toggleFavorite(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
         if isCloudScope {
-            let ids = selection
-            guard !ids.isEmpty else { return }
-            let shouldFavorite = !ids.allSatisfy { id in anyPhoto(id: id)?.isFavorite == true }
+            let shouldFavorite = !ids.allSatisfy { anyPhoto(id: $0)?.isFavorite == true }
             setCloudFavorite(shouldFavorite, for: ids)
             return
         }
         if isSystemScope, canEditNativeOverlay {
-            let ids = selection
-            guard !ids.isEmpty else { return }
-            let shouldFavorite = !ids.allSatisfy { id in anyPhoto(id: id)?.isFavorite == true }
+            let shouldFavorite = !ids.allSatisfy { anyPhoto(id: $0)?.isFavorite == true }
             setSystemFavorite(shouldFavorite, ids: ids)
             return
         }
         guard !isReadOnlyScope else { return }
-        let ids = selection
-        guard !ids.isEmpty else { return }
-        let shouldFavorite = !ids.allSatisfy { id in photo(id: id)?.isFavorite == true }
+        let shouldFavorite = !ids.allSatisfy { photo(id: $0)?.isFavorite == true }
+        let beforePhotos = photoSnapshot(ids)
         for index in photos.indices where ids.contains(photos[index].id) {
             photos[index].isFavorite = shouldFavorite
         }
         save()
+        recordUndo(shouldFavorite ? "设为收藏" : "取消收藏", beforePhotos: beforePhotos)
     }
 
     func toggleFavoriteCurrent() {
@@ -180,6 +278,7 @@ extension LibraryStore {
             return
         }
         guard !isReadOnlyScope, !ids.isEmpty else { return }
+        let beforePhotos = photoSnapshot(ids)
         for index in photos.indices where ids.contains(photos[index].id) {
             photos[index].isHidden = hidden
         }
@@ -188,6 +287,7 @@ extension LibraryStore {
         }
         selection.removeAll()
         save()
+        recordUndo(hidden ? "隐藏" : "取消隐藏", beforePhotos: beforePhotos)
     }
 
     func delete(_ ids: Set<UUID>) {
@@ -197,28 +297,32 @@ extension LibraryStore {
             confirmPermanentDelete(ids)
             return
         }
+        let beforePhotos = photoSnapshot(ids)
+        let beforeAlbums = albums
         let now = Date()
         for index in photos.indices where ids.contains(photos[index].id) {
             photos[index].deletedAt = now
         }
-        for index in albums.indices {
-            albums[index].photoIDs.removeAll { ids.contains($0) }
-        }
+        // 移动进最近删除时同样要脱离相簿（含封面引用），恢复后再按需重新加入。
+        detachFromAlbums(ids)
         if let viewerID, ids.contains(viewerID) {
             self.viewerID = nil
         }
         selection.removeAll()
         save()
+        recordUndo("移入最近删除", beforePhotos: beforePhotos, beforeAlbums: beforeAlbums)
         showToast("已移至最近删除")
     }
 
     func restore(_ ids: Set<UUID>) {
         guard !isReadOnlyScope, !ids.isEmpty else { return }
+        let beforePhotos = photoSnapshot(ids)
         for index in photos.indices where ids.contains(photos[index].id) {
             photos[index].deletedAt = nil
         }
         selection.removeAll()
         save()
+        recordUndo("恢复", beforePhotos: beforePhotos)
         showToast("已恢复")
     }
 
@@ -236,56 +340,24 @@ extension LibraryStore {
         guard !expired.isEmpty else { return }
         let ids = Set(expired.map(\.id))
         for photo in expired {
-            try? FileManager.default.removeItem(at: LibraryPaths.originalURL(for: photo))
-            try? FileManager.default.removeItem(at: LibraryPaths.thumbnailURL(for: photo))
-            try? FileManager.default.removeItem(at: LibraryPaths.quickThumbnailURL(for: photo))
-            if !photo.isSystem, let liveURL = LibraryPaths.livePhotoURL(for: photo) {
-                try? FileManager.default.removeItem(at: liveURL)
-            }
-            if let editedFilename = photo.editedFilename {
-                try? FileManager.default.removeItem(at: LibraryPaths.edited.appendingPathComponent(editedFilename))
-            }
-            try? FileManager.default.removeItem(at: PhotoCompressor.backupDirectory(for: photo))
-            try? FileManager.default.removeItem(at: LibraryPaths.transcodes
-                .appendingPathComponent(photo.id.uuidString + ".mp4"))
-            ImageLoader.invalidate(photo: photo)
+            purgeAssetArtifacts(photo)
         }
         photos.removeAll { ids.contains($0.id) }
-        analysisIndex = analysisIndex.filter { !ids.contains($0.key) }
-        metadataStore?.removeAnalysis(ids)
-        removeAssetsFromLocalPeople(ids)
-        albums = albums.map { album in
-            var album = album
-            album.photoIDs.removeAll { ids.contains($0) }
-            return album
+        purgeAssetMetadata(ids)
+        if let viewerID, ids.contains(viewerID) {
+            self.viewerID = nil
         }
         save()
     }
 
     func deletePermanently(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        for id in ids {
-            guard let photo = photo(id: id) else { continue }
-            try? FileManager.default.removeItem(at: LibraryPaths.originalURL(for: photo))
-            try? FileManager.default.removeItem(at: LibraryPaths.thumbnailURL(for: photo))
-            try? FileManager.default.removeItem(at: LibraryPaths.quickThumbnailURL(for: photo))
-            if let editedFilename = photo.editedFilename {
-                try? FileManager.default.removeItem(at: LibraryPaths.edited.appendingPathComponent(editedFilename))
-            }
-            try? FileManager.default.removeItem(at: PhotoCompressor.backupDirectory(for: photo))
-            try? FileManager.default.removeItem(at: LibraryPaths.transcodes
-                .appendingPathComponent(photo.id.uuidString + ".mp4"))
-            ImageLoader.invalidate(photo: photo)
+        let targets = ids.compactMap { photo(id: $0) }
+        for photo in targets {
+            purgeAssetArtifacts(photo)
         }
         photos.removeAll { ids.contains($0.id) }
-        analysisIndex = analysisIndex.filter { !ids.contains($0.key) }
-        metadataStore?.removeAnalysis(ids)
-        removeAssetsFromLocalPeople(ids)
-        albums = albums.map { album in
-            var album = album
-            album.photoIDs.removeAll { ids.contains($0) }
-            return album
-        }
+        purgeAssetMetadata(ids)
         if let viewerID, ids.contains(viewerID) {
             self.viewerID = nil
         }
@@ -300,17 +372,10 @@ extension LibraryStore {
         return selection
     }
 
+    /// 永久删除前先弹出确认卡片；真正执行在 `performPendingDeletion()`。
     func confirmPermanentDelete(_ ids: Set<UUID>) {
         guard !isReadOnlyScope, !ids.isEmpty else { return }
-        let alert = NSAlert()
-        alert.messageText = "要永久删除 \(ids.count) 个项目吗？"
-        alert.informativeText = "此操作无法撤销。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "永久删除")
-        alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn {
-            deletePermanently(ids)
-        }
+        pendingDeletion = DeleteRequest(ids: ids, kind: .permanent)
     }
 
     func toggleHiddenCommand() {
@@ -433,7 +498,14 @@ extension LibraryStore {
             photos.append(contentsOf: imported)
             selection = Set(imported.map(\.id))
             save()
-            showToast("已粘贴 \(imported.count) 项")
+            // 在相簿里粘贴：新项目同时加入当前相簿，否则用户会以为「粘贴没反应」。
+            if let albumID = currentAlbumID {
+                addToAlbum(albumID, photoIDs: Set(imported.map(\.id)))
+            } else if case .smartAlbum(_) = sidebarItem {
+                showToast("已粘贴 \(imported.count) 项；智能相簿会按条件自动收录")
+            } else {
+                showToast("已粘贴 \(imported.count) 项")
+            }
         }
     }
 
@@ -509,7 +581,12 @@ extension LibraryStore {
         photos.append(contentsOf: copies)
         selection = Set(copies.map(\.id))
         save()
-        showToast(failed == 0 ? "已复制 \(copies.count) 项" : "已复制 \(copies.count) 项，\(failed) 项失败")
+        // 在相簿里复制：副本同样留在当前相簿。
+        if let albumID = currentAlbumID {
+            addToAlbum(albumID, photoIDs: Set(copies.map(\.id)))
+        } else {
+            showToast(failed == 0 ? "已复制 \(copies.count) 项" : "已复制 \(copies.count) 项，\(failed) 项失败")
+        }
     }
 
     static func duplicateName(_ name: String) -> String {
@@ -583,24 +660,9 @@ extension LibraryStore {
         }
     }
 
+    /// ⌘F：请求顶栏的自定义搜索框获得焦点（由 `GalleryView` 响应）。
     func focusSearchField() {
-        guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
-        if let item = window.toolbar?.items.compactMap({ $0 as? NSSearchToolbarItem }).first {
-            window.makeFirstResponder(item.searchField)
-            return
-        }
-        if let field = Self.findSearchField(in: window.contentView) {
-            window.makeFirstResponder(field)
-        }
-    }
-
-    static func findSearchField(in view: NSView?) -> NSSearchField? {
-        guard let view else { return nil }
-        if let field = view as? NSSearchField { return field }
-        for subview in view.subviews {
-            if let found = findSearchField(in: subview) { return found }
-        }
-        return nil
+        searchFocusRequest += 1
     }
 
     func emptyTrash() {
@@ -608,21 +670,13 @@ extension LibraryStore {
         deletePermanently(ids)
     }
 
-    /// 清空最近删除前二次确认。
+    /// 清空最近删除前展示确认卡片；真正执行在 `performPendingDeletion()`。
     func confirmEmptyTrash() {
         let ids = Set(photos.filter { $0.deletedAt != nil }.map { $0.id })
         guard !ids.isEmpty else {
             showToast("最近删除是空的")
             return
         }
-        let alert = NSAlert()
-        alert.messageText = "要清空最近删除中的 \(ids.count) 个项目吗？"
-        alert.informativeText = "此操作无法撤销，原图与编辑结果都会被删除。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "清空")
-        alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn {
-            deletePermanently(ids)
-        }
+        pendingDeletion = DeleteRequest(ids: ids, kind: .emptyTrash)
     }
 }

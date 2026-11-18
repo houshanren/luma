@@ -207,7 +207,7 @@ struct SmartRule: Identifiable, Codable, Hashable {
                 return true
             }
             guard let analysis else { return false }
-            return !category.labels.isDisjoint(with: analysis.labels)
+            return SceneCatalog.matches(category, analysis: analysis, photo: photo)
         case .hasText:
             let hasText = !(analysis?.text.isEmpty ?? true)
             return hasText == (trimmed == "是")

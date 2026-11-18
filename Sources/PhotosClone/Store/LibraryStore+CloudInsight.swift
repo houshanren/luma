@@ -1,10 +1,11 @@
 import Foundation
 
-/// 网络存储的分类浏览：媒体类型、场景与图内文字。
+/// 网络存储的分类浏览：媒体类型、场景、图内文字，以及由 EXIF 派生的地图 / 位置 / 人物 /
+/// 值得重看 / 重复项目。
 ///
-/// 网盘照片没有可读的 EXIF，也没有 `Photos.sqlite`：类型按文件名/扩展名推断，
-/// 场景与文字由本机 Vision 在缩略图上识别，结果只保留在内存（切网盘即清空），
-/// 不写图库数据库、不上传任何内容。
+/// 网盘照片的拍摄时间、相机与 GPS 由 `CloudEXIF` 读取文件头部得到（SMB 直接读文件，
+/// WebDAV / 官方网盘走 Range），识别结果与 EXIF 都写入当前图库的 `cloud_assets` 缓存，
+/// 换挂载只清内存，不写网盘、不上传任何内容。
 extension LibraryStore {
     /// 当前打开中的网盘挂载 ID。
     var currentCloudMountID: UUID? {
@@ -20,7 +21,20 @@ extension LibraryStore {
             showToast("先点「识别内容」，完成后即可按场景或文字浏览")
         }
         cloudModel.scope = scope
+        // 选了具体范围就回到网格；离开「位置」时收起地点详情，避免旧地点残留在其它范围。
+        cloudModel.overview = nil
+        if scope != .places { selectedPlace = nil }
+        similarScope = nil
         cloudVisibleCacheKey = nil
+    }
+
+    /// 打开 / 关闭网盘的分区总览（媒体类型、更多项目），与拾光 / 系统图库的分区标题行为一致。
+    func showCloudOverview(_ section: CloudOverviewSection?) {
+        if let section, cloudModel.overview == section {
+            cloudModel.overview = nil
+        } else {
+            cloudModel.overview = section
+        }
     }
 
     /// 单张云照片是否属于某个范围。
@@ -37,15 +51,52 @@ extension LibraryStore {
         case .scene(let id):
             guard let category = SceneCatalog.category(id: id),
                   let analysis = cloudModel.analysis[photo.id] else { return false }
-            return !category.labels.isDisjoint(with: analysis.labels)
+            return SceneCatalog.matches(category, analysis: analysis, photo: photo)
+        case .revisit:
+            let now = Date()
+            guard photo.capturedAt < now.addingTimeInterval(-LibraryHealthTuning.revisitCaptureAge) else {
+                return false
+            }
+            guard let viewedAt = cloudModel.viewedAt[photo.id] else { return true }
+            return viewedAt < now.addingTimeInterval(-LibraryHealthTuning.revisitViewAge)
+        case .map, .places:
+            return !photo.isVideo && photo.hasLocation
+        case .people:
+            return cloudPeople.contains { $0.assetIDs.contains(photo.id) }
+        case .duplicates:
+            return cloudDuplicatePhotoIDs.contains(photo.id)
+        case .health:
+            return false
+        case .keywords:
+            return false
+        case .keyword(let name):
+            return photo.tags.contains(name)
         }
     }
 
-    /// 当前网盘列表的分类计数（一次遍历，按目录版本 + 识别进度缓存）。
+    /// 当前网盘列表的分类计数（一次遍历，按目录版本 + 识别 / 元数据进度缓存）。
     var cloudScopeCounts: CloudScopeCounts {
-        let key = "\(cloudModel.revision)-\(cloudModel.analysis.count)"
+        let key = [
+            String(cloudModel.revision),
+            String(cloudModel.analysis.count),
+            String(cloudModel.metadataRevision),
+            String(cloudModel.people.count),
+            String(cloudModel.viewedAt.count),
+            String(cloudModel.healthReport?.scannedAt.timeIntervalSince1970 ?? 0),
+            String(cloudKeywords.count)
+        ].joined(separator: "\u{1F}")
         if key == cloudScopeCountsCacheKey { return cloudScopeCountsCache }
         var counts = CloudScopeCounts()
+        if let report = cloudModel.healthReport {
+            counts.health = report.blurry.count
+                + report.similarDuplicatePhotos.count
+                + report.largeVideos.count
+        }
+        let now = Date()
+        let captureCutoff = now.addingTimeInterval(-LibraryHealthTuning.revisitCaptureAge)
+        let viewCutoff = now.addingTimeInterval(-LibraryHealthTuning.revisitViewAge)
+        let peopleIDs = Set(cloudPeople.flatMap { $0.assetIDs })
+        let duplicateIDs = cloudDuplicatePhotoIDs
         for photo in cloudPhotos where !photo.isHidden {
             if photo.isVideo {
                 counts.videos += 1
@@ -56,10 +107,20 @@ extension LibraryStore {
             if photo.isAnimatedFile { counts.animated += 1 }
             if photo.isRAWFile { counts.raws += 1 }
             if photo.isFavorite { counts.favorites += 1 }
+            if !photo.isVideo, photo.hasLocation { counts.located += 1 }
+            if peopleIDs.contains(photo.id) { counts.people += 1 }
+            if duplicateIDs.contains(photo.id) { counts.duplicates += 1 }
+            if !photo.isVideo, photo.capturedAt < captureCutoff,
+               (cloudModel.viewedAt[photo.id] ?? .distantPast) < viewCutoff {
+                counts.revisit += 1
+            }
+            for tag in photo.tags {
+                counts.keywords[tag, default: 0] += 1
+            }
             guard let analysis = cloudModel.analysis[photo.id] else { continue }
             if !analysis.text.isEmpty { counts.text += 1 }
             for category in SceneCatalog.categories
-            where !category.labels.isDisjoint(with: analysis.labels) {
+            where SceneCatalog.matches(category, analysis: analysis, photo: photo) {
                 counts.scenes[category.id, default: 0] += 1
             }
         }
@@ -113,6 +174,17 @@ extension LibraryStore {
                             text: result.text,
                             searchBlob: (result.labels + " " + result.text).lowercased()
                         )
+                        if let feature = result.feature {
+                            self.cloudModel.features[photo.id] = feature
+                        }
+                        // 识别结果写入当前图库数据库，重开网盘 / 换目录不必重新识别。
+                        if let mountID = photo.cloudMountID, let path = photo.cloudPath {
+                            self.metadataStore?.saveCloudAnalysis(mountID: mountID,
+                                                                  path: path,
+                                                                  labels: result.labels,
+                                                                  text: result.text,
+                                                                  feature: result.feature)
+                        }
                         // 只有按场景/文字浏览时列表才会变化，避免识别过程中反复重排整个网格。
                         if self.cloudModel.scope.requiresAnalysis {
                             self.cloudVisibleCacheKey = nil
@@ -149,20 +221,24 @@ extension LibraryStore {
         cloudModel.analysisProgress = 0
         cloudModel.analysis = [:]
         cloudModel.scope = .all
+        cloudModel.overview = nil
         cloudModel.insightMountID = nil
         cloudScopeCountsCacheKey = nil
         cloudScopeCountsCache = CloudScopeCounts()
         cloudVisibleCacheKey = nil
+        resetCloudDerivedData()
     }
 
     /// 打开某个网盘前调用：只有挂载变化时才清空，避免在同一网盘内换目录丢结果。
     func prepareCloudInsight(for mountID: UUID) {
         guard let current = cloudModel.insightMountID else {
             cloudModel.insightMountID = mountID
+            loadCloudCacheForMount(mountID)
             return
         }
         guard current != mountID else { return }
         resetCloudInsight()
         cloudModel.insightMountID = mountID
+        loadCloudCacheForMount(mountID)
     }
 }

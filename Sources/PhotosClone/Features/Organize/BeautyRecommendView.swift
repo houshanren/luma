@@ -7,6 +7,7 @@ struct BeautyRecommendView: View {
     @EnvironmentObject private var settings: AppSettings
 
     private var report: BeautyReport? { store.beautyReport }
+    private var cloud: CloudBrowserModel { store.cloudModel }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,7 +20,18 @@ struct BeautyRecommendView: View {
         .frame(width: 760, height: 660)
         .background(Color(nsColor: .windowBackgroundColor))
         .task {
-            if store.beautyReport == nil, !store.isScanningBeauty {
+            // 先回填上次落库的结果，再判断是否需要重新分析。
+            store.restoreCachedBeautyReportIfNeeded()
+            // 本地、系统图库与网盘的推荐结果互不通用：范围变了就重新分析。
+            let stale: Bool
+            if store.isCloudScope {
+                stale = !cloud.beautyReportIsCloud
+            } else if store.isSystemScope {
+                stale = !store.beautyReportIsSystem
+            } else {
+                stale = cloud.beautyReportIsCloud || store.beautyReportIsSystem
+            }
+            if (store.beautyReport == nil || stale), !store.isScanningBeauty {
                 store.scanBeautyCandidates()
             }
         }
@@ -63,8 +75,8 @@ struct BeautyRecommendView: View {
     @ViewBuilder
     private var content: some View {
         if !store.canScanBeauty {
-            message("智能美化只作用于拾光本地图库",
-                    detail: "系统「照片」图库与网络存储是只读来源，请先切换到自己的图库。")
+            message("请先打开一个图库",
+                    detail: "智能美化需要当前图库或网盘的照片，建库后再试。")
         } else if store.isScanningBeauty {
             VStack(alignment: .leading, spacing: 10) {
                 ProgressView(value: store.beautyScanProgress)
@@ -213,7 +225,11 @@ struct BeautyRecommendView: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                Text("美化会生成渲染副本，原图保留；已有编辑会叠加保留。")
+                Text(store.isCloudScope
+                     ? "网盘只读：美化结果会保存为拾光本地图库的新照片，网盘原图不变。"
+                     : (store.isSystemScope
+                        ? "系统图库只读：美化结果会保存为拾光本地图库的新照片，「照片」原图不变。"
+                        : "美化会生成渲染副本，原图保留；已有编辑会叠加保留。"))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -233,11 +249,32 @@ struct BeautyRecommendView: View {
     // MARK: - 动作
 
     private var photosByID: [UUID: PhotoItem] {
-        Dictionary(uniqueKeysWithValues: store.photos.map { ($0.id, $0) })
+        let source: [PhotoItem]
+        if store.isCloudScope {
+            source = store.cloudPhotos
+        } else if store.isSystemScope {
+            source = store.systemLoadedPhotos
+        } else {
+            source = store.photos
+        }
+        return Dictionary(uniqueKeysWithValues: source.map { ($0.id, $0) })
     }
 
     private func requestApply(_ ids: [UUID]) {
         guard !ids.isEmpty else { return }
+        // 官方「照片」图库作为当前图库时，可以选择写回原图（PhotoKit，可撤销）或另存副本。
+        if store.canWriteSystemOriginals {
+            switch store.confirmSystemBeautyTarget(count: ids.count) {
+            case .original:
+                Task { await store.applyBeautyToSystemOriginals(ids) }
+            case .copy:
+                guard store.confirmBeautyApply(count: ids.count) else { return }
+                Task { await store.applyBeauty(to: ids) }
+            case .cancel:
+                break
+            }
+            return
+        }
         guard store.confirmBeautyApply(count: ids.count) else { return }
         Task {
             await store.applyBeauty(to: ids)

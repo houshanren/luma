@@ -53,6 +53,39 @@ struct PlaceInfo: Codable, Hashable {
     }
 }
 
+// MARK: - 聚合层级
+
+/// 「位置」页的地点聚合层级：省 / 市 / 区县 / 街道。
+/// 层级只影响聚类与标题，不改变照片本身的地名数据。
+enum PlaceGranularity: String, CaseIterable, Identifiable {
+    case province
+    case city
+    case district
+    case street
+
+    var id: String { rawValue }
+
+    /// 切换控件上的短标签。
+    var shortTitle: String {
+        switch self {
+        case .province: return "省"
+        case .city: return "市"
+        case .district: return "区"
+        case .street: return "街道"
+        }
+    }
+
+    /// 完整名称，用于提示文案。
+    var title: String {
+        switch self {
+        case .province: return "省份"
+        case .city: return "城市"
+        case .district: return "区县"
+        case .street: return "街道"
+        }
+    }
+}
+
 // MARK: - 地点聚类
 
 struct PlaceCluster: Identifiable {
@@ -63,6 +96,11 @@ struct PlaceCluster: Identifiable {
     let photos: [PhotoItem]
     let latitude: Double
     let longitude: Double
+    /// 照片经纬度包围盒：视野统计先按簇整体剔除，避免每次平移都逐张检查全部照片。
+    let minLatitude: Double
+    let maxLatitude: Double
+    let minLongitude: Double
+    let maxLongitude: Double
 
     var count: Int { photos.count }
     var cover: PhotoItem? { photos.first }
@@ -72,86 +110,180 @@ struct PlaceCluster: Identifiable {
 }
 
 enum PlaceClusterBuilder {
-    static func key(for photo: PhotoItem) -> (id: String, title: String, subtitle: String?, group: String) {
-        let country = photo.placeCountry
-        let province = photo.placeProvince
-        let city = photo.placeCity
-        let district = photo.placeDistrict
+    static func key(for photo: PhotoItem,
+                    granularity: PlaceGranularity = .district) -> (id: String, title: String, subtitle: String?, group: String) {
+        let country = clean(photo.placeCountry)
+        let province = clean(photo.placeProvince)
+        let city = clean(photo.placeCity)
+        let district = clean(photo.placeDistrict)
+        let poi = clean(photo.placePOI)
 
-        if city != nil || district != nil || province != nil {
-            var titleParts: [String] = []
-            if let city, !city.isEmpty { titleParts.append(city) }
-            if let district, !district.isEmpty, district != city { titleParts.append(district) }
-            var title = titleParts.joined(separator: "，")
-            if title.isEmpty {
-                title = province ?? country ?? "未知地点"
+        // 省级 / 市级缺数据时逐级回退；街道级允许只有街道名。
+        // 只有国家（如海上 / 景区坐标）也算有地名：至少能显示国家或地区，不退回坐标。
+        let hasNamedLevel = country != nil || city != nil || district != nil || province != nil
+            || (granularity == .street && poi != nil)
+        if hasNamedLevel {
+            let title: String
+            let subtitle: String?
+            switch granularity {
+            case .province:
+                title = province ?? city ?? country ?? "未知地点"
+                subtitle = country.flatMap { $0 == title ? nil : $0 }
+            case .city:
+                title = city ?? province ?? country ?? "未知地点"
+                subtitle = (province ?? country).flatMap { $0 == title ? nil : $0 }
+            case .district:
+                title = joined([city, district == city ? nil : district])
+                    ?? province ?? country ?? "未知地点"
+                subtitle = province.flatMap { $0 == title ? nil : $0 }
+            case .street:
+                title = poi ?? district ?? city ?? province ?? country ?? "未知地点"
+                subtitle = joined([city == title ? nil : city,
+                                   district == title ? nil : district])
             }
-            let subtitle: String? = {
-                guard let province, !province.isEmpty, province != title else { return nil }
-                return province
-            }()
             let group = PlaceInfo(country: country,
                                   province: province,
                                   city: city,
                                   district: district,
-                                  poi: nil).regionGroup
-            let id = [country, province, city, district].map { $0 ?? "" }.joined(separator: "|")
+                                  poi: poi).regionGroup
+            // id 只包含当前层级以上的路径，保证同一街道 / 城市能被聚到同一个桶里。
+            let path: [String?]
+            switch granularity {
+            case .province:
+                path = [country, province ?? city]
+            case .city:
+                path = [country, province, city ?? province]
+            case .district:
+                path = [country, province, city, district]
+            case .street:
+                path = [country, province, city, district, poi]
+            }
+            let id = ([granularity.rawValue] + path.map { $0 ?? "" }).joined(separator: "|")
             return (id, title, subtitle, group)
         }
 
-        // 没有地名：用约 1 公里的网格聚合，标题显示坐标。
+        // 没有地名：用约 11 公里的网格聚合，标题显示坐标。
+        // 网格不能太细：十万级图库里没有地名的照片可能很多，1 公里一格会拆出上千张卡片把页面拖死。
         let lat = photo.latitude ?? 0
         let lon = photo.longitude ?? 0
-        let id = String(format: "geo|%.2f|%.2f", lat, lon)
-        let title = String(format: "%.2f°N, %.2f°E", lat, lon)
+        let id = String(format: "geo|%.1f|%.1f", lat, lon)
+        let title = String(format: "%.1f°%@, %.1f°%@",
+                           abs(lat), lat >= 0 ? "N" : "S",
+                           abs(lon), lon >= 0 ? "E" : "W")
         return (id, title, "未命名地点", "其他地点")
     }
 
-    static func clusters(from photos: [PhotoItem]) -> [PlaceCluster] {
-        struct Bucket {
-            var title: String
-            var subtitle: String?
-            var group: String
-            var photos: [PhotoItem]
-            var latSum: Double
-            var lonSum: Double
-            var count: Int
-        }
+    private static func clean(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
 
-        var buckets: [String: Bucket] = [:]
+    private static func joined(_ parts: [String?]) -> String? {
+        let values = parts.compactMap { $0 }
+        return values.isEmpty ? nil : values.joined(separator: "，")
+    }
+
+    static func clusters(from photos: [PhotoItem],
+                         granularity: PlaceGranularity = .district) -> [PlaceCluster] {
+        // 用引用类型的桶就地累加：值类型桶每次 append 都要整份拷出再写回，
+        // 大图库（上万张带定位照片）会明显拖慢地图页打开速度。
+        var buckets: [String: PlaceBucket] = [:]
+        buckets.reserveCapacity(32)
         for photo in photos {
-            guard let lat = photo.latitude, let lon = photo.longitude else { continue }
-            let key = key(for: photo)
-            if var bucket = buckets[key.id] {
-                bucket.photos.append(photo)
-                bucket.latSum += lat
-                bucket.lonSum += lon
-                bucket.count += 1
-                buckets[key.id] = bucket
+            guard let lat = photo.latitude, let lon = photo.longitude,
+                  CoordinateValidator.isValid(latitude: lat, longitude: lon) else { continue }
+            let key = key(for: photo, granularity: granularity)
+            let bucket: PlaceBucket
+            if let existing = buckets[key.id] {
+                bucket = existing
             } else {
-                buckets[key.id] = Bucket(title: key.title,
-                                         subtitle: key.subtitle,
-                                         group: key.group,
-                                         photos: [photo],
-                                         latSum: lat,
-                                         lonSum: lon,
-                                         count: 1)
+                let created = PlaceBucket(key: key)
+                buckets[key.id] = created
+                bucket = created
             }
+            bucket.photos.append(photo)
+            bucket.latitudeSum += lat
+            bucket.longitudeSum += lon
+            bucket.minLatitude = min(bucket.minLatitude, lat)
+            bucket.maxLatitude = max(bucket.maxLatitude, lat)
+            bucket.minLongitude = min(bucket.minLongitude, lon)
+            bucket.maxLongitude = max(bucket.maxLongitude, lon)
         }
 
         return buckets.map { id, bucket in
-            PlaceCluster(id: id,
-                         title: bucket.title,
-                         subtitle: bucket.subtitle,
-                         group: bucket.group,
-                         photos: bucket.photos.sorted { $0.capturedAt > $1.capturedAt },
-                         latitude: bucket.latSum / Double(bucket.count),
-                         longitude: bucket.lonSum / Double(bucket.count))
+            bucket.photos.sort { $0.capturedAt > $1.capturedAt }
+            let count = Double(max(1, bucket.photos.count))
+            return PlaceCluster(id: id,
+                                title: bucket.title,
+                                subtitle: bucket.subtitle,
+                                group: bucket.group,
+                                photos: bucket.photos,
+                                latitude: bucket.latitudeSum / count,
+                                longitude: bucket.longitudeSum / count,
+                                minLatitude: bucket.minLatitude,
+                                maxLatitude: bucket.maxLatitude,
+                                minLongitude: bucket.minLongitude,
+                                maxLongitude: bucket.maxLongitude)
         }
         .sorted {
             if $0.count != $1.count { return $0.count > $1.count }
             return $0.title.localizedStandardCompare($1.title) == .orderedAscending
         }
+    }
+}
+
+/// 地点文案：查看器顶栏、信息面板与网格地点标签共用同一套层级与回退顺序，
+/// 避免同一个地点在不同位置显示成不同的名字。
+extension PhotoItem {
+    /// 统一的地点标题：街道 → 城市 → 区县 → 省份 → 国家。
+    var placeTitle: String? {
+        if let poi = photoPlaceText(placePOI) { return poi }
+        return photoPlaceText(placeCity)
+            ?? photoPlaceText(placeDistrict)
+            ?? photoPlaceText(placeProvince)
+            ?? photoPlaceText(placeCountry)
+    }
+
+    /// 地点副行：标题是街道时补「城市 · 区县」，否则补下一级行政区。
+    var placeSubtitle: String? {
+        let city = photoPlaceText(placeCity)
+        let district = photoPlaceText(placeDistrict)
+        if photoPlaceText(placePOI) != nil {
+            let parts = [city, district].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        let title = placeTitle
+        for candidate in [district, photoPlaceText(placeProvince), photoPlaceText(placeCountry)] {
+            if let candidate, candidate != title { return candidate }
+        }
+        return nil
+    }
+
+    private func photoPlaceText(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+}
+
+/// 地点聚类过程中的累加桶（引用类型，避免结构体写回时的整份拷贝）。
+private final class PlaceBucket {
+    let title: String
+    let subtitle: String?
+    let group: String
+    var photos: [PhotoItem] = []
+    var latitudeSum = 0.0
+    var longitudeSum = 0.0
+    var minLatitude = Double.infinity
+    var maxLatitude = -Double.infinity
+    var minLongitude = Double.infinity
+    var maxLongitude = -Double.infinity
+
+    init(key: (id: String, title: String, subtitle: String?, group: String)) {
+        title = key.title
+        subtitle = key.subtitle
+        group = key.group
     }
 }
 

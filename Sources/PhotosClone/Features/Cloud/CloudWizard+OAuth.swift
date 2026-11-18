@@ -24,14 +24,13 @@ extension CloudSetupWizardView {
             VStack(alignment: .leading, spacing: 8) {
                 bullet("1", "打开 \(flow.title) 开放平台，创建一个「个人工具 / 桌面应用」")
                 bullet("2", "把回调地址填成：\(OAuthLoopbackServer.redirectURI)")
-                bullet("3", "权限勾选：\(flow == .aliyun ? "user:base、file:all:read" : "basic、netdisk")")
-                bullet("4", "把 AppID / AppSecret 填到下面")
+                bullet("3", "权限勾选：basic、netdisk")
+                bullet("4", "把 AppKey（API Key）/ SecretKey 填到下面，AppID 不要填进 AppKey")
             }
 
             HStack(spacing: 8) {
                 Button("打开开放平台") {
-                    open(flow == .aliyun ? "https://www.alipan.com/developer"
-                                         : "https://pan.baidu.com/union")
+                    open("https://pan.baidu.com/union")
                 }
                 Button("复制回调地址") {
                     NSPasteboard.general.clearContents()
@@ -43,8 +42,15 @@ extension CloudSetupWizardView {
 
             Divider()
 
-            labeledField("AppID", text: $clientID, prompt: "开放平台应用 ID")
-            labeledSecureField("AppSecret", text: $clientSecret, prompt: "开放平台应用密钥")
+            labeledField("AppKey", text: $clientID, prompt: "应用的 API Key")
+            labeledSecureField("SecretKey", text: $clientSecret, prompt: "应用的 Secret Key")
+            labeledField("AppID", text: $clientAppID, prompt: "可选，仅用于 device_id")
+            if baiduClientIDLooksLikeAppID {
+                Text("当前 AppKey 填的是纯数字，看起来是 AppID。百度授权接口的 client_id 必须使用 AppKey（API Key）。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Text("凭据只保存在本机 macOS 钥匙串，用于换取和刷新令牌。")
                 .font(.system(size: 10.5))
@@ -56,11 +62,15 @@ extension CloudSetupWizardView {
         VStack(alignment: .leading, spacing: 14) {
             Text("2. 在浏览器中登录并授权")
                 .font(.system(size: 13, weight: .semibold))
+            labeledField("名称", text: $mountName, prompt: flow.title)
 
             VStack(alignment: .leading, spacing: 6) {
                 infoRow("接入方式", flow.title)
                 infoRow("回调地址", OAuthLoopbackServer.redirectURI)
-                infoRow("AppID", clientID)
+                infoRow(flow == .baidu ? "AppKey" : "AppID", clientID)
+                if flow == .baidu, !clientAppID.trimmingCharacters(in: .whitespaces).isEmpty {
+                    infoRow("AppID", clientAppID)
+                }
             }
 
             HStack(spacing: 8) {
@@ -123,7 +133,7 @@ extension CloudSetupWizardView {
             }
             VStack(alignment: .leading, spacing: 6) {
                 infoRow("缩略图", "服务端生成，浏览大目录不会下载原图")
-                infoRow("视频", flow == .aliyun ? "优先使用官方转码 m3u8" : "官方直链流式播放")
+                infoRow("视频", "官方直链流式播放")
                 infoRow("写操作", "当前为只读；上传/删除请到网盘 App")
             }
             .padding(12)
@@ -136,10 +146,20 @@ extension CloudSetupWizardView {
 
     // MARK: 动作
 
+    private var baiduClientIDLooksLikeAppID: Bool {
+        let value = clientID.trimmingCharacters(in: .whitespaces)
+        return !value.isEmpty && value.allSatisfy(\.isNumber)
+    }
+
+    private func currentCredentials(flow: CloudWizardFlow) -> CloudClientCredentials {
+        CloudClientCredentials(clientID: clientID.trimmingCharacters(in: .whitespaces),
+                               clientSecret: clientSecret.trimmingCharacters(in: .whitespaces),
+                               appID: flow == .baidu ? clientAppID.trimmingCharacters(in: .whitespaces) : nil)
+    }
+
     func saveCredentials(flow: CloudWizardFlow) {
         guard let kind = flow.kind else { return }
-        let credentials = CloudClientCredentials(clientID: clientID.trimmingCharacters(in: .whitespaces),
-                                                 clientSecret: clientSecret.trimmingCharacters(in: .whitespaces))
+        let credentials = currentCredentials(flow: flow)
         CloudOAuthStore.saveCredentials(credentials, for: kind)
         status = "已保存应用凭据"
         statusIsError = false
@@ -148,23 +168,19 @@ extension CloudSetupWizardView {
 
     private func startOAuth(flow: CloudWizardFlow) {
         guard let kind = flow.kind, !isAuthorizing else { return }
-        let credentials = CloudClientCredentials(clientID: clientID.trimmingCharacters(in: .whitespaces),
-                                                 clientSecret: clientSecret.trimmingCharacters(in: .whitespaces))
+        let credentials = currentCredentials(flow: flow)
         CloudOAuthStore.saveCredentials(credentials, for: kind)
 
         let state = UUID().uuidString
         let redirect = OAuthLoopbackServer.redirectURI
         var url: URL?
         switch kind {
-        case .aliyun:
-            url = AliyunOAuth.authorizeURL(clientID: credentials.clientID,
-                                           redirectURI: redirect,
-                                           state: state)
         case .baidu:
             url = BaiduOAuth.authorizeURL(clientID: credentials.clientID,
+                                          appID: credentials.appID,
                                           redirectURI: redirect,
                                           state: state)
-        case .webdav, .smb:
+        case .webdav, .smb, .quark, .aliyun:
             url = nil
         }
         guard let url else {
@@ -224,31 +240,23 @@ extension CloudSetupWizardView {
         defer { isBusy = false }
 
         let token: CloudToken
-        var driveID: String?
         let name: String
+        let trimmedName = mountName.trimmingCharacters(in: .whitespacesAndNewlines)
 
         switch kind {
-        case .aliyun:
-            token = try await AliyunOAuth.exchange(clientID: clientID,
-                                                   clientSecret: clientSecret,
-                                                   code: code,
-                                                   redirectURI: redirectURI)
-            let info = try await AliyunOAuth.driveInfo(accessToken: token.accessToken)
-            driveID = info.driveID
-            name = "阿里云盘"
         case .baidu:
             token = try await BaiduOAuth.exchange(clientID: clientID,
                                                   clientSecret: clientSecret,
                                                   code: code,
                                                   redirectURI: redirectURI)
-            name = "百度网盘"
-        case .webdav, .smb:
+            name = trimmedName.isEmpty ? "百度网盘" : trimmedName
+        case .webdav, .smb, .quark, .aliyun:
             throw CloudOAuthError.unsupportedProvider
         }
 
         if let error = store.registerOAuthMount(kind: kind,
                                                 name: name,
-                                                driveID: driveID,
+                                                driveID: nil,
                                                 token: token) {
             throw CloudOAuthError.api(error)
         }

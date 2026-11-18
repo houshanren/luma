@@ -93,10 +93,10 @@ enum ImageLoader {
 
     /// 快速层文件存在且不早于主缩略图时返回其路径（主图更新后视为过期）。
     private static func freshQuickThumbnailURL(for photo: PhotoItem, mainURL: URL) -> URL? {
-        let fm = FileManager.default
         let quickURL = LibraryPaths.quickThumbnailURL(for: photo)
-        guard let quickDate = (try? fm.attributesOfItem(atPath: quickURL.path))?[.modificationDate] as? Date,
-              let mainDate = (try? fm.attributesOfItem(atPath: mainURL.path))?[.modificationDate] as? Date,
+        // 修改时间走缩略图索引：滚动时不再对每个格子做两次磁盘 stat。
+        guard let quickDate = ThumbnailFileIndex.shared.modificationDate(path: quickURL.path),
+              let mainDate = ThumbnailFileIndex.shared.modificationDate(path: mainURL.path),
               quickDate >= mainDate else { return nil }
         return quickURL
     }
@@ -111,6 +111,7 @@ enum ImageLoader {
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
             try? data.write(to: url, options: .atomic)
+            ThumbnailFileIndex.shared.recordWrite(url: url)
         }
     }
 
@@ -139,22 +140,36 @@ enum ImageLoader {
         cache.object(forKey: "\(pixelBucket(for: maxPixel))|\(photo.cacheKey)" as NSString)
     }
 
+    /// 外部缓存（云盘快速层等）复用同一套文件解码逻辑，不触发缩略图生成。
+    static func decodeThumbnailFile(at url: URL, maxPixel: CGFloat) -> NSImage? {
+        decodeThumbnail(at: url, maxPixel: maxPixel)
+    }
+
+    /// 外部来源（PhotoKit）取到的缩略图写回网格缓存：与本地解码共用同一套 key 与容量控制。
+    static func storeGridThumbnail(_ image: NSImage, for photo: PhotoItem, maxPixel: CGFloat) {
+        store(image, forKey: "\(pixelBucket(for: maxPixel))|\(photo.cacheKey)" as NSString)
+    }
+
     /// 缩略图磁盘位置；系统图库缺失时按需生成。
     private static func thumbnailSourceURL(for photo: PhotoItem) -> URL? {
-        let url: URL
         if photo.isCloud {
             guard let mountID = photo.cloudMountID, let path = photo.cloudPath else { return nil }
-            url = CloudPaths.thumbnailURL(mountID: mountID, path: path)
-        } else if photo.isSystem {
-            let existing = LibraryPaths.thumbnailURL(for: photo)
-            if FileManager.default.fileExists(atPath: existing.path) { return existing }
-            let destination = LibraryPaths.systemThumbs.appendingPathComponent(photo.id.uuidString + ".jpg")
-            generateSystemThumbnail(for: photo, destination: destination)
-            url = destination
-        } else {
-            url = LibraryPaths.thumbnailURL(for: photo)
+            let url = CloudPaths.thumbnailURL(mountID: mountID, path: path)
+            return ThumbnailFileIndex.shared.exists(path: url.path) ? url : nil
         }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        if photo.isSystem {
+            // 官方 derivative 优先；路径已在查询时算好，这里只查索引，避免每格都碰磁盘。
+            if let derivative = photo.systemThumbnailPath {
+                let url = URL(fileURLWithPath: derivative)
+                if ThumbnailFileIndex.shared.exists(path: url.path) { return url }
+            }
+            let destination = LibraryPaths.systemThumbs.appendingPathComponent(photo.id.uuidString + ".jpg")
+            if ThumbnailFileIndex.shared.exists(path: destination.path) { return destination }
+            generateSystemThumbnail(for: photo, destination: destination)
+            return ThumbnailFileIndex.shared.exists(path: destination.path) ? destination : nil
+        }
+        let url = LibraryPaths.thumbnailURL(for: photo)
+        return ThumbnailFileIndex.shared.exists(path: url.path) ? url : nil
     }
 
     /// 系统图库没有现成 derivative 时，从原图 / 视频现场生成缩略图。
@@ -174,6 +189,8 @@ enum ImageLoader {
                                                  destination: destination,
                                                  rotation: photo.rotationAngle)
             }
+            // 生成完成后立刻登记，紧跟着的存在性检查不必再 stat。
+            ThumbnailFileIndex.shared.recordWrite(url: destination)
         }
     }
 
@@ -199,6 +216,14 @@ enum ImageLoader {
 
     private static func displayKey(for photo: PhotoItem, maxPixel: CGFloat, sdr: Bool) -> NSString {
         "\(photo.cacheKey)-display-\(Int(maxPixel))\(sdr ? "-sdr" : "")" as NSString
+    }
+
+    /// 动图专用：保留全部帧交给 `AnimatedImageView` 播放，不走静态解码缓存。
+    /// 已编辑照片是静态渲染结果；云端动图由 Store 下载完整文件后再解码。
+    static func animatedImage(for photo: PhotoItem) -> NSImage? {
+        guard photo.playsAnimation, !photo.isCloud else { return nil }
+        let url = LibraryPaths.sourceURL(for: photo)
+        return NSImage(contentsOf: url)
     }
 
     /// 查看器显示图：解码结果写入内存缓存，回翻或连翻时不重复解码。
@@ -248,12 +273,52 @@ enum ImageLoader {
         }
     }
 
+    /// 滚动预取：窗口 / 分页落位后，提前把即将进入视野的格子解码成快速层。
+    /// 参考系统「照片」的预加载策略——只解码 192px 小图并写入内存与快速层文件，
+    /// 真正滚到这些格子时直接命中缓存，不再等磁盘 IO 与解码。
+    static func prefetchGridQuick(for photos: [PhotoItem], limit: Int = 0) {
+        let cap = limit > 0 ? limit : prefetchBatchLimit
+        guard !photos.isEmpty, cap > 0 else { return }
+        let quickKey = gridQuickPixel
+        let targets = photos.prefix(cap).filter {
+            cache.object(forKey: "\(quickKey)|\($0.cacheKey)" as NSString) == nil
+        }
+        guard !targets.isEmpty else { return }
+        let workload = Array(targets)
+        let maxPixel = CGFloat(quickKey)
+        let workers = min(ThumbnailPrefetchTuner.concurrency, workload.count)
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                var next = 0
+                func addWorker() {
+                    guard next < workload.count else { return }
+                    let photo = workload[next]
+                    next += 1
+                    group.addTask {
+                        guard !Task.isCancelled else { return }
+                        let started = Date().timeIntervalSinceReferenceDate
+                        _ = gridThumbnail(for: photo, maxPixel: maxPixel)
+                        ThumbnailPrefetchTuner.record(
+                            milliseconds: (Date().timeIntervalSinceReferenceDate - started) * 1_000
+                        )
+                    }
+                }
+                // 并发与单次预取量按实测 IO 延迟自适应：慢盘上少排队，快盘上多预热。
+                for _ in 0..<max(1, workers) { addWorker() }
+                while await group.next() != nil { addWorker() }
+            }
+        }
+    }
+
+    /// 单次窗口预取的张数上限：外接机械盘 / 网络盘上自动缩小，避免预取把可见格子的 IO 抢光。
+    static var prefetchBatchLimit: Int { ThumbnailPrefetchTuner.batchLimit }
+
     /// 打开相簿 / 文件夹后预热前若干张快速缩略图：
     /// 解码一次并写入本地快速层文件与内存缓存，首屏与后续滚动直接命中，不必逐张等外部磁盘。
     /// 返回的任务可在切换相簿时取消。
     @discardableResult
     static func prewarmQuickThumbnails(for photos: [PhotoItem],
-                                       concurrency: Int = 3) -> Task<Void, Never> {
+                                       concurrency: Int = ThumbnailPrefetchTuner.concurrency) -> Task<Void, Never> {
         let targets = photos
         return Task.detached(priority: .utility) {
             guard !targets.isEmpty else { return }
@@ -265,7 +330,11 @@ enum ImageLoader {
                     next += 1
                     group.addTask {
                         guard !Task.isCancelled else { return }
+                        let started = Date().timeIntervalSinceReferenceDate
                         _ = gridThumbnail(for: photo, maxPixel: CGFloat(gridQuickPixel))
+                        ThumbnailPrefetchTuner.record(
+                            milliseconds: (Date().timeIntervalSinceReferenceDate - started) * 1_000
+                        )
                     }
                 }
                 for _ in 0..<max(1, concurrency) { addWorker() }
@@ -328,6 +397,48 @@ enum ImageLoader {
                                                  format: .RGBA8,
                                                  colorSpace: space) else { return image }
         return NSImage(cgImage: output, size: image.size)
+    }
+
+    /// 本地视频封面补生成：导入时若还没有 ffmpeg（MKV 等容器），derivative 会缺失；
+    /// 现在组件内置了就绪后，首次显示时补一帧，不需要重新导入整个图库。
+    enum LocalVideoPoster {
+        private static let lock = NSLock()
+        private static var running: Set<UUID> = []
+        /// 本次会话已失败的项目不再反复拉起 ffmpeg。
+        private static var failed: Set<UUID> = []
+
+        static func ensure(for photo: PhotoItem) async {
+            guard photo.isVideo, !photo.isCloud, !photo.isSystem else { return }
+            let destination = LibraryPaths.thumbnailURL(for: photo)
+            guard !FileManager.default.fileExists(atPath: destination.path) else { return }
+            let source = LibraryPaths.sourceURL(for: photo)
+            guard FileManager.default.fileExists(atPath: source.path) else { return }
+
+            lock.lock()
+            guard !running.contains(photo.id), !failed.contains(photo.id) else {
+                lock.unlock()
+                return
+            }
+            running.insert(photo.id)
+            lock.unlock()
+            defer {
+                lock.lock()
+                running.remove(photo.id)
+                lock.unlock()
+            }
+
+            _ = await Task.detached(priority: .utility) {
+                VideoSupport.makeThumbnail(url: source, destination: destination)
+            }.value
+
+            if FileManager.default.fileExists(atPath: destination.path) {
+                ImageLoader.invalidate(photo: photo)
+            } else {
+                lock.lock()
+                failed.insert(photo.id)
+                lock.unlock()
+            }
+        }
     }
 
     static func invalidate(photo: PhotoItem) {
@@ -465,6 +576,44 @@ enum ImageLoader {
     }
 }
 
+/// 缩略图预取的吞吐自适应：按实测「读盘 + 解码」耗时调节并发与单批张数。
+/// 机械盘 / 网络盘上单张可能要上百毫秒，此时缩小预取规模，避免把可见格子的 IO 抢光。
+private enum ThumbnailPrefetchTuner {
+    private static let lock = NSLock()
+    private static var ewmaMS: Double = 6
+    private static var samples = 0
+
+    static func record(milliseconds: Double) {
+        guard milliseconds.isFinite, milliseconds >= 0 else { return }
+        lock.lock()
+        samples += 1
+        if samples < 5 {
+            ewmaMS = (ewmaMS * Double(samples - 1) + milliseconds) / Double(samples)
+        } else {
+            ewmaMS = ewmaMS * 0.8 + milliseconds * 0.2
+        }
+        lock.unlock()
+    }
+
+    static var concurrency: Int {
+        lock.lock()
+        let value = ewmaMS
+        lock.unlock()
+        if value > 45 { return 2 }
+        if value > 18 { return 3 }
+        return 4
+    }
+
+    static var batchLimit: Int {
+        lock.lock()
+        let value = ewmaMS
+        lock.unlock()
+        if value > 45 { return 80 }
+        if value > 18 { return 120 }
+        return 160
+    }
+}
+
 /// 限制后台预取解码的并发数，避免连翻时预取任务挤占当前照片的解码。
 private final class DisplayPrefetchLimiter: @unchecked Sendable {
     static let shared = DisplayPrefetchLimiter()
@@ -502,7 +651,9 @@ private final class ThumbnailGenerationGate: @unchecked Sendable {
     static let shared = ThumbnailGenerationGate()
 
     private let condition = NSCondition()
-    private let limit = 3
+    /// 同时生成的缩略图数量：官方「照片」在滚动时会并行解码多个格子，
+    /// 这里按机器核数放宽（4–8），比固定 3 个更快补齐首屏空白格。
+    private let limit = max(4, min(8, ProcessInfo.processInfo.activeProcessorCount - 2))
     private var active = 0
     private var inFlight: Set<String> = []
 
@@ -512,14 +663,14 @@ private final class ThumbnailGenerationGate: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         if inFlight.contains(key) {
-            // 等同一个文件的生成结束，避免重复解码。
-            let deadline = Date(timeIntervalSinceNow: 3)
+            // 等同一个文件的生成结束，避免重复解码；生成完成后调用方会重新检查文件。
+            let deadline = Date(timeIntervalSinceNow: 10)
             while inFlight.contains(key), Date() < deadline {
                 condition.wait(until: Date(timeIntervalSinceNow: 0.2))
             }
             return .duplicate
         }
-        let deadline = Date(timeIntervalSinceNow: 3)
+        let deadline = Date(timeIntervalSinceNow: 6)
         while active >= limit {
             guard Date() < deadline else { return .throttled }
             condition.wait(until: Date(timeIntervalSinceNow: 0.2))

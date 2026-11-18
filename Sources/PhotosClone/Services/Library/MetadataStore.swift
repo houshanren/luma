@@ -1,11 +1,16 @@
 import Foundation
 
-/// 本地图库的元数据存储（SQLite）。系统「照片」图库只读，不写入这里。
+/// 当前图库的元数据存储（SQLite）。除本地 `assets` 等表外，还保存系统图库 / 网盘的派生缓存
+/// （`system_analysis`、`derived_reports`、`cloud_assets`、`cloud_people`）；
+/// Apple 的 `Photos.sqlite` 始终只读，真实写入只经 PhotoKit。
 final class MetadataStore {
     let db: SQLiteDatabase
     let queue = DispatchQueue(label: "com.baymax.photosclone.metadata")
     private var pendingData: LibraryData?
     private var isWriting = false
+    /// 网盘缓存行的轻量副本（不含 feature BLOB）：按挂载缓存，切换目录时不再重复查库。
+    /// 只在 `queue` 内读写；任何写库都会让对应挂载的缓存失效。
+    var cloudAssetsRowCache: [UUID: [String: CloudAssetCacheRow]] = [:]
 
     init(url: URL) throws {
         db = try SQLiteDatabase(path: url.path, readonly: false)
@@ -45,6 +50,13 @@ final class MetadataStore {
                 pendingData = nil
                 try? write(next)
             }
+        }
+    }
+
+    /// 保险库备份前把 WAL 合并回主库，避免复制到一半的日志。
+    func checkpoint() {
+        queue.sync {
+            try? db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         }
     }
 
@@ -90,9 +102,13 @@ final class MetadataStore {
         var keywords: [String]?
         var title: String?
         var viewedAt: Date?
+        var rating: Int?
+        var flag: PhotoFlag?
+        var colorLabel: PhotoColorLabel?
 
         var isEmpty: Bool {
-            isFavorite == nil && isHidden == nil && keywords == nil && title == nil && viewedAt == nil
+            isFavorite == nil && isHidden == nil && keywords == nil && title == nil
+                && viewedAt == nil && rating == nil && flag == nil && colorLabel == nil
         }
     }
 
@@ -110,6 +126,9 @@ final class MetadataStore {
                 }
                 overlay.title = row["title"]?.string
                 overlay.viewedAt = row["viewed_at"]?.double.map { Date(timeIntervalSince1970: $0) }
+                overlay.rating = row["rating"]?.int
+                overlay.flag = row["flag"]?.string.flatMap(PhotoFlag.init(rawValue:))
+                overlay.colorLabel = row["color_label"]?.string.flatMap(PhotoColorLabel.init(rawValue:))
                 result[id] = overlay
             }
             return result
@@ -130,8 +149,9 @@ final class MetadataStore {
             }
             try? db.execute("""
                 INSERT OR REPLACE INTO asset_overlays
-                (asset_id, is_favorite, is_hidden, keywords, title, viewed_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (asset_id, is_favorite, is_hidden, keywords, title, viewed_at,
+                 rating, flag, color_label, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [
                     id.uuidString,
                     overlay.isFavorite.map { $0 ? 1 : 0 },
@@ -139,6 +159,9 @@ final class MetadataStore {
                     keywords,
                     overlay.title,
                     overlay.viewedAt?.timeIntervalSince1970,
+                    overlay.rating,
+                    overlay.flag?.rawValue,
+                    overlay.colorLabel?.rawValue,
                     Date().timeIntervalSince1970
                 ])
         }
@@ -180,6 +203,14 @@ final class MetadataStore {
             for id in ids {
                 try? self.db.execute("DELETE FROM asset_analysis WHERE asset_id = ?", [id.uuidString])
             }
+        }
+    }
+
+    /// 清空全部本地图库的分析结果（「重置」用）：标签、文字与特征向量一并删除。
+    func purgeAnalysis() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            try? self.db.execute("DELETE FROM asset_analysis", [])
         }
     }
 
@@ -310,6 +341,27 @@ final class MetadataStore {
                     try self.db.execute("INSERT OR REPLACE INTO scanned_faces (asset_id) VALUES (?)",
                                         [id.uuidString])
                 }
+            }
+        }
+    }
+
+    /// 永久删除资产时清理与它绑定的端侧人脸数据、补充元数据与已扫标记。
+    /// 直接在数据库里按 `asset_id` 删除，不依赖聚结果是否已经载入内存；
+    /// 之后再把没有照片的人物一并移除，避免留下空人物。
+    func removeAssetDerivedData(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            try? self.db.transaction {
+                for id in ids {
+                    try self.db.execute("DELETE FROM person_assets WHERE asset_id = ?", [id.uuidString])
+                    try self.db.execute("DELETE FROM scanned_faces WHERE asset_id = ?", [id.uuidString])
+                    try self.db.execute("DELETE FROM asset_analysis WHERE asset_id = ?", [id.uuidString])
+                    try self.db.execute("DELETE FROM asset_overlays WHERE asset_id = ?", [id.uuidString])
+                }
+                try self.db.execute("""
+                    DELETE FROM people WHERE id NOT IN (SELECT DISTINCT person_id FROM person_assets);
+                    """)
             }
         }
     }
@@ -464,12 +516,125 @@ final class MetadataStore {
                 keywords TEXT,
                 title TEXT,
                 viewed_at REAL,
+                rating INTEGER,
+                flag TEXT,
+                color_label TEXT,
                 updated_at REAL NOT NULL
+            );
+            """)
+        // 系统图库的端侧识别与特征向量缓存（写在当前图库的数据库里，不写 Photos.sqlite）。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS system_analysis (
+                library_path TEXT NOT NULL,
+                asset_id TEXT NOT NULL,
+                labels TEXT,
+                text TEXT,
+                feature BLOB,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (library_path, asset_id)
+            );
+            """)
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_system_analysis_path ON system_analysis(library_path);")
+        // 派生报告（体检 / 美化推荐 / 相似结果）：按「范围 + 签名」缓存 JSON，换范围或换库自动失效。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS derived_reports (
+                key TEXT PRIMARY KEY NOT NULL,
+                signature TEXT,
+                payload TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            """)
+        // 网盘照片缓存：EXIF / 端侧识别 / 特征向量 / 查看记录，按远端文件大小校验。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_assets (
+                mount_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                size INTEGER,
+                remote_mtime REAL,
+                exif TEXT,
+                labels TEXT,
+                text TEXT,
+                feature BLOB,
+                viewed_at REAL,
+                metadata_at REAL,
+                analyzed_at REAL,
+                people_at REAL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (mount_id, path)
+            );
+            """)
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_cloud_assets_mount ON cloud_assets(mount_id);")
+        // 网盘端侧人物聚类缓存（与本地人物分开，按挂载点清理）。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_people (
+                mount_id TEXT NOT NULL,
+                person_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                face_count INTEGER NOT NULL DEFAULT 0,
+                cover BLOB,
+                centroid BLOB,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (mount_id, person_id)
+            );
+            """)
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_person_assets (
+                mount_id TEXT NOT NULL,
+                person_id TEXT NOT NULL,
+                asset_id TEXT NOT NULL,
+                PRIMARY KEY (mount_id, person_id, asset_id)
+            );
+            """)
+        // 全库检索索引（「问一问」与标签治理共用）。
+        // 文档表与 FTS 表分离：FTS 只是召回通道，排序与过滤都在文档表上做。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS search_docs (
+                doc_id TEXT PRIMARY KEY NOT NULL,
+                asset_id TEXT NOT NULL,
+                title TEXT,
+                keywords TEXT,
+                labels TEXT,
+                ocr TEXT,
+                place TEXT,
+                people TEXT,
+                camera TEXT,
+                captured_at REAL,
+                updated_at REAL NOT NULL
+            );
+            """)
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_search_docs_asset ON search_docs(asset_id);")
+        // 中文子串检索只能靠 trigram；旧系统没有该分词器时退回默认分词，词法召回降级但不报错。
+        do {
+            try db.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
+                    doc_id UNINDEXED, title, keywords, labels, ocr, place, people, camera,
+                    tokenize = 'trigram'
+                );
+                """)
+        } catch {
+            try? db.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
+                    doc_id UNINDEXED, title, keywords, labels, ocr, place, people, camera
+                );
+                """)
+        }
+        // 768 维图像特征的符号位量化（96 字节/张），用于向量召回预筛。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS search_vectors (
+                doc_id TEXT PRIMARY KEY NOT NULL,
+                bits BLOB NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            """)
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS search_state (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT
             );
             """)
         // 旧库补列：最近查看时间（「值得重看」用）。
         try addColumnIfNeeded("assets", "viewed_at", "REAL")
-        try db.execute("PRAGMA user_version = 5;")
+        try db.execute("PRAGMA user_version = 7;")
 
         // 地点信息（旧库自动补列）。
         for column in ["place_country", "place_province", "place_city", "place_district", "place_poi"] {
@@ -486,6 +651,26 @@ final class MetadataStore {
         try addColumnIfNeeded("assets", "live_photo_video_path", "TEXT")
         // 相簿自定义封面（旧库自动补列）。
         try addColumnIfNeeded("albums", "cover_asset_id", "TEXT")
+
+        // 元数据工作流：评分 / 旗标 / 色标。
+        try addColumnIfNeeded("assets", "rating", "INTEGER")
+        try addColumnIfNeeded("assets", "flag", "TEXT")
+        try addColumnIfNeeded("assets", "color_label", "TEXT")
+        // 查重 2.0：原文件内容哈希与感知哈希。
+        try addColumnIfNeeded("assets", "content_hash", "TEXT")
+        try addColumnIfNeeded("assets", "perceptual_hash", "INTEGER")
+        try db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_assets_content_hash
+            ON assets(content_hash) WHERE content_hash IS NOT NULL;
+            """)
+        try db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_assets_rating
+            ON assets(rating) WHERE rating IS NOT NULL AND rating > 0;
+            """)
+        // 系统图库叠加数据的同名字段（旧库自动补列）。
+        try addColumnIfNeeded("asset_overlays", "rating", "INTEGER")
+        try addColumnIfNeeded("asset_overlays", "flag", "TEXT")
+        try addColumnIfNeeded("asset_overlays", "color_label", "TEXT")
     }
 
     private func addColumnIfNeeded(_ table: String, _ column: String, _ type: String) throws {
@@ -618,6 +803,11 @@ final class MetadataStore {
            let keywordsData = keywordsString.data(using: .utf8) {
             item.keywords = try? JSONDecoder().decode([String].self, from: keywordsData)
         }
+        item.rating = row["rating"]?.int
+        item.flag = row["flag"]?.string.flatMap(PhotoFlag.init(rawValue:))
+        item.colorLabel = row["color_label"]?.string.flatMap(PhotoColorLabel.init(rawValue:))
+        item.contentHash = row["content_hash"]?.string
+        item.perceptualHash = row["perceptual_hash"]?.int64
         return item
     }
 
@@ -680,8 +870,8 @@ final class MetadataStore {
                 aperture, shutter_speed, iso, latitude, longitude, keywords,
                 place_country, place_province, place_city, place_district, place_poi,
                 edit_recipe, is_live_photo, live_photo_filename, live_photo_video_path,
-                import_batch_id, viewed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                import_batch_id, rating, flag, color_label, content_hash, perceptual_hash, viewed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 photo.id.uuidString,
                 photo.filename,
@@ -719,8 +909,49 @@ final class MetadataStore {
                 photo.livePhotoFilename,
                 photo.livePhotoVideoPath,
                 photo.importBatchID?.uuidString,
+                photo.rating,
+                photo.flag?.rawValue,
+                photo.colorLabel?.rawValue,
+                photo.contentHash,
+                photo.perceptualHash,
                 photo.viewedAt?.timeIntervalSince1970
             ])
+    }
+
+    /// 当前图库所有已知内容哈希（SHA-256 → 资产 ID），用于导入时精确查重。
+    func contentHashes() -> [String: UUID] {
+        queue.sync {
+            guard let rows = try? db.query("""
+                SELECT content_hash, id FROM assets
+                WHERE content_hash IS NOT NULL AND deleted_at IS NULL
+                """) else { return [:] }
+            var result: [String: UUID] = [:]
+            result.reserveCapacity(rows.count)
+            for row in rows {
+                guard let hash = row["content_hash"]?.string,
+                      let idString = row["id"]?.string,
+                      let id = UUID(uuidString: idString) else { continue }
+                result[hash] = id
+            }
+            return result
+        }
+    }
+
+    /// 批量回写内容哈希 / 感知哈希（查重扫描与导入后校验使用）。
+    func updateHashes(_ entries: [(id: UUID, contentHash: String?, perceptualHash: Int64?)]) {
+        guard !entries.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            try? self.db.transaction {
+                for entry in entries {
+                    try self.db.execute("""
+                        UPDATE assets SET content_hash = COALESCE(?, content_hash),
+                                          perceptual_hash = COALESCE(?, perceptual_hash)
+                        WHERE id = ?
+                        """, [entry.contentHash, entry.perceptualHash, entry.id.uuidString])
+                }
+            }
+        }
     }
 
     /// 记录一次查看（只更新单行，避免为一次打开重写整个资产表）。

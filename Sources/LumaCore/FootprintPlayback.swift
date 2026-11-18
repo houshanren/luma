@@ -58,7 +58,7 @@ public struct FootprintLeg: Equatable {
     public var pitch: Double
     /// 镜头朝向（度，0 = 正北），长距离航段朝向前进方向。
     public var heading: Double
-    /// 行进时长（秒，中速）。
+    /// 行进时长（秒，丝滑巡航速度）。
     public var duration: Double
     /// 抵达后在该站的停留时长（秒）。
     public var dwell: Double
@@ -77,6 +77,175 @@ public struct FootprintPlan: Equatable {
     public var lastTime: Date?
     public var totalDistance: Double { distanceToStop.last ?? 0 }
     public var isEmpty: Bool { stops.isEmpty }
+}
+
+/// 连续巡航中的一帧。光点与镜头共用同一条时间轴，避免两套动画各自起停。
+public struct FootprintCruiseFrame: Equatable {
+    public var stopIndex: Int
+    public var legFraction: Double
+    public var head: FootprintPoint
+    /// 镜头看向路线前方的一点，而不是固定在每段的中点。
+    public var cameraCenter: FootprintPoint
+    public var cameraDistance: Double
+    public var pitch: Double
+    public var heading: Double
+    public var isDwelling: Bool
+    public var dwellFraction: Double
+    public var isComplete: Bool
+}
+
+/// 把行程段与旅拍停留编成一条可拖动、可暂停的连续时间轴。
+/// 行进段的比例始终线性，平滑只作用于镜头参数，因此不会每站刹停再启动。
+public struct FootprintCruiseTimeline {
+    public let plan: FootprintPlan
+    public let totalDuration: TimeInterval
+    private let legStarts: [TimeInterval]
+
+    public init(plan: FootprintPlan) {
+        self.plan = plan
+        var starts: [TimeInterval] = []
+        var cursor = 0.0
+        for leg in plan.legs {
+            starts.append(cursor)
+            cursor += max(0, leg.duration) + max(0, leg.dwell)
+        }
+        legStarts = starts
+        totalDuration = cursor
+    }
+
+    /// 返回时间轴上某一时刻的光点、镜头与停留状态。
+    public func frame(at elapsed: TimeInterval) -> FootprintCruiseFrame {
+        guard let first = plan.stops.first else {
+            let point = FootprintPoint(latitude: 0, longitude: 0)
+            return FootprintCruiseFrame(stopIndex: 0, legFraction: 0, head: point,
+                                        cameraCenter: point, cameraDistance: 600, pitch: 0,
+                                        heading: 0, isDwelling: false, dwellFraction: 0,
+                                        isComplete: true)
+        }
+        guard !plan.legs.isEmpty else {
+            return FootprintCruiseFrame(stopIndex: 0, legFraction: 0, head: first.point,
+                                        cameraCenter: first.point, cameraDistance: 900, pitch: 36,
+                                        heading: 0, isDwelling: false, dwellFraction: 0,
+                                        isComplete: true)
+        }
+
+        let time = min(max(0, elapsed), totalDuration)
+        if time >= totalDuration {
+            let index = plan.legs.count - 1
+            let frame = travelingFrame(legIndex: index, fraction: 1)
+            return FootprintCruiseFrame(stopIndex: plan.stops.count - 1,
+                                        legFraction: 0,
+                                        head: plan.stops[plan.stops.count - 1].point,
+                                        cameraCenter: frame.cameraCenter,
+                                        cameraDistance: frame.cameraDistance,
+                                        pitch: frame.pitch,
+                                        heading: frame.heading,
+                                        isDwelling: false,
+                                        dwellFraction: 1,
+                                        isComplete: true)
+        }
+
+        let index = legIndex(at: time)
+        let leg = plan.legs[index]
+        let duration = max(0, leg.duration)
+        let dwell = max(0, leg.dwell)
+        let local = max(0, time - legStarts[index])
+        if local >= duration, dwell > 0 {
+            let destination = index + 1
+            let frame = travelingFrame(legIndex: index, fraction: 1)
+            return FootprintCruiseFrame(stopIndex: destination,
+                                        legFraction: 0,
+                                        head: plan.stops[destination].point,
+                                        cameraCenter: frame.cameraCenter,
+                                        cameraDistance: frame.cameraDistance,
+                                        pitch: frame.pitch,
+                                        heading: frame.heading,
+                                        isDwelling: true,
+                                        dwellFraction: min(1, max(0, (local - duration) / dwell)),
+                                        isComplete: false)
+        }
+
+        let fraction = min(1, max(0, local / max(0.001, duration)))
+        return travelingFrame(legIndex: index, fraction: fraction)
+    }
+
+    /// 拖动到某站时，落在该站准备出发的时刻；终点则落在抵达后的旅拍停留。
+    public func time(atStop index: Int) -> TimeInterval {
+        guard !plan.stops.isEmpty else { return 0 }
+        let station = min(max(0, index), plan.stops.count - 1)
+        if station < legStarts.count { return legStarts[station] }
+        guard let last = plan.legs.last else { return 0 }
+        return max(0, totalDuration - max(0, last.dwell))
+    }
+
+    private func legIndex(at time: TimeInterval) -> Int {
+        var low = 0
+        var high = plan.legs.count - 1
+        while low < high {
+            let middle = (low + high) / 2
+            let leg = plan.legs[middle]
+            let end = legStarts[middle] + max(0, leg.duration) + max(0, leg.dwell)
+            if time < end {
+                high = middle
+            } else {
+                low = middle + 1
+            }
+        }
+        return low
+    }
+
+    private func travelingFrame(legIndex index: Int, fraction: Double) -> FootprintCruiseFrame {
+        let from = plan.stops[index].point
+        let to = plan.stops[index + 1].point
+        let head = FootprintPlanner.interpolate(from: from, to: to, fraction: fraction)
+        let ahead = lookAhead(legIndex: index, fraction: fraction)
+        let center = FootprintPlanner.interpolate(from: head, to: ahead, fraction: 0.36)
+        let pose = cameraPose(legIndex: index, fraction: fraction)
+        return FootprintCruiseFrame(stopIndex: index,
+                                    legFraction: fraction,
+                                    head: head,
+                                    cameraCenter: center,
+                                    cameraDistance: pose.distance,
+                                    pitch: pose.pitch,
+                                    heading: pose.heading,
+                                    isDwelling: false,
+                                    dwellFraction: 0,
+                                    isComplete: false)
+    }
+
+    /// 镜头提前看路线 18% 的位置；跨过站点时接上下一段，位置不会在段边界跳变。
+    private func lookAhead(legIndex index: Int, fraction: Double) -> FootprintPoint {
+        let lead = 0.18
+        let from = plan.stops[index].point
+        let to = plan.stops[index + 1].point
+        if index == plan.legs.count - 1 || fraction < 1 - lead {
+            return FootprintPlanner.interpolate(from: from, to: to, fraction: min(1, fraction + lead))
+        }
+        let next = index + 1
+        let nextFraction = min(lead, max(0, fraction - (1 - lead)))
+        return FootprintPlanner.interpolate(from: plan.stops[next].point,
+                                            to: plan.stops[next + 1].point,
+                                            fraction: nextFraction)
+    }
+
+    /// 只给镜头做平滑，光点仍使用原始线性比例；段边界两端使用同一个镜头姿态。
+    private func cameraPose(legIndex index: Int,
+                            fraction: Double) -> (distance: Double, pitch: Double, heading: Double) {
+        let current = plan.legs[index]
+        let previous = index > 0 ? plan.legs[index - 1] : current
+        let t = min(1, max(0, fraction))
+        let blend = t * t * (3 - 2 * t)
+        let fromDistance = max(1, previous.cameraDistance)
+        let toDistance = max(1, current.cameraDistance)
+        let distance = exp(log(fromDistance) + (log(toDistance) - log(fromDistance)) * blend)
+        let pitch = previous.pitch + (current.pitch - previous.pitch) * blend
+        let delta = (current.heading - previous.heading + 540)
+            .truncatingRemainder(dividingBy: 360) - 180
+        var heading = previous.heading + delta * blend
+        if heading < 0 { heading += 360 }
+        if heading >= 360 { heading -= 360 }
+        return (distance, pitch, heading)
+    }
 }
 
 public enum FootprintPlanner {
@@ -172,13 +341,12 @@ public enum FootprintPlanner {
         } else {
             pitch = 30
         }
-        let heading = distance > 150 ? bearing(from: from, to: to) : 0
-        let duration: Double
-        if distance < 1 {
-            duration = 0.22
-        } else {
-            duration = min(2.4, max(0.52, 0.52 + 0.58 * log10(1 + distance / 14)))
-        }
+        let heading = distance > 1 ? bearing(from: from, to: to) : 0
+        // 统一的是画面中的前进感，而非现实车速：距离 / 镜头高度约等于
+        // 本段跨越的屏幕尺度，因此街区和跨城段都以相同的视觉速率前进。
+        // 极短段另设最短时长，避免百米内的移动一闪而过。
+        let visibleDistance = distance / cameraDistance
+        let duration = distance < 1 ? 0.45 : max(0.9, visibleDistance / 0.24)
         let dwell = photoCount >= 2
             ? min(0.85, max(0.2, 0.16 + 0.045 * Double(photoCount)))
             : 0

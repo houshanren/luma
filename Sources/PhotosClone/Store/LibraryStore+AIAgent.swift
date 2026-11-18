@@ -65,9 +65,13 @@ extension LibraryStore {
     }
 
     /// API Key 只存钥匙串，随设备而不是图库；切换图库不需要重新填写。
-    var aiAPIKey: String { AIKeychain.key(for: aiConfig.provider) }
+    var aiAPIKey: String {
+        aiConfig.provider.requiresAPIKey ? AIKeychain.key(for: aiConfig.provider) : ""
+    }
 
-    var aiHasAPIKey: Bool { AIKeychain.hasKey(for: aiConfig.provider) }
+    var aiHasAPIKey: Bool {
+        !aiConfig.provider.requiresAPIKey || AIKeychain.hasKey(for: aiConfig.provider)
+    }
 
     /// 接口地址与模型名都必须填写（豆包与自定义提供商默认不预填模型）。
     var aiConfigurationReady: Bool {
@@ -85,8 +89,8 @@ extension LibraryStore {
         let question = aiInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !aiIsResponding else { return }
         guard aiConfigurationReady else {
-            aiError = "请先在设置 › 智能助手中填写接口地址与模型"
-            showToast("请先在设置 › 智能助手中填写接口地址与模型")
+            aiError = "请先在设置 › 助手中填写接口地址与模型"
+            showToast("请先在设置 › 助手中填写接口地址与模型")
             return
         }
         guard aiHasAPIKey else {
@@ -252,7 +256,7 @@ extension LibraryStore {
                 if !didExecuteTool, Self.hasActionIntent(question) {
                     self.aiMessages.append(AIChatMessage(
                         role: .assistant,
-                        text: "本次没有执行任何图库操作：模型没有调用工具。可以重试，或在设置 › 智能助手中改用支持工具调用的模型。",
+                        text: "本次没有执行任何图库操作：模型没有调用工具。可以重试，或在设置 › 助手中改用支持工具调用的模型。",
                         isError: true
                     ))
                 }

@@ -19,10 +19,11 @@ enum AIProviderClient {
                          messages: [AIRequestMessage],
                          tools: [AIRequestTool] = []) async throws -> AICompletion {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { throw AIError.missingKey }
+        // 本地运行时（Ollama / LM Studio）不校验 API Key。
+        if config.provider.requiresAPIKey, key.isEmpty { throw AIError.missingKey }
         let model = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else {
-            throw AIError.server("请先在设置 › 智能助手中填写模型名称")
+            throw AIError.server("请先在设置 › 助手中填写模型名称")
         }
         guard let url = endpointURL(for: config.baseURL) else { throw AIError.invalidBaseURL }
 
@@ -30,7 +31,9 @@ enum AIProviderClient {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
 
         var body: [String: Any] = [
             "model": model,

@@ -159,14 +159,15 @@ actor CloudThumbnailLoader {
     private static let gate = CloudConcurrencyGate(limit: 3)
 
     func thumbnail(for photo: PhotoItem, mount: CloudMount, password: String) async -> CloudThumbnailResult {
-        guard let path = photo.cloudPath else {
-            return CloudThumbnailResult(image: nil, size: nil, duration: nil)
-        }
+        let empty = CloudThumbnailResult(image: nil, size: nil, duration: nil)
+        guard let path = photo.cloudPath else { return empty }
         let cacheURL = CloudPaths.thumbnailURL(mountID: mount.id, path: path)
         if let image = NSImage(contentsOf: cacheURL) {
             return CloudThumbnailResult(image: image, size: nil, duration: nil)
         }
         let key = cacheURL.path
+        // 刚失败过的项目不再重复打远端：滚动回来时直接显示占位。
+        if await CloudThumbnailFailureCache.shared.isFailing(key) { return empty }
         if let task = running[key] {
             return await task.value
         }
@@ -178,12 +179,21 @@ actor CloudThumbnailLoader {
                                              path: path,
                                              password: password,
                                              isVideo: isVideo)
+            // 目标图生成成功后顺手产出 192px 快速层：滚动时先出小图，不必等 900px 解码。
+            if result.image != nil {
+                Self.writeQuickLayer(cacheURL: cacheURL, mountID: mount.id, path: path)
+            }
             await Self.gate.release()
             return result
         }
         running[key] = task
         let result = await task.value
         running[key] = nil
+        if result.image == nil {
+            await CloudThumbnailFailureCache.shared.markFailure(key)
+        } else {
+            await CloudThumbnailFailureCache.shared.clear(key)
+        }
         return result
     }
 
@@ -196,28 +206,72 @@ actor CloudThumbnailLoader {
         }
         guard let client = WebDAVClient(baseURLString: mount.baseURL,
                                         username: mount.username,
-                                        password: password) else { return empty }
+                                        password: password,
+                                        allowsSelfSignedCertificate: mount.trustSelfSigned) else { return empty }
         try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
 
         if isVideo {
             guard let url = client.fileURL(path: path) else { return empty }
-            let asset = AVURLAsset(url: url, options: [CloudPlayback.headerFieldsKey: client.requestHeaders])
+            // WebDAV 必须带 Basic 认证头、NAS 常是自签名证书，AVFoundation 直连都拿不到数据，
+            // 统一由资源读取器代取。
+            var keeper: CloudAssetResourceLoader?
+            let asset: AVURLAsset
+            if let made = CloudAssetResourceLoader.makeAsset(upstreamURL: url,
+                                                             headers: client.requestHeaders,
+                                                             trustSelfSigned: mount.trustSelfSigned,
+                                                             pathExtension: (path as NSString).pathExtension) {
+                asset = made.asset
+                keeper = made.loader
+            } else {
+                asset = AVURLAsset(url: url, options: [CloudPlayback.headerFieldsKey: client.requestHeaders])
+            }
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
             generator.maximumSize = CGSize(width: 1200, height: 1200)
+            // 远程资源只求拿到任意一帧，避免为精确时间反复跳读。
+            generator.requestedTimeToleranceBefore = .positiveInfinity
+            generator.requestedTimeToleranceAfter = .positiveInfinity
             let duration = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
             let seconds = duration > 1 ? min(1, duration / 10) : 0.1
             let time = CMTime(seconds: seconds, preferredTimescale: 600)
-            guard let generated = try? await generator.image(at: time) else { return empty }
-            let cgImage = generated.image
-            ImportService.writeJPEG(cgImage, to: cacheURL, quality: 0.85)
-            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            return CloudThumbnailResult(image: image, size: nil, duration: duration > 0 ? duration : nil)
+            if let generated = try? await generator.image(at: time) {
+                keeper?.invalidate()
+                let cgImage = generated.image
+                ImportService.writeJPEG(cgImage, to: cacheURL, quality: 0.85)
+                let image = NSImage(cgImage: cgImage,
+                                    size: NSSize(width: cgImage.width, height: cgImage.height))
+                return CloudThumbnailResult(image: image, size: nil,
+                                            duration: duration > 0 ? duration : nil)
+            }
+            keeper?.invalidate()
+            // MKV 等容器 AVFoundation 无法解析：让 ffmpeg 直接读远端抽一帧。
+            if VideoSupport.makeRemoteThumbnail(url: url, headers: client.requestHeaders,
+                                                trustSelfSigned: mount.trustSelfSigned,
+                                                destination: cacheURL),
+               let image = NSImage(contentsOf: cacheURL) {
+                let meta = VideoSupport.ffprobeMetadata(url: url, headers: client.requestHeaders)
+                Diagnostics.record("WebDAV 视频缩略图改用 ffmpeg \(path)")
+                return CloudThumbnailResult(image: image,
+                                            size: meta.size.width > 0 ? meta.size : nil,
+                                            duration: meta.duration > 0 ? meta.duration : nil)
+            }
+            Diagnostics.record("WebDAV 视频缩略图失败 \(path)")
+            return empty
         }
 
         // 1) 只取前 256KB：若包含 EXIF 内嵌缩略图，直接使用，避免整张原图下行。
-        if let probe = try? await client.data(path: path, byteRange: 0...262_143) {
+        //    EXIF 扫描通常会先取同一段数据，这里优先复用，避免同一张图请求两次。
+        let probeKey = "\(mount.id.uuidString)|\(path)"
+        var probe: (data: Data, partial: Bool)?
+        if let cached = await CloudProbeCache.shared.probe(for: probeKey) {
+            probe = (cached.data, cached.partial)
+        } else if let fetched = try? await client.data(path: path, byteRange: 0...262_143) {
+            probe = fetched
+            await CloudProbeCache.shared.store(.init(data: fetched.data, partial: fetched.partial),
+                                               for: probeKey)
+        }
+        if let probe {
             if !probe.partial {
                 if let result = Self.makeThumbnail(from: probe.data, cacheURL: cacheURL) {
                     return result
@@ -288,6 +342,22 @@ actor CloudThumbnailLoader {
         ImportService.writeJPEG(cgImage, to: cacheURL, quality: 0.88)
         let size = originalSize ?? Self.pixelSize(source: source)
         return CloudThumbnailResult(image: NSImage(contentsOf: cacheURL), size: size, duration: nil)
+    }
+
+    /// 从已生成的 900px 缓存产出 192px 快速层；失败不影响主链路。
+    private static func writeQuickLayer(cacheURL: URL, mountID: UUID, path: String) {
+        let quickURL = CloudPaths.quickThumbnailURL(mountID: mountID, path: path)
+        guard let source = CGImageSourceCreateWithURL(cacheURL as CFURL, nil) else { return }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: ImageLoader.gridQuickPixel,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let quick = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return
+        }
+        ImportService.writeJPEG(quick, to: quickURL, quality: 0.75)
     }
 
     private static func pixelSize(source: CGImageSource) -> CGSize? {

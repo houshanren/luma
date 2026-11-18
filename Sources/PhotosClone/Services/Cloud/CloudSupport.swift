@@ -21,33 +21,101 @@ enum CloudIdentity {
 // MARK: - 凭据（Keychain）
 
 enum CloudCredentials {
+    /// 仅用于迁移旧版本存放在钥匙串里的 NAS 密码 / 网盘 Cookie。
     private static let service = "com.baymax.photosclone.webdav"
-    /// 旧版包标识时期使用的 Keychain service，仅用于一次性迁移。
     private static let legacyService = "com.lijialong.photosclone.webdav"
 
+    /// 进程内缓存：滚动目录时每次点击都会新建客户端，但密码只读一次。
+    private static let cacheLock = NSLock()
+    private static var cache: [UUID: String] = [:]
+
     static func password(for mountID: UUID) -> String {
-        let account = mountID.uuidString
-        if let value = read(service: service, account: account) {
-            return value
-        }
-        // 从旧 service 迁移一次，避免升级后已保存的 NAS 密码“消失”。
-        guard let legacy = read(service: legacyService, account: account) else { return "" }
-        setPassword(legacy, for: mountID)
-        delete(service: legacyService, account: account)
-        return legacy
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cached = cache[mountID] { return cached }
+        let value = storedPassword(for: mountID)
+        cache[mountID] = value
+        return value
+    }
+
+    /// 认证失败时丢掉缓存：下次真正需要连接时再读一次。
+    static func invalidate(for mountID: UUID) {
+        cacheLock.lock()
+        cache[mountID] = nil
+        cacheLock.unlock()
+    }
+
+    /// 切换图库时清空，避免把上一个图库的网盘密码留在内存里。
+    static func clearCache() {
+        cacheLock.lock()
+        cache.removeAll()
+        cacheLock.unlock()
     }
 
     static func setPassword(_ password: String, for mountID: UUID) {
-        write(Data(password.utf8), service: service, account: mountID.uuidString)
+        let account = "password.\(mountID.uuidString)"
+        CloudSecretStore.mark("legacy-password.\(mountID.uuidString)")
+        CloudSecretStore.set(Data(password.utf8), for: account)
+        cacheLock.lock()
+        cache[mountID] = password
+        cacheLock.unlock()
     }
 
     static func delete(for mountID: UUID) {
-        let account = mountID.uuidString
-        delete(service: service, account: account)
-        delete(service: legacyService, account: account)
+        let account = "password.\(mountID.uuidString)"
+        CloudSecretStore.mark("legacy-password.\(mountID.uuidString)")
+        CloudSecretStore.remove(account)
+        cacheLock.lock()
+        cache[mountID] = nil
+        cacheLock.unlock()
     }
 
-    private static func read(service: String, account: String) -> String? {
+    private static func storedPassword(for mountID: UUID) -> String {
+        let account = "password.\(mountID.uuidString)"
+        if let data = CloudSecretStore.data(for: account),
+           let value = String(data: data, encoding: .utf8) {
+            return value
+        }
+        // 旧版本存在钥匙串里：只尝试迁移一次，之后不再访问钥匙串。
+        let flag = "legacy-password.\(mountID.uuidString)"
+        guard !CloudSecretStore.isMarked(flag) else { return "" }
+
+        switch readLegacyValue(service: service, account: mountID.uuidString) {
+        case .retry:
+            return ""
+        case .value(let value):
+            CloudSecretStore.mark(flag)
+            CloudSecretStore.set(Data(value.utf8), for: account)
+            return value
+        case .denied:
+            CloudSecretStore.mark(flag)
+            return ""
+        case .missing:
+            break
+        }
+
+        switch readLegacyValue(service: legacyService, account: mountID.uuidString) {
+        case .retry:
+            return ""
+        case .value(let value):
+            CloudSecretStore.mark(flag)
+            CloudSecretStore.set(Data(value.utf8), for: account)
+            return value
+        case .missing, .denied:
+            CloudSecretStore.mark(flag)
+            return ""
+        }
+    }
+
+    private enum LegacyRead {
+        case value(String)
+        case missing
+        case denied
+        /// 屏幕锁定等临时不可交互状态：不写迁移标记，下次还能再试。
+        case retry
+    }
+
+    private static func readLegacyValue(service: String, account: String) -> LegacyRead {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -56,35 +124,16 @@ enum CloudCredentials {
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data,
-              let value = String(data: data, encoding: .utf8) else { return nil }
-        return value
-    }
-
-    private static func write(_ data: Data, service: String, account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let attributes: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var addition = query
-            addition[kSecValueData as String] = data
-            addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(addition as CFDictionary, nil)
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return .missing }
+        if status == errSecInteractionNotAllowed { return .retry }
+        guard status == errSecSuccess else {
+            NSLog("LumaKeychain: 读取网盘密码 %@ 失败 status=%d", account, status)
+            return .denied
         }
-    }
-
-    private static func delete(service: String, account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
+        guard let data = item as? Data,
+              let value = String(data: data, encoding: .utf8) else { return .missing }
+        return .value(value)
     }
 }
 
@@ -92,12 +141,21 @@ enum CloudCredentials {
 
 enum CloudPaths {
     static func thumbnailURL(mountID: UUID, path: String) -> URL {
+        cacheURL(mountID: mountID, path: path, prefix: "")
+    }
+
+    /// 云缩略图快速层（192px）：滚动时先出小图，再替换成 900px 目标图。
+    static func quickThumbnailURL(mountID: UUID, path: String) -> URL {
+        cacheURL(mountID: mountID, path: path, prefix: "q-")
+    }
+
+    private static func cacheURL(mountID: UUID, path: String, prefix: String) -> URL {
         let digest = SHA256.hash(data: Data(path.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
         return LibraryPaths.cloudThumbs
             .appendingPathComponent(mountID.uuidString, isDirectory: true)
-            .appendingPathComponent(String(digest.prefix(40)) + ".jpg")
+            .appendingPathComponent(prefix + String(digest.prefix(40)) + ".jpg")
     }
 }
 
@@ -154,4 +212,69 @@ enum AListProbe {
         configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
     }()
+}
+
+/// 云缩略图失败短缓存：同一张图失败后 60 秒内不再重复请求远端。
+///
+/// 没有这层缓存时，一次滚动里失败的项目会在每次重新进入视野时再次发起
+/// WebDAV Range 或整文件下载；在网络盘上很容易把队列彻底堵死。
+actor CloudThumbnailFailureCache {
+    static let shared = CloudThumbnailFailureCache()
+
+    private var failed: [String: Date] = [:]
+    private let ttl: TimeInterval = 60
+    private let maxEntries = 4_000
+
+    func isFailing(_ key: String) -> Bool {
+        guard let date = failed[key] else { return false }
+        if Date().timeIntervalSince(date) < ttl { return true }
+        failed.removeValue(forKey: key)
+        return false
+    }
+
+    func markFailure(_ key: String) {
+        if failed.count >= maxEntries {
+            let cutoff = Date().addingTimeInterval(-ttl)
+            failed = failed.filter { $0.value >= cutoff }
+            if failed.count >= maxEntries { failed.removeAll(keepingCapacity: true) }
+        }
+        failed[key] = Date()
+    }
+
+    func clear(_ key: String) {
+        failed.removeValue(forKey: key)
+    }
+}
+
+/// 文件头探测缓存（默认前 256KB）。
+///
+/// EXIF 扫描与缩略图生成都会各取一次同样的 Range 请求；缓存后同一张图只下一次。
+/// TTL 很短、条目很少，只用于同一次浏览期间的去重。
+actor CloudProbeCache {
+    struct Probe {
+        let data: Data
+        let partial: Bool
+    }
+
+    static let shared = CloudProbeCache()
+
+    private var entries: [String: (probe: Probe, date: Date)] = [:]
+    private let ttl: TimeInterval = 180
+    private let maxEntries = 16
+
+    func probe(for key: String) -> Probe? {
+        guard let entry = entries[key] else { return nil }
+        if Date().timeIntervalSince(entry.date) < ttl { return entry.probe }
+        entries.removeValue(forKey: key)
+        return nil
+    }
+
+    func store(_ probe: Probe, for key: String) {
+        if entries.count >= maxEntries {
+            let cutoff = Date().addingTimeInterval(-ttl)
+            entries = entries.filter { $0.value.date >= cutoff }
+            if entries.count >= maxEntries { entries.removeAll(keepingCapacity: true) }
+        }
+        entries[key] = (probe, Date())
+    }
 }

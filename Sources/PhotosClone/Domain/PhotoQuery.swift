@@ -24,6 +24,10 @@ struct PhotoQuery: Equatable, Sendable {
     var keyword: String?
     var sortKey: SortKey = .capturedAt
     var ascending: Bool = false
+    /// 元数据筛选：评分下限（0 表示不限）、旗标、色标。
+    var minRating: Int = 0
+    var flag: PhotoFlag?
+    var colorLabel: PhotoColorLabel?
 
     /// 影响窗口内容与顺序的指纹（不含图库内容版本号）。
     var key: String {
@@ -32,7 +36,10 @@ struct PhotoQuery: Equatable, Sendable {
             filter.rawValue,
             keyword ?? "",
             sortKey.rawValue,
-            String(ascending)
+            String(ascending),
+            String(minRating),
+            flag?.rawValue ?? "",
+            colorLabel?.rawValue ?? ""
         ].joined(separator: "|")
     }
 }
@@ -61,6 +68,8 @@ struct PhotoMonthGroup: Identifiable {
     let title: String
     let count: Int
     let days: [PhotoDayBucket]
+    /// 直连模式下没有逐天数据，用这个月的样本直接渲染卡片。
+    var samples: [PhotoItem] = []
 }
 
 extension SidebarItem {

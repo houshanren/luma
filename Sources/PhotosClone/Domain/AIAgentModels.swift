@@ -8,6 +8,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
     case qwen
     case doubao
     case openAI
+    case local
     case custom
 
     var id: String { rawValue }
@@ -20,6 +21,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .qwen: return "通义千问"
         case .doubao: return "豆包（火山方舟）"
         case .openAI: return "OpenAI"
+        case .local: return "本地运行时"
         case .custom: return "自定义（OpenAI 兼容）"
         }
     }
@@ -32,6 +34,8 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .qwen: return "https://dashscope.aliyuncs.com/compatible-mode/v1"
         case .doubao: return "https://ark.cn-beijing.volces.com/api/v3"
         case .openAI: return "https://api.openai.com/v1"
+        // Ollama 的 OpenAI 兼容端点；LM Studio 默认在 1234 端口。
+        case .local: return "http://127.0.0.1:11434/v1"
         case .custom: return ""
         }
     }
@@ -45,6 +49,8 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         // 火山方舟使用推理接入点 ID（ep-...），必须由用户自己填写。
         case .doubao: return ""
         case .openAI: return "gpt-4o-mini"
+        // 本地运行时的模型名由「检测本机运行时」扫描得到。
+        case .local: return ""
         case .custom: return ""
         }
     }
@@ -60,7 +66,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
             return ["glm-4-flash", "glm-4-plus", "glm-4v-flash", "glm-4v-plus"]
         case .qwen:
             return ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-vl-plus", "qwen-vl-max"]
-        case .doubao, .custom:
+        case .doubao, .custom, .local:
             return []
         case .openAI:
             return ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
@@ -73,9 +79,13 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .glm: return "视觉模型：glm-4v-flash / glm-4v-plus"
         case .qwen: return "视觉模型：qwen-vl-plus / qwen-vl-max"
         case .openAI: return "视觉模型：gpt-4o-mini / gpt-4o"
+        case .local: return "本地模型是否支持图片取决于模型本身（如 llava、qwen2-vl）。"
         case .deepseek, .kimi, .doubao, .custom: return nil
         }
     }
+
+    /// 本地运行时不需要 API Key。
+    var requiresAPIKey: Bool { self != .local }
 
     /// Keychain 里的账号名；API Key 只存钥匙串，绝不进入图库或 UserDefaults。
     var keychainAccount: String { "provider.\(rawValue)" }
@@ -168,7 +178,7 @@ enum AIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingKey:
-            return "还没有填写 API Key，请在设置 › 智能助手中填写"
+            return "还没有填写 API Key，请在设置 › 助手中填写"
         case .invalidBaseURL:
             return "接口地址无效，请填写 https:// 开头的地址"
         case .unauthorized:

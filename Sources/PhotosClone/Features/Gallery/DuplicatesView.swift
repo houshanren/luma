@@ -12,6 +12,14 @@ struct DuplicatesView: View {
     @State private var sortMode: SortMode = .space
     @State private var hoveredPhotoID: UUID?
     @State private var pending: PendingMerge?
+    @State private var mode: Mode = .exact
+
+    private enum Mode: String, CaseIterable, Identifiable {
+        case exact, similar
+
+        var id: String { rawValue }
+        var title: String { self == .exact ? "精确重复" : "相似照片" }
+    }
 
     private enum SortMode: String, CaseIterable, Identifiable {
         case space, date, count
@@ -50,20 +58,32 @@ struct DuplicatesView: View {
         }
     }
 
+    private var similarGroups: [SimilarPhotoGroup] {
+        store.similarPhotoGroups
+    }
+
     private var alertBinding: Binding<Bool> {
         Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })
     }
 
     var body: some View {
         Group {
-            if groups.isEmpty {
+            if mode == .exact, groups.isEmpty {
                 emptyState
+            } else if mode == .similar, similarGroups.isEmpty {
+                similarEmptyState
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         hero
-                        ForEach(groups) { group in
-                            groupCard(group)
+                        if mode == .exact {
+                            ForEach(groups) { group in
+                                groupCard(group)
+                            }
+                        } else {
+                            ForEach(similarGroups) { group in
+                                similarCard(group)
+                            }
                         }
                         footer
                     }
@@ -82,6 +102,10 @@ struct DuplicatesView: View {
         } message: { item in
             Text(item.message)
         }
+        .task(id: store.systemDuplicateGroupsToken) {
+            // 数万条重复标记的解码与归组在后台完成，界面先显示进度，不再卡在打开瞬间。
+            if system { store.loadSystemDuplicateGroupsIfNeeded() }
+        }
     }
 
     // MARK: - 顶部总览
@@ -89,19 +113,38 @@ struct DuplicatesView: View {
     private var hero: some View {
         let redundant = groups.reduce(0) { $0 + $1.photos.count - 1 }
         let bytes = groups.reduce(Int64(0)) { $0 + $1.reclaimableBytes }
+        let similarRedundant = similarGroups.reduce(0) { $0 + $1.photos.count - 1 }
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("重复项目")
+                    Text(mode == .exact ? "重复项目" : "相似照片")
                         .font(.system(size: 27, weight: .bold))
-                    Text(system
-                         ? "官方「照片」图库只读；可到「照片」中合并，或在拾光里隐藏其余副本（随时可恢复）。"
-                         : "同一张照片的多份副本会归到一组；合并保留一个版本，并汇总收藏、关键词与相簿关系。")
+                    Text(mode == .exact
+                         ? (system
+                            ? "官方「照片」图库只读；可到「照片」中合并，或在拾光里隐藏其余副本（随时可恢复）。"
+                            : "同一张照片的多份副本会归到一组；合并保留一个版本，并汇总收藏、关键词与相簿关系。")
+                         : "按感知哈希 + 拍摄时间 + 宽高比归组；相似不等于相同，默认只展示，不自动合并。")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
-                if system {
+                if mode == .similar {
+                    if store.isScanningHashes {
+                        Button("停止扫描") { store.cancelHashScan() }
+                            .controlSize(.regular)
+                    } else {
+                        Button {
+                            store.startHashScanIfNeeded()
+                        } label: {
+                            Label(store.pendingHashCount > 0 ? "扫描相似照片" : "重新扫描",
+                                  systemImage: "sparkle.magnifyingglass")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .help("为尚未计算哈希的照片生成 SHA-256 与感知哈希")
+                    }
+                } else if system {
                     HStack(spacing: 8) {
                         Button {
                             openSystemDuplicatesInPhotos()
@@ -138,19 +181,47 @@ struct DuplicatesView: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                statChip("\(groups.count)", "组重复", icon: "square.on.square")
-                statChip("\(redundant)", "个多余副本", icon: "doc.on.doc")
-                statChip(formatFileSize(bytes), system ? "副本占用" : "可释放空间", icon: "internaldrive")
-                Spacer(minLength: 8)
-                sortMenu
+            if !system {
+                Picker("重复类型", selection: $mode) {
+                    ForEach(Mode.allCases) { item in
+                        Text(item.title).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 260, alignment: .leading)
             }
 
-            if system && store.isLoadingSystemLibrary {
+            HStack(spacing: 10) {
+                if mode == .exact {
+                    statChip("\(groups.count)", "组重复", icon: "square.on.square")
+                    statChip("\(redundant)", "个多余副本", icon: "doc.on.doc")
+                    statChip(formatFileSize(bytes), system ? "副本占用" : "可释放空间", icon: "internaldrive")
+                } else {
+                    statChip("\(similarGroups.count)", "组相似", icon: "sparkle.magnifyingglass")
+                    statChip("\(similarRedundant)", "张备选", icon: "photo.on.rectangle.angled")
+                    statChip("\(store.photos.filter { $0.perceptualHash != nil }.count)", "已计算哈希", icon: "number")
+                }
+                Spacer(minLength: 8)
+                if mode == .exact { sortMenu }
+            }
+
+            if mode == .similar, store.isScanningHashes {
+                VStack(alignment: .leading, spacing: 5) {
+                    ProgressView(value: store.hashScanFraction)
+                    Text("正在计算哈希 \(store.hashScanCompleted.formatted()) / \(store.hashScanTotal.formatted())")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if system && (store.isLoadingSystemLibrary || store.isLoadingSystemDuplicates) {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.mini)
-                    Text("正在读取系统图库… \(store.systemScanCount.formatted()) 项，完成后会自动更新重复结果。")
+                    Text(store.isLoadingSystemDuplicates
+                         ? "正在后台分组重复项目…完成后自动更新。"
+                         : "正在读取系统图库… \(store.systemScanCount.formatted()) 项，完成后会自动更新重复结果。")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 }
@@ -278,7 +349,8 @@ struct DuplicatesView: View {
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 12) {
+                // 单个重复组可能有上千个副本，按需创建卡片里的缩略图，避免打开时一次性加载全部图片。
+                LazyHStack(alignment: .top, spacing: 12) {
                     ForEach(group.photos) { photo in
                         DuplicateThumb(photo: photo,
                                        system: system,
@@ -307,13 +379,100 @@ struct DuplicatesView: View {
         }
     }
 
+    private func similarCard(_ group: SimilarPhotoGroup) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(group.photos.count) 张画面相近")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("默认不合并")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.orange.opacity(0.12), in: Capsule())
+                Spacer(minLength: 8)
+                Button {
+                    requestSimilarMerge(group, keeping: group.representative.id)
+                } label: {
+                    Label("保留推荐，其余移入最近删除", systemImage: "arrow.triangle.merge")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(group.photos) { photo in
+                        DuplicateThumb(photo: photo,
+                                       system: false,
+                                       isKeep: photo.id == group.representative.id,
+                                       reasons: photo.id == group.representative.id ? ["推荐保留"] : [],
+                                       isHovering: hoveredPhotoID == photo.id,
+                                       onHover: { hovering in
+                                           hoveredPhotoID = hovering
+                                               ? photo.id
+                                               : (hoveredPhotoID == photo.id ? nil : hoveredPhotoID)
+                                       },
+                                       onKeep: {
+                                           requestSimilarMerge(group, keeping: photo.id)
+                                       })
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color.orange.opacity(0.035)))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.14), lineWidth: 0.6)
+        }
+    }
+
+    private var similarEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "sparkle.magnifyingglass")
+                .font(.system(size: 34, weight: .ultraLight))
+                .foregroundStyle(.tertiary)
+            Text(store.isScanningHashes ? "正在扫描相似照片" : "还没有相似照片结果")
+                .font(.system(size: 14, weight: .semibold))
+            if store.isScanningHashes {
+                ProgressView(value: store.hashScanFraction)
+                    .frame(width: 220)
+                Text("\(store.hashScanCompleted.formatted()) / \(store.hashScanTotal.formatted())")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Button("停止扫描") { store.cancelHashScan() }
+            } else {
+                Text("为本地照片计算感知哈希后，会按画面相似度归组；相似照片只展示，不自动删除。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+                Button("扫描相似照片") { store.startHashScanIfNeeded() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 100)
+    }
+
     private var footer: some View {
         VStack(spacing: 4) {
-            Text("共 \(groups.reduce(0) { $0 + $1.photos.count }) 张照片")
+            Text(mode == .exact
+                 ? "共 \(groups.reduce(0) { $0 + $1.photos.count }) 张照片"
+                 : "共 \(similarGroups.reduce(0) { $0 + $1.photos.count }) 张照片")
                 .font(.system(size: 11.5, weight: .medium))
-            Text(system
-                 ? "官方图库只读，拾光不会删除 Apple 的照片；可用「隐藏」管理重复项，或到「照片」中合并。"
-                 : "重复项目按文件大小与分辨率归组，也可能包含元数据不同的精确副本。合并后可随时在「最近删除」中恢复。")
+            Text(mode == .exact
+                 ? (system
+                    ? "官方图库只读，拾光不会删除 Apple 的照片；可用「隐藏」管理重复项，或到「照片」中合并。"
+                    : "重复项目优先按 SHA-256 归组；没有哈希的旧资产按文件大小与分辨率兜底。合并后可随时在「最近删除」中恢复。")
+                 : "相似照片按感知哈希 + 拍摄时间 + 宽高比归组；相似不代表相同，合并前请逐组确认。")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -324,12 +483,13 @@ struct DuplicatesView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            if system && store.isLoadingSystemLibrary {
+            if system && (store.isLoadingSystemLibrary || store.isLoadingSystemDuplicates) {
                 ProgressView()
                     .controlSize(.large)
-                Text("正在读取系统图库…")
+                Text(store.isLoadingSystemDuplicates ? "正在分组重复项目…"
+                                                     : "正在读取系统图库…")
                     .font(.system(size: 14, weight: .semibold))
-                Text("扫描完成后会自动列出重复项目。")
+                Text("几万条重复标记会在后台比对，完成后自动列出结果。")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             } else {
@@ -359,6 +519,19 @@ struct DuplicatesView: View {
             message: "所选项目按文件大小与分辨率判定为副本，元数据可能不同。合并将保留\(keepText)，汇总收藏、关键词、标题与相簿关系，并将其余 \(group.photos.count - 1) 个项目移至「最近删除」，30 天内可恢复。",
             actionTitle: "合并 \(group.photos.count) 个精确副本",
             perform: { store.mergeDuplicateGroup(group, keeping: keepID) }
+        )
+    }
+
+    private func requestSimilarMerge(_ group: SimilarPhotoGroup, keeping keepID: UUID) {
+        let keepText = keepID == group.representative.id ? "推荐保留的版本" : "所选的版本"
+        let duplicate = DuplicateGroup(photos: group.photos,
+                                       pick: DuplicatePick(photo: group.representative,
+                                                           reasons: ["画面相似"]))
+        pending = PendingMerge(
+            title: "整理相似照片",
+            message: "这些照片画面相近，但不是字节级重复。将保留\(keepText)，把其余 \(group.photos.count - 1) 张移入「最近删除」（30 天内可恢复）。建议逐组确认，避免误删同一场景的不同瞬间。",
+            actionTitle: "保留 1 张，移入 \(group.photos.count - 1) 张",
+            perform: { store.mergeDuplicateGroup(duplicate, keeping: keepID) }
         )
     }
 
@@ -426,9 +599,24 @@ private struct DuplicateThumb: View {
                 .frame(width: 148, height: 148)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
+                    if isHovering {
+                        // 悬停玻璃反光：不提亮边框以外的区域，也不做缩放。
+                        LinearGradient(colors: [Color.white.opacity(0.16),
+                                                .clear,
+                                                Color.black.opacity(0.08)],
+                                       startPoint: .topLeading,
+                                       endPoint: .bottomTrailing)
+                            .blendMode(.softLight)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(isKeep ? Color.accentColor : Color.primary.opacity(0.08),
-                                      lineWidth: isKeep ? 2 : 0.5)
+                        .strokeBorder(isKeep
+                                      ? Color.accentColor
+                                      : Color.primary.opacity(isHovering ? 0.20 : 0.08),
+                                      lineWidth: isKeep ? 2 : (isHovering ? 1 : 0.5))
                 }
                 .overlay(alignment: .topLeading) {
                     if isKeep {
@@ -445,7 +633,6 @@ private struct DuplicateThumb: View {
                 }
                 .shadow(color: .black.opacity(isHovering ? 0.20 : 0.10),
                         radius: isHovering ? 12 : 6, y: isHovering ? 5 : 2)
-                .scaleEffect(isHovering ? 1.015 : 1)
                 .animation(.snappy(duration: 0.16), value: isHovering)
                 .onHover(perform: onHover)
                 .onTapGesture { store.openViewer(photo.id) }

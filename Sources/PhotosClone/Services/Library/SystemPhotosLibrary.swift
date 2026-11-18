@@ -10,7 +10,8 @@ struct SystemLibrarySnapshot {
     var totalAssetCount: Int? = nil
 }
 
-/// 官方图库里已命名的人物 / 宠物（读取端侧识别结果，不额外做识别）。
+/// 官方图库里的人物 / 宠物（读取端侧识别结果，不额外做识别）。
+/// 官方「照片」的人物列表包含尚未命名的聚类，这里同样收录，未命名时用「未命名」占位。
 struct SystemPersonInfo: Identifiable, Hashable, Codable {
     let id: Int64
     let name: String
@@ -19,6 +20,18 @@ struct SystemPersonInfo: Identifiable, Hashable, Codable {
     let assetIDs: [UUID]
     let keyAssetID: UUID?
     let cropData: Data?
+    /// 关键人脸的几何信息（Photos.sqlite `ZDETECTEDFACE`，0-1 归一化）：
+    /// `faceCenterX` 相对图宽、`faceCenterY` 相对图高且原点在左下、`faceSize` 相对图对角线。
+    /// 官方「照片」的人物头像就是按这组几何从关键照片现算裁切的；缺失时回退整张照片。
+    let faceCenterX: Double?
+    let faceCenterY: Double?
+    let faceSize: Double?
+
+    /// 官方图库里尚未命名的聚类统一叫「未命名」。
+    var isUnnamed: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "未命名"
+    }
 }
 
 enum SystemLibraryError: LocalizedError {
@@ -36,7 +49,6 @@ enum SystemLibraryError: LocalizedError {
 /// 只读解析 macOS 官方「照片」图库（Photos.sqlite）。
 enum SystemPhotosLibrary {
     static func scan(libraryURL: URL,
-                     maxAssets: Int = 0,
                      progress: ((Int) -> Void)? = nil,
                      onBatch: (([PhotoItem]) -> Void)? = nil) throws -> SystemLibrarySnapshot {
         let databaseURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
@@ -56,7 +68,9 @@ enum SystemPhotosLibrary {
             : "NULL"
         let titleColumn = additionalColumns.contains("ZTITLE") ? "aa.ZTITLE" : "NULL"
         let subtypeColumn = assetColumns.contains("ZKINDSUBTYPE") ? "a.ZKINDSUBTYPE" : "NULL"
+        let spatialColumn = assetColumns.contains("ZSPATIALTYPE") ? "a.ZSPATIALTYPE" : "NULL"
         let avalancheColumn = assetColumns.contains("ZAVALANCHEUUID") ? "a.ZAVALANCHEUUID" : "NULL"
+        let avalanchePickColumn = assetColumns.contains("ZAVALANCHEPICKTYPE") ? "a.ZAVALANCHEPICKTYPE" : "NULL"
         let playbackStyleColumn = assetColumns.contains("ZPLAYBACKSTYLE") ? "a.ZPLAYBACKSTYLE" : "NULL"
         let cameraDeviceColumn = assetColumns.contains("ZDERIVEDCAMERACAPTUREDEVICE")
             ? "a.ZDERIVEDCAMERACAPTUREDEVICE"
@@ -65,25 +79,31 @@ enum SystemPhotosLibrary {
             ? "a.ZADJUSTMENTTIMESTAMP"
             : "NULL"
         let lastViewedColumn = additionalColumns.contains("ZLASTVIEWEDDATE") ? "aa.ZLASTVIEWEDDATE" : "NULL"
+        let albumColumns = (try? db.query("PRAGMA table_info(ZGENERICALBUM)"))?
+            .compactMap { $0["name"]?.string } ?? []
+        // 与索引模式保持一致：优先用官方「照片」的手动排序键，旧图库退回主键。
+        let albumSortColumn = albumColumns.contains("Z_FOK_PARENTFOLDER") ? "Z_FOK_PARENTFOLDER" : "Z_PK"
 
-        // 有限额时先用 ZDATECREATED 覆盖索引取最近的 N 个主键，再回表连接；
-        // 直接在 ZKIND 过滤后排序会让 SQLite 对整库做临时排序（百万级图库要几十秒）。
+        // 直接用 ZDATECREATED 覆盖索引取主键顺序后 CROSS JOIN 固定顺序：
+        // 在 ZKIND 过滤后排序会让 SQLite 对整库做临时排序（百万级图库要几十秒），
+        // 而固定顺序能让边扫边显示时视频 / 截屏等媒体类型尽早出现。
         let assetSource: String
-        let binds: [Any?]
-        if maxAssets > 0 {
+        let binds: [Any?] = []
+        let orderClause = ""
+        var scanNullDates = false
+        if assetColumns.contains("ZDATECREATED") {
             assetSource = """
                 FROM (
                     SELECT Z_PK FROM ZASSET
                     WHERE ZDATECREATED IS NOT NULL
                     ORDER BY ZDATECREATED DESC
-                    LIMIT ?
+                    LIMIT -1
                 ) picked
-                JOIN ZASSET a ON a.Z_PK = picked.Z_PK
+                CROSS JOIN ZASSET a ON a.Z_PK = picked.Z_PK
                 """
-            binds = [maxAssets]
+            scanNullDates = true
         } else {
             assetSource = "FROM ZASSET a"
-            binds = []
         }
 
         var photos: [PhotoItem] = []
@@ -97,12 +117,16 @@ enum SystemPhotosLibrary {
         let hasDerivatives = FileManager.default.fileExists(
             atPath: LibraryPaths.systemDerivatives(libraryURL: libraryURL).path)
 
-        do {
-            try db.forEachRow("""
+        func makeSQL(assetSource: String,
+                     extraCondition: String = "",
+                     orderClause: String = "") -> String {
+            """
                 SELECT a.Z_PK AS pk, a.ZUUID AS uuid, a.ZFILENAME AS filename,
                        a.ZDIRECTORY AS directory, a.ZKIND AS kind,
                        \(subtypeColumn) AS subtype,
+                       \(spatialColumn) AS spatialtype,
                        \(avalancheColumn) AS avalanche,
+                       \(avalanchePickColumn) AS avalanchepick,
                        \(playbackStyleColumn) AS playbackstyle,
                        \(cameraDeviceColumn) AS cameradevice,
                        \(adjustmentColumn) AS adjustmentdate,
@@ -128,9 +152,12 @@ enum SystemPhotosLibrary {
                 \(assetSource)
                 LEFT JOIN ZADDITIONALASSETATTRIBUTES aa ON aa.ZASSET = a.Z_PK
                 LEFT JOIN ZEXTENDEDATTRIBUTES e ON e.ZASSET = a.Z_PK
-                WHERE a.ZKIND IN (0, 1)
-                \(maxAssets > 0 ? "ORDER BY a.ZDATECREATED DESC" : "")
-                """, binds) { row in
+                WHERE a.ZKIND IN (0, 1)\(extraCondition)
+                \(orderClause)
+                """
+        }
+
+        func handleRow(_ row: [String: SQLiteValue]) {
             guard let pk = row["pk"]?.int64,
                   let uuidString = row["uuid"]?.string,
                   let uuid = UUID(uuidString: uuidString),
@@ -188,11 +215,20 @@ enum SystemPhotosLibrary {
             item.isPortraitCapture = (row["depth"]?.int ?? 0) > 0
             item.isDuplicateItem = (row["duplicate"]?.int ?? 0) > 0
             // Photos.sqlite 的 ZKINDSUBTYPE：1 = 全景，2/3 = 实况照片，6/10 = 截屏，
-            // 101 = 慢动作视频；ZPLAYBACKSTYLE：2 = 动图，3 = 实况照片。
+            // 101 = 慢动作，102 = 延时摄影，103 = 录屏；ZPLAYBACKSTYLE：2 = 动图，3 = 实况照片。
+            // 电影效果没有稳定的库字段，由 PhotoKit 智能相簿提供 ID。
             item.isLivePhoto = subtype == 2 || subtype == 3 || playbackStyle == 3
             item.isBurstItem = (row["avalanche"]?.string).map { !$0.isEmpty } ?? false
+            // 连拍组 ID 与键照片标记：同组成员共享 UUID，代表图口径与官方「照片」一致。
+            if let group = row["avalanche"]?.string, !group.isEmpty {
+                item.burstGroupID = group
+            }
+            item.isBurstKeyPhoto = ((row["avalanchepick"]?.int ?? 0) & 16) != 0
             item.isSlowMotion = isVideo && subtype == 101
-            item.isScreenRecording = isVideo && isScreenshot
+            item.isTimelapse = isVideo && subtype == 102
+            item.isCinematic = false
+            item.isSpatial = (row["spatialtype"]?.int ?? 0) != 0
+            item.isScreenRecording = isVideo && (isScreenshot || subtype == 103)
             item.isAnimated = !isVideo && playbackStyle == 2
             item.viewedAt = coreDataDate(row["lastviewed"])
             item.editedAt = coreDataDate(row["adjustmentdate"])
@@ -252,7 +288,8 @@ enum SystemPhotosLibrary {
                 item.systemThumbnailPath = LibraryPaths.systemDerivativePath(
                     libraryURL: libraryURL,
                     assetID: item.id,
-                    isVideo: item.kind == .video
+                    isVideo: item.kind == .video,
+                    directory: directory
                 )
             }
             photos.append(item)
@@ -264,10 +301,21 @@ enum SystemPhotosLibrary {
                 pendingBatch.removeAll(keepingCapacity: true)
             }
         }
-        if !pendingBatch.isEmpty {
-            onBatch?(pendingBatch)
-            pendingBatch.removeAll(keepingCapacity: true)
-        }
+
+        do {
+            try db.forEachRow(makeSQL(assetSource: assetSource, orderClause: orderClause),
+                              binds) { handleRow($0) }
+            if scanNullDates {
+                // 极少数缺少拍摄日期的项目排在最后补扫，避免静默漏掉。
+                try db.forEachRow(makeSQL(assetSource: "FROM ZASSET a",
+                                          extraCondition: " AND a.ZDATECREATED IS NULL",
+                                          orderClause: "ORDER BY a.Z_PK"),
+                                  []) { handleRow($0) }
+            }
+            if !pendingBatch.isEmpty {
+                onBatch?(pendingBatch)
+                pendingBatch.removeAll(keepingCapacity: true)
+            }
         } catch {
             throw SystemLibraryError.unsupported(error.localizedDescription)
         }
@@ -288,7 +336,7 @@ enum SystemPhotosLibrary {
 
         let albumRows = try db.query("""
             SELECT Z_PK AS pk, ZKIND AS kind, ZTITLE AS title, ZPARENTFOLDER AS parent,
-                   ZCREATIONDATE AS created
+                   ZCREATIONDATE AS created, ZUUID AS uuid, \(albumSortColumn) AS sortkey
             FROM ZGENERICALBUM
             WHERE ZKIND IN (2, 4000) AND ZTRASHEDSTATE = 0
             """)
@@ -301,7 +349,7 @@ enum SystemPhotosLibrary {
             folders.append(SystemFolderInfo(id: pk,
                                             name: row["title"]?.string ?? "未命名文件夹",
                                             parent: row["parent"]?.int64,
-                                            sortIndex: pk))
+                                            sortIndex: row["sortkey"]?.int64 ?? pk))
         }
 
         var members: [Int64: [UUID]] = [:]
@@ -328,7 +376,8 @@ enum SystemPhotosLibrary {
                                           name: row["title"]?.string ?? "未命名相簿",
                                           parentFolder: parent,
                                           assetIDs: members[pk] ?? [],
-                                          sortIndex: pk))
+                                          sortIndex: row["sortkey"]?.int64 ?? pk,
+                                          uuid: row["uuid"]?.string))
         }
 
         // 修正文件夹父子关系（父节点可能尚未遍历到）。
@@ -377,10 +426,14 @@ enum SystemPhotosLibrary {
             }
         }
 
+        // 同一人物可能有多条裁切图，只认与关键照片一致的那条（与官方「照片」的头像口径一致）。
         var crops: [Int64: Data] = [:]
         try? db.forEachRow("""
-            SELECT ZPERSON AS person, ZRESOURCEDATA AS data FROM ZFACECROP
-            WHERE ZPERSON IS NOT NULL AND ZRESOURCEDATA IS NOT NULL
+            SELECT fc.ZPERSON AS person, fc.ZRESOURCEDATA AS data
+            FROM ZFACECROP fc
+            JOIN ZPERSON p ON p.Z_PK = fc.ZPERSON
+            JOIN ZDETECTEDFACE kf ON kf.Z_PK = p.ZKEYFACE
+            WHERE fc.ZRESOURCEDATA IS NOT NULL AND fc.ZASSET = kf.ZASSETFORFACE
             """) { row in
             if let personPK = row["person"]?.int64,
                let data = row["data"]?.data,
@@ -389,12 +442,12 @@ enum SystemPhotosLibrary {
             }
         }
 
+        // 官方「照片」的人物列表不只包含已命名的人，未命名的人脸聚类同样会出现在「人物」里；
+        // 这里不按名称过滤，未命名时用「未命名」占位，保证与官方列出的人物数量一致。
         let personRows = try db.query("""
             SELECT Z_PK AS pk, ZDISPLAYNAME AS display, ZFULLNAME AS full,
                    ZFACECOUNT AS faces, ZTYPE AS type, ZKEYFACE AS keyface
             FROM ZPERSON
-            WHERE (ZDISPLAYNAME IS NOT NULL AND length(ZDISPLAYNAME) > 0)
-               OR (ZFULLNAME IS NOT NULL AND length(ZFULLNAME) > 0)
             """)
 
         var people: [SystemPersonInfo] = []
@@ -407,10 +460,26 @@ enum SystemPhotosLibrary {
             guard !assetIDs.isEmpty else { continue }
 
             var keyAssetID: UUID?
-            if let keyfacePK = row["keyface"]?.int64,
-               let keyRow = try? db.query("SELECT ZASSETFORFACE AS asset FROM ZDETECTEDFACE WHERE Z_PK = ?", [keyfacePK]).first,
-               let assetPK = keyRow["asset"]?.int64 {
-                keyAssetID = assetIDByPK[assetPK]
+            var faceCenterX: Double?
+            var faceCenterY: Double?
+            var faceSize: Double?
+            if let keyfacePK = row["keyface"]?.int64 {
+                // 关键人脸的关键照片与几何一次取出；旧图库缺几何列时用 NULL 顶替。
+                let geometry = (faceColumns.contains("ZCENTERX")
+                                && faceColumns.contains("ZCENTERY")
+                                && faceColumns.contains("ZSIZE"))
+                    ? "ZCENTERX AS fcx, ZCENTERY AS fcy, ZSIZE AS fsize"
+                    : "NULL AS fcx, NULL AS fcy, NULL AS fsize"
+                if let keyRow = try? db.query("""
+                    SELECT ZASSETFORFACE AS asset, \(geometry)
+                    FROM ZDETECTEDFACE WHERE Z_PK = ?
+                    """, [keyfacePK]).first,
+                   let assetPK = keyRow["asset"]?.int64 {
+                    keyAssetID = assetIDByPK[assetPK]
+                    faceCenterX = keyRow["fcx"]?.double
+                    faceCenterY = keyRow["fcy"]?.double
+                    faceSize = keyRow["fsize"]?.double
+                }
             }
 
             people.append(SystemPersonInfo(id: pk,
@@ -419,7 +488,10 @@ enum SystemPhotosLibrary {
                                            isPet: (row["type"]?.int ?? 0) == 1,
                                            assetIDs: assetIDs,
                                            keyAssetID: keyAssetID,
-                                           cropData: crops[pk]))
+                                           cropData: crops[pk],
+                                           faceCenterX: faceCenterX,
+                                           faceCenterY: faceCenterY,
+                                           faceSize: faceSize))
         }
         return people.sorted {
             if $0.faceCount != $1.faceCount { return $0.faceCount > $1.faceCount }
@@ -487,22 +559,23 @@ enum SystemLibraryCache {
     /// 解析逻辑或快照结构变更时递增，旧缓存会自动失效。
     /// v5：扫描时记录官方 derivative 路径，旧缓存需要重扫一次。
     /// v6：缓存记录载入上限，调整上限后旧快照不再被当成最新缓存。
-    static let version = 6
+    /// v7：人物收录未命名聚类（与官方「照片」人物列表对齐），旧缓存需要重扫一次。
+    /// v8：相簿 / 文件夹改用 Z_FOK_PARENTFOLDER 手动排序键，旧缓存需要重扫一次。
+    /// v9：移除载入上限，旧缓存可能是截断结果，需要重扫一次。
+    static let version = 9
     private static let maxCacheFiles = 8
     /// 超大快照不做缓存，避免编码/解码占用过多内存。
     private static let maxCachedPhotos = 250_000
 
     struct Loaded {
         let snapshot: SystemLibrarySnapshot
-        /// Photos.sqlite 未变化且载入上限一致，缓存即最新，无需再扫描。
+        /// Photos.sqlite 未变化，缓存即最新，无需再扫描。
         let isFresh: Bool
     }
 
     private struct Payload: Codable {
         var version: Int
         var signature: String
-        /// 生成该快照时使用的载入上限（0 = 不限制）。
-        var maxAssets: Int
         var name: String
         var photos: [PhotoItem]
         var albums: [SystemAlbumInfo]
@@ -511,7 +584,7 @@ enum SystemLibraryCache {
         var totalAssetCount: Int?
     }
 
-    static func load(for libraryURL: URL, maxAssets: Int) -> Loaded? {
+    static func load(for libraryURL: URL) -> Loaded? {
         guard let signature = signature(for: libraryURL),
               let file = cacheFile(for: libraryURL),
               let data = try? Data(contentsOf: file),
@@ -523,18 +596,16 @@ enum SystemLibraryCache {
                                              folders: payload.folders,
                                              people: payload.people,
                                              totalAssetCount: payload.totalAssetCount)
-        // 上限变化时先展示旧快照，再按新上限重扫，避免出现空白等待。
-        let isFresh = payload.signature == signature && payload.maxAssets == maxAssets
+        let isFresh = payload.signature == signature
         return Loaded(snapshot: snapshot, isFresh: isFresh)
     }
 
-    static func save(_ snapshot: SystemLibrarySnapshot, maxAssets: Int, for libraryURL: URL) {
+    static func save(_ snapshot: SystemLibrarySnapshot, for libraryURL: URL) {
         guard snapshot.photos.count <= maxCachedPhotos,
               let signature = signature(for: libraryURL),
               let file = cacheFile(for: libraryURL) else { return }
         let payload = Payload(version: version,
                               signature: signature,
-                              maxAssets: maxAssets,
                               name: snapshot.name,
                               photos: snapshot.photos,
                               albums: snapshot.albums,

@@ -29,6 +29,21 @@ enum MetadataPreset {
     case full
 }
 
+/// 设置窗口的分页。其它入口（如影院菜单）可以先把目标页写进 `SettingsKeys.selectedTab`，
+/// 再打开设置窗口，直接落在对应分页上。
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case appearance
+    case browsing
+    case cinema
+    case shortcuts
+    case library
+    case models
+    case assistant
+
+    var id: String { rawValue }
+}
+
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system
     case light
@@ -115,6 +130,23 @@ enum PhotoOpenMode: String, CaseIterable, Identifiable {
         case .systemApp: return "双击交给「预览」等默认应用；云端项目仍用查看器。"
         }
     }
+
+    /// 设置卡片上的短标题与图标。
+    var shortTitle: String {
+        switch self {
+        case .viewer: return "App 内查看"
+        case .editor: return "直接编辑"
+        case .systemApp: return "系统应用"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .viewer: return "eye"
+        case .editor: return "slider.horizontal.3"
+        case .systemApp: return "arrow.up.forward.app"
+        }
+    }
 }
 
 /// 查看器呈现方式：窗口内浏览（保留侧边栏与工具栏）或全屏沉浸。
@@ -135,6 +167,28 @@ enum ViewerLayout: String, CaseIterable, Identifiable {
         switch self {
         case .window: return "保留侧边栏与顶部工具栏，照片居中显示，可一边浏览一边切换相簿。"
         case .fullscreen: return "查看器覆盖整个窗口并隐藏侧边栏，适合专注看图。"
+        }
+    }
+}
+
+/// 视频控制条的位置：画面底部悬浮，或贴着窗口工具栏下缘融入画面上方。
+enum VideoControlPlacement: String, CaseIterable, Identifiable {
+    case floating
+    case topIntegrated
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .floating: return "画面底部悬浮"
+        case .topIntegrated: return "顶栏融合"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .floating: return "控制条悬浮在画面底部，可拖到画面内任意位置，双击顶部把手复位。"
+        case .topIntegrated: return "播放控制并入窗口工具栏，与返回、拍摄信息和操作按钮共用一行：播放按钮紧跟返回，中部播放舱保留地点、日期与序号并显示进度，播放选项收到右侧菜单。"
         }
     }
 }

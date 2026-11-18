@@ -40,12 +40,16 @@ struct WebDAVClient {
     let baseURL: URL
     let username: String
     let password: String
+    /// NAS 常使用自签名证书：开启后只对本次挂载放行服务器证书校验。
+    let allowsSelfSignedCertificate: Bool
 
-    init?(baseURLString: String, username: String, password: String) {
+    init?(baseURLString: String, username: String, password: String,
+          allowsSelfSignedCertificate: Bool = false) {
         guard let url = Self.normalizedBaseURL(baseURLString) else { return nil }
         self.baseURL = url
         self.username = username
         self.password = password
+        self.allowsSelfSignedCertificate = allowsSelfSignedCertificate
     }
 
     /// 补全协议、去掉查询参数，并确保路径以「/」结尾。
@@ -98,6 +102,39 @@ struct WebDAVClient {
         return components.url
     }
 
+    /// 用最新一次 PROPFIND 的结果定位文件的真实地址。
+    /// 服务器返回的 href 可能与「挂载点 + 相对路径」拼出来的不一样（编码、别名、目录重定向等），
+    /// 直接按 href 下载可以避免 404；文件确实不在目录里时返回 nil。
+    func resolveFileURL(path: String) async throws -> URL? {
+        let parent = (path as NSString).deletingLastPathComponent
+        let name = (path as NSString).lastPathComponent
+        guard !name.isEmpty, let folder = folderURL(path: parent) else { return nil }
+        var request = URLRequest(url: folder, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+        request.httpMethod = "PROPFIND"
+        request.setValue("1", forHTTPHeaderField: "Depth")
+        request.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Self.propfindBody
+        for (key, value) in requestHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 207 else { return nil }
+
+        let parsed = WebDAVMultistatusParser.parse(data)
+        for item in parsed where !item.isCollection {
+            guard let hrefURL = URL(string: item.href, relativeTo: folder) else { continue }
+            let decoded = (hrefURL.path.removingPercentEncoding ?? hrefURL.path)
+            guard (decoded as NSString).lastPathComponent == name else { continue }
+            // href 是绝对地址：直接用；相对地址：沿用挂载点的 scheme/host/port，路径用服务器返回的。
+            var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+            components?.percentEncodedPath = hrefURL.path(percentEncoded: true)
+            components?.query = nil
+            components?.fragment = nil
+            return components?.url ?? hrefURL
+        }
+        return nil
+    }
+
     func list(path: String) async throws -> [CloudEntry] {
         guard let url = folderURL(path: path) else { throw WebDAVError.invalidURL }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
@@ -112,7 +149,7 @@ struct WebDAVClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await Self.session.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch {
             throw WebDAVError.transport(error.localizedDescription)
         }
@@ -135,16 +172,26 @@ struct WebDAVClient {
         let parsed = WebDAVMultistatusParser.parse(data)
         let basePath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
         let decodedBase = basePath.removingPercentEncoding ?? basePath
+        // 挂载根路径：entry.path 必须是「相对挂载根」的完整路径，扫描、相册树与播放都依赖它。
+        let rootPath = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? baseURL.path
+        let decodedRoot = rootPath.removingPercentEncoding ?? rootPath
         let requestedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // 诊断：确认服务器返回的 href 与本地拼接的 base 是否一致（排查 404）。
+        let samples = parsed.prefix(2).map(\.href).joined(separator: " , ")
+        Diagnostics.record("WebDAV 列表 base=\(decodedBase) href=\(samples)")
 
         var entries: [CloudEntry] = []
         for item in parsed {
             guard !item.href.isEmpty else { continue }
             let encodedPath = URL(string: item.href)?.path(percentEncoded: true) ?? item.href
             let decoded = encodedPath.removingPercentEncoding ?? encodedPath
+            // 优先按挂载根截断；href 与挂载根前缀不一致时退回「当前目录 + 剩余部分」。
             var relative = decoded
-            if relative.hasPrefix(decodedBase) {
-                relative = String(relative.dropFirst(decodedBase.count))
+            if relative.hasPrefix(decodedRoot) {
+                relative = String(relative.dropFirst(decodedRoot.count))
+            } else if relative.hasPrefix(decodedBase) {
+                let rest = String(relative.dropFirst(decodedBase.count))
+                relative = requestedPath.isEmpty ? rest : requestedPath + "/" + rest
             }
             relative = relative.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             guard !relative.isEmpty, relative != requestedPath else { continue }
@@ -167,7 +214,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let (data, response) = try await Self.session.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Self.validate(response)
         return data
     }
@@ -180,7 +227,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let (data, response) = try await Self.session.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Self.validate(response)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 200
         return (data, status == 206)
@@ -192,7 +239,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let (temp, response) = try await Self.session.download(for: request)
+        let (temp, response) = try await session.download(for: request)
         try Self.validate(response)
         let fm = FileManager.default
         try? fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -209,7 +256,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let http = try await Self.perform(request)
+        let http = try await perform(request)
         switch http.statusCode {
         case 200, 201:
             return
@@ -227,7 +274,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let http = try await Self.perform(request)
+        let http = try await perform(request)
         switch http.statusCode {
         case 200, 202, 204:
             return
@@ -246,7 +293,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let http = try await Self.perform(request)
+        let http = try await perform(request)
         switch http.statusCode {
         case 200, 201, 204:
             return
@@ -266,7 +313,7 @@ struct WebDAVClient {
         for (key, value) in requestHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let (_, response) = try await Self.session.upload(for: request, fromFile: localURL)
+        let (_, response) = try await session.upload(for: request, fromFile: localURL)
         guard let http = response as? HTTPURLResponse else { throw WebDAVError.invalidResponse }
         switch http.statusCode {
         case 200, 201, 204:
@@ -278,7 +325,7 @@ struct WebDAVClient {
         }
     }
 
-    private static func perform(_ request: URLRequest) async throws -> HTTPURLResponse {
+    private func perform(_ request: URLRequest) async throws -> HTTPURLResponse {
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw WebDAVError.invalidResponse }
         return http
@@ -313,6 +360,10 @@ struct WebDAVClient {
         </D:propfind>
         """.utf8)
 
+    private var session: URLSession {
+        allowsSelfSignedCertificate ? Self.trustingSession : Self.session
+    }
+
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 25
@@ -322,6 +373,36 @@ struct WebDAVClient {
         configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
     }()
+
+    /// 放行自签名证书的会话：仅用于用户明确勾选「信任自签名证书」的挂载。
+    private static let trustingSession: URLSession = {
+        URLSession(configuration: session.configuration,
+                   delegate: SelfSignedTrustDelegate(),
+                   delegateQueue: nil)
+    }()
+}
+
+/// 接受服务器证书（含自签名）的 URLSession 代理。
+private final class SelfSignedTrustDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        complete(challenge, completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        complete(challenge, completionHandler)
+    }
+
+    private func complete(_ challenge: URLAuthenticationChallenge,
+                          _ completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
 }
 
 // MARK: - PROPFIND 解析

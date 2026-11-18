@@ -9,7 +9,8 @@ struct SectionHeaderView: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(title)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 22, weight: .bold))
+                .tracking(-0.02)
                 .lineLimit(1)
             Spacer(minLength: 8)
             Text("\(count) 张照片")
@@ -19,15 +20,25 @@ struct SectionHeaderView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.06), in: Capsule())
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                }
         }
         .padding(.horizontal, 20)
         .padding(.top, 14)
         .padding(.bottom, 10)
-        .background(.regularMaterial)
+        // 悬浮分段头也走磨砂：网格滚到下面时能透出照片的颜色，而不是一块实心灰。
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                LinearGradient(colors: [Color.accentColor.opacity(0.05), .clear],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        }
         .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
+            LinearGradient(colors: [Color.primary.opacity(0.16), Color.primary.opacity(0.03)],
+                           startPoint: .leading, endPoint: .trailing)
                 .frame(height: 0.5)
         }
     }
@@ -37,11 +48,14 @@ struct SquarePhotoGrid: View {
     @EnvironmentObject private var store: LibraryStore
     let photos: [PhotoItem]
     let availableWidth: CGFloat
+    /// 非图库网格（人物详情等）打开查看器时的顺序基准。
+    var viewerContext: [PhotoItem]?
 
-    private let spacing: CGFloat = 4
+    private let spacing: CGFloat = 2
 
     var body: some View {
-        let contentWidth = max(120, availableWidth - 40)
+        // 网格直接铺满内容区，左右不再留白（对齐系统「照片」的满宽网格）。
+        let contentWidth = max(120, availableWidth)
         let target = CGFloat(store.thumbSize)
         let columns = GridLayout.columns(contentWidth: contentWidth, targetSize: target, spacing: spacing)
         let cell = GridLayout.squareCellWidth(contentWidth: contentWidth, columns: columns, spacing: spacing)
@@ -50,13 +64,14 @@ struct SquarePhotoGrid: View {
             spacing: spacing
         ) {
             ForEach(photos) { photo in
-                PhotoCell(photo: photo, width: cell, height: cell)
+                PhotoCell(photo: photo, width: cell, height: cell, cornerRadius: 0,
+                          viewerContext: viewerContext)
                     .id(photo.id)
                     .background(
                         GeometryReader { geo in
                             Color.clear.preference(
                                 key: PhotoFramePreferenceKey.self,
-                                value: [photo.id: geo.frame(in: .named("galleryGrid"))]
+                                value: [photo.id: geo.frame(in: .named(PhotoMarqueeSpace.name))]
                             )
                         }
                     )
@@ -77,36 +92,29 @@ struct JustifiedPhotoGrid: View {
     let availableWidth: CGFloat
     let targetHeight: CGFloat
 
-    private let spacing: CGFloat = 8
+    private let spacing: CGFloat = 2
 
     var body: some View {
-        let contentWidth = max(120, availableWidth - 40)
+        let contentWidth = max(120, availableWidth)
         let rows = Self.buildRows(photos: photos, width: contentWidth,
                                   targetHeight: max(60, targetHeight), spacing: spacing)
-        // 完整宽高比模式：每张缩略图保持原始比例，行高统一，文件名居中显示在下方（与系统「照片」一致）。
-        LazyVStack(alignment: .leading, spacing: 18) {
+        // 完整宽高比模式：每张缩略图保持原始比例、同一行的顶边与底边对齐。
+        // 文件名不再常驻在图下方（会让行高参差、整页显得杂乱），改为悬停提示里查看。
+        LazyVStack(alignment: .leading, spacing: spacing) {
             ForEach(rows.indices, id: \.self) { index in
                 HStack(alignment: .top, spacing: spacing) {
                     ForEach(rows[index]) { entry in
-                        VStack(spacing: 6) {
-                            PhotoCell(photo: entry.photo, width: entry.width, height: entry.height)
-                                .background(
-                                    GeometryReader { geo in
-                                        Color.clear.preference(
-                                            key: PhotoFramePreferenceKey.self,
-                                            value: [entry.photo.id: geo.frame(in: .named("galleryGrid"))]
-                                        )
-                                    }
-                                )
-                            Text(entry.photo.displayFilename)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(maxWidth: entry.width)
-                        }
-                        .frame(width: entry.width)
-                        .id(entry.photo.id)
+                        PhotoCell(photo: entry.photo, width: entry.width, height: entry.height,
+                                  cornerRadius: 0)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: PhotoFramePreferenceKey.self,
+                                        value: [entry.photo.id: geo.frame(in: .named(PhotoMarqueeSpace.name))]
+                                    )
+                                }
+                            )
+                            .id(entry.photo.id)
                     }
                     Spacer(minLength: 0)
                 }
@@ -131,21 +139,22 @@ struct JustifiedPhotoGrid: View {
 }
 
 /// 瀑布流：等宽多列、每列高度自适应，保留原始宽高比，竖图横图混排也不留空洞。
-/// 卡片比其它网格更大，并常驻投影 + 更强的悬停放大，让照片从背景里浮出来。
+/// 卡片比其它网格更大，并常驻投影，让照片从背景里浮出来。
 struct MasonryPhotoGrid: View {
-    @EnvironmentObject private var settings: AppSettings
     let photos: [PhotoItem]
     let availableWidth: CGFloat
     let targetWidth: CGFloat
+    /// 非图库网格（地点详情等）打开查看器时的顺序基准。
+    var viewerContext: [PhotoItem]?
 
-    private let spacing: CGFloat = 14
+    private let spacing: CGFloat = 8
     private let maxColumns = 6
 
     /// 瀑布流卡片比正方形网格大 1.5 倍，减少列数、放大单张，观感更接近「瀑布」。
     private var cardWidth: CGFloat { max(180, targetWidth * 1.5) }
 
     var body: some View {
-        let contentWidth = max(120, availableWidth - 40)
+        let contentWidth = max(120, availableWidth)
         let columns = min(maxColumns,
                           GridLayout.columns(contentWidth: contentWidth,
                                              targetSize: cardWidth,
@@ -163,15 +172,15 @@ struct MasonryPhotoGrid: View {
                         PhotoCell(photo: photo,
                                   width: columnWidth,
                                   height: Self.cellHeight(for: photo, width: columnWidth),
-                                  cornerRadius: settings.cardRadius,
+                                  cornerRadius: 0,
                                   elevated: true,
-                                  hoverScale: 1.02)
+                                  viewerContext: viewerContext)
                             .id(photo.id)
                             .background(
                                 GeometryReader { geo in
                                     Color.clear.preference(
                                         key: PhotoFramePreferenceKey.self,
-                                        value: [photo.id: geo.frame(in: .named("galleryGrid"))]
+                                        value: [photo.id: geo.frame(in: .named(PhotoMarqueeSpace.name))]
                                     )
                                 }
                             )
@@ -329,7 +338,7 @@ private struct PhotoListRow: View {
             GeometryReader { geo in
                 Color.clear.preference(
                     key: PhotoFramePreferenceKey.self,
-                    value: [photo.id: geo.frame(in: .named("galleryGrid"))]
+                    value: [photo.id: geo.frame(in: .named(PhotoMarqueeSpace.name))]
                 )
             }
         )

@@ -97,7 +97,11 @@ final class ThumbnailFileIndex: @unchecked Sendable {
     // MARK: - 预热
 
     /// 后台枚举一个缩略图根目录。只索引 JPEG；同一根目录只枚举一次。
-    func warm(root: URL) {
+    ///
+    /// `timeBudget`：外接盘上的系统图库可能有一百多万个 derivative 文件，
+    /// 整棵目录树走完要几分钟，期间所有翻页都在抢磁盘；这里只预热一小段时间，
+    /// 其余路径仍按需 stat 并把结果记进索引。
+    func warm(root: URL, timeBudget: TimeInterval = 1.2) {
         let key = root.path
         guard FileManager.default.fileExists(atPath: key) else { return }
         lock.lock()
@@ -109,13 +113,14 @@ final class ThumbnailFileIndex: @unchecked Sendable {
         lock.unlock()
 
         let limit = maxEntries
-        Task.detached(priority: .utility) { [weak self] in
+        Task.detached(priority: .background) { [weak self] in
             guard let self else { return }
             let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
             let keySet = Set(keys)
             var batch: [String: TimeInterval] = [:]
             batch.reserveCapacity(2_000)
             var total = 0
+            let deadline = Date().addingTimeInterval(timeBudget)
 
             if let enumerator = FileManager.default.enumerator(at: root,
                                                                includingPropertiesForKeys: keys,
@@ -124,6 +129,8 @@ final class ThumbnailFileIndex: @unchecked Sendable {
                 while let next = enumerator.nextObject() {
                     if Task.isCancelled { break }
                     guard let url = next as? URL else { continue }
+                    // 官方图库的 masters 是原图，不是缩略图，没必要进索引。
+                    guard !url.path.contains("/masters/") else { continue }
                     let name = url.lastPathComponent.lowercased()
                     guard name.hasSuffix(".jpg") || name.hasSuffix(".jpeg") else { continue }
                     guard let values = try? url.resourceValues(forKeys: keySet),
@@ -137,6 +144,8 @@ final class ThumbnailFileIndex: @unchecked Sendable {
                         await Task.yield()
                     }
                     if total >= limit { break }
+                    // 每批检查一次时间预算，避免为了预热把磁盘占满。
+                    if total % 512 == 0, Date() >= deadline { break }
                 }
             }
             if !batch.isEmpty { self.merge(batch) }

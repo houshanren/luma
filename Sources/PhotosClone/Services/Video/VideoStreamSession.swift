@@ -1,13 +1,19 @@
 import Foundation
-import Darwin
 
-/// 边下载边转封装：ffmpeg 把远端（或本地）MKV 实时封成 fMP4 分片 HLS，
+/// 边下载边转封装：ffmpeg 把远端（或本地）MKV 封成 fMP4 分片 HLS，
 /// 由本机回环 HTTP 服务交给 AVPlayer。首段生成即可开播，不必等整部文件下载完。
 /// 已完整转换过的结果留在图库 transcodes 目录，下次打开同一视频直接复用。
 ///
-/// 网盘直链不走 ffmpeg 自带的 HTTP 客户端：改由 App 的 URLSession 下载后灌进 ffmpeg stdin，
-/// 复用网盘已验证过的请求头、302 跟随与证书策略（夸克 / 百度的 CDN 对第三方客户端的限制较多）。
+/// 网盘直链不走 ffmpeg 自带的 HTTP 客户端：先由 `RemoteRangeSource` 代理成本机可 Range 读取的地址，
+/// 再交给 ffmpeg。这样既能复用 App 已验证过的请求头 / 302 / 证书策略，又允许按位置读取而不是只能从头顺序灌。
 final class VideoStreamSession {
+    enum Mode: Equatable {
+        /// 只转封装（-c:v copy）：最快，H.264 / HEVC 等 AVPlayer 能解的编码走这条。
+        case remux
+        /// 转封装失败时降级为重编码 H.264，兼容 RealVideo / Theora 等编码。
+        case transcode
+    }
+
     /// 完整转换结果的缓存目录（只有带 EXT-X-ENDLIST 的播放列表才会放进来）。
     private let cacheDirectory: URL
     /// 本次播放独占的工作目录：避免同一视频的两个会话互删中间文件。
@@ -16,20 +22,40 @@ final class VideoStreamSession {
     private let headers: [String: String]
     /// 挂载点勾选了「信任自签名证书」：URLSession 需要放行 NAS 的自签名证书。
     private let trustSelfSigned: Bool
+    private let mode: Mode
+    /// 从第几秒开始读取：用户拖到未生成区间时，用 -ss 重新起一个会话。
+    private let startOffset: Double
+    private let isHEVC: Bool
+    private let isHDR: Bool
+    /// 只映射这一条音轨；切换音轨时调用方会重新建会话。
+    private let audioIndex: Int
+    /// 音轨声道数：>2 时给 AAC 更高码率，避免把 5.1 压得太狠。
+    private let audioChannels: Int
+    /// 云盘直链过期时重新解析（由播放页提供）。
+    private let refreshSource: (() -> (URL, [String: String])?)?
+
     private var process: Process?
     private var server: LocalHLSServer?
-    private var pump: HTTPStreamPump?
-    private var stdinHandle: FileHandle?
+    private var rangeSource: RemoteRangeSource?
     private var logURL: URL?
     private let stateLock = NSLock()
-    private var pumpFailure: String?
+    private var sourceFailure: String?
     /// 主动关闭会话时置位：ffmpeg 因收到 SIGTERM 退出属于预期行为，不再记录为转换失败。
     private var stopping = false
+    /// ffmpeg 是否被暂停生成（播放器暂停时挂起进程，避免后台把整片转完）。
+    private var generationPaused = false
+    /// 当前保留的最小分片序号（播放中滚动清理）。
+    private var minSegmentIndex = 0
+    /// 最小保留分片对应的时间偏移（相对会话起点）。
+    private var retainedOffset: Double = 0
     /// 实际提供给播放器的目录：命中缓存时是缓存目录，否则是工作目录。
     private var servingDirectory: URL
     private var usesCache = false
 
-    init(photoID: UUID, source: URL, headers: [String: String], trustSelfSigned: Bool = false) {
+    init(photoID: UUID, source: URL, headers: [String: String], trustSelfSigned: Bool = false,
+         mode: Mode = .remux, startOffset: Double = 0, isHEVC: Bool = false,
+         isHDR: Bool = false, audioIndex: Int = 0, audioChannels: Int = 2,
+         refreshSource: (() -> (URL, [String: String])?)? = nil) {
         let base = LibraryPaths.transcodes
         self.cacheDirectory = base.appendingPathComponent(photoID.uuidString + ".hls", isDirectory: true)
         self.workDirectory = base.appendingPathComponent(photoID.uuidString + "-" + UUID().uuidString + ".hls",
@@ -38,25 +64,131 @@ final class VideoStreamSession {
         self.source = source
         self.headers = headers
         self.trustSelfSigned = trustSelfSigned
+        self.mode = mode
+        self.startOffset = max(0, startOffset)
+        self.isHEVC = isHEVC
+        self.isHDR = isHDR
+        self.audioIndex = max(0, audioIndex)
+        self.audioChannels = max(1, audioChannels)
+        self.refreshSource = refreshSource
     }
 
     private var playlistPath: URL {
-        servingDirectory.appendingPathComponent("live.m3u8")
+        // 单参数 appendingPathComponent 会 lstat，这个路径在等首段时每 100ms 读一次。
+        servingDirectory.appendingPathComponent("live.m3u8", isDirectory: false)
+    }
+
+    /// 本地 / SMB 源不落长期缓存：源就在本地，重转很快，缓存只会白占磁盘。
+    private var persistCache: Bool { !source.isFileURL }
+
+    /// 只有「云端、完整、从 0 开始、默认音轨、无损转封装」的结果才值得长期缓存。
+    private var canReuseCache: Bool {
+        persistCache && mode == .remux && startOffset < 0.5 && audioIndex == 0
+    }
+
+    /// 已删除分片之前的起点（秒）：跳转到这之前需要重新起流。
+    var retainedStartSeconds: Double {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return startOffset + retainedOffset
+    }
+
+    /// 播放推进后删除窗口外的旧分片，避免长片把磁盘写满。
+    /// 只保留当前播放位置之前约 2 分钟的片段，回看更早的位置由调用方重建流。
+    func trim(before seconds: Double) {
+        guard !usesCache else { return }
+        let keepBehind: Double = 120
+        let cutoff = Int(((seconds - startOffset - keepBehind) / 2).rounded(.down))
+        guard cutoff > 0 else { return }
+        stateLock.lock()
+        guard cutoff > minSegmentIndex else {
+            stateLock.unlock()
+            return
+        }
+        minSegmentIndex = cutoff
+        stateLock.unlock()
+
+        // 分片长度并不严格等于 hls_time（会在关键帧处切分）：从播放列表读出精确起点。
+        if let start = Self.segmentStartTime(playlistPath, index: cutoff) {
+            stateLock.lock()
+            retainedOffset = start
+            stateLock.unlock()
+        }
+
+        // 删除动作放到后台：一次可能清掉上百个分片，不能卡主线程。
+        let directory = workDirectory
+        DispatchQueue.global(qos: .utility).async {
+            guard let items = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil) else { return }
+            for url in items {
+                let name = url.lastPathComponent
+                guard name.hasPrefix("seg"), name.hasSuffix(".m4s"),
+                      let index = Int(name.dropFirst(3).dropLast(4)),
+                      index < cutoff else { continue }
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// 是否在播放已经完整生成过的 HLS 缓存（整部片都可直接 seek）。
+    var isCompleteCache: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return usesCache
+    }
+
+    private func currentMinSegmentIndex() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return minSegmentIndex
+    }
+
+    /// 播放器暂停时挂起 ffmpeg，继续播放时恢复：避免暂停期间把整部片转成缓存。
+    func setGenerationActive(_ active: Bool) {
+        guard !usesCache, let process, process.isRunning else { return }
+        let shouldPause = !active
+        stateLock.lock()
+        guard generationPaused != shouldPause else {
+            stateLock.unlock()
+            return
+        }
+        generationPaused = shouldPause
+        stateLock.unlock()
+        kill(process.processIdentifier, active ? SIGCONT : SIGSTOP)
+    }
+
+    /// 失败是否来自网盘（鉴权 / 网络 / 非视频数据）：这类失败重编码也没用。
+    var failureIsSource: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return sourceFailure != nil
     }
 
     /// 启动本地服务并返回可播放的 m3u8 地址；首次播放会等第一段分片就绪。
     func start() async throws -> URL {
-        if Self.isComplete(cacheDirectory) {
+        if canReuseCache, Self.isComplete(cacheDirectory) {
             usesCache = true
             servingDirectory = cacheDirectory
         } else {
-            // 上次中断留下的缓存不完整，清掉重新生成。
-            try? FileManager.default.removeItem(at: cacheDirectory)
+            // 只有完整回放才复用/清理长期缓存；跳转或换音轨的临时会话不能动它。
+            // 旧版本还给本地文件存过整部 HLS，这里一并清掉。
+            if canReuseCache || !persistCache {
+                let stale = cacheDirectory
+                DispatchQueue.global(qos: .utility).async {
+                    try? FileManager.default.removeItem(at: stale)
+                }
+            }
             try? FileManager.default.removeItem(at: workDirectory)
             try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         }
 
         let server = LocalHLSServer(directory: servingDirectory)
+        server.minSegmentIndexProvider = { [weak self] in
+            guard let self else { return 0 }
+            self.stateLock.lock()
+            defer { self.stateLock.unlock() }
+            return self.minSegmentIndex
+        }
         let port = try server.start()
         self.server = server
         if !usesCache {
@@ -77,11 +209,16 @@ final class VideoStreamSession {
         if !usesCache, process != nil, !FileManager.default.fileExists(atPath: playlistPath.path) {
             Diagnostics.record("边下边播会话提前结束（首段未生成）")
         }
-        pump?.cancel()
-        pump = nil
-        try? stdinHandle?.close()
-        stdinHandle = nil
-        process?.terminate()
+        rangeSource?.stop()
+        rangeSource = nil
+        if let process {
+            stateLock.lock()
+            let paused = generationPaused
+            stateLock.unlock()
+            // 被 SIGSTOP 挂起的进程要先恢复，否则 SIGTERM 不会立即生效。
+            if paused { kill(process.processIdentifier, SIGCONT) }
+            process.terminate()
+        }
         process = nil
         server?.stop()
         server = nil
@@ -90,50 +227,94 @@ final class VideoStreamSession {
             self.logURL = nil
         }
         guard !usesCache else { return }
-        if Self.isComplete(workDirectory) {
-            // 已经转完：整目录挪到缓存位置，下次直接回放。
+        // 播放中删过旧分片的结果不完整，不能作为下次直接回放的缓存。
+        if canReuseCache, currentMinSegmentIndex() == 0, Self.isComplete(workDirectory) {
+            // 云端完整结果挪到缓存位置，下次直接回放；本地源不落缓存。
             try? FileManager.default.removeItem(at: cacheDirectory)
             try? FileManager.default.moveItem(at: workDirectory, to: cacheDirectory)
+            VideoCacheManager.trimIfNeeded()
         } else {
-            // 没转完的中间产物留着也没法播，直接清掉。
-            try? FileManager.default.removeItem(at: workDirectory)
+            // 没转完的中间产物留着也没法播；可能有好几 GB，放后台删。
+            let stale = workDirectory
+            DispatchQueue.global(qos: .utility).async {
+                try? FileManager.default.removeItem(at: stale)
+            }
         }
     }
 
     // MARK: - 内部
 
     private static func isComplete(_ directory: URL) -> Bool {
-        let playlist = directory.appendingPathComponent("live.m3u8")
+        let playlist = directory.appendingPathComponent("live.m3u8", isDirectory: false)
         guard let text = try? String(contentsOf: playlist, encoding: .utf8) else { return false }
         return text.contains("#EXT-X-ENDLIST")
     }
 
     private func launch() throws {
-        guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
+        let needsToneMap = mode == .transcode && isHDR && VideoSupport.supportsToneMapping
+        guard let ffmpeg = FFmpeg.executable(preferToneMap: needsToneMap) else {
+            throw VideoError.transcodeUnavailable
+        }
         try? FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
 
-        // 远端由 URLSession 喂 stdin；本地文件直接给路径。
         let isRemote = !source.isFileURL
-        var arguments = ["-y", "-v", "error"]
-        if !isRemote, !headers.isEmpty {
-            arguments += ["-headers", headers.map { "\($0.key): \($0.value)\r\n" }.joined()]
+        var inputArguments: [String] = []
+        if isRemote {
+            let proxy = RemoteRangeSource(upstream: source,
+                                          headers: headers,
+                                          trustSelfSigned: trustSelfSigned,
+                                          cacheDirectory: workDirectory.appendingPathComponent("range-cache",
+                                                                                              isDirectory: true))
+            proxy.onFailure = { [weak self] message in
+                self?.recordSourceFailure(message)
+            }
+            proxy.onAuthFailure = refreshSource
+            let inputURL = try proxy.start()
+            rangeSource = proxy
+            inputArguments += ["-i", inputURL.absoluteString]
+        } else {
+            inputArguments += ["-i", source.path]
         }
+
+        var arguments = ["-y", "-v", "error"]
         // 只看开头几个 MB 就足够判断流信息，缩短首段等待。
-        arguments += ["-probesize", "4M",
-                      "-analyzeduration", "4M",
-                      "-i", isRemote ? "pipe:0" : source.path,
-                      "-map", "0:v:0", "-map", "0:a:0?",
-                      "-c:v", "copy",
-                      "-c:a", "aac", "-b:a", "192k", "-ac", "2",
-                      "-f", "hls",
+        arguments += ["-probesize", "4M", "-analyzeduration", "4M"]
+        // 把生成速度限制在 4 倍速：配合播放中的分片滚动清理，
+        // 避免一部 4K 长片在几秒内被完整转成几十 GB 的分片。
+        arguments += ["-readrate", "4"]
+        if startOffset > 0 {
+            // 放在 -i 之前：输入侧快速定位，转封装时跳到目标位置最近的关键帧。
+            arguments += ["-ss", String(format: "%.3f", startOffset)]
+        }
+        arguments += inputArguments
+        arguments += ["-map", "0:v:0"]
+        switch mode {
+        case .remux:
+            arguments += ["-c:v", "copy"]
+            // AVFoundation 只认 hvc1 标签，ffmpeg 默认写 hev1。
+            if isHEVC { arguments += ["-tag:v", "hvc1"] }
+            // 不强制 -ac 2：保留源的多声道（AAC 5.1 由 AVPlayer 正常输出）。
+            arguments += ["-c:a", "aac", "-b:a", audioChannels > 2 ? "384k" : "256k"]
+        case .transcode:
+            arguments += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+            let toneMap = VideoSupport.hdrToneMapArguments(toneMapHDR: isHDR)
+            if toneMap.isEmpty {
+                arguments += ["-pix_fmt", "yuv420p"]
+            } else {
+                arguments += toneMap
+            }
+            arguments += ["-c:a", "aac", "-b:a", audioChannels > 2 ? "384k" : "256k"]
+        }
+        arguments += ["-map", "0:a:\(audioIndex)?"]
+        arguments += ["-f", "hls",
                       "-hls_time", "2",
                       "-hls_init_time", "1",
                       "-hls_list_size", "0",
                       "-hls_playlist_type", "event",
                       "-hls_segment_type", "fmp4",
                       "-hls_fmp4_init_filename", "init.mp4",
-                      "-hls_segment_filename", workDirectory.appendingPathComponent("seg%05d.m4s").path,
-                      workDirectory.appendingPathComponent("live.m3u8").path]
+                      "-hls_segment_filename", workDirectory.appendingPathComponent("seg%05d.m4s", isDirectory: false).path,
+                      workDirectory.appendingPathComponent("live.m3u8", isDirectory: false).path]
 
         let process = Process()
         process.executableURL = ffmpeg
@@ -147,16 +328,6 @@ final class VideoStreamSession {
         process.standardError = logHandle ?? Pipe()
         self.logURL = logURL
 
-        var stdinHandle: FileHandle?
-        if isRemote {
-            let input = Pipe()
-            // ffmpeg 提前退出时继续写管道会触发 SIGPIPE 直接杀进程。
-            _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-            process.standardInput = input
-            stdinHandle = input.fileHandleForWriting
-        }
-        self.stdinHandle = stdinHandle
-
         process.terminationHandler = { [weak self] finished in
             try? logHandle?.close()
             guard let self else { return }
@@ -168,34 +339,23 @@ final class VideoStreamSession {
                   finished.terminationStatus != 0 else { return }
             let tail = Self.tail(of: logURL)
             Diagnostics.record("边下边播转换异常结束 status=\(finished.terminationStatus)：\(tail)")
-            self.recordPumpFailure(tail)
+            self.recordSourceFailure(tail)
         }
         try process.run()
         self.process = process
-
-        if isRemote, let stdinHandle {
-            let pump = HTTPStreamPump(url: source,
-                                      headers: headers,
-                                      trustSelfSigned: trustSelfSigned,
-                                      sink: stdinHandle) { [weak self] message in
-                if let message { self?.recordPumpFailure(message) }
-            }
-            self.pump = pump
-            pump.start()
-        }
     }
 
-    private func recordPumpFailure(_ message: String) {
+    private func recordSourceFailure(_ message: String) {
         stateLock.lock()
-        if pumpFailure == nil { pumpFailure = message }
+        if sourceFailure == nil { sourceFailure = message }
         stateLock.unlock()
         Diagnostics.record("边下边播失败：\(message)")
     }
 
-    private var currentPumpFailure: String? {
+    private var currentSourceFailure: String? {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return pumpFailure
+        return sourceFailure
     }
 
     /// 等 ffmpeg 写出第一版播放列表（第一段分片完成后才会写）。
@@ -205,7 +365,7 @@ final class VideoStreamSession {
             try Task.checkCancellation()
             if FileManager.default.fileExists(atPath: playlistPath.path) { return }
             if let process, !process.isRunning {
-                let reason = currentPumpFailure ?? Self.tail(of: logURL)
+                let reason = currentSourceFailure ?? Self.tail(of: logURL)
                 throw VideoError.transcodeFailedMessage(reason)
             }
             if index % 50 == 0 {
@@ -216,8 +376,33 @@ final class VideoStreamSession {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         let size = Self.directorySize(workDirectory)
-        let extra = currentPumpFailure.map { "：\($0)" } ?? ""
+        let extra = currentSourceFailure.map { "：\($0)" } ?? ""
         throw VideoError.transcodeFailedMessage("等待首段超时，已写入 \(size / 1024 / 1024) MB\(extra)")
+    }
+
+    /// 读取播放列表，算出第 index 个分片在会话内的起始秒数。
+    private static func segmentStartTime(_ playlist: URL, index: Int) -> Double? {
+        guard let text = try? String(contentsOf: playlist, encoding: .utf8) else { return nil }
+        var elapsed: Double = 0
+        var pendingDuration: Double?
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#EXTINF:") {
+                let value = trimmed
+                    .dropFirst("#EXTINF:".count)
+                    .split(separator: ",")
+                    .first
+                    .flatMap { Double($0) }
+                pendingDuration = value
+                continue
+            }
+            guard trimmed.hasPrefix("seg"), trimmed.hasSuffix(".m4s"),
+                  let value = Int(trimmed.dropFirst(3).dropLast(4)) else { continue }
+            if value == index { return elapsed }
+            elapsed += pendingDuration ?? 2
+            pendingDuration = nil
+        }
+        return nil
     }
 
     private static func directorySize(_ directory: URL) -> Int64 {
@@ -235,179 +420,5 @@ final class VideoStreamSession {
               let text = try? String(contentsOf: url, encoding: .utf8) else { return "无输出" }
         let lines = text.split(separator: "\n").suffix(3).map { $0.trimmingCharacters(in: .whitespaces) }
         return lines.isEmpty ? "无输出" : lines.joined(separator: " | ")
-    }
-}
-
-/// 用 App 的 URLSession 把网盘文件读出来，按块写进 ffmpeg 的 stdin。
-/// 走 URLSession 可以复用请求头 / 302 跟随 / 自签名证书策略，并且天然带背压（管道写满即阻塞）。
-private final class HTTPStreamPump: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate {
-    private let url: URL
-    private let headers: [String: String]
-    private let trustSelfSigned: Bool
-    private let sink: FileHandle
-    private let onFinish: (String?) -> Void
-    private let queue = DispatchQueue(label: "luma.video.pump")
-    private var session: URLSession?
-    private var task: URLSessionDataTask?
-    private var closed = false
-    private var validatedPayload = false
-
-    init(url: URL, headers: [String: String], trustSelfSigned: Bool, sink: FileHandle,
-         onFinish: @escaping (String?) -> Void) {
-        self.url = url
-        self.headers = headers
-        self.trustSelfSigned = trustSelfSigned
-        self.sink = sink
-        self.onFinish = onFinish
-        super.init()
-    }
-
-    func start() {
-        queue.async {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.timeoutIntervalForRequest = 60
-            configuration.timeoutIntervalForResource = 3600
-            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-            configuration.httpMaximumConnectionsPerHost = 1
-            let delegateQueue = OperationQueue()
-            delegateQueue.maxConcurrentOperationCount = 1
-            delegateQueue.underlyingQueue = self.queue
-            let session = URLSession(configuration: configuration,
-                                     delegate: self,
-                                     delegateQueue: delegateQueue)
-            self.session = session
-            var request = URLRequest(url: self.url,
-                                     cachePolicy: .reloadIgnoringLocalCacheData,
-                                     timeoutInterval: 60)
-            for (key, value) in self.headers {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
-            let task = session.dataTask(with: request)
-            self.task = task
-            task.resume()
-        }
-    }
-
-    func cancel() {
-        queue.async {
-            self.task?.cancel()
-            self.session?.invalidateAndCancel()
-            self.finish(nil)
-        }
-    }
-
-    // MARK: - URLSession
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
-                    didReceive response: URLResponse,
-                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse else {
-            completionHandler(.cancel)
-            finish("网盘没有返回有效响应")
-            return
-        }
-        let type = http.value(forHTTPHeaderField: "Content-Type") ?? "-"
-        let length = http.value(forHTTPHeaderField: "Content-Length") ?? "-"
-        let decodedPath = url.path.removingPercentEncoding ?? url.path
-        Diagnostics.record("边下边播请求 host=\(url.host ?? "-"):\(url.port.map(String.init) ?? "-") "
-                           + "path=\(decodedPath) status=\(http.statusCode) type=\(type) length=\(length)")
-        guard (200...299).contains(http.statusCode) else {
-            completionHandler(.cancel)
-            finish("网盘返回 HTTP \(http.statusCode)")
-            return
-        }
-        let lowered = type.lowercased()
-        if lowered.contains("text/html") || lowered.contains("application/json") {
-            completionHandler(.cancel)
-            finish("网盘返回的是网页/JSON（HTTP \(http.statusCode)），可能鉴权失败或路径不存在")
-            return
-        }
-        completionHandler(.allow)
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard !closed else { return }
-        if !validatedPayload {
-            validatedPayload = true
-            guard Self.looksLikeMedia(data) else {
-                let preview = String(data: data.prefix(160), encoding: .utf8)?
-                    .replacingOccurrences(of: "\n", with: " ") ?? ""
-                finish("网盘返回的数据不是视频（开头：\(preview)）")
-                return
-            }
-        }
-        do {
-            try sink.write(contentsOf: data)
-        } catch {
-            finish("写入本地管道失败：\(error.localizedDescription)")
-        }
-    }
-
-    /// 只认常见的视频容器魔数，避免把登录页 / 错误页当成视频喂给 ffmpeg。
-    private static func looksLikeMedia(_ data: Data) -> Bool {
-        guard data.count >= 8 else { return true }
-        let prefix = [UInt8](data.prefix(12))
-        if prefix.starts(with: [0x1A, 0x45, 0xDF, 0xA3]) { return true }          // Matroska / WebM
-        if prefix.count >= 8,
-           String(bytes: prefix[4..<8], encoding: .ascii) == "ftyp" { return true } // MP4 / MOV
-        if prefix[0] == 0x47 { return true }                                       // MPEG-TS
-        if String(bytes: prefix.prefix(4), encoding: .ascii) == "RIFF" { return true } // AVI
-        if String(bytes: prefix.prefix(3), encoding: .ascii) == "FLV" { return true }
-        return false
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error, (error as NSError).code != NSURLErrorCancelled {
-            finish("读取网盘数据失败：\(error.localizedDescription)")
-        } else {
-            finish(nil)
-        }
-    }
-
-    func urlSession(_ session: URLSession,
-                    task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
-        var redirected = request
-        for (key, value) in headers {
-            redirected.setValue(value, forHTTPHeaderField: key)
-        }
-        completionHandler(redirected)
-    }
-
-    /// NAS 常是自签名证书：只有挂载点明确勾选「信任自签名证书」时才放行。
-    func urlSession(_ session: URLSession,
-                    didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        acceptSelfSigned(challenge, completionHandler)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        acceptSelfSigned(challenge, completionHandler)
-    }
-
-    private func acceptSelfSigned(_ challenge: URLAuthenticationChallenge,
-                                  _ completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard trustSelfSigned,
-              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-        completionHandler(.useCredential, URLCredential(trust: trust))
-    }
-
-    // MARK: - 收尾
-
-    private func finish(_ message: String?) {
-        guard !closed else { return }
-        closed = true
-        try? sink.close()
-        session?.finishTasksAndInvalidate()
-        session = nil
-        onFinish(message)
     }
 }

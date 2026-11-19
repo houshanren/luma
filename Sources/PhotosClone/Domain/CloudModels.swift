@@ -218,6 +218,8 @@ struct CloudScanRecord: Codable {
     var isVideo: Bool
     /// 所属目录（用于恢复后按文件夹相簿筛选）。
     var folderPath: String?
+    /// 视频编码（Aliyun list 自带），恢复快照后转封装仍能写对 hvc1 标签。
+    var codec: String?
 }
 
 /// 某个网盘挂载的全盘扫描结果（落当前图库的 `derived_reports`，重开即可先显示）。
@@ -254,6 +256,8 @@ struct CloudEntry: Identifiable, Hashable {
     var duration: Double?
     /// 服务端标记为受限内容（夸克 risk_type ≠ 0 / ban）：播放与下载接口都会拒绝。
     var isRestricted = false
+    /// 服务端给出的视频编码（如 hevc）：转封装时需要据此写 hvc1 标签。
+    var codecName: String?
 
     var isVideo: Bool {
         if let contentType, contentType.lowercased().hasPrefix("video/") { return true }
@@ -278,6 +282,8 @@ struct CloudEntry: Identifiable, Hashable {
 struct CloudStreamResource {
     let url: URL
     let headers: [String: String]
+    /// 官方转码返回的 HLS 播放列表：交给 AVPlayer 直接播放，不能再走 ffmpeg 的按字节读取。
+    var isHLS = false
 }
 
 struct CloudThumbnailResult {

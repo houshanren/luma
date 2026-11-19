@@ -370,6 +370,9 @@ final class LibraryStore: ObservableObject {
     }
     /// 键盘导航时请求网格滚动到指定照片。
     @Published var scrollTargetID: UUID?
+    /// 消费 `scrollTargetID` 时是否只用「最小滚动」（目标已可见就不动）。
+    /// 关闭查看器时用最小滚动：否则网格会在查看器淡出的同时整体跳到居中，看起来像残影。
+    var scrollTargetMinimal = false
     /// 月总览里请求滚动到指定月份分段。
     @Published var scrollTargetSection: String?
     /// 顶栏副标题：网格当前可见区域的日期范围，随滚动动态更新。
@@ -465,6 +468,9 @@ final class LibraryStore: ObservableObject {
     /// 官方「照片」图库照片的拾光补充元数据（收藏 / 隐藏 / 查看时间 / 关键词 / 标题）。
     /// 只存在当前图库自己的 `PhotosClone.sqlite`，不写回 `Photos.sqlite`。
     var systemOverlays: [UUID: MetadataStore.AssetOverlay] = [:]
+    /// 收藏 / 隐藏叠加的变更版本：收藏汇总只关心这类变化，
+    /// 不能跟着 `contentRevision`（后台计数、识别回填都会改它）反复重建上万条收藏。
+    var systemFavoritesRevision = 0
     @Published var systemAlbums: [SystemAlbumInfo] = [] {
         didSet {
             contentRevision &+= 1
@@ -677,6 +683,10 @@ final class LibraryStore: ObservableObject {
     var systemDuplicateGroupsTask: Task<Void, Never>?
     var metadataStore: MetadataStore?
     var systemPhotoIndex: [UUID: PhotoItem] = [:]
+    /// 最近在系统图库窗口 / 查看器里出现过的照片。
+    /// 顶栏收藏态、查看记录这些在 SwiftUI body 里会被高频读取，
+    /// 每次去查 Photos.sqlite 会排队等索引任务的锁，启动期直接卡住主线程。
+    var systemRecentPhotos: [UUID: PhotoItem] = [:]
     /// 已完成扫描的系统图库路径；再次点击同一个图库时只切换页面，不重复扫描。
     var systemLibraryLoadedPath: String?
     /// 系统图库载入令牌：每次载入递增，旧扫描的结果不再写回状态与缓存。
@@ -690,6 +700,8 @@ final class LibraryStore: ObservableObject {
     @Published var cloudFavorites: Set<String> = []
     /// 云照片的本地关键词（"mountID|path" → 标签数组），只记录在拾光本地，不写回网盘。
     @Published var cloudKeywords: [String: [String]] = [:]
+    /// 云照片的本地评分 / 旗标 / 色标（"mountID|path" → 标记），只记录在拾光本地，不写回网盘。
+    @Published var cloudMarks: [String: CloudMark] = [:]
     var cloudVisibleCacheKey: String?
     var cloudVisibleCacheValue: [PhotoItem] = []
     /// 网盘分类计数与场景计数缓存（键含目录版本与识别进度）。
@@ -909,8 +921,8 @@ final class LibraryStore: ObservableObject {
                 albums = data.albums
                 folders = data.folders
                 systemLibraryPath = store.setting("system_library_path")
-                // 后台枚举一次本地缩略图目录：网格滚动时不用逐格 stat。
-                ThumbnailFileIndex.shared.warm(root: LibraryPaths.derivatives)
+                // 后台枚举一次本地缩略图目录：网格滚动时不用逐格 stat（本机盘，给足预算）。
+                ThumbnailFileIndex.shared.warm(root: LibraryPaths.derivatives, timeBudget: 3)
             } else {
                 loadLegacyJSON()
             }
@@ -939,6 +951,7 @@ final class LibraryStore: ObservableObject {
         loadCloudMounts()
         loadCloudFavorites()
         loadCloudKeywords()
+        loadCloudMarks()
         loadCinemaIndexes()
         migrateLegacyCinemaIndexIfNeeded()
         loadSmartAlbums()

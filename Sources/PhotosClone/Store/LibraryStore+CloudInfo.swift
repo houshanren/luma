@@ -496,6 +496,32 @@ extension LibraryStore {
         return cloudPhotos.filter { ids.contains($0.id) }
     }
 
+    /// 网盘人物的摘要：与拾光 / 系统图库使用同一个 `PersonInsight` 与展示组件。
+    func cloudPersonInsight(for person: LocalPerson) -> PersonInsight {
+        var insight = PersonInsight.make(photos: cloudPhotos(for: person))
+        let mine = Set(person.assetIDs)
+        insight.companions = cloudPeople
+            .filter { $0.id != person.id }
+            .compactMap { other -> PersonInsight.Companion? in
+                let shared = mine.intersection(other.assetIDs).count
+                guard shared >= 2 else { return nil }
+                return PersonInsight.Companion(id: other.id.uuidString,
+                                               name: other.name,
+                                               count: shared,
+                                               coverPhotoID: other.assetIDs.first,
+                                               coverData: other.coverImageData)
+            }
+            .sorted { $0.count > $1.count }
+            .prefix(3)
+            .map { $0 }
+        return insight
+    }
+
+    /// 网盘人物的「地图」：只看这个人在当前列表里带有效定位的照片。
+    func personMapPhotos(cloud person: LocalPerson) -> [PhotoItem] {
+        cloudPhotos(for: person).filter { $0.hasLocation }
+    }
+
     /// 换挂载 / 换库 / 换目录时清空 EXIF、人物与派生缓存（内存），数据库缓存保留以便回填。
     func resetCloudDerivedData() {
         cloudModel.metadataTask?.cancel()

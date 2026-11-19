@@ -419,52 +419,22 @@ struct CloudConnectSheet: View {
     }
 }
 
-// MARK: - 云盘浏览
+// MARK: - 云盘分类总览
 
-struct CloudBrowserView: View {
+/// 网盘的分类总览卡片墙。普通照片列表已交给 `GalleryView` 的统一网格，
+/// 这里只负责总览本身。
+struct CloudOverviewView: View {
+    let section: CloudOverviewSection
+
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
-    /// 网盘「位置」页的搜索关键词。
-    @State private var placesQuery = ""
     /// 分类卡片墙的悬停项：与图库同一套抬升反馈。
     @State private var hoveredOverview: String?
-    /// 渐进渲染上限：网盘清单最多 2 万项，一次把整份数组交给网格会让每次 body 都重算月份分桶。
-    @State private var renderLimit = 1_200
-
-    private var mountID: UUID? {
-        if case .cloudMount(let id) = store.sidebarItem { return id }
-        return nil
-    }
-
-    private var mountKind: CloudKind? {
-        cloud.mounts.first(where: { $0.id == mountID })?.kind
-    }
-
-    /// 当前目录的照片经过搜索、筛选与排序后的结果，与其它图库网格保持一致。
-    private var photos: [PhotoItem] {
-        store.cloudVisiblePhotos
-    }
-
-    /// 实际交给网格渲染的子集：首屏 1200 张，滚到底继续追加。
-    private var displayedPhotos: [PhotoItem] {
-        photos.count > renderLimit ? Array(photos.prefix(renderLimit)) : photos
-    }
-
-    private var isFiltering: Bool {
-        store.cloudScope != .all
-            || store.similarScope != nil
-            || store.photoFilter != .all
-            || !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty
-    }
 
     var body: some View {
         GeometryReader { proxy in
-            if let overview = cloud.overview {
-                overviewView(overview, width: proxy.size.width)
-            } else {
-                content(width: proxy.size.width, height: proxy.size.height)
-            }
+            overviewView(width: proxy.size.width)
         }
     }
 
@@ -478,47 +448,30 @@ struct CloudBrowserView: View {
         let scope: CloudScope?
         let folderPath: String?
         let cover: PhotoItem?
+        /// 「更多项目」与拾光一样只展示入口，不显示数量。
+        var showsCount = true
     }
 
     private func overviewEntries(_ section: CloudOverviewSection,
                                  counts: CloudScopeCounts) -> [CloudOverviewEntry] {
         switch section {
         case .mediaTypes:
-            return [
-                CloudOverviewEntry(id: "all", title: "全部项目", icon: "photo.stack",
-                                   count: counts.count(for: .all), scope: .all, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "videos", title: "视频", icon: "video",
-                                   count: counts.videos, scope: .videos, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "photos", title: "照片", icon: "photo",
-                                   count: counts.photos, scope: .photos, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "screenshots", title: "截屏", icon: "camera.viewfinder",
-                                   count: counts.screenshots, scope: .screenshots, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "animated", title: "动图", icon: "photo.on.rectangle.angled",
-                                   count: counts.animated, scope: .animated, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "raws", title: "RAW", icon: "camera.aperture",
-                                   count: counts.raws, scope: .raws, folderPath: nil, cover: nil)
-            ]
+            // 与拾光媒体类型总览一致：同一组类型、同一顺序，数量为 0 的不显示。
+            return MediaTypeKey.cloudCases.compactMap { key in
+                guard let scope = key.cloudScope else { return nil }
+                let count = counts.count(for: scope)
+                guard count > 0 else { return nil }
+                return CloudOverviewEntry(id: key.rawValue, title: key.title, icon: key.icon,
+                                          count: count, scope: scope, folderPath: nil, cover: nil)
+            }
         case .moreItems:
-            return [
-                CloudOverviewEntry(id: "favorites", title: "个人收藏", icon: "heart.fill",
-                                   count: counts.favorites, scope: .favorites, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "duplicates", title: "重复项目", icon: "square.on.square",
-                                   count: counts.duplicates, scope: .duplicates, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "text", title: "包含文字", icon: "text.viewfinder",
-                                   count: counts.text, scope: .text, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "keywords", title: "关键词", icon: "tag",
-                                   count: counts.count(for: .keywords), scope: .keywords, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath",
-                                   count: counts.revisit, scope: .revisit, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "health", title: "图库体检", icon: "stethoscope",
-                                   count: counts.health, scope: .health, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "map", title: "地图", icon: "map",
-                                   count: counts.located, scope: .map, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "places", title: "位置", icon: "mappin.and.ellipse",
-                                   count: counts.located, scope: .places, folderPath: nil, cover: nil),
-                CloudOverviewEntry(id: "people", title: "人物", icon: "person.crop.square",
-                                   count: counts.people, scope: .people, folderPath: nil, cover: nil)
-            ]
+            // 与拾光「更多项目」总览一致：同一顺序与显示条件，卡片不显示数量。
+            return CloudScope.moreItems(counts: counts, analyzedCount: store.cloudAnalyzedCount)
+                .map { scope in
+                    CloudOverviewEntry(id: scope.key, title: scope.title, icon: scope.icon,
+                                       count: counts.count(for: scope), scope: scope,
+                                       folderPath: nil, cover: nil, showsCount: false)
+                }
         case .scenes:
             let visible = SceneCatalog.categories.filter { (counts.scenes[$0.id] ?? 0) > 0 }
             return visible.map { category in
@@ -536,7 +489,7 @@ struct CloudBrowserView: View {
     }
 
     /// 与拾光 / 系统图库的分类总览同一套卡片样式：列数跟设置走，宽度按可用空间均分。
-    private func overviewView(_ section: CloudOverviewSection, width: CGFloat) -> some View {
+    private func overviewView(width: CGFloat) -> some View {
         let counts = store.cloudScopeCounts
         let entries = overviewEntries(section, counts: counts)
         let spacing: CGFloat = 22
@@ -591,9 +544,11 @@ struct CloudBrowserView: View {
                     .font(.system(size: 12.5, weight: .medium))
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Text(entry.count.formatted())
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                if entry.showsCount {
+                    Text(entry.count.formatted())
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal, 2)
         }
@@ -623,10 +578,29 @@ struct CloudBrowserView: View {
         case .photos: return cloud.photos.first { !$0.isVideo }
         case .screenshots:
             return cloud.photos.first { CloudMediaNaming.looksLikeScreenshot($0.originalName) }
+        case .screenRecordings:
+            return cloud.photos.first { CloudMediaNaming.looksLikeScreenRecording($0.originalName) }
+        case .panoramas:
+            return cloud.photos.first {
+                CloudMediaNaming.looksLikePanorama($0.originalName,
+                                                   pixelWidth: $0.pixelWidth,
+                                                   pixelHeight: $0.pixelHeight)
+            }
         case .animated: return cloud.photos.first { $0.isAnimatedFile }
         case .raws: return cloud.photos.first { $0.isRAWFile }
         case .favorites: return cloud.photos.first { $0.isFavorite }
         case .text: return cloud.photos.first { !(cloud.analysis[$0.id]?.text.isEmpty ?? true) }
+        case .recentlyViewed:
+            return cloud.photos
+                .filter { cloud.viewedAt[$0.id] != nil }
+                .max { ($0.viewedAt ?? .distantPast) < ($1.viewedAt ?? .distantPast) }
+        case .recentlySaved:
+            return cloud.photos.max { $0.addedAt < $1.addedAt }
+        case .ratings:
+            return cloud.photos.first {
+                $0.starRating > 0 || $0.pickFlag != .none || $0.labelColor != .none
+            }
+        case .recentlyEdited, .trash, .imports: return nil
         case .scene: return nil
         case .revisit: return store.cloudRevisitPhotos.first
         case .map, .places: return store.cloudGeoPhotos.first
@@ -638,241 +612,69 @@ struct CloudBrowserView: View {
         case .health: return nil
         }
     }
+}
 
-    private var placesSearchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            TextField("搜索地点", text: $placesQuery)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .frame(width: 120)
-            if !placesQuery.isEmpty {
-                Button {
-                    placesQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.06), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .help("搜索地点")
+// MARK: - 网盘网格空态
+
+/// 网盘网格的空状态：扫描进度、目录错误与筛选无结果。
+/// 有照片时由 `GalleryView` 的统一网格渲染，这里只负责「没有内容」时的页面。
+struct CloudGridEmptyState: View {
+    @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var cloud: CloudBrowserModel
+
+    private var isFiltering: Bool {
+        store.cloudScope != .all
+            || store.similarScope != nil
+            || store.photoFilter != .all
+            || !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    @ViewBuilder
-    private func content(width: CGFloat, height: CGFloat) -> some View {
-        switch store.cloudScope {
-        case .map:
-            PhotoMapView()
-        case .places:
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    PlaceGranularitySwitch()
-                    placesSearchField
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                PlaceStatisticsView(query: $placesQuery)
-            }
-        case .keywords:
-            CloudKeywordGalleryView()
-        case .people:
-            CloudPeopleView()
-        case .duplicates:
-            CloudDuplicatesView()
-        case .health:
-            CloudHealthView()
-        default:
-            cloudGrid(width: width, height: height)
-        }
-    }
-
-    // MARK: - 照片网格（与图库同一套按月分段）
-
-    private struct CloudAlbumMonth: Identifiable {
-        let id: String
-        let title: String
-        let photos: [PhotoItem]
-    }
-
-    /// 按拍摄月份分段（与系统「照片」时间轴一致，最新在前）。
-    private var albumMonths: [CloudAlbumMonth] {
-        let calendar = Calendar.current
-        var order: [String] = []
-        var buckets: [String: [PhotoItem]] = [:]
-        for photo in displayedPhotos {
-            let components = calendar.dateComponents([.year, .month], from: photo.capturedAt)
-            let year = components.year ?? 0
-            let key = year < 1970 ? "unknown" : String(format: "%04d-%02d", year, components.month ?? 0)
-            if buckets[key] == nil {
-                buckets[key] = []
-                order.append(key)
-            }
-            buckets[key]?.append(photo)
-        }
-        return order.map { key in
-            let bucket = buckets[key] ?? []
-            let title = key == "unknown"
-                ? "时间未知"
-                : DateText.monthFormatter.string(from: bucket.first?.capturedAt ?? Date())
-            return CloudAlbumMonth(id: key, title: title, photos: bucket)
-        }
-    }
-
-    /// 网格预取键：切换目录 / 挂载、范围变化，或新增约 200 项时重启预取。
-    /// 数量做量化，避免扫描期间每批都取消重排预取。
-    private var cloudPrefetchKey: String {
-        [
-            mountID?.uuidString ?? "-",
-            cloud.selectedFolderPath ?? "",
-            String(describing: store.cloudScope),
-            String(photos.count / 200)
-        ].joined(separator: "\u{1F}")
-    }
-
-    /// 只随目录 / 挂载 / 范围变化：用于把渐进渲染窗口收回首屏。
-    private var cloudScopeKey: String {
-        [
-            mountID?.uuidString ?? "-",
-            cloud.selectedFolderPath ?? "",
-            String(describing: store.cloudScope)
-        ].joined(separator: "\u{1F}")
-    }
-
-    private func cloudGrid(width: CGFloat, height: CGFloat) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if let error = cloud.error, !photos.isEmpty {
-                    errorView(error)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 14)
-                }
-
-                if photos.isEmpty {
-                    placeholder
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        ForEach(albumMonths) { month in
-                            Section {
-                                photoGrid(month.photos, width: width)
-                            } header: {
-                                SectionHeaderView(title: month.title, count: month.photos.count)
-                            }
-                        }
-                    }
-                    if photos.count > displayedPhotos.count {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("继续加载更多…")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 16)
-                        .frame(maxWidth: .infinity)
-                        .onAppear { renderLimit += 1_200 }
-                    }
-                }
-
-                if isFiltering, !cloud.photos.isEmpty, photos.count != cloud.photos.count {
-                    Text("筛选后显示 \(photos.count) 项（共 \(cloud.photos.count) 项）")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                }
-            }
-            .photoMarqueeSelection(fillHeight: height)
-        }
-        .scrollIndicators(.automatic)
-        .onChange(of: cloudScopeKey) { _, _ in renderLimit = 1_200 }
-        // 与本地 / 系统图库一致：首屏落位后提前取头部缩略图，滚动时不至于一格一格等网络。
-        .task(id: cloudPrefetchKey) {
-            guard let task = store.prefetchCloudThumbnails(for: photos) else { return }
-            // 离开网盘或切换目录时，把预取一起取消，避免后台继续吃网络。
-            await withTaskCancellationHandler {
-                await task.value
-            } onCancel: {
-                task.cancel()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var placeholder: some View {
-        if let error = cloud.error {
-            errorView(error)
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-        } else if cloud.scanPhase.isScanning {
-            VStack(spacing: 12) {
-                ProgressView()
-                    .controlSize(.large)
-                Text("正在扫描网盘… 已发现 \(cloud.scanMediaCount.formatted()) 项")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 90)
-        } else if isFiltering, !cloud.photos.isEmpty {
-            filteredEmptyView
-        } else {
-            VStack(spacing: 10) {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 46, weight: .ultraLight))
-                    .foregroundStyle(.tertiary)
-                Text(cloud.scanPhase == .cancelled ? "扫描已停止" : emptyTitle)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(cloud.scanPhase == .cancelled
-                     ? "点工具栏的刷新按钮继续扫描剩余目录。"
-                     : "缩略图与 EXIF 按需读取；稍后刷新，或在左侧「相簿」里浏览已扫描的目录。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 90)
-        }
+    private var mountKind: CloudKind? {
+        guard let id = store.currentCloudMountID else { return nil }
+        return cloud.mounts.first(where: { $0.id == id })?.kind
     }
 
     private var emptyTitle: String {
         cloud.selectedFolderPath == nil ? "这个网盘里还没有可展示的媒体" : "此相簿没有照片或视频"
     }
 
-    /// 与图库网格同一套上下留白，按月分段后的间距保持完全一致。
-    @ViewBuilder
-    private func photoGrid(_ photos: [PhotoItem], width: CGFloat) -> some View {
+    var body: some View {
         Group {
-            switch store.thumbnailAspect {
-            case .square:
-                SquarePhotoGrid(photos: photos, availableWidth: width)
-                    .padding(.bottom, 26)
-            case .actual:
-                JustifiedPhotoGrid(photos: photos,
-                                   availableWidth: width,
-                                   targetHeight: CGFloat(store.thumbSize) * 0.92)
-                    .padding(.bottom, 26)
-            case .masonry:
-                MasonryPhotoGrid(photos: photos,
-                                 availableWidth: width,
-                                 targetWidth: CGFloat(store.thumbSize))
-                    .padding(.bottom, 26)
-            case .list:
-                PhotoListView(photos: photos, availableWidth: width)
-                    .padding(.bottom, 20)
+            if let error = cloud.error {
+                VStack(spacing: 14) {
+                    errorView(error)
+                    Spacer(minLength: 0)
+                }
+            } else if cloud.scanPhase.isScanning {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("正在扫描网盘… 已发现 \(cloud.scanMediaCount.formatted()) 项")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if isFiltering, !cloud.photos.isEmpty {
+                filteredEmptyView
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 46, weight: .ultraLight))
+                        .foregroundStyle(.tertiary)
+                    Text(cloud.scanPhase == .cancelled ? "扫描已停止" : emptyTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                    Text(cloud.scanPhase == .cancelled
+                         ? "点工具栏的刷新按钮继续扫描剩余目录。"
+                         : "缩略图与 EXIF 按需读取；稍后刷新，或在左侧「相簿」里浏览已扫描的目录。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.top, 50)
             }
         }
-        .padding(.top, 10)
+        .padding(.horizontal, 20)
     }
 
     private func errorView(_ message: String) -> some View {
@@ -925,6 +727,7 @@ struct CloudBrowserView: View {
                     : "调整范围、筛选或搜索关键词后再试。"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             Button("清除筛选与搜索") {
                 store.setCloudScope(.all)
                 store.clearFilter()
@@ -932,8 +735,51 @@ struct CloudBrowserView: View {
             }
             .padding(.top, 4)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 90)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 50)
+    }
+}
+
+// MARK: - 网盘只读入口页
+
+/// 与系统图库同名同位置的入口里，网盘本身不提供的几项（最近编辑 / 最近删除 / 导入项目）。
+/// 页面沿用统一的空状态版式，说明原因并给出回到「全部项目」的入口，而不是把入口藏起来。
+struct CloudReadOnlyScopeView: View {
+    @EnvironmentObject private var store: LibraryStore
+    let scope: CloudScope
+
+    private var detail: String {
+        switch scope {
+        case .recentlyEdited:
+            return "网盘文件为只读，拾光不会修改原文件，因此这里没有编辑记录。需要编辑时，请先把照片导入拾光本地图库或系统图库。"
+        case .trash:
+            return "网盘不提供最近删除。删除或恢复文件请在该网盘的 App 或网页中操作，拾光不会改动网盘内容。"
+        case .imports:
+            return "网盘里的文件直接读取，不经过导入流程，因此没有导入批次记录。可以在左侧「相簿」里按目录浏览。"
+        default:
+            return "这个入口在网盘里暂不提供。"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: scope.icon)
+                .font(.system(size: 46, weight: .ultraLight))
+                .foregroundStyle(.tertiary)
+            Text(scope.title)
+                .font(.system(size: 15, weight: .semibold))
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Button("返回全部项目") {
+                store.setCloudScope(.all)
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
     }
 }
 
@@ -1050,12 +896,16 @@ struct CloudMountInfoView: View {
 
 // MARK: - 网盘人物（端侧聚类，仅内存）
 
-/// 网盘人物页：与本地人物页同一套端侧 Vision 聚类，结果只保存在内存，切换网盘即清空。
+/// 网盘人物：列表、卡片与人物详情（摘要 / 地图 / 全部影像）与系统图库共用同一套组件。
 struct CloudPeopleView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
     @State private var selectedPersonID: UUID?
+    @State private var detailMode: PersonDetailMode = .summary
+    @State private var insight: PersonInsight?
+    @State private var heroAvatar: NSImage?
+    @State private var collapseProgress: CGFloat = 0
+    @State private var pinchBase: Double?
 
     private var people: [LocalPerson] { store.cloudPeople }
 
@@ -1064,8 +914,20 @@ struct CloudPeopleView: View {
         return people.first(where: { $0.id == selectedPersonID })
     }
 
+    /// 人物卡片尺寸跟随工具栏缩放（56…360 → 72…300）。
     private var cardSize: CGFloat {
         min(300, max(72, CGFloat(store.thumbSize)))
+    }
+
+    private var pinchGesture: some Gesture {
+        MagnifyGesture(minimumScaleDelta: 0.005)
+            .onChanged { value in
+                if pinchBase == nil { pinchBase = store.thumbSize }
+                guard let base = pinchBase else { return }
+                store.thumbSize = min(LibraryStore.thumbSizeRange.upperBound,
+                                        max(LibraryStore.thumbSizeRange.lowerBound, base * value.magnification))
+            }
+            .onEnded { _ in pinchBase = nil }
     }
 
     var body: some View {
@@ -1084,147 +946,252 @@ struct CloudPeopleView: View {
         }
     }
 
+    // MARK: - 总览
+
     private var overview: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .bottom, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("人物")
-                        .font(.system(size: 28, weight: .bold))
-                    Text("端侧识别与聚类 · \(people.count) 位 · 结果缓存在当前图库，不会上传或写回网盘")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button {
-                    if cloud.isClusteringPeople {
-                        store.cancelCloudPeopleScan()
-                    } else {
-                        store.scanCloudPeople()
-                    }
-                } label: {
-                    Label(cloud.isClusteringPeople ? "停止分析" : (people.isEmpty ? "开始分析" : "继续分析"),
-                          systemImage: cloud.isClusteringPeople ? "stop.circle" : "wand.and.stars")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(cloud.isClusteringPeople ? "停止人物分析" : "分析尚未处理过的网盘照片")
-            }
-            .padding(.horizontal, 26)
-            .padding(.top, 20)
-            .padding(.bottom, 12)
-
             if cloud.isClusteringPeople {
-                VStack(alignment: .leading, spacing: 6) {
-                    ProgressView(value: cloud.peopleProgress)
-                        .progressViewStyle(.linear)
-                    HStack {
-                        Text("正在分析 \(Int((cloud.peopleProgress * 100).rounded()))%")
-                        Text("· 已识别 \(people.count) 位人物")
-                        Spacer()
-                        Button("停止") { store.cancelCloudPeopleScan() }
-                            .buttonStyle(.link)
-                    }
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 26)
-                .padding(.bottom, 12)
+                scanningBar
+            } else if !people.isEmpty {
+                scanActionsBar
             }
 
             if people.isEmpty {
-                EmptyStateView()
+                emptyState
+            } else if filteredPeople.isEmpty {
+                filterEmptyState
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: cardSize, maximum: cardSize * 1.35),
                                                  spacing: cardSize * 0.16, alignment: .top)],
                               alignment: .leading,
-                              spacing: cardSize * 0.16) {
-                        ForEach(people) { person in
-                            personCard(person)
+                              spacing: cardSize * 0.2) {
+                        ForEach(filteredPeople) { person in
+                            PeoplePersonCardShell(name: person.name,
+                                                  count: person.assetIDs.count) {
+                                LocalPersonAvatar(person: person,
+                                                  size: cardSize * 0.94,
+                                                  style: store.peopleDisplayStyle)
+                            }
+                            .onTapGesture { selectedPersonID = person.id }
                         }
                     }
                     .padding(.horizontal, 26)
-                    .padding(.top, 4)
-                    .padding(.bottom, 48)
+                    .padding(.top, 16)
+                    .padding(.bottom, 56)
                 }
+                .simultaneousGesture(pinchGesture)
             }
         }
     }
 
-    private func personCard(_ person: LocalPerson) -> some View {
-        Button {
-            selectedPersonID = person.id
-        } label: {
-            VStack(alignment: .leading, spacing: 7) {
-                Group {
-                    if let data = person.coverImageData, let image = NSImage(data: data) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        ZStack {
-                            Color.primary.opacity(0.06)
-                            Image(systemName: "person.fill")
-                                .font(.system(size: cardSize * 0.3))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                .frame(width: cardSize, height: cardSize)
-                .clipShape(RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous))
+    /// 按当前聚合筛选得到的人物；网盘聚类不区分宠物，宠物筛选为空。
+    private var filteredPeople: [LocalPerson] {
+        switch store.peopleFilter {
+        case .all: return people
+        case .named: return people.filter { !$0.isUnnamed }
+        case .unnamed: return people.filter(\.isUnnamed)
+        case .pets: return []
+        }
+    }
 
-                Text(person.name)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .lineLimit(1)
-                Text("\(person.assetIDs.count) 张")
-                    .font(.system(size: 10.5))
+    private var scanningBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ProgressView(value: cloud.peopleProgress)
+                .progressViewStyle(.linear)
+            HStack {
+                Text("正在分析 \(Int((cloud.peopleProgress * 100).rounded()))%")
+                Text("· 已识别 \(people.count) 位人物")
+                Spacer()
+                Button("停止") { store.cancelCloudPeopleScan() }
+                    .buttonStyle(.link)
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+    }
+
+    /// 与拾光一样：有结果时顶部保留「继续识别」入口，说明结果只在本机。
+    private var scanActionsBar: some View {
+        HStack(spacing: 10) {
+            let pending = store.cloudPeoplePendingCount
+            Button {
+                store.scanCloudPeople()
+            } label: {
+                Label(pending > 0 ? "继续识别（剩余 \(pending.formatted()) 张）" : "当前列表已识别",
+                      systemImage: "wand.and.stars")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(pending == 0 || cloud.isClusteringPeople)
+            .help("只分析当前网盘列表里还没处理过的照片，已有聚类与命名都会保留")
+
+            Text("由本机 Vision 在端侧识别，结果缓存在当前图库，不会上传或写回网盘")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 26)
+        .padding(.top, 10)
+    }
+
+    /// 当前聚合筛选没有结果时的占位；与「图库为空」区分开。
+    private var filterEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: store.peopleFilter.icon)
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(.secondary)
+            Text(store.peopleFilter.emptyTitle)
+                .font(.system(size: 16, weight: .semibold))
+            Text(store.peopleFilter.emptyHint)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 400)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, 40)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 96, height: 96)
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.system(size: 42, weight: .light))
                     .foregroundStyle(.secondary)
             }
-            .frame(width: cardSize, alignment: .leading)
-            .contentShape(Rectangle())
+            Text("端侧人物聚类")
+                .font(.system(size: 22, weight: .semibold))
+            Text("使用本机 Vision 检测当前网盘列表的人脸并聚类为人物。\n结果缓存在当前图库，不会上传或写回网盘。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Button {
+                store.scanCloudPeople()
+            } label: {
+                Label(store.cloudPeoplePendingCount > 0 ? "开始分析" : "当前列表已识别",
+                      systemImage: "wand.and.stars")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .padding(.top, 4)
+            .disabled(cloud.isClusteringPeople || store.cloudPeoplePendingCount == 0)
         }
-        .buttonStyle(.plain)
-        .help(person.name)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, 60)
     }
+
+    // MARK: - 人物详情
 
     private func personDetail(_ person: LocalPerson) -> some View {
         let photos = store.cloudPhotos(for: person)
-        return VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button {
-                    selectedPersonID = nil
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("返回人物列表")
+        return GeometryReader { proxy in
+            VStack(spacing: 0) {
+                PersonDetailHero(name: person.name,
+                                 subtitle: insight?.subtitle ?? "正在整理这段影像…",
+                                 avatar: heroAvatar,
+                                 isPet: false,
+                                 cover: insight?.coverPhoto ?? photos.first,
+                                 mode: detailMode,
+                                 collapse: detailMode == .map ? 1 : collapseProgress,
+                                 onBack: { selectedPersonID = nil },
+                                 onModeChange: { newMode in
+                                     withAnimation(.snappy(duration: 0.26)) { detailMode = newMode }
+                                 })
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(person.name)
-                        .font(.system(size: 20, weight: .bold))
-                    Text("\(photos.count) 张照片 · 仅本机识别")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                if detailMode == .map {
+                    // 地图档：页头收成一条紧凑栏，剩下的空间全部交给地图。
+                    PersonMapPanel(source: .cloud(person), name: person.name)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            PersonScrollTracker(coordinateSpace: "cloudPersonScroll")
+                            if detailMode == .summary {
+                                if let insight {
+                                    PersonInsightSummaryView(insight: insight, name: person.name)
+                                } else {
+                                    insightLoading.frame(height: 360)
+                                }
+                            } else {
+                                allPhotos(photos,
+                                          availableWidth: proxy.size.width,
+                                          fillHeight: proxy.size.height)
+                            }
+                        }
+                        .id(detailMode)
+                    }
+                    .coordinateSpace(name: "cloudPersonScroll")
+                    .onPreferenceChange(PersonScrollOffsetKey.self) { offset in
+                        let value = min(1, max(0, offset / 180))
+                        if abs(value - collapseProgress) > 0.004 {
+                            collapseProgress = value
+                        }
+                    }
                 }
+            }
+        }
+        .task(id: person.id) {
+            detailMode = .summary
+            collapseProgress = 0
+            insight = nil
+            let request = PersonAvatarLoader.request(for: person, size: 84)
+            heroAvatar = PersonAvatarLoader.cached(request)
+            if heroAvatar == nil {
+                heroAvatar = await PersonAvatarLoader.load(request, store: store)
+            }
+            let loaded = store.cloudPersonInsight(for: person)
+            if !Task.isCancelled, selectedPersonID == person.id {
+                insight = loaded
+            }
+        }
+        .onChange(of: selectedPersonID) { _, _ in
+            detailMode = .summary
+            collapseProgress = 0
+            insight = nil
+        }
+    }
+
+    private var insightLoading: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("正在整理这段影像故事…")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 「全部」：与系统图库一致，瀑布流拼贴并按缩略图尺寸缩放。
+    private func allPhotos(_ photos: [PhotoItem], availableWidth: CGFloat,
+                           fillHeight: CGFloat) -> some View {
+        LazyVStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("全部影像")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("\(photos.count.formatted()) 张")
+                    .font(.system(size: 10.5))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.horizontal, 26)
             .padding(.top, 18)
-            .padding(.bottom, 12)
 
-            GeometryReader { proxy in
-                ScrollView {
-                    SquarePhotoGrid(photos: photos,
-                                    availableWidth: proxy.size.width,
-                                    viewerContext: photos)
-                        .padding(.bottom, 48)
-                }
-            }
+            MasonryPhotoGrid(photos: photos,
+                             availableWidth: availableWidth,
+                             targetWidth: CGFloat(store.thumbSize) * 1.25)
         }
+        .padding(.bottom, 56)
+        .photoMarqueeSelection(fillHeight: fillHeight)
     }
 }
 

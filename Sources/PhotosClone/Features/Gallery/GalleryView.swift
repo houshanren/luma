@@ -33,6 +33,7 @@ private struct TimelineScrollObserver: ViewModifier {
 
 struct GalleryView: View {
     @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var selectionModel: SelectionModel
     @Environment(\.colorScheme) private var scheme
@@ -77,7 +78,15 @@ struct GalleryView: View {
     /// 自定义搜索框的焦点（⌘F 由 store 发请求，这里负责真正聚焦）。
     @FocusState private var isSearchFieldFocused: Bool
 
+    /// 网盘：只有普通照片列表是网格；分类总览与地图 / 位置 / 人物 / 关键词 / 体检 / 重复项目
+    /// 都是专用页面，不能套用网格的计数胶囊、键盘操作与缩放控件。
+    private var isCloudGridScope: Bool {
+        guard store.isCloudScope else { return false }
+        return store.cloudOverviewSection == nil && !store.cloudScope.usesDedicatedView
+    }
+
     private var isGridScope: Bool {
+        if store.isCloudScope { return isCloudGridScope }
         switch store.sidebarItem {
         case .collections, .systemCollections, .map, .places, .systemMap, .systemPlaces, .systemPeople,
              .allAlbums, .folder, .systemFolder, .people, .duplicates, .health, .systemHealth,
@@ -86,7 +95,7 @@ struct GalleryView: View {
              .systemDuplicates, .systemImports, .revisit, .systemRevisit,
              .keywords, .systemKeywords,
              .ratings, .flags, .colorLabels, .systemRatings, .systemFlags, .systemColorLabels,
-             .ask, .tagGovernance, .cinema, .cloudCinema:
+             .cinema, .cloudCinema:
             return false
         default:
             // 网络存储也使用照片网格：排序、筛选、搜索、缩放与键盘导航一致可用。
@@ -115,19 +124,23 @@ struct GalleryView: View {
     }
 
     private var isRevisitScope: Bool {
-        store.sidebarItem == .revisit || store.sidebarItem == .systemRevisit
+        if store.isCloudScope { return store.cloudScope == .revisit }
+        return store.sidebarItem == .revisit || store.sidebarItem == .systemRevisit
     }
 
     private var isPlacesScope: Bool {
-        store.sidebarItem == .places || store.sidebarItem == .systemPlaces
+        if store.isCloudScope { return store.cloudScope == .places }
+        return store.sidebarItem == .places || store.sidebarItem == .systemPlaces
     }
 
     private var isMapScope: Bool {
-        store.sidebarItem == .map || store.sidebarItem == .systemMap
+        if store.isCloudScope { return store.cloudScope == .map }
+        return store.sidebarItem == .map || store.sidebarItem == .systemMap
     }
 
     /// 整理工作室：评分 / 旗标 / 色标 / 关键词四种维度共用同一个页面与顶栏控件。
     private var isOrganizeScope: Bool {
+        if store.isCloudScope { return store.cloudScope == .ratings }
         switch store.sidebarItem {
         case .ratings, .flags, .colorLabels,
              .systemRatings, .systemFlags, .systemColorLabels:
@@ -151,6 +164,14 @@ struct GalleryView: View {
     /// 需要缩放控件的范围：照片/相簿网格，以及人物、位置这类卡片墙。
     private var supportsZoomControl: Bool {
         if isGridScope || showsSearchResultsGrid || isGlobalSearchActive { return !isFavoritesDigestHub }
+        if store.isCloudScope {
+            // 分类总览的卡片墙与拾光一样保留缩放控件；人物 / 位置 / 关键词卡片墙同理。
+            if store.cloudOverviewSection != nil { return true }
+            switch store.cloudScope {
+            case .people, .places, .keywords: return true
+            default: return false
+            }
+        }
         switch store.sidebarItem {
         case .allAlbums, .folder, .systemFolder, .people, .systemPeople, .places, .systemPlaces,
              .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
@@ -206,6 +227,14 @@ struct GalleryView: View {
             lastDateSpanOffset = .greatestFiniteMagnitude
             // 换到另一个范围时网格整体换页：等新窗口取回后再锚定一次，
             // 避免沿用上一个范围的滚动偏移，停在空白占位或半屏照片上。
+            needsTimelineRestore = true
+            timelineGridReady = false
+            lastTimelineJumpOffset = -1
+        }
+        // 网盘的 sidebarItem 始终是 `.cloudMount`：切换范围 / 目录 / 总览时同样要重置网格状态。
+        .onChange(of: cloudPageIdentity) { _, _ in
+            store.visibleDateSpanText = ""
+            lastDateSpanOffset = .greatestFiniteMagnitude
             needsTimelineRestore = true
             timelineGridReady = false
             lastTimelineJumpOffset = -1
@@ -353,6 +382,12 @@ struct GalleryView: View {
 
     /// 人物 / 位置 / 图库体检 / 精选集：把原本占首屏的大标题压缩进统一工具栏。
     private var showsContextChip: Bool {
+        if store.isCloudScope {
+            switch store.cloudScope {
+            case .people, .places, .keywords, .health: return true
+            default: return false
+            }
+        }
         switch store.sidebarItem {
         case .people, .systemPeople, .places, .systemPlaces, .health, .systemHealth,
              .collections, .systemCollections, .keywords, .systemKeywords,
@@ -365,7 +400,44 @@ struct GalleryView: View {
 
     @ViewBuilder
     private var contextChip: some View {
-        switch store.sidebarItem {
+        if store.isCloudScope {
+            switch store.cloudScope {
+            case .people:
+                chipPill(icon: "person.2",
+                         text: "\(store.cloudPeople.count.formatted()) 位 · 本机聚类")
+            case .places:
+                if let place = store.selectedPlace {
+                    chipPill(icon: "mappin",
+                             text: "\(place.title) · \(place.count.formatted()) 张照片")
+                } else {
+                    chipPill(icon: "mappin.and.ellipse",
+                             text: "\(store.placeClusters.count.formatted()) 个地点 · \(store.geoPhotos.count.formatted()) 张")
+                }
+            case .keywords:
+                if let keyword = store.selectedKeyword {
+                    chipPill(icon: "tag",
+                             text: "#\(keyword) · \(store.visibleCount.formatted()) 张照片")
+                } else {
+                    let options = store.keywordOptions
+                    let photos = options.reduce(0) { $0 + $1.count }
+                    chipPill(icon: "tag",
+                             text: "\(options.count.formatted()) 个关键词 · \(photos.formatted()) 张")
+                }
+            case .health:
+                if cloud.isScanningHealth {
+                    chipPill(icon: "stethoscope",
+                             text: "检查中 \(Int((cloud.healthScanProgress * 100).rounded()))%")
+                } else if let report = cloud.healthReport {
+                    chipPill(icon: "stethoscope",
+                             text: "模糊 \(report.blurry.count) · 相似 \(report.similarDuplicatePhotos.count) · 已查 \(report.scannedCount)")
+                } else {
+                    chipPill(icon: "stethoscope", text: "本机检查照片质量")
+                }
+            default:
+                EmptyView()
+            }
+        } else {
+            switch store.sidebarItem {
         case .collections:
             chipPill(icon: "rectangle.stack", text: "智能汇总 · 照片 / 视频 / 编辑成果")
         case .systemCollections:
@@ -436,9 +508,9 @@ struct GalleryView: View {
             importSessionChip(id)
         default:
             EmptyView()
+            }
         }
     }
-
     /// 导入批次页的顶栏信息：这批内容的导入时间、照片 / 视频构成与拍摄跨度。
     @ViewBuilder
     private func importSessionChip(_ id: Int64) -> some View {
@@ -506,7 +578,8 @@ struct GalleryView: View {
         if showsCinemaConsole {
             // 影院控制台放在内容顶部（贴着工具栏），这里不再重复显示。
             EmptyView()
-        } else if isCloudMountScope {
+        } else if isCloudMountScope,
+                  store.cloudBreadcrumbChain.count > 1 || store.cloudOverviewSection != nil {
             LumaBreadcrumbBar(crumbs: cloudBreadcrumbCrumbs) { crumb in
                 selectCloudCrumb(crumb)
             }
@@ -552,13 +625,15 @@ struct GalleryView: View {
         isCinemaScope
     }
 
-    /// 网盘面包屑：整个网盘 → 文件夹相簿链路；分类总览再追加一节。
+    /// 网盘面包屑：整个网盘 → 文件夹相簿链路；分类总览或具体分类再追加一节。
     private var cloudBreadcrumbCrumbs: [LumaBreadcrumbBar.Crumb] {
         var crumbs = store.cloudBreadcrumbChain.map {
             LumaBreadcrumbBar.Crumb(id: "folder:" + $0.id, title: $0.name)
         }
         if let section = store.cloudOverviewSection {
             crumbs.append(LumaBreadcrumbBar.Crumb(id: "overview", title: section.title))
+        } else if store.cloudScope != .all {
+            crumbs.append(LumaBreadcrumbBar.Crumb(id: "scope", title: store.cloudScope.title))
         }
         return crumbs
     }
@@ -568,35 +643,20 @@ struct GalleryView: View {
             store.showCloudOverview(nil)
             return
         }
-        // 总览页点根节点：先退出总览，再回到整个网盘。
+        if crumb.id == "scope" {
+            // 与拾光的分类页一致：点当前分类退回整个网盘（关键词退回关键词总览）。
+            store.setCloudScope(store.cloudScope.keywordOverviewParent ?? .all)
+            return
+        }
+        // 总览页点节点：先退出总览与分类，再进入目标目录。
         if store.cloudOverviewSection != nil {
             store.showCloudOverview(nil)
         }
+        if store.cloudScope != .all {
+            store.setCloudScope(store.cloudScope.keywordOverviewParent ?? .all)
+        }
         let path = String(crumb.id.dropFirst("folder:".count))
         store.selectCloudFolder(path: path == store.cloudBreadcrumbRootID ? nil : path)
-    }
-
-    /// 网盘范围胶囊：点 × 回到全部项目。
-    private var cloudScopeChip: some View {
-        HStack(spacing: 5) {
-            Image(systemName: store.cloudScope.icon)
-                .font(.system(size: 9.5, weight: .semibold))
-            Text(store.cloudScope.title)
-                .font(.system(size: 10.5, weight: .medium))
-            Button {
-                store.setCloudScope(store.cloudScope.keywordOverviewParent ?? .all)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("回到全部项目")
-        }
-        .foregroundStyle(Color.accentColor)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background { Capsule().fill(Color.accentColor.opacity(0.12)) }
     }
 
     /// 网盘工具栏动作：刷新与（可写时）新建 / 上传，与其它工具胶囊同一套外观。
@@ -633,10 +693,16 @@ struct GalleryView: View {
     @ViewBuilder
     private var principalToolbarContent: some View {
         if isCloudMountScope {
-            if let section = store.cloudOverviewSection {
-                chipPill(icon: "rectangle.stack", text: "总览 · \(section.title)")
-            } else if store.cloudScope != .all {
-                cloudScopeChip
+            // 与拾光 / 系统图库同一套中间栏：总览与专用页面由窗口标题表达；
+            // 普通照片列表显示年 / 月 / 所有照片分组，分类页显示对应上下文。
+            if store.cloudOverviewSection != nil {
+                EmptyView()
+            } else if isCloudGridScope, store.isTimelineScope {
+                TimelineGroupingSwitch(selection: $store.grouping)
+            } else if showsContextChip {
+                contextChip
+            } else if isOrganizeScope {
+                organizeStatsChip
             }
         } else if isGridScope, store.isTimelineScope {
             TimelineGroupingSwitch(selection: $store.grouping)
@@ -669,7 +735,8 @@ struct GalleryView: View {
             }
             gallerySearchField
         }
-        if store.sidebarItem == .people || store.sidebarItem == .systemPeople {
+        if store.sidebarItem == .people || store.sidebarItem == .systemPeople
+            || (store.isCloudScope && store.cloudScope == .people) {
             PeopleGroupFilterSwitch()
         }
         if store.sidebarItem == .health || store.sidebarItem == .systemHealth {
@@ -1239,10 +1306,6 @@ struct GalleryView: View {
                 KeywordGalleryView(system: false)
             case .systemKeywords:
                 KeywordGalleryView(system: true)
-            case .ask:
-                AskView()
-            case .tagGovernance:
-                TagGovernanceView()
             case .systemImports:
                 ImportSessionsOverviewView()
             case .systemLibraries:
@@ -1254,7 +1317,46 @@ struct GalleryView: View {
             case .revisit, .systemRevisit:
                 RevisitView()
             case .cloudMount:
-                CloudBrowserView()
+                if isCloudGridScope {
+                    // 与拾光 / 系统图库同一套网格：分组、排序、筛选、缩放、列表形式与计数胶囊都复用。
+                    photoContent(width: width)
+                        .task(id: cloudGridPrefetchKey) {
+                            guard let task = store.prefetchCloudThumbnails(for: store.visiblePhotos) else { return }
+                            await withTaskCancellationHandler {
+                                await task.value
+                            } onCancel: {
+                                task.cancel()
+                            }
+                        }
+                } else if let section = store.cloudOverviewSection {
+                    CloudOverviewView(section: section)
+                } else {
+                    // 网盘专属页面：与拾光 / 系统图库的同名页面共用同一个入口位置。
+                    switch store.cloudScope {
+                    case .map:
+                        PhotoMapView()
+                    case .places:
+                        PlaceStatisticsView(query: $placesQuery)
+                    case .keywords:
+                        CloudKeywordGalleryView()
+                    case .people:
+                        CloudPeopleView()
+                    case .duplicates:
+                        CloudDuplicatesView()
+                    case .health:
+                        CloudHealthView()
+                    case .revisit:
+                        // 与拾光 / 系统图库同一套「值得重看」主体页，数据源切到当前网盘目录。
+                        RevisitView()
+                    case .ratings:
+                        // 与系统图库同一套整理工作台：评分 / 旗标 / 色标只在拾光本地记录。
+                        OrganizeStudioView()
+                    case .recentlyEdited, .trash, .imports:
+                        CloudReadOnlyScopeView(scope: store.cloudScope)
+                    default:
+                        photoContent(width: width)
+                    }
+                }
             case .favorites, .systemFavorites:
                 if store.favoritesViewMode != .all, store.selectedFavoriteBucket == nil {
                     FavoritesDigestView()
@@ -1279,7 +1381,10 @@ struct GalleryView: View {
         // 不能按 visibleCount 判定为「没有照片」，否则会直接显示空状态。
         let showsTimelineOverview = store.isTimelineScope && store.grouping != .all
         if store.visibleCount == 0, !showsTimelineOverview {
-            if store.isPagedScope, store.isPagedWindowLoading || !store.hasLoadedPagedWindow {
+            if store.isCloudScope {
+                // 网盘的空态还要承担扫描进度、错误与重新授权入口。
+                CloudGridEmptyState()
+            } else if store.isPagedScope, store.isPagedWindowLoading || !store.hasLoadedPagedWindow {
                 VStack(spacing: 12) {
                     ProgressView()
                         .controlSize(.large)
@@ -1372,6 +1477,21 @@ struct GalleryView: View {
             .joined(separator: "\u{1F}")
     }
 
+    /// 消费 `store.scrollTargetID`：默认居中，关闭查看器时用最小滚动（已可见就不动）。
+    private func scrollToRequestedTarget(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard let target = store.scrollTargetID else { return }
+        let anchor: UnitPoint? = store.scrollTargetMinimal ? nil : .center
+        store.scrollTargetMinimal = false
+        if animated {
+            withAnimation(.snappy(duration: 0.28)) {
+                proxy.scrollTo(target, anchor: anchor)
+            }
+        } else {
+            proxy.scrollTo(target, anchor: anchor)
+        }
+        store.scrollTargetID = nil
+    }
+
     private func windowedPhotos(_ photos: [PhotoItem]) -> [PhotoItem] {
         guard systemWindowActive, photos.count > systemRenderLimit else { return photos }
         return Array(photos.prefix(systemRenderLimit))
@@ -1414,7 +1534,26 @@ struct GalleryView: View {
          store.sortKey.rawValue,
          String(store.sortAscending),
          store.photoFilter.rawValue,
-         String(store.timelineShowsNewestAtBottom)]
+         String(store.timelineShowsNewestAtBottom),
+         cloudPageIdentity]
+            .joined(separator: "|")
+    }
+
+    /// 网盘页面身份：sidebarItem 始终是 `.cloudMount`，切换范围 / 目录 / 总览必须显式参与身份。
+    private var cloudPageIdentity: String {
+        guard store.isCloudScope else { return "" }
+        return [store.currentCloudMountID?.uuidString ?? "",
+                store.cloudSelectedFolderPath ?? "",
+                String(describing: store.cloudScope),
+                store.cloudOverviewSection?.rawValue ?? ""]
+            .joined(separator: "|")
+    }
+
+    /// 网盘缩略图预取键：范围 / 目录 / 数量变化时重启预取。
+    private var cloudGridPrefetchKey: String {
+        guard store.isCloudScope else { return "" }
+        return [cloudPageIdentity,
+                String(store.visibleCount / 200)]
             .joined(separator: "|")
     }
 
@@ -1492,10 +1631,9 @@ struct GalleryView: View {
         .coordinateSpace(name: GalleryScrollSpace.name)
         .defaultScrollAnchor(.top)
         .onAppear {
-            if let target = store.scrollTargetID {
+            if store.scrollTargetID != nil {
                 DispatchQueue.main.async {
-                    proxy.scrollTo(target, anchor: .center)
-                    store.scrollTargetID = nil
+                    scrollToRequestedTarget(proxy, animated: false)
                 }
             } else {
                 restoreTimelinePosition(proxy)
@@ -1505,11 +1643,8 @@ struct GalleryView: View {
         .onChange(of: store.pagedKey) { _, _ in lastDateSpanOffset = .greatestFiniteMagnitude }
         .simultaneousGesture(pinchGesture)
         .onChange(of: store.scrollTargetID) { _, target in
-            guard let target else { return }
-            withAnimation(.snappy(duration: 0.28)) {
-                proxy.scrollTo(target, anchor: .center)
-            }
-            store.scrollTargetID = nil
+            guard target != nil else { return }
+            scrollToRequestedTarget(proxy, animated: true)
         }
     }
 
@@ -1583,10 +1718,9 @@ struct GalleryView: View {
         })
         .onAppear {
             lastTimelineJumpOffset = -1
-            if let target = store.scrollTargetID {
+            if store.scrollTargetID != nil {
                 DispatchQueue.main.async {
-                    proxy.scrollTo(target, anchor: .center)
-                    store.scrollTargetID = nil
+                    scrollToRequestedTarget(proxy, animated: false)
                 }
             } else {
                 restoreTimelinePosition(proxy)
@@ -1617,11 +1751,8 @@ struct GalleryView: View {
             }
         }
         .onChange(of: store.scrollTargetID) { _, target in
-            guard let target else { return }
-            withAnimation(.snappy(duration: 0.28)) {
-                proxy.scrollTo(target, anchor: .center)
-            }
-            store.scrollTargetID = nil
+            guard target != nil else { return }
+            scrollToRequestedTarget(proxy, animated: true)
         }
         .simultaneousGesture(pinchGesture)
     }
@@ -1716,8 +1847,7 @@ struct GalleryView: View {
             if let target = store.scrollTargetID,
                store.loadedWindowPhotos.contains(where: { $0.id == target }) {
                 DispatchQueue.main.async {
-                    proxy.scrollTo(target, anchor: .center)
-                    store.scrollTargetID = nil
+                    scrollToRequestedTarget(proxy, animated: false)
                 }
             } else {
                 restoreTimelinePosition(proxy)
@@ -1744,11 +1874,8 @@ struct GalleryView: View {
             }
         }
         .onChange(of: store.scrollTargetID) { _, target in
-            guard let target else { return }
-            withAnimation(.snappy(duration: 0.28)) {
-                proxy.scrollTo(target, anchor: .center)
-            }
-            store.scrollTargetID = nil
+            guard target != nil else { return }
+            scrollToRequestedTarget(proxy, animated: true)
         }
     }
 

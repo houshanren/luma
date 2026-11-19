@@ -289,8 +289,19 @@ extension LibraryStore {
 
     func systemPhoto(id: UUID) -> PhotoItem? {
         if let item = systemPhotoIndex[id] { return item }
+        // 窗口里刚出现过的照片走内存，避免 body 求值时同步查 Photos.sqlite。
+        if let recent = systemRecentPhotos[id] { return recent }
         guard let index = systemIndex else { return nil }
         return index.photo(id: id).map { applySystemOverlay($0) }
+    }
+
+    /// 把已加载窗口里的照片记进内存（有上限），供 body 里的高频读取使用。
+    func rememberSystemPhotos(_ photos: [PhotoItem]) {
+        guard !photos.isEmpty else { return }
+        if systemRecentPhotos.count + photos.count > 4_000 {
+            systemRecentPhotos.removeAll(keepingCapacity: true)
+        }
+        for item in photos { systemRecentPhotos[item.id] = item }
     }
 
     func anyPhoto(id: UUID) -> PhotoItem? {
@@ -420,6 +431,7 @@ extension LibraryStore {
         systemWindowTask?.cancel()
         systemWindowTask = nil
         systemWindowPhotos = []
+        systemRecentPhotos.removeAll(keepingCapacity: false)
         systemWindowTotal = 0
         systemWindowVideos = 0
         systemWindowKey = ""
@@ -583,6 +595,7 @@ extension LibraryStore {
         loadViewPreferences()
         loadCloudFavorites()
         loadCloudKeywords()
+        loadCloudMarks()
         loadCloudMounts()
         cinemaIndexes = [:]
         loadCinemaIndexes()
@@ -788,6 +801,7 @@ extension LibraryStore {
     var canEditNativeOverlay: Bool { isNativeContainer }
 
     private func updateSystemPhoto(_ id: UUID, mutate: (inout PhotoItem) -> Void) {
+        systemRecentPhotos[id] = nil
         if let index = systemPhotos.firstIndex(where: { $0.id == id }) {
             mutate(&systemPhotos[index])
             systemPhotoIndex[id] = systemPhotos[index]
@@ -812,11 +826,14 @@ extension LibraryStore {
 
     private func saveSystemOverlay(_ id: UUID, mutate: (inout MetadataStore.AssetOverlay) -> Void) {
         guard let store = metadataStore else { return }
+        // 覆盖元数据变了：窗口缓存里的旧对象要作废，下次读取才会带上新的收藏 / 隐藏状态。
+        systemRecentPhotos[id] = nil
         var overlay = systemOverlays[id] ?? MetadataStore.AssetOverlay()
         mutate(&overlay)
         systemOverlays[id] = overlay
         // 收藏 / 隐藏 / 关键词都会参与索引查询条件，缓存必须失效。
         systemQueryCacheSignature = nil
+        systemFavoritesRevision &+= 1
         store.saveOverlay(id, overlay)
     }
 
@@ -916,8 +933,18 @@ extension LibraryStore {
         guard canEditNativeOverlay, let item = systemPhoto(id: id) else { return }
         let now = Date()
         if let last = item.viewedAt, now.timeIntervalSince(last) < 3600 { return }
-        updateSystemPhoto(id) { $0.viewedAt = now }
-        saveSystemOverlay(id) { $0.viewedAt = now }
+        // 「看过」只影响「值得重看」，不参与查询条件，也不显示在网格上。
+        // 不能走 updateSystemPhoto / saveSystemOverlay：它们会推进 contentRevision、
+        // 清空查询缓存并重建收藏汇总，大图库（几万张）开图那一刻整个窗口都要重算。
+        if var cached = systemPhotoIndex[id] {
+            cached.viewedAt = now
+            systemPhotoIndex[id] = cached
+        }
+        guard let store = metadataStore else { return }
+        var overlay = systemOverlays[id] ?? MetadataStore.AssetOverlay()
+        overlay.viewedAt = now
+        systemOverlays[id] = overlay
+        store.saveOverlay(id, overlay)
     }
 
     /// 首次进入系统图库相关页面时才扫描 Photos.sqlite，避免启动即加载。
@@ -1256,10 +1283,11 @@ extension LibraryStore {
         systemLibraryLoadedPath = url.path
         systemIndexReady = true
         // 缩略图目录先登记到索引：外接库里每个格子的存在性判断都变成内存查询。
+        // 官方 derivative 目录可能有上百万个文件，只预热一小段时间；本机缩略图缓存给足预算。
         ThumbnailFileIndex.shared.warm(root: LibraryPaths.systemDerivatives(libraryURL: url))
         ThumbnailFileIndex.shared.warm(root: url.appendingPathComponent("scopes/cloudsharing",
                                                                        isDirectory: true))
-        ThumbnailFileIndex.shared.warm(root: LibraryPaths.systemThumbs)
+        ThumbnailFileIndex.shared.warm(root: LibraryPaths.systemThumbs, timeBudget: 3)
         invalidateSystemDuplicateGroups()
         systemGeoCacheKey = nil
         systemCountsCache = nil
@@ -1491,6 +1519,22 @@ extension LibraryStore {
             }
         }
         return result
+    }
+
+    /// 相簿封面的异步版本：相簿墙可能有上万个相簿，body 里逐张同步查 `Photos.sqlite`
+    /// 会让打开文件夹直接卡住。命中索引缓存时立刻返回，否则在后台取。
+    func systemAlbumPreviewPhotosAsync(_ albumID: Int64, limit: Int) async -> [PhotoItem] {
+        guard limit > 0 else { return [] }
+        guard let index = systemIndex else {
+            return systemAlbumPreviewPhotos(albumID, limit: limit)
+        }
+        if let cached = index.cachedAlbumPreviewPhotos(albumID, limit: limit) {
+            return cached.map { applySystemOverlay($0) }
+        }
+        let raw = await Task.detached(priority: .utility) {
+            index.albumPreviewPhotos(albumID, limit: limit)
+        }.value
+        return raw.map { applySystemOverlay($0) }
     }
 
     /// 官方导入会话（按导入时间从新到旧）；本地库没有这套记录。

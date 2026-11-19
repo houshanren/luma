@@ -127,7 +127,7 @@ struct PhotoInfoContent: View {
 
             section("拍摄时间") {
                 row("日期", DateText.dayFormatter.string(from: photo.capturedAt))
-                row("时间", DateText.timeFormatter.string(from: photo.capturedAt))
+                row("时间", DateText.secondTimeFormatter.string(from: photo.capturedAt))
                 if let viewedAt = photo.viewedAt {
                     row("最近查看", DateText.fullFormatter.string(from: viewedAt))
                 }

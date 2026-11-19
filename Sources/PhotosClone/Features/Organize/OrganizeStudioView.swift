@@ -643,12 +643,14 @@ struct OrganizeStudioView: View {
                 )
             }
         }
-        .onTapGesture(count: 2) {
-            store.openViewer(photo.id)
-        }
-        .onTapGesture {
-            handlePhotoTap(photo)
-        }
+        .photoClickActions(
+            single: {
+                handlePhotoTap(photo)
+            },
+            double: {
+                store.openViewer(photo.id)
+            }
+        )
         .onHover { hovering in
             hoveredPhotoID = hovering ? photo.id : (hoveredPhotoID == photo.id ? nil : hoveredPhotoID)
         }
@@ -1112,7 +1114,9 @@ struct OrganizeStudioView: View {
     private var refreshToken: String {
         [
             String(store.contentRevision),
-            store.isSystemScope ? "system" : "local",
+            store.isCloudScope
+                ? "cloud#\(store.cloudModel.revision)#\(store.cloudModel.metadataRevision)"
+                : (store.isSystemScope ? "system" : "local"),
             dimension.rawValue,
             ratingPick.map(String.init) ?? "-",
             flagPick?.rawValue ?? "-",
@@ -1122,6 +1126,9 @@ struct OrganizeStudioView: View {
     }
 
     private var libraryTotal: Int {
+        if store.isCloudScope {
+            return store.cloudPhotos.filter { !$0.isHidden }.count
+        }
         if store.isSystemScope {
             if store.systemTotalAssetCount > 0 { return store.systemTotalAssetCount }
             return store.systemPhotos.isEmpty ? store.systemWindowTotal : store.systemPhotos.count
@@ -1219,7 +1226,11 @@ struct OrganizeStudioView: View {
                 }
             }
         } else {
-            for photo in store.photos where photo.deletedAt == nil && !photo.isHidden {
+            // 网盘与本地图库共用同一套统计：网盘用当前目录的照片，标记只在本机。
+            let pool = store.isCloudScope
+                ? store.cloudPhotos.filter { !$0.isHidden }
+                : store.photos.filter { $0.deletedAt == nil && !$0.isHidden }
+            for photo in pool {
                 next.total += 1
 
                 let rating = photo.starRating
@@ -1295,8 +1306,10 @@ struct OrganizeStudioView: View {
                         collected = Array(matched.prefix(resultLimit))
                     case .untagged:
                         var count = 0
-                        for photo in store.photos
-                        where photo.deletedAt == nil && !photo.isHidden && photo.tags.isEmpty {
+                        let untaggedPool = store.isCloudScope
+                            ? store.cloudPhotos.filter { !$0.isHidden }
+                            : store.photos.filter { $0.deletedAt == nil && !$0.isHidden }
+                        for photo in untaggedPool where photo.tags.isEmpty {
                             count += 1
                             if collected.count < resultLimit { collected.append(photo) }
                         }

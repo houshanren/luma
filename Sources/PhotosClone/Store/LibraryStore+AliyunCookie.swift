@@ -7,15 +7,21 @@ extension LibraryStore {
     func testAliyunCookie(_ input: String) async -> (ok: Bool, message: String) {
         do {
             let token = try await AliyunCookieAuth.token(from: input)
-            let info = try await AliyunOAuth.driveInfo(accessToken: token.accessToken)
-            let entries = try await AliyunOAuth.list(driveID: info.driveID,
-                                                     parentID: "root",
-                                                     accessToken: token.accessToken)
-            let folders = entries.filter { $0.isDirectory }.count
-            let media = entries.filter { !$0.isDirectory && $0.isMedia }.count
-            return (true, "连接成功：根目录 \(folders) 个文件夹、\(media) 个媒体文件")
+            let drives = try await AliyunOAuth.drives(accessToken: token.accessToken)
+            guard !drives.isEmpty else { throw CloudOAuthError.api("未获取到网盘信息") }
+            var folders = 0
+            var media = 0
+            for drive in drives {
+                let entries = try await AliyunOAuth.list(driveID: drive.id,
+                                                         parentID: "root",
+                                                         accessToken: token.accessToken)
+                folders += entries.filter { $0.isDirectory }.count
+                media += entries.filter { !$0.isDirectory && $0.isMedia }.count
+            }
+            let names = drives.map(\.label).joined(separator: " / ")
+            return (true, "连接成功：\(names)，根目录合计 \(folders) 个文件夹、\(media) 个媒体文件")
         } catch let error as CloudOAuthError where error.requiresReauth {
-            return (false, "登录凭据已失效：请重新登录 alipan.com 后复制新的 refresh_token")
+            return (false, "登录凭据已失效：请打开 https://alist.nn.ci/tool/aliyundrive/request 重新扫码，复制新的 refresh_token")
         } catch {
             return (false, "连接失败：\(error.localizedDescription)")
         }

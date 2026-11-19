@@ -9,6 +9,9 @@ final class LocalHLSServer {
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private(set) var port: UInt16 = 0
+    /// 播放中会滚动删除旧分片：返回当前保留的最小分片序号，
+    /// 服务播放列表时过滤掉已删除的条目，并把 MEDIA-SEQUENCE 前移。
+    var minSegmentIndexProvider: (() -> Int)?
 
     init(directory: URL) {
         self.directory = directory
@@ -117,11 +120,15 @@ final class LocalHLSServer {
         if let query = path.firstIndex(of: "?") { path = String(path[..<query]) }
         let name = (path as NSString).lastPathComponent
         guard !name.isEmpty, !name.contains(".."),
-              let data = try? Data(contentsOf: directory.appendingPathComponent(name)) else {
+              var data = try? Data(contentsOf: directory.appendingPathComponent(name)) else {
             return Self.build(status: "404 Not Found", body: Data(), contentType: "text/plain")
         }
 
         let isPlaylist = name.hasSuffix(".m3u8")
+        if isPlaylist, let provider = minSegmentIndexProvider,
+           let text = String(data: data, encoding: .utf8) {
+            data = Data(Self.filterPlaylist(text, minIndex: provider()).utf8)
+        }
         var body = data
         var status = "200 OK"
         var extra: [String] = []
@@ -142,6 +149,50 @@ final class LocalHLSServer {
                           contentType: isPlaylist ? "application/vnd.apple.mpegurl" : "video/mp4",
                           noCache: isPlaylist,
                           extra: extra)
+    }
+
+    /// 丢弃序号小于 minIndex 的分片条目，避免播放器请求已删除的文件。
+    private static func filterPlaylist(_ text: String, minIndex: Int) -> String {
+        guard minIndex > 0 else { return text }
+        var output: [String] = []
+        var pendingExtinf: String?
+        var sawMediaSequence = false
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#EXT-X-MEDIA-SEQUENCE:") {
+                output.append("#EXT-X-MEDIA-SEQUENCE:\(minIndex)")
+                sawMediaSequence = true
+                pendingExtinf = nil
+                continue
+            }
+            if trimmed.hasPrefix("#EXTINF") {
+                pendingExtinf = line
+                continue
+            }
+            if let index = segmentIndex(trimmed) {
+                if index >= minIndex {
+                    if let pendingExtinf { output.append(pendingExtinf) }
+                    output.append(line)
+                }
+                pendingExtinf = nil
+                continue
+            }
+            if let extinf = pendingExtinf {
+                output.append(extinf)
+                pendingExtinf = nil
+            }
+            output.append(line)
+        }
+        if !sawMediaSequence, output.count > 1 {
+            output.insert("#EXT-X-MEDIA-SEQUENCE:\(minIndex)", at: 1)
+        }
+        return output.joined(separator: "\n")
+    }
+
+    private static func segmentIndex(_ line: String) -> Int? {
+        guard line.hasPrefix("seg"), line.hasSuffix(".m4s") else { return nil }
+        let digits = line.dropFirst(3).dropLast(4)
+        return Int(digits)
     }
 
     private static func build(status: String, body: Data, contentType: String,

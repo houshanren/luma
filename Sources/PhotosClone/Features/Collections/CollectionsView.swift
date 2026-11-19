@@ -946,31 +946,23 @@ struct SystemFolderOverviewView: View {
 
     // MARK: - 封面
 
-    private func albumCover(_ album: SystemAlbumInfo) -> PhotoItem? {
-        store.systemAlbumPreviewPhotos(album.id, limit: 1).first
-    }
-
-    /// 子文件夹封面取自身与更深层中第一个有内容的相簿；限制递归深度，避免遍历异常结构。
-    private func folderCover(_ id: Int64, depth: Int = 0) -> PhotoItem? {
-        folderPhotos(id, limit: 1, depth: depth).first
-    }
-
-    /// 文件夹的四宫格封面：从自身与更深层相簿里取最多 4 张；限制递归深度。
-    private func folderPhotos(_ id: Int64, limit: Int = 4, depth: Int = 0) -> [PhotoItem] {
+    /// 文件夹的四宫格封面（异步）：从自身与更深层相簿里取最多 4 张；限制递归深度。
+    /// 相簿墙可能有上万个相簿，封面查询必须离开 body 主线程，否则打开文件夹就卡住。
+    private func folderPhotosAsync(_ id: Int64, limit: Int = 4, depth: Int = 0) async -> [PhotoItem] {
         guard limit > 0, depth < 4 else { return [] }
         var result: [PhotoItem] = []
         for entry in store.systemChildren(of: id) {
+            guard result.count < limit else { break }
+            let photos: [PhotoItem]
             switch entry {
             case .album(let album):
-                for photo in albumPhotos(album, limit: limit) where result.count < limit {
-                    if !result.contains(where: { $0.id == photo.id }) { result.append(photo) }
-                }
+                photos = await store.systemAlbumPreviewPhotosAsync(album.id, limit: limit)
             case .folder(let child):
-                for photo in folderPhotos(child.id, limit: limit, depth: depth + 1) where result.count < limit {
-                    if !result.contains(where: { $0.id == photo.id }) { result.append(photo) }
-                }
+                photos = await folderPhotosAsync(child.id, limit: limit, depth: depth + 1)
             }
-            if result.count >= limit { break }
+            for photo in photos where result.count < limit {
+                if !result.contains(where: { $0.id == photo.id }) { result.append(photo) }
+            }
         }
         return result
     }
@@ -979,42 +971,44 @@ struct SystemFolderOverviewView: View {
 
     private func folderCard(_ child: SystemFolderInfo, width: CGFloat) -> some View {
         let key = "folder-\(child.id)"
-        let photos = folderPhotos(child.id)
-        return cardBody(key: key,
-                        title: child.name,
-                        cover: photos.first,
-                        photos: photos,
-                        placeholder: .folder,
-                        width: width) {
-            store.navigate(to: .systemFolder(child.id))
-        } contextMenu: {
-            Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
-            Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
+            await folderPhotosAsync(child.id)
+        } content: { photos in
+            cardBody(key: key,
+                     title: child.name,
+                     cover: photos.first,
+                     photos: photos,
+                     placeholder: .folder,
+                     width: width) {
+                store.navigate(to: .systemFolder(child.id))
+            } contextMenu: {
+                Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+            }
         }
         .accessibilityLabel("文件夹 \(child.name)")
     }
 
     private func albumCard(_ album: SystemAlbumInfo, width: CGFloat) -> some View {
         let key = "album-\(album.id)"
-        return cardBody(key: key,
-                        title: album.name,
-                        cover: albumCover(album),
-                        placeholder: .album,
-                        width: width) {
-            store.navigate(to: .systemAlbum(album.id))
-        } contextMenu: {
-            Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
-            Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
+            await store.systemAlbumPreviewPhotosAsync(album.id, limit: 1)
+        } content: { photos in
+            cardBody(key: key,
+                     title: album.name,
+                     cover: photos.first,
+                     placeholder: .album,
+                     width: width) {
+                store.navigate(to: .systemAlbum(album.id))
+            } contextMenu: {
+                Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+            }
         }
         .accessibilityLabel("相簿 \(album.name)")
     }
 
     // MARK: - 列表 / 拼贴墙
-
-    /// 相簿封面照片：最多取 4 张用于列表与拼贴墙的拼贴（只读系统图库）。
-    private func albumPhotos(_ album: SystemAlbumInfo, limit: Int = 4) -> [PhotoItem] {
-        store.systemAlbumPreviewPhotos(album.id, limit: limit)
-    }
 
     /// 文件夹子树里的相簿数量（限制递归深度，避免异常结构）。
     private func folderAlbumCount(_ id: Int64, depth: Int = 0) -> Int {
@@ -1030,61 +1024,81 @@ struct SystemFolderOverviewView: View {
     }
 
     private func folderListRow(_ child: SystemFolderInfo, thumb: CGFloat) -> some View {
-        AlbumOverviewRow(title: child.name,
-                         subtitle: folderAlbumCount(child.id).formatted(),
-                         cover: folderCover(child.id),
-                         placeholder: .folder,
-                         side: thumb,
-                         action: { store.navigate(to: .systemFolder(child.id)) },
-                         menu: {
-                             Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
-                             Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
-                         })
-            .accessibilityLabel("文件夹 \(child.name)")
+        let key = "folder-row-\(child.id)"
+        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
+            await folderPhotosAsync(child.id, limit: 1)
+        } content: { photos in
+            AlbumOverviewRow(title: child.name,
+                             subtitle: folderAlbumCount(child.id).formatted(),
+                             cover: photos.first,
+                             placeholder: .folder,
+                             side: thumb,
+                             action: { store.navigate(to: .systemFolder(child.id)) },
+                             menu: {
+                                 Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                                 Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+                             })
+        }
+        .accessibilityLabel("文件夹 \(child.name)")
     }
 
     private func albumListRow(_ album: SystemAlbumInfo, thumb: CGFloat) -> some View {
-        AlbumOverviewRow(title: album.name,
-                         subtitle: store.systemAlbumPhotoCount(album.id).formatted(),
-                         cover: albumCover(album),
-                         placeholder: .album,
-                         side: thumb,
-                         action: { store.navigate(to: .systemAlbum(album.id)) },
-                         menu: {
-                             Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
-                             Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
-                         })
-            .accessibilityLabel("相簿 \(album.name)")
+        let key = "album-row-\(album.id)"
+        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
+            await store.systemAlbumPreviewPhotosAsync(album.id, limit: 1)
+        } content: { photos in
+            AlbumOverviewRow(title: album.name,
+                             subtitle: store.systemAlbumPhotoCount(album.id).formatted(),
+                             cover: photos.first,
+                             placeholder: .album,
+                             side: thumb,
+                             action: { store.navigate(to: .systemAlbum(album.id)) },
+                             menu: {
+                                 Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                                 Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+                             })
+        }
+        .accessibilityLabel("相簿 \(album.name)")
     }
 
     private func folderCollageTile(_ child: SystemFolderInfo, side: CGFloat) -> some View {
-        AlbumOverviewTile(title: child.name,
-                          subtitle: "\(folderAlbumCount(child.id)) 个相簿",
-                          photos: folderPhotos(child.id),
-                          placeholder: .folder,
-                          side: side,
-                          isFolder: true,
-                          action: { store.navigate(to: .systemFolder(child.id)) },
-                          menu: {
-                              Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
-                              Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
-                          })
-            .accessibilityLabel("文件夹 \(child.name)")
+        let key = "folder-tile-\(child.id)"
+        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
+            await folderPhotosAsync(child.id)
+        } content: { photos in
+            AlbumOverviewTile(title: child.name,
+                              subtitle: "\(folderAlbumCount(child.id)) 个相簿",
+                              photos: photos,
+                              placeholder: .folder,
+                              side: side,
+                              isFolder: true,
+                              action: { store.navigate(to: .systemFolder(child.id)) },
+                              menu: {
+                                  Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                                  Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+                              })
+        }
+        .accessibilityLabel("文件夹 \(child.name)")
     }
 
     private func albumCollageTile(_ album: SystemAlbumInfo, side: CGFloat) -> some View {
-        AlbumOverviewTile(title: album.name,
-                          subtitle: "\(store.systemAlbumPhotoCount(album.id)) 项",
-                          photos: albumPhotos(album),
-                          placeholder: .album,
-                          side: side,
-                          isFolder: false,
-                          action: { store.navigate(to: .systemAlbum(album.id)) },
-                          menu: {
-                              Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
-                              Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
-                          })
-            .accessibilityLabel("相簿 \(album.name)")
+        let key = "album-tile-\(album.id)"
+        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
+            await store.systemAlbumPreviewPhotosAsync(album.id, limit: 4)
+        } content: { photos in
+            AlbumOverviewTile(title: album.name,
+                              subtitle: "\(store.systemAlbumPhotoCount(album.id)) 项",
+                              photos: photos,
+                              placeholder: .album,
+                              side: side,
+                              isFolder: false,
+                              action: { store.navigate(to: .systemAlbum(album.id)) },
+                              menu: {
+                                  Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                                  Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+                              })
+        }
+        .accessibilityLabel("相簿 \(album.name)")
     }
 
     private func cardBody<MenuContent: View>(key: String,
@@ -1125,6 +1139,33 @@ struct SystemFolderOverviewView: View {
         }
         .onTapGesture(perform: action)
         .contextMenu(menuItems: contextMenu)
+    }
+}
+
+/// 封面异步加载器：先渲染占位，后台取到封面后再替换。
+/// 相簿墙可能有上万个相簿，如果在 body 里同步查 `Photos.sqlite`，打开文件夹就会卡住。
+private struct SystemCoverLoader<Content: View>: View {
+    let key: String
+    let load: () async -> [PhotoItem]
+    private let content: ([PhotoItem]) -> Content
+
+    @State private var photos: [PhotoItem] = []
+
+    init(key: String,
+         load: @escaping () async -> [PhotoItem],
+         @ViewBuilder content: @escaping ([PhotoItem]) -> Content) {
+        self.key = key
+        self.load = load
+        self.content = content
+    }
+
+    var body: some View {
+        content(photos)
+            .task(id: key) {
+                let loaded = await load()
+                guard !Task.isCancelled else { return }
+                photos = loaded
+            }
     }
 }
 
@@ -1325,43 +1366,70 @@ struct MoreItemsOverviewView: View {
 
     private var entries: [Entry] {
         if system {
-            // 与「拾光 › 更多项目」同一顺序与图标；最近查看 / 值得重看为系统图库独有入口。
-            return [
+            // 与侧边栏「更多项目」同一顺序、同名、同图标；条件入口也与侧边栏一致。
+            var list: [Entry] = [
                 Entry(id: "favorites", title: "个人收藏", icon: "heart.fill", item: .systemFavorites),
-                Entry(id: "trash", title: "最近删除", icon: "trash", item: .systemTrash),
-                Entry(id: "recentlySaved", title: "最近保存", icon: "square.and.arrow.down", item: .systemRecentlySaved),
-                Entry(id: "recentlyViewed", title: "最近查看", icon: "eye", item: .systemRecentlyViewed),
-                Entry(id: "recentlyEdited", title: "最近编辑", icon: "slider.horizontal.3", item: .systemEdited),
-                Entry(id: "imports", title: "导入项目", icon: "square.and.arrow.down.on.square", item: .systemImports),
-                Entry(id: "ocr", title: "包含文字", icon: "text.viewfinder", item: .systemOcrTexts),
-                Entry(id: "keywords", title: "关键词", icon: "tag", item: .systemKeywords),
-                Entry(id: "ratings", title: "整理", icon: "square.grid.2x2", item: .systemRatings),
-                Entry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath", item: .systemRevisit),
                 Entry(id: "health", title: "图库体检", icon: "stethoscope", item: .systemHealth),
+                Entry(id: "ratings", title: "图库整理", icon: "square.grid.2x2", item: .systemRatings),
+                Entry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath", item: .systemRevisit)
+            ]
+            if store.systemDuplicateCount > 0 {
+                list.append(Entry(id: "duplicates", title: "重复项目", icon: "square.on.square",
+                                  item: .systemDuplicates))
+            }
+            list += [
                 Entry(id: "map", title: "地图", icon: "map", item: .systemMap),
                 Entry(id: "places", title: "位置", icon: "mappin.and.ellipse", item: .systemPlaces),
                 Entry(id: "people", title: "人物", icon: "person.crop.square", item: .systemPeople),
-                Entry(id: "duplicates", title: "重复项目", icon: "square.on.square", item: .systemDuplicates),
-                Entry(id: "hidden", title: "已隐藏", icon: "eye.slash", item: .systemHidden)
+                Entry(id: "keywords", title: "关键词", icon: "tag", item: .systemKeywords)
             ]
+            if store.ocrPhotoCount > 0 {
+                list.append(Entry(id: "ocr", title: "包含文字", icon: "text.viewfinder", item: .systemOcrTexts))
+            }
+            list += [
+                Entry(id: "recentlyViewed", title: "最近查看", icon: "eye", item: .systemRecentlyViewed),
+                Entry(id: "recentlyEdited", title: "最近编辑", icon: "slider.horizontal.3", item: .systemEdited),
+                Entry(id: "recentlySaved", title: "最近保存", icon: "square.and.arrow.down",
+                      item: .systemRecentlySaved),
+                Entry(id: "trash", title: "最近删除", icon: "trash", item: .systemTrash),
+                Entry(id: "imports", title: "导入项目", icon: "square.and.arrow.down.on.square",
+                      item: .systemImports)
+            ]
+            if store.systemHiddenCount > 0 {
+                list.append(Entry(id: "hidden", title: "已隐藏", icon: "eye.slash", item: .systemHidden))
+            }
+            return list
         }
-        return [
+        // 与侧边栏「更多项目」同一顺序、同名、同图标；条件入口也与侧边栏一致。
+        var list: [Entry] = [
             Entry(id: "favorites", title: "个人收藏", icon: "heart.fill", item: .favorites),
-            Entry(id: "trash", title: "最近删除", icon: "trash", item: .trash),
-            Entry(id: "recentlySaved", title: "最近保存", icon: "square.and.arrow.down", item: .recentlySaved),
-            Entry(id: "recentlyEdited", title: "最近编辑", icon: "slider.horizontal.3", item: .recentlyEdited),
-            Entry(id: "imports", title: "导入项目", icon: "square.and.arrow.down.on.square", item: .imports),
-            Entry(id: "ocr", title: "包含文字", icon: "text.viewfinder", item: .ocrTexts),
-            Entry(id: "keywords", title: "关键词", icon: "tag", item: .keywords),
-            Entry(id: "ratings", title: "整理", icon: "square.grid.2x2", item: .ratings),
-            Entry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath", item: .revisit),
             Entry(id: "health", title: "图库体检", icon: "stethoscope", item: .health),
+            Entry(id: "ratings", title: "图库整理", icon: "square.grid.2x2", item: .ratings),
+            Entry(id: "revisit", title: "值得重看", icon: "clock.arrow.circlepath", item: .revisit)
+        ]
+        if store.duplicateCount > 0 {
+            list.append(Entry(id: "duplicates", title: "重复项目", icon: "square.on.square",
+                              item: .duplicates))
+        }
+        list += [
             Entry(id: "map", title: "地图", icon: "map", item: .map),
             Entry(id: "places", title: "位置", icon: "mappin.and.ellipse", item: .places),
             Entry(id: "people", title: "人物", icon: "person.crop.square", item: .people),
-            Entry(id: "duplicates", title: "重复项目", icon: "square.on.square", item: .duplicates),
-            Entry(id: "hidden", title: "已隐藏", icon: "eye.slash", item: .hidden)
+            Entry(id: "keywords", title: "关键词", icon: "tag", item: .keywords)
         ]
+        if store.analyzedCount > 0 {
+            list.append(Entry(id: "ocr", title: "包含文字", icon: "text.viewfinder", item: .ocrTexts))
+        }
+        list += [
+            Entry(id: "recentlyEdited", title: "最近编辑", icon: "slider.horizontal.3", item: .recentlyEdited),
+            Entry(id: "recentlySaved", title: "最近保存", icon: "square.and.arrow.down", item: .recentlySaved),
+            Entry(id: "trash", title: "最近删除", icon: "trash", item: .trash),
+            Entry(id: "imports", title: "导入项目", icon: "square.and.arrow.down.on.square", item: .imports)
+        ]
+        if store.hiddenCount > 0 {
+            list.append(Entry(id: "hidden", title: "已隐藏", icon: "eye.slash", item: .hidden))
+        }
+        return list
     }
 
     var body: some View {
@@ -2717,31 +2785,15 @@ private struct PersonAvatarView: View {
 }
 
 private struct PersonCardView: View {
-    @EnvironmentObject private var store: LibraryStore
     let person: SystemPersonInfo
     /// 头像直径，随工具栏缩放变化。
     var avatarSize: CGFloat = 124
     /// 头像形状（圆形 / 圆角方形），随当前图库保存。
     var style: PeopleDisplayStyle = .circle
-    /// 悬停状态留在卡片内部：上千人的列表不应该因为一次 hover 重排整个网格。
-    @State private var isHovered = false
 
     var body: some View {
-        VStack(spacing: 10) {
+        PeoplePersonCardShell(name: person.name, count: person.faceCount) {
             PersonAvatarView(person: person, size: avatarSize, style: style)
-                .shadow(color: .black.opacity(isHovered ? 0.25 : 0.10),
-                        radius: isHovered ? 14 : 6,
-                        y: isHovered ? 7 : 3)
-            Text(person.name)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-            Text("\(person.faceCount.formatted()) 张照片")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
         }
-        .scaleEffect(isHovered ? 1.02 : 1)
-        .animation(.snappy(duration: 0.18), value: isHovered)
-        .contentShape(Rectangle())
-        .onHover { isHovered = $0 }
     }
 }

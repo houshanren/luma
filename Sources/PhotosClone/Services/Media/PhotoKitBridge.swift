@@ -213,7 +213,12 @@ enum PhotoKitBridge {
     /// 共享相簿与仅存 iCloud 的视频在本机没有原图文件，必须由 Photos 自己按需下载。
     /// 返回的 URL 只是本地缓存路径，流式素材可能为 nil。
     static func videoAsset(id: UUID) async -> (asset: AVAsset, url: URL?)? {
-        guard await ensureAuthorized(), let source = videoPHAsset(id: id) else { return nil }
+        guard await ensureAuthorized() else { return nil }
+        // 共享相簿要逐本枚举才能找到项目，大图库上很慢：不能占用主线程。
+        let source = await Task.detached(priority: .userInitiated) {
+            videoPHAsset(id: id)
+        }.value
+        guard let source else { return nil }
         let avAsset: AVAsset? = await withCheckedContinuation { continuation in
             let options = PHVideoRequestOptions()
             options.isNetworkAccessAllowed = true

@@ -347,20 +347,22 @@ private struct PhotoListRow: View {
         .onDrag {
             PhotoDrag.provider(for: actionIDs)
         }
-        .onTapGesture(count: 2) {
-            store.openPhoto(photo.id, by: settings.photoOpenMode)
-        }
-        .onTapGesture {
-            // 与网格一致：单击只负责选择，⌘ / ⇧ 单击多选，双击打开。
-            let flags = NSEvent.modifierFlags
-            if flags.contains(.command) || flags.contains(.shift) {
-                store.handleTap(photo.id)
-            } else if selectionModel.ids.contains(photo.id), selectionModel.ids.count > 1 {
-                store.selectionAnchorID = photo.id
-            } else {
-                store.handleTap(photo.id)
+        .photoClickActions(
+            single: {
+                // 与网格一致：单击只负责选择，⌘ / ⇧ 单击多选，双击打开。
+                let flags = NSEvent.modifierFlags
+                if flags.contains(.command) || flags.contains(.shift) {
+                    store.handleTap(photo.id)
+                } else if selectionModel.ids.contains(photo.id), selectionModel.ids.count > 1 {
+                    store.selectionAnchorID = photo.id
+                } else {
+                    store.handleTap(photo.id)
+                }
+            },
+            double: {
+                store.openPhoto(photo.id, by: settings.photoOpenMode)
             }
-        }
+        )
         .contextMenu {
             PhotoContextMenu(photo: photo, actionIDs: actionIDs)
         }

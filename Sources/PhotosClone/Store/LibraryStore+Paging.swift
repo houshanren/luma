@@ -25,8 +25,21 @@ extension LibraryStore {
     /// 系统图库的索引查询描述：索引可用且当前范围能翻译成 SQL 时生效。
     var systemQuery: SystemQuery? {
         guard systemIndex != nil, !needsLibrarySetup, isSystemScope else { return nil }
-        // 收藏汇总下钻使用汇总时载入的完整收藏列表，不走索引分页。
-        if selectedFavoriteBucket != nil { return nil }
+        // 收藏汇总下钻：年份可以直接下推成「收藏 + 日期区间」，不必等上万条汇总读完；
+        // 其它维度需要地点 / 相机等逐张元数据，继续用汇总时载入的完整收藏列表。
+        if let bucket = selectedFavoriteBucket {
+            if isSystemScope, bucket.dimension == .year, let year = Int(bucket.key) {
+                var query = cachedSystemQuery(.favorites)
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = .current
+                query.startDate = calendar.date(from: DateComponents(year: year, month: 1, day: 1))
+                query.endDate = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1))
+                query.sortKey = .capturedAt
+                query.ascending = false
+                return query
+            }
+            return nil
+        }
         // 地点详情展示的是聚类自带的那组照片，不是一个 SystemQueryScope：
         // 让它走内存列表，查看器翻页 / 序号才会和屏幕上的照片一致。
         if selectedPlace != nil { return nil }
@@ -278,6 +291,7 @@ extension LibraryStore {
                 self.systemWindowStart = start
                 self.systemWindowStartRank = start
                 self.systemWindowPhotos = page.map { self.applySystemOverlay($0) }
+                self.rememberSystemPhotos(self.systemWindowPhotos)
                 self.systemWindowRevision &+= 1
                 self.hasLoadedSystemWindow = true
                 // 落在这一页中间：滚动位置与换页前的视野中心基本对齐，不会停在占位空白里。
@@ -323,6 +337,7 @@ extension LibraryStore {
             self.systemWindowStart = 0
             self.systemWindowStartRank = result.1
             self.systemWindowPhotos = result.0.map { self.applySystemOverlay($0) }
+            self.rememberSystemPhotos(self.systemWindowPhotos)
             self.systemWindowRevision &+= 1
             self.hasLoadedSystemWindow = true
             // 占位高度只是按排名估算，真正落位交给网格滚到这一张，避免停在空白占位里。
@@ -702,6 +717,7 @@ extension LibraryStore {
             self.systemWindowStartRank = replace ? 0 : self.systemWindowStartRank
             let mapped = result.1.map { self.applySystemOverlay($0) }
             self.systemWindowPhotos = replace ? mapped : self.systemWindowPhotos + mapped
+            self.rememberSystemPhotos(mapped)
             self.systemWindowRevision &+= 1
             self.hasLoadedSystemWindow = true
             self.prefetchGridThumbnails(self.systemWindowPhotos, newest: replace)

@@ -8,23 +8,31 @@ import Foundation
 /// 换挂载只清内存，不写网盘、不上传任何内容。
 extension LibraryStore {
     /// 当前打开中的网盘挂载 ID。
+    /// 影院也归属这个网盘：进入影院后分类树（媒体类型 / 更多项目 / 场景 / 相簿）仍要正常显示，
+    /// 不能因为 `sidebarItem` 变成 `.cloudCinema` 就把相簿树清空。
     var currentCloudMountID: UUID? {
-        if case .cloudMount(let id) = sidebarItem { return id }
-        return nil
+        switch sidebarItem {
+        case .cloudMount(let id): return id
+        case .cloudCinema(let id): return id
+        default: return nil
+        }
     }
 
     var cloudScope: CloudScope { cloudModel.scope }
 
     func setCloudScope(_ scope: CloudScope) {
-        guard cloudModel.scope != scope else { return }
-        if scope.requiresAnalysis, cloudModel.analysis.isEmpty {
-            showToast("先点「识别内容」，完成后即可按场景或文字浏览")
+        if cloudModel.scope != scope {
+            if scope.requiresAnalysis, cloudModel.analysis.isEmpty {
+                showToast("先点「识别内容」，完成后即可按场景或文字浏览")
+            }
+            cloudModel.scope = scope
         }
-        cloudModel.scope = scope
-        // 选了具体范围就回到网格；离开「位置」时收起地点详情，避免旧地点残留在其它范围。
+        // 选了具体范围就回到网格；与 `navigate(to:)` 一致，点当前范围也把搜索 / 筛选 / 选择回正。
         cloudModel.overview = nil
-        if scope != .places { selectedPlace = nil }
-        similarScope = nil
+        // 媒体类型与「更多项目」是整库口径：像拾光一样离开当前目录相簿；
+        // 回到「全部项目」则保留当前相簿，方便只清除筛选。
+        if scope != .all { showCloudRootPhotos() }
+        clearTransientBrowsingState()
         cloudVisibleCacheKey = nil
     }
 
@@ -37,17 +45,36 @@ extension LibraryStore {
         }
     }
 
+    /// 只打开不关闭：点分区标题与拾光一样进入总览，再次点击不会退回照片网格。
+    func openCloudOverview(_ section: CloudOverviewSection) {
+        // 与拾光一致：媒体类型 / 更多项目 / 场景 / 相簿总览都是整库口径，进入时先离开当前目录相簿。
+        showCloudRootPhotos()
+        cloudModel.overview = section
+    }
+
     /// 单张云照片是否属于某个范围。
     func cloudPhoto(_ photo: PhotoItem, matches scope: CloudScope) -> Bool {
         switch scope {
         case .all: return true
         case .videos: return photo.isVideo
         case .photos: return !photo.isVideo
-        case .screenshots: return CloudMediaNaming.looksLikeScreenshot(photo.originalName)
+        case .screenshots: return !photo.isVideo && CloudMediaNaming.looksLikeScreenshot(photo.originalName)
+        case .screenRecordings:
+            return photo.isVideo && CloudMediaNaming.looksLikeScreenRecording(photo.originalName)
+        case .panoramas:
+            return !photo.isVideo && CloudMediaNaming.looksLikePanorama(photo.originalName,
+                                                                       pixelWidth: photo.pixelWidth,
+                                                                       pixelHeight: photo.pixelHeight)
         case .animated: return photo.isAnimatedFile
         case .raws: return photo.isRAWFile
         case .favorites: return photo.isFavorite
         case .text: return !(cloudModel.analysis[photo.id]?.text.isEmpty ?? true)
+        case .recentlyViewed:
+            return (photo.viewedAt ?? .distantPast) >= Self.recentlyViewedCutoff
+        case .recentlySaved:
+            return photo.addedAt >= Self.recentlySavedCutoff
+        case .ratings: return true
+        case .recentlyEdited, .trash, .imports: return false
         case .scene(let id):
             guard let category = SceneCatalog.category(id: id),
                   let analysis = cloudModel.analysis[photo.id] else { return false }
@@ -95,6 +122,8 @@ extension LibraryStore {
         let now = Date()
         let captureCutoff = now.addingTimeInterval(-LibraryHealthTuning.revisitCaptureAge)
         let viewCutoff = now.addingTimeInterval(-LibraryHealthTuning.revisitViewAge)
+        let savedCutoff = Self.recentlySavedCutoff
+        let viewedCutoff = Self.recentlyViewedCutoff
         let peopleIDs = Set(cloudPeople.flatMap { $0.assetIDs })
         let duplicateIDs = cloudDuplicatePhotoIDs
         for photo in cloudPhotos where !photo.isHidden {
@@ -103,10 +132,25 @@ extension LibraryStore {
             } else {
                 counts.photos += 1
             }
-            if CloudMediaNaming.looksLikeScreenshot(photo.originalName) { counts.screenshots += 1 }
+            if !photo.isVideo, CloudMediaNaming.looksLikeScreenshot(photo.originalName) {
+                counts.screenshots += 1
+            }
+            if photo.isVideo, CloudMediaNaming.looksLikeScreenRecording(photo.originalName) {
+                counts.screenRecordings += 1
+            }
+            if !photo.isVideo, CloudMediaNaming.looksLikePanorama(photo.originalName,
+                                                                  pixelWidth: photo.pixelWidth,
+                                                                  pixelHeight: photo.pixelHeight) {
+                counts.panoramas += 1
+            }
             if photo.isAnimatedFile { counts.animated += 1 }
             if photo.isRAWFile { counts.raws += 1 }
             if photo.isFavorite { counts.favorites += 1 }
+            if (photo.viewedAt ?? .distantPast) >= viewedCutoff { counts.recentlyViewed += 1 }
+            if photo.addedAt >= savedCutoff { counts.recentlySaved += 1 }
+            if photo.starRating > 0 || photo.pickFlag != .none || photo.labelColor != .none {
+                counts.ratings += 1
+            }
             if !photo.isVideo, photo.hasLocation { counts.located += 1 }
             if peopleIDs.contains(photo.id) { counts.people += 1 }
             if duplicateIDs.contains(photo.id) { counts.duplicates += 1 }

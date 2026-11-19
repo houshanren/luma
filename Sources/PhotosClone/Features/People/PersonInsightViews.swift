@@ -290,6 +290,42 @@ struct PersonScrollTracker: View {
     }
 }
 
+// MARK: - 人物卡片
+
+/// 人物总览卡片：拾光、系统图库与网盘共用同一套头像尺寸、文字层级与悬停抬升。
+struct PeoplePersonCardShell<Avatar: View>: View {
+    let name: String
+    let count: Int
+    let avatar: () -> Avatar
+    /// 悬停状态留在卡片内部：上千人的列表不应该因为一次 hover 重排整个网格。
+    @State private var isHovered = false
+
+    init(name: String, count: Int, @ViewBuilder avatar: @escaping () -> Avatar) {
+        self.name = name
+        self.count = count
+        self.avatar = avatar
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            avatar()
+                .shadow(color: .black.opacity(isHovered ? 0.25 : 0.10),
+                        radius: isHovered ? 14 : 6,
+                        y: isHovered ? 7 : 3)
+            Text(name)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            Text("\(count.formatted()) 张照片")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+        }
+        .scaleEffect(isHovered ? 1.02 : 1)
+        .animation(.snappy(duration: 0.18), value: isHovered)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+    }
+}
+
 // MARK: - 摘要
 
 /// 人物摘要：一段画像文案 + 年度轨迹 + 地点 / 时段 / 同框 / 色彩 + 高光时刻。

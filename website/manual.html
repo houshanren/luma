@@ -79,7 +79,7 @@
     </nav>
 
     <div class="doc-side-foot">
-      <span>版本 1.2</span>
+      <span>版本 1.3</span>
       <span>适用于 macOS 14+</span>
     </div>
   </aside>
@@ -90,7 +90,7 @@
       <h1>把十万张照片，<br>整理成一段清楚的时间线。</h1>
       <p class="doc-lede">这本手册覆盖拾光的全部功能：从建库、导入与浏览，到端侧智能、可选的智能助手、值得重看、回忆影片、网络存储与官方「照片」图库接入。它同时说明数据写在哪里、权限边界如何划分，以及哪些事情应该继续交给系统「照片」。</p>
       <div class="doc-meta">
-        <span>版本 1.2</span>
+        <span>版本 1.3</span>
         <span>更新于 2026 年 11 月</span>
         <span>界面语言：简体中文</span>
         <span>无账号 · 无第三方依赖</span>
@@ -146,7 +146,7 @@
       <p class="lead">拾光没有安装器，也没有后台服务。构建产出一份 <code>Luma.app</code>，双击即可运行；所有数据都写在你选择的图库里。</p>
 
       <h3>下载现成版本</h3>
-      <p>不想自己编译，可以直接下载发布产物：<a href="https://github.com/houshanren/luma/releases/download/v1.2.0/Luma-1.2.0-macOS.zip">Luma-1.2.0-macOS.zip</a>（约 44 MB）。解压后把 <code>Luma.app</code> 拖进「应用程序」即可。</p>
+      <p>不想自己编译，可以直接下载发布产物：<a href="https://github.com/houshanren/luma/releases/download/v1.3.0/Luma-1.3.0-macOS.zip">Luma-1.3.0-macOS.zip</a>（约 56 MB）。解压后把 <code>Luma.app</code> 拖进「应用程序」即可。</p>
       <p>产物为 ad-hoc 签名、未做 Apple 公证，首次打开如提示“无法验证开发者”，请右键点击 <code>Luma.app</code> → 「打开」，或执行：</p>
       <div class="code-block"><pre><code>xattr -dr com.apple.quarantine /Applications/Luma.app</code></pre></div>
       <p>全部版本与源码见 GitHub：<a href="https://github.com/houshanren/luma/releases" target="_blank" rel="noopener">Releases</a> · <a href="https://github.com/houshanren/luma" target="_blank" rel="noopener">仓库</a>。</p>
@@ -372,7 +372,7 @@ open Luma.app        # 运行</code></pre></div>
           <tr><td><code>3gp</code> · <code>3g2</code> · <code>ogv</code> · <code>rm</code> · <code>rmvb</code> · <code>divx</code> · <code>dv</code> · <code>mxf</code> · <code>amv</code></td><td>手机、网络视频、专业设备</td></tr>
         </tbody>
       </table>
-      <p>播放优先走 AVPlayer；系统不支持的容器或编码，在 PATH 中存在 <code>ffmpeg</code> 时会自动转码为 H.264 + AAC 的 MP4，写入 <code>resources/transcodes/</code> 并复用缓存。常见编码包括 H.264、HEVC、ProRes、MPEG-4、VP8 / VP9、AV1、Motion JPEG、MPEG-2、Theora、RealVideo、WMV 与 Sorenson H.263。</p>
+      <p>播放优先走 AVPlayer；系统不支持的容器或编码由 App 内置的静态 <code>ffmpeg</code>（带 libzimg）转封装为 H.264 + AAC 的 MP4，HEVC 会写正确的 <code>hvc1</code> 标签，HDR 片源自动做色调映射，结果写入 <code>resources/transcodes/</code> 并复用缓存；输出目录超过「设置 › 通用 › 视频缓存」上限时按最久未使用淘汰。网盘视频边下边播、按 Range 拖动，官方转码返回 HLS 时直接交给 AVPlayer。常见编码包括 H.264、HEVC、ProRes、MPEG-4、VP8 / VP9、AV1、Motion JPEG、MPEG-2、Theora、RealVideo、WMV 与 Sorenson H.263。</p>
 
       <h3>播放能力</h3>
       <table class="doc-table">
@@ -381,7 +381,9 @@ open Luma.app        # 运行</code></pre></div>
           <tr><td>倍速</td><td>0.25× / 0.5× / 0.75× / 1× / 1.25× / 1.5× / 2× / 3× / 4×</td></tr>
           <tr><td>连播与循环</td><td>播完自动连播列表里的下一个视频（跳过照片）；可在设置或播放器里改为循环当前视频</td></tr>
           <tr><td>画面</td><td>填充 / 适应、旋转 90°（仅播放显示，存帧跟随朝向）、全屏、画中画、保存当前帧</td></tr>
-          <tr><td>声音</td><td>音量滑杆、默认静音、一键静音</td></tr>
+          <tr><td>声音</td><td>音量滑杆、默认静音、一键静音；多音轨视频可在菜单里切换音轨</td></tr>
+          <tr><td>字幕</td><td>外挂字幕（<code>srt</code> / <code>vtt</code> / <code>ass</code> / <code>ssa</code>）：自动发现同名字幕、手动载入文件、提前 / 延后 0.5 秒调整偏移、按设置显示字号与半透明底色；内嵌字幕可在菜单里开关</td></tr>
+          <tr><td>网盘视频</td><td>边下边播，拖动进度只按 Range 读取所需片段；官方转码返回 HLS 时直接播放</td></tr>
           <tr><td>控制条</td><td>可拖到画面任意位置，双击把手复位；点击时长切换剩余时间；上一个 / 下一个视频</td></tr>
           <tr><td>键盘</td><td><kbd>K</kbd> 播放 / 暂停、<kbd>↑</kbd> / <kbd>↓</kbd> 按步长快进 / 快退（默认 5 秒，可在设置里改）、<kbd>J</kbd> / <kbd>L</kbd> 快退 / 快进 10 秒、<kbd>←</kbd> / <kbd>→</kbd> 上一个 / 下一个（与照片一致）、<kbd>⌘←</kbd> / <kbd>⌘→</kbd> 与 <kbd>⌘↑</kbd> / <kbd>⌘↓</kbd> 只在视频之间跳转、<kbd>,</kbd> / <kbd>.</kbd> 上一帧 / 下一帧、<kbd>R</kbd> 旋转 90°、<kbd>M</kbd> 静音、<kbd>A</kbd> 填充 / 适应、<kbd>F</kbd> 全屏、<kbd>空格</kbd> 返回图库</td></tr>
           <tr><td>图库内</td><td>视频右下角始终显示时长角标与视频标记；可按「视频」筛选、按时长排序；导出时保留原文件</td></tr>
@@ -390,7 +392,7 @@ open Luma.app        # 运行</code></pre></div>
       </table>
       <div class="callout warn">
         <b>边界</b>
-        <p>暂不支持视频修剪与慢动作变速；未安装 <code>ffmpeg</code> 时，只能播放系统可解码的编码。系统图库与网盘上的视频按其来源权限播放，不参与端侧分析。</p>
+        <p>暂不支持视频修剪与慢动作变速。系统图库与网盘上的视频按其来源权限播放，不参与端侧分析。</p>
       </div>
     </section>
 
@@ -968,12 +970,12 @@ open Luma.app        # 运行</code></pre></div>
       </ul>
 
       <h3>打开网盘后的分类浏览</h3>
-      <p>与本地图库一样分「媒体类型 / 场景 / 更多项目」，每个网盘行与三组分类都有独立的展开箭头：</p>
+      <p>树结构与系统图库一致：影院（网盘自有）→ 媒体类型 → 更多项目 → 场景 → 相簿，媒体类型与场景默认收起，每个网盘行与各分类都有独立的展开箭头：</p>
       <ul class="doc-list">
-        <li><b>媒体类型</b>：全部项目、视频、照片、截屏（按文件名识别）、动图、RAW。</li>
-        <li><b>更多项目</b>：个人收藏、包含文字、值得重看、地图、位置、人物、重复项目、图库体检；点分区标题会像拾光一样打开卡片总览（数量 + 封面）。</li>
+        <li><b>媒体类型</b>：视频、全景照片、截屏、录屏（按文件名与像素比例识别）、动图、RAW；数量为 0 的类型不占位。</li>
+        <li><b>更多项目</b>：与系统图库同名同序 —— 个人收藏、图库体检、图库整理、值得重看、重复项目、地图、位置、人物、关键词、包含文字、最近查看、最近编辑、最近保存、最近删除、导入项目；点分区标题会像系统图库一样打开卡片总览（数量 + 封面）。图库整理里的评分 / 旗标 / 色标只记在本机；最近编辑 / 最近删除 / 导入项目打开的是同一位置的只读说明页。</li>
         <li><b>场景</b>：点「识别内容」后在本机用 Vision 识别当前列表（每次最多 120 张，可随时停止），结果写入 <code>cloud_assets</code>，重开目录直接回填。</li>
-        <li><b>只读派生</b>：地图 / 位置复用拾光的地图与地点卡片墙（缺地名时本机逆地理编码，境外坐标回退到内置城市库按最近城市补国家 / 城市）；人物在本机对网盘缩略图做人脸聚类，结果写入 <code>cloud_people</code>；重复项目按「文件大小 + 像素尺寸」分组，只提示到网盘 App 合并；值得重看用 EXIF 拍摄时间与 <code>cloud_assets.viewed_at</code> 判定；图库体检只检查当前目录；相似照片现算特征并缓存；智能美化把渲染结果保存到拾光本地图库。</li>
+        <li><b>只读派生</b>：地图 / 位置复用拾光的地图与地点卡片墙（缺地名时本机逆地理编码，境外坐标回退到内置城市库按最近城市补国家 / 城市）；人物在本机对网盘缩略图做人脸聚类，结果写入 <code>cloud_people</code>；重复项目按「文件大小 + 像素尺寸」分组，只提示到网盘 App 合并；值得重看用 EXIF 拍摄时间与 <code>cloud_assets.viewed_at</code> 判定；最近查看按本机查看时间倒序；图库体检只检查当前目录；相似照片现算特征并缓存；智能美化把渲染结果保存到拾光本地图库。</li>
         <li><b>断开连接</b>前会先确认：会移除挂载并清理本机缓存的缩略图、收藏与分析记录，网盘上的文件不受影响。</li>
       </ul>
 
@@ -1004,7 +1006,7 @@ open Luma.app        # 运行</code></pre></div>
     <!-- 14 设置 -->
     <section class="doc-chapter" id="settings">
       <h2><span class="chapter-no">14</span>设置</h2>
-      <p class="lead">设置分为通用、外观、浏览、图库与智能助手五页。图库级业务设置写入当前图库的数据库，外观等 App 级偏好写入 <code>UserDefaults</code>；只与单个视图相关的轻量状态才使用 <code>@AppStorage</code>。</p>
+      <p class="lead">设置分为通用、外观、浏览、图库、影院、模型、助手、快捷键与关于九页。图库级业务设置写入当前图库的数据库，外观等 App 级偏好写入 <code>UserDefaults</code>；只与单个视图相关的轻量状态才使用 <code>@AppStorage</code>。</p>
 
       <h3>通用</h3>
       <table class="doc-table">
@@ -1012,6 +1014,8 @@ open Luma.app        # 运行</code></pre></div>
           <tr><th>双击打开方式</th><td>查看器 / 编辑器 / 系统应用；单击为选择，⌘ 或 ⇧ 单击多选</td></tr>
           <tr><th>查看器形态</th><td>窗口内浏览（默认）/ 全屏沉浸</td></tr>
           <tr><th>视频</th><td>自动播放、播放结束后自动连播下一个、默认静音、循环播放、快进 / 快退步长（↑ / ↓ 键，1–30 秒，默认 5 秒）、查看完整 HDR</td></tr>
+          <tr><th>字幕</th><td>外挂字幕字号（13 / 15 / 18 / 21 pt）与半透明底色；时间轴偏移在播放器的字幕菜单里临时调整</td></tr>
+          <tr><th>视频缓存</th><td>边下边播与完整转码的缓存上限：不限制 / 5 / 10 / 20 / 50 / 100 GB（默认 20 GB），显示当前占用并可一键清理；超出后按最久未使用淘汰</td></tr>
           <tr><th>幻灯片</th><td>间隔与 Ken Burns 效果</td></tr>
           <tr><th>导入默认</th><td>按文件夹创建相簿、保留上层结构</td></tr>
           <tr><th>查看器</th><td>打开时显示信息面板；底部缩略图（胶片条）可默认显示 / 隐藏</td></tr>
@@ -1167,7 +1171,7 @@ open Luma.app        # 运行</code></pre></div>
       <p>删除是不可逆的产品决策，必须由你确认。体检与相似检索只给建议；执行删除时会移入最近删除，保留期内仍可恢复。</p>
 
       <h3>视频无法播放怎么办？</h3>
-      <p>先确认系统播放器能否打开。某些编码需要可选的 <code>ffmpeg</code>；安装并确保它在 <code>PATH</code> 中，拾光会转码为 H.264 后播放。</p>
+      <p>先确认系统播放器能否打开。系统不支持的容器会由 App 内置的静态 <code>ffmpeg</code> 转封装为 H.264 后播放，无需自行安装；若片源本身损坏或加密，仍可能无法解码。</p>
 
       <h3>为什么不能编辑官方「照片」图库里的照片？</h3>
       <p>可以直接编辑。官方库作为当前图库时，拾光会经 PhotoKit 写回编辑、删除、相簿增删改与收藏隐藏，由「照片」自己更新原图并保留可撤销的调整记录；需要在系统设置里授予照片读写权限。关键词与标题 PhotoKit 不开放，仍只记录在拾光的 sidecar。额外连接的其他官方图库与网盘仍不可写。</p>
@@ -1199,7 +1203,7 @@ open Luma.app        # 运行</code></pre></div>
         <li>撤销栈只保留最近 30 步，且只在当前图库内有效；永久删除、清空最近删除、导入、编辑与压缩不进入撤销栈。</li>
         <li>智能助手每次只带当前范围最多 40 张候选照片；更大范围检索通过「应用筛选」回到本地搜索管线。视觉支持、上下文长度与限流取决于所选提供商与模型。</li>
         <li>导入始终拷贝原文件，不支持引用原位置。</li>
-        <li>视频转码依赖外部 <code>ffmpeg</code>；未安装时仅支持系统可解码的编码。</li>
+        <li>视频转码由内置静态 <code>ffmpeg</code> 完成；HDR → SDR 色调映射需要带 libzimg 的构建，缺失时退化为普通转码。</li>
         <li><b>多图库</b>：最近图库与系统图库连接会同时保留并可快速切换，但同一时间只渲染一个「当前图库」的网格，不支持两个库并排显示。</li>
         <li><b>压缩</b>：有损（JPEG / HEIC，可调画质与长边）与无损（保持像素与尺寸）两种方式；无损模式对 JPEG 只移除元数据，其它格式转无损 PNG，体积可能不会变小。</li>
         <li>「年 / 月」时间轴总览只在图库层级提供；相簿 / 文件夹使用普通网格。</li>
@@ -1223,10 +1227,10 @@ open Luma.app        # 运行</code></pre></div>
           <tr><td>大图库</td><td>由系统统一管理</td><td>超过 5,000 张自动 SQL 分页（600 / 页），年 / 月走 SQL 分区</td></tr>
           <tr><td>显示形式</td><td>正方形网格，按年 / 月 / 日分段</td><td>正方形 / 完整比例 / 瀑布流 / 列表，四种可缩放</td></tr>
           <tr><td>查看器</td><td>窗口或全屏</td><td>窗口内浏览 / 全屏沉浸，灯箱底 + 玻璃 HUD + 胶片条，渐进加载 + 预取</td></tr>
-          <tr><td>网络存储</td><td>需先导入图库</td><td>SMB / WebDAV / 阿里云盘 / 百度网盘 / AList 直接浏览；文件头 EXIF、场景、地图、人物与体检按目录派生</td></tr>
+          <tr><td>网络存储</td><td>需先导入图库</td><td>SMB / WebDAV / 阿里云盘 / 夸克网盘 / 百度网盘 / AList 直接浏览；文件头 EXIF、场景、地图、人物与体检按目录派生</td></tr>
           <tr><td>官方图库</td><td>本体</td><td>读取 + PhotoKit 写回（编辑 / 删除 / 相簿 / 收藏隐藏），关键词与标题走 sidecar；不改 <code>Photos.sqlite</code></td></tr>
           <tr><td>端侧索引</td><td>系统智能搜索</td><td>场景标签 + OCR + 特征向量落库，可浏览、可组合、可检查</td></tr>
-          <tr><td>视频格式</td><td>系统可解码格式</td><td>30 种扩展名直接导入；ffmpeg 自动转码，0.25–4×、连播、循环、画中画、旋转、存帧</td></tr>
+          <tr><td>视频格式</td><td>系统可解码格式</td><td>30 种扩展名直接导入；内置 ffmpeg 转封装 + HDR 色调映射，外挂字幕 / 音轨、0.25–4×、连播、循环、画中画、旋转、存帧</td></tr>
           <tr><td>智能助手</td><td>—</td><td>可选、自带 API Key；26 个工具 / 19 个写操作需确认；支持整理、原地压缩与自动美化</td></tr>
           <tr><td>图库体检</td><td>—</td><td>模糊 / 相似连拍 / 大视频 / 可腾出空间，一次扫描并缓存报告</td></tr>
           <tr><td>值得重看</td><td>—</td><td>今日重看 + 人物 / 地点 / 场景 / 年份主体 + 年份胶囊 + 时光碎片</td></tr>
@@ -1254,7 +1258,7 @@ open Luma.app        # 运行</code></pre></div>
     <footer class="doc-footer">
       <div>
         <b>拾光 Luma 使用手册</b>
-        <span>版本 1.2 · 更新于 2026 年 11 月 · 适用于 macOS 14+</span>
+        <span>版本 1.3 · 更新于 2026 年 11 月 · 适用于 macOS 14+</span>
       </div>
       <div class="doc-footer-links">
         <a href="#intro">回到顶部</a>

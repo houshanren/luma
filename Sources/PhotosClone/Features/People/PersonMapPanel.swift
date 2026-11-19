@@ -7,12 +7,15 @@ struct PersonMapPanel: View {
     enum Source: Hashable {
         case local(LocalPerson)
         case system(SystemPersonInfo)
+        /// 网盘人物：同样是端侧聚类得到的 LocalPerson，但照片来自当前网盘列表。
+        case cloud(LocalPerson)
 
         /// 只用稳定标识参与比较：人物的头像裁切 / 人脸向量变化不应触发地图重载。
         var key: String {
             switch self {
             case .local(let person): return "local-\(person.id.uuidString)-\(person.assetIDs.count)"
             case .system(let person): return "system-\(person.id)"
+            case .cloud(let person): return "cloud-\(person.id.uuidString)-\(person.assetIDs.count)"
             }
         }
 
@@ -237,6 +240,8 @@ struct PersonMapPanel: View {
             loaded = store.personMapPhotos(local: person)
         case .system(let person):
             loaded = await store.personMapPhotos(system: person)
+        case .cloud(let person):
+            loaded = store.personMapPhotos(cloud: person)
         }
         guard !Task.isCancelled else { return }
         photos = loaded

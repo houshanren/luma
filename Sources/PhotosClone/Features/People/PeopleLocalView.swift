@@ -371,14 +371,8 @@ struct LocalPeopleView: View {
         Button {
             store.selectedLocalPersonID = person.id
         } label: {
-            VStack(spacing: 9) {
+            PeoplePersonCardShell(name: person.name, count: person.assetIDs.count) {
                 LocalPersonAvatar(person: person, size: cardSize * 0.94, style: store.peopleDisplayStyle)
-                Text(person.name)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .lineLimit(1)
-                Text("\(person.assetIDs.count) 张")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
             }
         }
         .buttonStyle(.plain)
@@ -530,7 +524,7 @@ struct LocalPeopleView: View {
 
 /// 本地人物头像：后台解码 + 内存缓存，避免在 body 里同步解码裁切图或缩略图。
 /// 头像形状随「人物」总览的显示偏好（圆形 / 圆角方形）。
-private struct LocalPersonAvatar: View {
+struct LocalPersonAvatar: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: AppSettings
 

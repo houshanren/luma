@@ -4,6 +4,7 @@ import Foundation
 extension LibraryStore {
     /// 当前范围里「值得重看」的照片。
     var revisitScopePhotos: [PhotoItem] {
+        if isCloudScope { return cloudRevisitPhotos }
         if isSystemScope {
             return photos(for: .systemRevisit)
         }
@@ -13,10 +14,21 @@ extension LibraryStore {
     func revisitInsight(onlyUnseen: Bool) -> RevisitInsight {
         let source = revisitScopePhotos
         let filtered = onlyUnseen ? source.filter { $0.viewedAt == nil } : source
-        let analysis = isSystemScope ? systemAnalysisIndex : analysisIndex
+        let analysis = isCloudScope
+            ? cloudModel.analysis
+            : (isSystemScope ? systemAnalysisIndex : analysisIndex)
 
         var seeds: [RevisitPersonSeed] = []
-        if isSystemScope {
+        if isCloudScope {
+            seeds = cloudPeople.compactMap { person in
+                guard !person.assetIDs.isEmpty else { return nil }
+                return RevisitPersonSeed(id: "cloud-\(person.id.uuidString)",
+                                         name: person.name,
+                                         assetIDs: person.assetIDs,
+                                         coverPhotoID: person.assetIDs.first,
+                                         coverData: person.coverImageData)
+            }
+        } else if isSystemScope {
             seeds = systemPeople.compactMap { person in
                 guard !person.assetIDs.isEmpty else { return nil }
                 return RevisitPersonSeed(id: "system-\(person.id)",

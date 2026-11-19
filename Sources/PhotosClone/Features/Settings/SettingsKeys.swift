@@ -51,6 +51,12 @@ enum SettingsKeys {
     static let videoSeekStep = "settings.video.seekStep"
     /// 视频控制条的位置：底部悬浮 / 顶栏融合。
     static let videoControlPlacement = "settings.video.controlPlacement"
+    /// 视频转码 / 边下边播缓存的总容量上限（GB）。
+    static let videoCacheLimitGB = "settings.video.cacheLimitGB"
+    /// 外挂字幕字号。
+    static let subtitleFontSize = "settings.video.subtitleFontSize"
+    /// 外挂字幕是否显示半透明底色。
+    static let subtitleBackground = "settings.video.subtitleBackground"
     static let trashRetentionDays = "settings.trash.retentionDays"
     static let importCreateAlbums = "settings.import.createAlbums"
     static let importPreserveStructure = "settings.import.preserveStructure"

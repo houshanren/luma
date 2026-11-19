@@ -54,7 +54,7 @@ enum ModelRegistry {
             id: .localLLM,
             directoryName: "LocalLLM",
             title: "本地语言模型",
-            detail: "问一问 · 自然语言检索 · 智能相簿生成",
+            detail: "自然语言检索 · 智能相簿生成",
             approxSize: "约 2.5–3 GB",
             requiredEntries: ["model.gguf"],
             installable: false,

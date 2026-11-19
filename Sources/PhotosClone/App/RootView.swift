@@ -160,7 +160,6 @@ struct RootView: View {
         // 解析成同一个颜色，避免出现「滑杆粉色、选中框蓝色」两套配色。
         .tint(settings.accentColor)
         .accentColor(settings.accentColor)
-        .animation(settings.motion.overlay, value: viewer.viewerID == nil)
         .animation(settings.motion.overlay, value: viewer.editorID == nil)
         .animation(settings.motion.overlay, value: store.showSlideshow)
         .animation(settings.motion.overlay, value: store.activeMemory?.id)
@@ -227,7 +226,8 @@ struct RootView: View {
     /// 空格：任意照片网格里打开所选照片，查看器里再次按下收起（由查看器自己的键盘处理）。
     /// 放在 RootView 是为了让相簿 / 媒体类型 / 人物 / 地点 / 重复项等所有页面行为一致。
     private func handleSpaceKey(_ event: NSEvent) -> Bool {
-        guard event.keyCode == 49 else { return false }
+        // 忽略长按产生的重复事件：否则一次稍长的空格会在「打开 → 关闭」之间反复切换。
+        guard event.keyCode == 49, !event.isARepeat else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
         guard let window = hostWindow ?? event.window,
@@ -342,10 +342,11 @@ struct RootView: View {
 
     private var toolbarHidden: Bool {
         // 窗口内浏览保留统一工具栏：返回、缩放、拍摄时间与操作都放在工具栏里。
-        // 视频全屏时不再显式隐藏工具栏：交给系统全屏自动收起（鼠标移到顶部才出现），
-        // 显式隐藏会让 SwiftUI 在进出全屏时改窗口内容高度，反复进出窗口就会越退越矮。
+        // 视频真全屏时工具栏会挡住画面：显式隐藏，并用画面内的悬浮控制条接管操作。
+        // 退出全屏后由 endVideoImmersiveFullScreen 恢复，窗口尺寸由 restoreWindowFrameAfterFullScreen 兜底。
         viewer.editorID != nil
             || (viewer.viewerID != nil && settings.viewerLayout == .fullscreen)
+            || viewer.videoImmersiveFullScreen
     }
 }
 

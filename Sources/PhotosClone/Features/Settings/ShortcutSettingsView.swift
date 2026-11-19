@@ -14,7 +14,6 @@ struct ShortcutSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                hero
                 searchBar
                 if let message {
                     notice(message)
@@ -39,48 +38,7 @@ struct ShortcutSettingsView: View {
         .onDisappear(perform: stopRecording)
     }
 
-    // MARK: - 顶部
-
-    private var hero: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(LumaBrand.gradient)
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 1)
-                Image(systemName: "command")
-                    .font(.system(size: 23, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 56, height: 56)
-            .shadow(color: LumaBrand.coral.opacity(0.32), radius: 12, y: 5)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("键盘快捷键")
-                    .font(.system(size: 16, weight: .semibold))
-                Text("点按右侧按键重新录制，修改立即生效；Delete 恢复该项默认。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("\(shortcuts.customizedCount)")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(LumaBrand.violet)
-                Text("已自定义")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.primary.opacity(scheme == .dark ? 0.16 : 0.07), lineWidth: 0.8)
-        }
-    }
+    // MARK: - 搜索
 
     private var searchBar: some View {
         HStack(spacing: 7) {

@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// 「固定」分区拖拽排序用的自定义类型，避免和照片拖拽（纯文本）互相干扰。
-private let pinnedSidebarDragType = UTType(exportedAs: "com.luma.sidebar-pinned-item")
+let pinnedSidebarDragType = UTType(exportedAs: "com.luma.sidebar-pinned-item")
 
 struct SidebarView: View {
     @EnvironmentObject private var store: LibraryStore
@@ -30,7 +30,7 @@ struct SidebarView: View {
         SidebarStateStorage.stringSet(SidebarStateStorage.Key.expandedSections)
     /// 每个图库默认收起「媒体类型」与「场景」，其余分区默认展开。
     private static let defaultCollapsedSections: Set<String> = [
-        "luma.media", "luma.scenes", "luma.intelligence", "sys.media", "sys.scenes"
+        "luma.media", "luma.scenes", "sys.media", "sys.scenes"
     ]
     @State private var hoveredSection: String?
     @State private var namePrompt: NamePromptPayload?
@@ -51,21 +51,12 @@ struct SidebarView: View {
                 sectionHeader("拾光", key: "luma", topPadding: 4)
                 if !isCollapsed("luma") {
                     sidebarRow(.library, icon: "photo.stack", title: "图库")
-                    sidebarRow(.cinema, icon: "film.stack", title: "影院", pinKey: "cinema")
                     sidebarRow(.collections, icon: "square.stack.3d.up", title: "精选集")
                 }
 
                 sectionHeader("固定", key: "luma.fixed")
                 if !isCollapsed("luma.fixed") {
                     pinnedRows(system: false)
-                }
-
-                sectionHeader("智能", key: "luma.intelligence")
-                if !isCollapsed("luma.intelligence") {
-                    sidebarRow(.ask, icon: "sparkle.magnifyingglass", title: "问一问")
-                    if !store.isSystemScope && !store.isCloudScope {
-                        sidebarRow(.tagGovernance, icon: "wand.and.stars", title: "标签治理")
-                    }
                 }
 
                 sectionHeader("媒体类型", key: "luma.media", navigateTo: .mediaTypes)
@@ -81,25 +72,26 @@ struct SidebarView: View {
 
                 sectionHeader("更多项目", key: "luma.more", navigateTo: .moreItems)
                 if !isCollapsed("luma.more") {
+                    // 顺序与「更多项目」总览页保持一致。
                     sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏", color: .pink, pinKey: "favorites")
-                    trashRow(pinKey: "trash")
+                    sidebarRow(.health, icon: "stethoscope", title: "图库体检", pinKey: "health")
+                    sidebarRow(.ratings, icon: "square.grid.2x2", title: "图库整理", color: .yellow,
+                               pinKey: "ratings")
+                    sidebarRow(.revisit, icon: "clock.arrow.circlepath", title: "值得重看", pinKey: "revisit")
                     if store.duplicateCount > 0 {
                         sidebarRow(.duplicates, icon: "square.on.square", title: "重复项目", pinKey: "duplicates")
                     }
-                    sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存", pinKey: "recentlySaved")
-                    sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑", pinKey: "recentlyEdited")
-                    sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目", pinKey: "imports")
-                    if store.analyzedCount > 0 {
-                        sidebarRow(.ocrTexts, icon: "text.viewfinder", title: "包含文字", pinKey: "ocrTexts")
-                    }
-                    sidebarRow(.keywords, icon: "tag", title: "关键词", pinKey: "keywords")
-                    sidebarRow(.revisit, icon: "clock.arrow.circlepath", title: "值得重看", pinKey: "revisit")
-                    sidebarRow(.health, icon: "stethoscope", title: "图库体检", pinKey: "health")
                     sidebarRow(.map, icon: "map", title: "地图", pinKey: "map")
                     sidebarRow(.places, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
                     sidebarRow(.people, icon: "person.crop.square", title: "人物", pinKey: "people")
-                    sidebarRow(.ratings, icon: "square.grid.2x2", title: "整理工作室", color: .yellow,
-                               pinKey: "ratings")
+                    sidebarRow(.keywords, icon: "tag", title: "关键词", pinKey: "keywords")
+                    if store.analyzedCount > 0 {
+                        sidebarRow(.ocrTexts, icon: "text.viewfinder", title: "包含文字", pinKey: "ocrTexts")
+                    }
+                    sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑", pinKey: "recentlyEdited")
+                    sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存", pinKey: "recentlySaved")
+                    trashRow(pinKey: "trash")
+                    sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目", pinKey: "imports")
                     if store.hiddenCount > 0 {
                         sidebarRow(.hidden, icon: "eye.slash", title: "已隐藏", color: .secondary, pinKey: "hidden")
                     }
@@ -284,50 +276,28 @@ struct SidebarView: View {
                             color: Color = .accentColor,
                             scope: String = "main",
                             pinKey: String? = nil) -> some View {
-        Button {
-            store.navigate(to: item)
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: icon)
-                    .font(.system(size: LumaMetrics.sidebarIconSize))
-                    .foregroundStyle(color)
-                    .frame(width: LumaMetrics.sidebarIconColumn)
-                Text(title)
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if pinKey == "trash" {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+        SidebarCategoryRow(icon: icon,
+                           title: title,
+                           iconColor: color,
+                           trailingIcon: pinKey == "trash" ? "lock.fill" : nil,
+                           isActive: store.sidebarItem == item,
+                           isHovered: hoveredItem == item && hoveredItemScope == scope,
+                           action: { store.navigate(to: item) })
+            .onHover { hovering in
+                if hovering {
+                    hoveredItem = item
+                    hoveredItemScope = scope
+                } else if hoveredItem == item && hoveredItemScope == scope {
+                    hoveredItem = nil
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-            .contentShape(Rectangle())
-            .background {
-                LumaRowHighlight(active: store.sidebarItem == item,
-                                 hovered: hoveredItem == item && hoveredItemScope == scope)
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            if hovering {
-                hoveredItem = item
-                hoveredItemScope = scope
-            } else if hoveredItem == item && hoveredItemScope == scope {
-                hoveredItem = nil
-            }
-        }
-        .contextMenu {
-            if let pinKey {
-                Button(store.isPinned(.system(pinKey)) ? "取消固定" : "固定到侧边栏") {
-                    store.togglePin(.system(pinKey))
+            .contextMenu {
+                if let pinKey {
+                    Button(store.isPinned(.system(pinKey)) ? "取消固定" : "固定到侧边栏") {
+                        store.togglePin(.system(pinKey))
+                    }
                 }
             }
-        }
-        .help(title)
-        .accessibilityLabel(title)
     }
 
     private func trashRow(scope: String = "main", pinKey: String? = nil) -> some View {
@@ -385,7 +355,7 @@ struct SidebarView: View {
         } else {
             ForEach(store.pinnedItems) { item in
                 pinnedItemRow(item, system: system)
-                    .onDrag { pinnedDragProvider(item) }
+                    .onDrag { pinnedDragProviderForSidebar(item) }
                     .onDrop(of: [pinnedSidebarDragType],
                             delegate: PinnedReorderDropDelegate(target: item, store: store))
             }
@@ -395,16 +365,6 @@ struct SidebarView: View {
                 .onDrop(of: [pinnedSidebarDragType],
                         delegate: PinnedEndDropDelegate(store: store))
         }
-    }
-
-    private func pinnedDragProvider(_ item: PinnedSidebarItem) -> NSItemProvider {
-        let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: pinnedSidebarDragType.identifier,
-                                            visibility: .ownProcess) { completion in
-            completion(Data(item.id.utf8), nil)
-            return nil
-        }
-        return provider
     }
 
     /// 「固定」区里的条目：系统项、相簿、智能相簿、文件夹或系统图库的相簿 / 文件夹。
@@ -493,8 +453,8 @@ struct SidebarView: View {
             return PinnedSystemInfo(title: "图库体检", icon: "stethoscope",
                                     item: system ? .systemHealth : .health)
         case "ratings", "flags", "colorLabels":
-            // 旧的三个固定项统一收敛成「整理工作室」入口。
-            return PinnedSystemInfo(title: "整理工作室", icon: "square.grid.2x2", color: .yellow,
+            // 旧的三个固定项统一收敛成「图库整理」入口。
+            return PinnedSystemInfo(title: "图库整理", icon: "square.grid.2x2", color: .yellow,
                                     item: system ? .systemRatings : .ratings)
         default:
             // 场景固定 key：`scene:<分类 id>`，与媒体类型一样随当前范围指向拾光或系统图库入口。
@@ -761,102 +721,27 @@ struct SidebarView: View {
 
     /// 可收起的分区头：悬停时显示「更多」与「收起 / 展开」。
     /// 传入 `navigateTo` 时标题可点击，右侧显示该分区的二级总览视图。
-    @ViewBuilder
     private func sectionHeader<MenuContent: View>(
         _ title: String,
         key: String,
         topPadding: CGFloat = 16,
         navigateTo: SidebarItem? = nil,
-        @ViewBuilder menu: () -> MenuContent = { EmptyView() }
+        @ViewBuilder menu: @escaping () -> MenuContent = { EmptyView() }
     ) -> some View {
-        let collapsed = isCollapsed(key)
-        let hovering = hoveredSection == key
-        let active = navigateTo.map { $0 == store.sidebarItem } ?? false
-
-        ZStack(alignment: .trailing) {
-            // 整行（含左右留白）都是点击区域，不只是标题那几个字。
-            if let navigateTo {
-                Button {
-                    store.navigate(to: navigateTo)
-                } label: {
-                    HStack(spacing: 0) {
-                        sectionLabel(title, active: active)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("打开「\(title)」总览")
-            } else {
-                HStack(spacing: 0) {
-                    sectionLabel(title, active: active)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-            }
-            // 「更多」与收起 / 展开按钮浮在整行点击区之上，各自响应自己的点击。
-            HStack(spacing: 2) {
-                if hovering {
-                    Menu {
-                        Button(collapsed ? "展开" : "收起") {
-                            withAnimation(settings.motion.layout) { toggleSection(key) }
-                        }
-                        menu()
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16, height: 16)
-                            .contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .frame(width: 16)
-                    .help("更多")
-                }
-                if hovering || collapsed {
-                    Button {
-                        withAnimation(settings.motion.layout) { toggleSection(key) }
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .rotationEffect(.degrees(collapsed ? -90 : 0))
-                            .frame(width: 16, height: 16)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(collapsed ? "展开" : "收起")
-                }
-            }
-            .padding(.trailing, 8)
-        }
-        .padding(.top, topPadding)
-        .padding(.bottom, 3)
-        .contentShape(Rectangle())
+        SidebarSectionHeader(
+            title: title,
+            collapsed: isCollapsed(key),
+            active: navigateTo.map { $0 == store.sidebarItem } ?? false,
+            topPadding: topPadding,
+            isHovered: hoveredSection == key,
+            onOpen: navigateTo.map { item in { store.navigate(to: item) } },
+            onToggle: {
+                withAnimation(settings.motion.layout) { toggleSection(key) }
+            },
+            menu: menu
+        )
         .onHover { inside in
             hoveredSection = inside ? key : (hoveredSection == key ? nil : hoveredSection)
-        }
-    }
-
-    /// 分区标题：左侧一条强调色细线 + 轻微字距，让侧边栏有清晰的层级节奏。
-    private func sectionLabel(_ title: String, active: Bool) -> some View {
-        HStack(spacing: 7) {
-            Capsule()
-                .fill(
-                    LinearGradient(colors: [
-                        Color.accentColor.opacity(active ? 0.95 : 0.42),
-                        Color.accentColor.opacity(active ? 0.35 : 0.08)
-                    ], startPoint: .top, endPoint: .bottom)
-                )
-                .frame(width: 2, height: 10)
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(0.06)
-                .foregroundStyle(active ? Color.accentColor : Color.secondary)
         }
     }
 
@@ -949,40 +834,21 @@ struct SidebarView: View {
 
     private func sceneRow(_ category: SceneCategory, count: Int) -> some View {
         let item = SidebarItem.scene(category.id)
-        return Button {
-            store.navigate(to: item)
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: category.icon)
-                    .font(.system(size: LumaMetrics.sidebarIconSize))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: LumaMetrics.sidebarIconColumn)
-                Text(category.title)
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Text("\(count)")
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+        return SidebarCategoryRow(icon: category.icon,
+                                  title: category.title,
+                                  count: count,
+                                  isActive: store.sidebarItem == item,
+                                  isHovered: hoveredItem == item,
+                                  helpText: "查看「\(category.title)」照片",
+                                  action: { store.navigate(to: item) })
+            .contextMenu {
+                Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
+                    store.togglePin(.system("scene:\(category.id)"))
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-            .contentShape(Rectangle())
-            .background {
-                LumaRowHighlight(active: store.sidebarItem == item,
-                                 hovered: hoveredItem == item)
+            .onHover { hovering in
+                hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
             }
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
-                store.togglePin(.system("scene:\(category.id)"))
-            }
-        }
-        .help("查看「\(category.title)」照片")
-        .onHover { hovering in
-            hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
-        }
     }
 
     // MARK: - 系统图库场景（端侧识别，缓存到 system_analysis）
@@ -1080,40 +946,21 @@ struct SidebarView: View {
 
     private func systemSceneRow(_ category: SceneCategory, count: Int) -> some View {
         let item = SidebarItem.systemScene(category.id)
-        return Button {
-            store.navigate(to: item)
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: category.icon)
-                    .font(.system(size: LumaMetrics.sidebarIconSize))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: LumaMetrics.sidebarIconColumn)
-                Text(category.title)
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Text("\(count)")
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+        return SidebarCategoryRow(icon: category.icon,
+                                  title: category.title,
+                                  count: count,
+                                  isActive: store.sidebarItem == item,
+                                  isHovered: hoveredItem == item,
+                                  helpText: "查看「\(category.title)」照片",
+                                  action: { store.navigate(to: item) })
+            .contextMenu {
+                Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
+                    store.togglePin(.system("scene:\(category.id)"))
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-            .contentShape(Rectangle())
-            .background {
-                LumaRowHighlight(active: store.sidebarItem == item,
-                                 hovered: hoveredItem == item)
+            .onHover { hovering in
+                hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
             }
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
-                store.togglePin(.system("scene:\(category.id)"))
-            }
-        }
-        .help("查看「\(category.title)」照片")
-        .onHover { hovering in
-            hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
-        }
     }
 
     // MARK: - System libraries
@@ -1324,35 +1171,35 @@ struct SidebarView: View {
 
             sectionHeader("更多项目", key: "sys.more", topPadding: 12, navigateTo: .systemMoreItems)
             if !isCollapsed("sys.more") {
-                // 与「拾光 › 更多项目」保持同一顺序与图标；最近查看 / 值得重看是系统图库独有入口。
+                // 与「更多项目」总览页保持同一顺序与图标；最近查看是系统图库独有入口。
                 sidebarRow(.systemFavorites, icon: "heart.fill", title: "个人收藏", color: .pink,
                            pinKey: "favorites")
-                systemTrashRow
+                sidebarRow(.systemHealth, icon: "stethoscope", title: "图库体检", pinKey: "health")
+                sidebarRow(.systemRatings, icon: "square.grid.2x2", title: "图库整理", color: .yellow,
+                           pinKey: "ratings")
+                sidebarRow(.systemRevisit, icon: "clock.arrow.circlepath", title: "值得重看",
+                           pinKey: "revisit")
                 if store.systemDuplicateCount > 0 {
                     sidebarRow(.systemDuplicates, icon: "square.on.square", title: "重复项目",
                                pinKey: "duplicates")
                 }
-                sidebarRow(.systemRecentlySaved, icon: "square.and.arrow.down", title: "最近保存",
-                           pinKey: "recentlySaved")
-                sidebarRow(.systemRecentlyViewed, icon: "eye", title: "最近查看",
-                           pinKey: "recentlyViewed")
-                sidebarRow(.systemEdited, icon: "slider.horizontal.3", title: "最近编辑",
-                           pinKey: "recentlyEdited")
-                sidebarRow(.systemImports, icon: "square.and.arrow.down.on.square", title: "导入项目",
-                           pinKey: "imports")
+                sidebarRow(.systemMap, icon: "map", title: "地图", pinKey: "map")
+                sidebarRow(.systemPlaces, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
+                sidebarRow(.systemPeople, icon: "person.crop.square", title: "人物", pinKey: "people")
+                sidebarRow(.systemKeywords, icon: "tag", title: "关键词", pinKey: "keywords")
                 if store.ocrPhotoCount > 0 {
                     sidebarRow(.systemOcrTexts, icon: "text.viewfinder", title: "包含文字",
                                pinKey: "ocrTexts")
                 }
-                sidebarRow(.systemKeywords, icon: "tag", title: "关键词", pinKey: "keywords")
-                sidebarRow(.systemRevisit, icon: "clock.arrow.circlepath", title: "值得重看",
-                           pinKey: "revisit")
-                sidebarRow(.systemHealth, icon: "stethoscope", title: "图库体检", pinKey: "health")
-                sidebarRow(.systemMap, icon: "map", title: "地图", pinKey: "map")
-                sidebarRow(.systemPlaces, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
-                sidebarRow(.systemPeople, icon: "person.crop.square", title: "人物", pinKey: "people")
-                sidebarRow(.systemRatings, icon: "square.grid.2x2", title: "整理工作室", color: .yellow,
-                           pinKey: "ratings")
+                sidebarRow(.systemRecentlyViewed, icon: "eye", title: "最近查看",
+                           pinKey: "recentlyViewed")
+                sidebarRow(.systemEdited, icon: "slider.horizontal.3", title: "最近编辑",
+                           pinKey: "recentlyEdited")
+                sidebarRow(.systemRecentlySaved, icon: "square.and.arrow.down", title: "最近保存",
+                           pinKey: "recentlySaved")
+                systemTrashRow
+                sidebarRow(.systemImports, icon: "square.and.arrow.down.on.square", title: "导入项目",
+                           pinKey: "imports")
                 if store.systemHiddenCount > 0 {
                     sidebarRow(.systemHidden, icon: "eye.slash", title: "已隐藏", color: .secondary,
                                pinKey: "hidden")
@@ -1641,8 +1488,19 @@ struct SidebarView: View {
     }
 }
 
+/// 「固定」分区的拖动数据：拾光 / 系统图库 / 网盘共用同一种拖拽类型。
+func pinnedDragProviderForSidebar(_ item: PinnedSidebarItem) -> NSItemProvider {
+    let provider = NSItemProvider()
+    provider.registerDataRepresentation(forTypeIdentifier: pinnedSidebarDragType.identifier,
+                                        visibility: .ownProcess) { completion in
+        completion(Data(item.id.utf8), nil)
+        return nil
+    }
+    return provider
+}
+
 /// 「固定」分区的拖拽排序：只接受固定项自身的拖拽，照片拖拽仍交给相簿 / 文件夹处理。
-private func loadPinnedDragID(from info: DropInfo, completion: @escaping (String) -> Void) -> Bool {
+func loadPinnedDragID(from info: DropInfo, completion: @escaping (String) -> Void) -> Bool {
     guard let provider = info.itemProviders(for: [pinnedSidebarDragType]).first else {
         return false
     }
@@ -1655,7 +1513,7 @@ private func loadPinnedDragID(from info: DropInfo, completion: @escaping (String
     return true
 }
 
-private struct PinnedReorderDropDelegate: DropDelegate {
+struct PinnedReorderDropDelegate: DropDelegate {
     let target: PinnedSidebarItem
     let store: LibraryStore
 
@@ -1675,7 +1533,7 @@ private struct PinnedReorderDropDelegate: DropDelegate {
 }
 
 /// 拖到「固定」列表末尾：移到最后一位。
-private struct PinnedEndDropDelegate: DropDelegate {
+struct PinnedEndDropDelegate: DropDelegate {
     let store: LibraryStore
 
     func validateDrop(info: DropInfo) -> Bool {

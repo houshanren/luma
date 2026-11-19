@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var cacheSize: Int64 = 0
     @State private var systemCacheSize: Int64 = 0
     @State private var sidecarSize: Int64 = 0
+    @State private var videoCacheSize: Int64 = 0
     @State private var confirmDestroySidecar = false
     @State private var libraryEntries: [LibraryEntry] = []
     @State private var aiKeyInput = ""
@@ -34,27 +35,34 @@ struct SettingsView: View {
             browsingTab
                 .tabItem { Label("浏览", systemImage: "photo.on.rectangle") }
                 .tag(SettingsTab.browsing)
-            cinemaTab
-                .tabItem { Label("影院", systemImage: "film.stack") }
-                .tag(SettingsTab.cinema)
-            shortcutsTab
-                .tabItem { Label("快捷键", systemImage: "command") }
-                .tag(SettingsTab.shortcuts)
             libraryTab
                 .tabItem { Label("图库", systemImage: "photo.stack") }
                 .tag(SettingsTab.library)
+            cinemaTab
+                .tabItem { Label("影院", systemImage: "film.stack") }
+                .tag(SettingsTab.cinema)
             modelTab
                 .tabItem { Label("模型", systemImage: "cpu") }
                 .tag(SettingsTab.models)
             assistantTab
                 .tabItem { Label("助手", systemImage: "sparkles") }
                 .tag(SettingsTab.assistant)
+            shortcutsTab
+                .tabItem { Label("快捷键", systemImage: "command") }
+                .tag(SettingsTab.shortcuts)
+            aboutTab
+                .tabItem { Label("关于", systemImage: "info.circle") }
+                .tag(SettingsTab.about)
         }
         .frame(width: 580, height: 500)
         .preferredColorScheme(settings.appearance.colorScheme)
         .tint(settings.accentColor)
         .accentColor(settings.accentColor)
         .onAppear(perform: refreshCacheSize)
+        .onChange(of: settings.videoCacheLimitGB) { _, _ in
+            VideoCacheManager.trimIfNeeded()
+            videoCacheSize = VideoCacheManager.totalSize()
+        }
     }
 
     // MARK: 通用
@@ -146,6 +154,40 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 Text(settings.videoControlPlacement.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("字幕") {
+                Picker("字幕字号", selection: $settings.subtitleFontSize) {
+                    ForEach([13.0, 15.0, 18.0, 21.0], id: \.self) { value in
+                        Text("\(Int(value)) pt").tag(value)
+                    }
+                }
+                Toggle("字幕背景", isOn: $settings.subtitleBackground)
+                Text("外挂字幕的字号与半透明底色；时间轴偏移可在播放器的字幕菜单里临时调整。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("视频缓存") {
+                Picker("缓存上限", selection: $settings.videoCacheLimitGB) {
+                    ForEach([0, 5, 10, 20, 50, 100], id: \.self) { value in
+                        Text(value == 0 ? "不限制" : "\(value) GB").tag(value)
+                    }
+                }
+                HStack {
+                    Text("当前占用 \(ByteCountFormatter.string(fromByteCount: videoCacheSize, countStyle: .file))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("清理") {
+                        VideoCacheManager.clear()
+                        videoCacheSize = 0
+                    }
+                    .controlSize(.small)
+                }
+                Text("边下边播与完整转码产生的临时文件上限，超出后按最久未使用淘汰；本地视频不落缓存。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -948,9 +990,6 @@ struct SettingsView: View {
                     }
                 }
 
-                settingsGroup(icon: "info.circle", title: "关于", subtitle: "") {
-                    ProductizationSettingsView()
-                }
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 22)
@@ -968,6 +1007,21 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("只删除拾光自己的元数据库、索引 / 快照、缩略图、转码与缓存；Apple 的 Photos.sqlite、originals 原图与衍生图不会被动到。该操作不可撤销。")
+        }
+    }
+
+    // MARK: 关于
+
+    private var aboutTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                settingsGroup(icon: "info.circle", title: "关于", subtitle: "") {
+                    ProductizationSettingsView()
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1284,6 +1338,7 @@ struct SettingsView: View {
         cacheSize = store.cloudThumbnailCacheSize()
         systemCacheSize = store.systemThumbnailCacheSize()
         sidecarSize = store.systemLibrarySidecarSize()
+        videoCacheSize = VideoCacheManager.totalSize()
     }
 }
 

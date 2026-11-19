@@ -35,11 +35,12 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case browsing
-    case cinema
-    case shortcuts
     case library
+    case cinema
     case models
     case assistant
+    case shortcuts
+    case about
 
     var id: String { rawValue }
 }
@@ -188,7 +189,7 @@ enum VideoControlPlacement: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .floating: return "控制条悬浮在画面底部，可拖到画面内任意位置，双击顶部把手复位。"
-        case .topIntegrated: return "播放控制并入窗口工具栏，与返回、拍摄信息和操作按钮共用一行：播放按钮紧跟返回，中部播放舱保留地点、日期与序号并显示进度，播放选项收到右侧菜单。"
+        case .topIntegrated: return "播放控制并入窗口工具栏：播放按钮与返回共用左侧胶囊，中部显示拍摄信息、序号与进度，音量 / 播放选项 / 全屏排在右侧操作按钮之前。"
         }
     }
 }

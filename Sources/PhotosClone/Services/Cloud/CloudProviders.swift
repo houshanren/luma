@@ -424,6 +424,36 @@ enum AliyunOAuth {
         return (driveID, name)
     }
 
+    /// 阿里云盘一个账号最多有三个盘：默认盘、资源库、备份盘。
+    /// 资源号 / 分享号的媒体通常只在「资源库」里，只扫默认盘会看起来几乎为空。
+    static func drives(accessToken: String) async throws -> [(id: String, label: String)] {
+        let object = try await post(path: "/adrive/v1.0/user/getDriveInfo",
+                                    body: [:],
+                                    accessToken: accessToken)
+        var result: [(id: String, label: String)] = []
+        func add(_ key: String, _ label: String) {
+            guard let id = object[key] as? String, !id.isEmpty,
+                  !result.contains(where: { $0.id == id }) else { return }
+            result.append((id, label))
+        }
+        add("default_drive_id", "默认盘")
+        add("resource_drive_id", "资源库")
+        add("backup_drive_id", "备份盘")
+        return result
+    }
+
+    /// 扫描与播放用 `盘ID|文件ID` 表示路径：同一账号的多个盘可以共存在一个挂载点下。
+    static func splitPath(_ path: String?, fallbackDrive: String?) -> (drive: String, fileID: String)? {
+        guard let path, !path.isEmpty else { return nil }
+        if let separator = path.firstIndex(of: "|") {
+            let drive = String(path[..<separator])
+            let fileID = String(path[path.index(after: separator)...])
+            if !drive.isEmpty, !fileID.isEmpty { return (drive, fileID) }
+        }
+        if let fallbackDrive, !fallbackDrive.isEmpty { return (fallbackDrive, path) }
+        return nil
+    }
+
     static func list(driveID: String, parentID: String, accessToken: String) async throws -> [CloudEntry] {
         var entries: [CloudEntry] = []
         var marker = ""
@@ -442,7 +472,7 @@ enum AliyunOAuth {
                                         body: body,
                                         accessToken: accessToken)
             let items = object["items"] as? [[String: Any]] ?? []
-            entries.append(contentsOf: items.compactMap { parseEntry($0) })
+            entries.append(contentsOf: items.compactMap { parseEntry($0, driveID: driveID) })
             marker = (object["next_marker"] as? String) ?? ""
             page += 1
         } while !marker.isEmpty && page < 30
@@ -481,7 +511,7 @@ enum AliyunOAuth {
 
     // MARK: 内部
 
-    private static func parseEntry(_ item: [String: Any]) -> CloudEntry? {
+    private static func parseEntry(_ item: [String: Any], driveID: String) -> CloudEntry? {
         guard let fileID = item["file_id"] as? String,
               let name = item["name"] as? String else { return nil }
         let isDirectory = (item["type"] as? String) == "folder"
@@ -495,7 +525,7 @@ enum AliyunOAuth {
             ?? (videoMeta?["height"] as? NSNumber)?.intValue
         let duration = (videoMeta?["duration"] as? NSNumber)?.doubleValue
 
-        var entry = CloudEntry(path: fileID,
+        var entry = CloudEntry(path: "\(driveID)|\(fileID)",
                                name: name,
                                isDirectory: isDirectory,
                                size: size,
@@ -506,6 +536,10 @@ enum AliyunOAuth {
         entry.pixelWidth = width
         entry.pixelHeight = height
         entry.duration = duration
+        if let streams = videoMeta?["video_media_video_stream"] as? [[String: Any]],
+           let codec = streams.first?["code_name"] as? String, !codec.isEmpty {
+            entry.codecName = codec.lowercased()
+        }
         return entry
     }
 
@@ -837,11 +871,13 @@ enum CloudService {
             return try await client.list(path: containerID)
         case .aliyun:
             let token = try await accessToken(for: mount)
-            guard let driveID = mount.remoteDriveID, !driveID.isEmpty else {
+            let parsed = AliyunOAuth.splitPath(containerID, fallbackDrive: mount.remoteDriveID)
+            guard let driveID = parsed?.drive ?? mount.remoteDriveID, !driveID.isEmpty else {
                 throw CloudOAuthError.api("缺少网盘 ID，请重新授权")
             }
+            let parentID = parsed?.fileID ?? "root"
             return try await AliyunOAuth.list(driveID: driveID,
-                                              parentID: containerID.isEmpty ? "root" : containerID,
+                                              parentID: parentID,
                                               accessToken: token)
         case .baidu:
             let token = try await accessToken(for: mount)
@@ -894,24 +930,32 @@ enum CloudService {
             return CloudStreamResource(url: url, headers: [:])
         case .aliyun:
             let token = try await accessToken(for: mount)
-            guard let driveID = mount.remoteDriveID,
-                  let fileID = photo.cloudPath else {
+            guard let target = AliyunOAuth.splitPath(photo.cloudPath ?? photo.cloudRemoteID,
+                                                     fallbackDrive: mount.remoteDriveID) else {
                 throw CloudOAuthError.api("缺少文件 ID")
             }
+            let driveID = target.drive
+            let fileID = target.fileID
             // 阿里云盘的下载 / 转码地址只对带官方 Referer 与 UA 的请求放行。
             let headers = ["User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 Luma/1.0",
                            "Referer": "https://www.alipan.com/"]
-            if photo.isVideo,
-               let videoURL = try? await AliyunOAuth.videoURL(driveID: driveID,
-                                                              fileID: fileID,
-                                                              accessToken: token) {
-                return CloudStreamResource(url: videoURL, headers: headers)
+            // 优先原始文件：CDN 直链支持 Range，MKV 等容器可以边下边播且保留原始画质；
+            // 官方转码 m3u8 目前只对部分清晰度返回地址，作为「禁止下载」时的兜底。
+            do {
+                let url = try await AliyunOAuth.downloadURL(driveID: driveID,
+                                                            fileID: fileID,
+                                                            accessToken: token)
+                return CloudStreamResource(url: url, headers: headers)
+            } catch {
+                guard photo.isVideo,
+                      let hls = try? await AliyunOAuth.videoURL(driveID: driveID,
+                                                                fileID: fileID,
+                                                                accessToken: token) else {
+                    throw error
+                }
+                return CloudStreamResource(url: hls, headers: headers, isHLS: true)
             }
-            let url = try await AliyunOAuth.downloadURL(driveID: driveID,
-                                                        fileID: fileID,
-                                                        accessToken: token)
-            return CloudStreamResource(url: url, headers: headers)
         case .baidu:
             let token = try await accessToken(for: mount)
             guard let fsID = photo.cloudRemoteID else {

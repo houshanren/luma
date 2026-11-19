@@ -128,6 +128,8 @@ struct CinemaFile: Codable, Hashable {
     var cloudThumbnailURL: String?
     /// 网盘端标记为受限内容时保留，影院播放同样需要给出准确提示。
     var cloudRestricted: Bool?
+    /// 网盘返回的视频编码（hevc 等），影院播放转封装时同样需要。
+    var videoCodec: String?
     var pixelWidth: Int
     var pixelHeight: Int
 
@@ -142,6 +144,7 @@ struct CinemaFile: Codable, Hashable {
         cloudRemoteID = photo.cloudRemoteID
         cloudThumbnailURL = photo.cloudThumbnailURL
         cloudRestricted = photo.cloudRestricted
+        videoCodec = photo.videoCodec
         pixelWidth = photo.pixelWidth
         pixelHeight = photo.pixelHeight
     }
@@ -166,6 +169,7 @@ struct CinemaFile: Codable, Hashable {
         item.cloudRemoteID = cloudRemoteID
         item.cloudThumbnailURL = cloudThumbnailURL
         item.cloudRestricted = cloudRestricted
+        item.videoCodec = videoCodec
         return item
     }
 }

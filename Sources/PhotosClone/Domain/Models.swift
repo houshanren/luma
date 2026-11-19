@@ -215,6 +215,8 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     var cloudThumbnailURL: String?
     /// 网盘端已把该文件标记为受限内容（夸克 risk_type ≠ 0），无法取得播放地址。
     var cloudRestricted: Bool?
+    /// 网盘返回的视频编码（如 hevc），用于转封装时写正确的 hvc1 标签。
+    var videoCodec: String?
 
     var displayFilename: String { editedFilename ?? filename }
     /// 展示用标题：优先用户标题，否则用原始文件名。
@@ -468,10 +470,6 @@ enum SidebarItem: Hashable {
     case moreItems
     /// 关键词总览：按关键词聚合的卡片墙。
     case keywords
-    /// 问一问：全库检索 + 模型总结。
-    case ask
-    /// 标签治理：重复 / 相似 / 可归入标准标签的建议。
-    case tagGovernance
     case album(UUID)
     case smartAlbum(UUID)
     case folder(UUID)
@@ -983,6 +981,14 @@ enum DateText {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    /// 精确到秒的时分秒：查看器顶栏与信息面板用它区分同一分钟内的连拍。
+    static let secondTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "HH:mm:ss"
         return f
     }()
 

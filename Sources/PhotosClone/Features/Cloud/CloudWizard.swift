@@ -66,6 +66,9 @@ struct CloudSetupWizardView: View {
     /// 添加到侧边栏时显示的名称；留空则用各接入方式的默认名。
     @State var mountName = ""
 
+    /// 钥匙串里已有同类型连接：首屏直接作为候选，点一下带入地址、账号与密码。
+    @State var credentialCandidates: [CloudCredentialCandidate] = []
+
     // AList
     @State var alistProvider: AlistProvider = .aliyun
     @State var alistAddress = "http://127.0.0.1:5244"
@@ -355,6 +358,7 @@ struct CloudSetupWizardView: View {
             cancelSMBDiscovery()
         }
         resetWebDAVBrowse()
+        refreshCredentialCandidates(for: flow)
         if let kind = flow.kind, let saved = CloudOAuthStore.credentials(for: kind) {
             clientID = saved.clientID
             clientSecret = saved.clientSecret
@@ -443,5 +447,118 @@ struct CloudSetupWizardView: View {
         } else if let url = WebDAVClient.normalizedBaseURL(raw) {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+// MARK: - 钥匙串候选
+
+/// 向导首屏的「从钥匙串带入」候选：来自已保存的同类连接（地址 + 账号 + 密码）。
+struct CloudCredentialCandidate: Identifiable {
+    let mount: CloudMount
+    let hasPassword: Bool
+
+    var id: UUID { mount.id }
+
+    var host: String {
+        URLComponents(string: mount.baseURL)?.host ?? mount.baseURL
+    }
+
+    var detail: String {
+        let account = mount.username.isEmpty ? "无账号" : mount.username
+        return "\(host) · \(account)"
+    }
+}
+
+extension CloudSetupWizardView {
+    /// 按当前流程读取同类已保存连接；密码状态走 `CloudCredentials` 的进程内缓存，不会反复读钥匙串。
+    func refreshCredentialCandidates(for flow: CloudWizardFlow) {
+        guard let kind = flow.kind, kind == .webdav || kind == .smb else {
+            credentialCandidates = []
+            return
+        }
+        credentialCandidates = store.cloudMounts
+            .filter { $0.kind == kind && !$0.baseURL.isEmpty }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map { mount in
+                CloudCredentialCandidate(mount: mount,
+                                         hasPassword: !store.cloudPassword(for: mount.id).isEmpty)
+            }
+    }
+
+    /// 候选列表：点一下把地址、账号与钥匙串密码填进当前流程。
+    @ViewBuilder
+    func credentialCandidateSection(_ candidates: [CloudCredentialCandidate],
+                                    noun: String,
+                                    apply: @escaping (CloudCredentialCandidate) -> Void) -> some View {
+        if !candidates.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(LumaBrand.amber)
+                    Text("从钥匙串带入")
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text("\(noun) · 已保存 \(candidates.count) 个连接")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 196), spacing: 8)], spacing: 8) {
+                    ForEach(candidates) { candidate in
+                        credentialCandidateChip(candidate, apply: apply)
+                    }
+                }
+                Text("单击候选即可带入地址、账号与钥匙串密码。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(10)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(LumaBrand.amber.opacity(0.07))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(LumaBrand.amber.opacity(0.22), lineWidth: 1)
+            }
+        }
+    }
+
+    private func credentialCandidateChip(_ candidate: CloudCredentialCandidate,
+                                         apply: @escaping (CloudCredentialCandidate) -> Void) -> some View {
+        Button {
+            apply(candidate)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(LumaBrand.amber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(candidate.mount.name)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .lineLimit(1)
+                    Text(candidate.detail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: candidate.hasPassword ? "checkmark.seal.fill" : "exclamationmark.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(candidate.hasPassword ? Color.green : Color.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(candidate.hasPassword
+              ? "带入「\(candidate.mount.name)」的地址、账号与钥匙串密码"
+              : "带入「\(candidate.mount.name)」的地址与账号，钥匙串里没有密码")
     }
 }

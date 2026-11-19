@@ -4,17 +4,28 @@ import Foundation
 /// 本地图库写入 `assets`；官方「照片」图库写入拾光的 `asset_overlays`，不修改 `Photos.sqlite`。
 extension LibraryStore {
     /// 当前是否可以对所选项目修改评分 / 旗标 / 色标。
+    /// 网盘照片的标记只记在本机 settings（`cloud_marks`），不写回网盘。
     var canEditRatingFlagColor: Bool {
-        (!isReadOnlyScope && !isCloudScope) || canEditNativeOverlay
+        if isCloudScope { return true }
+        return (!isReadOnlyScope && !isCloudScope) || canEditNativeOverlay
     }
 
     var canEditMetadataWorkflow: Bool {
-        !isCloudScope && (!isReadOnlyScope || canEditNativeOverlay)
+        isCloudScope || (!isReadOnlyScope || canEditNativeOverlay)
     }
 
     func setRating(_ rating: Int, ids: Set<UUID>) {
         guard canEditMetadataWorkflow, !ids.isEmpty else { return }
         let value = min(5, max(0, rating))
+        if isCloudScope {
+            updateCloudMarks(ids) { mark in
+                let next: Int? = value == 0 ? nil : value
+                guard mark.rating != next else { return false }
+                mark.rating = next
+                return true
+            }
+            return
+        }
         let systemIDs = ids.filter { isSystemPhotoID($0) }
         let localIDs = ids.subtracting(systemIDs)
         if !systemIDs.isEmpty {
@@ -36,6 +47,15 @@ extension LibraryStore {
 
     func setFlag(_ flag: PhotoFlag, ids: Set<UUID>) {
         guard canEditMetadataWorkflow, !ids.isEmpty else { return }
+        if isCloudScope {
+            updateCloudMarks(ids) { mark in
+                let next: PhotoFlag? = flag == .none ? nil : flag
+                guard mark.flag != next else { return false }
+                mark.flag = next
+                return true
+            }
+            return
+        }
         let systemIDs = ids.filter { isSystemPhotoID($0) }
         let localIDs = ids.subtracting(systemIDs)
         if !systemIDs.isEmpty {
@@ -57,6 +77,15 @@ extension LibraryStore {
 
     func setColorLabel(_ label: PhotoColorLabel, ids: Set<UUID>) {
         guard canEditMetadataWorkflow, !ids.isEmpty else { return }
+        if isCloudScope {
+            updateCloudMarks(ids) { mark in
+                let next: PhotoColorLabel? = label == .none ? nil : label
+                guard mark.colorLabel != next else { return false }
+                mark.colorLabel = next
+                return true
+            }
+            return
+        }
         let systemIDs = ids.filter { isSystemPhotoID($0) }
         let localIDs = ids.subtracting(systemIDs)
         if !systemIDs.isEmpty {

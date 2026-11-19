@@ -356,14 +356,6 @@ struct PhotosCloneApp: App {
                     store.showAIAssistant = true
                 }
 
-                Button("问一问") {
-                    store.navigate(to: .ask)
-                }
-
-                Button("标签治理") {
-                    store.navigate(to: .tagGovernance)
-                }
-
                 Button("智能美化…") {
                     store.showBeautyPanel = true
                 }

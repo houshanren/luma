@@ -197,6 +197,52 @@ actor CloudThumbnailLoader {
         return result
     }
 
+    /// 阿里 / 百度 / 夸克没有服务端缩略图时：用 ffmpeg 直接读直链抽一帧。
+    func remotePoster(for photo: PhotoItem, stream: CloudStreamResource,
+                      trustSelfSigned: Bool) async -> CloudThumbnailResult {
+        let empty = CloudThumbnailResult(image: nil, size: nil, duration: nil)
+        guard let mountID = photo.cloudMountID, let path = photo.cloudPath else { return empty }
+        let cacheURL = CloudPaths.thumbnailURL(mountID: mountID, path: path)
+        if let image = NSImage(contentsOf: cacheURL) {
+            return CloudThumbnailResult(image: image, size: nil, duration: nil)
+        }
+        let key = "poster|\(cacheURL.path)"
+        if await CloudThumbnailFailureCache.shared.isFailing(key) { return empty }
+        if let task = running[key] { return await task.value }
+        let url = stream.url
+        let headers = stream.headers
+        let task = Task<CloudThumbnailResult, Never> {
+            await Self.gate.acquire()
+            try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            let ok = VideoSupport.makeRemoteThumbnail(url: url, headers: headers,
+                                                      trustSelfSigned: trustSelfSigned,
+                                                      destination: cacheURL)
+            var size: CGSize?
+            var duration: Double?
+            var image: NSImage?
+            if ok {
+                image = NSImage(contentsOf: cacheURL)
+                let meta = VideoSupport.ffprobeMetadata(url: url, headers: headers,
+                                                        tlsInsecure: trustSelfSigned)
+                if meta.size.width > 0 { size = meta.size }
+                if meta.duration > 0 { duration = meta.duration }
+                Self.writeQuickLayer(cacheURL: cacheURL, mountID: mountID, path: path)
+            }
+            await Self.gate.release()
+            return CloudThumbnailResult(image: image, size: size, duration: duration)
+        }
+        running[key] = task
+        let result = await task.value
+        running[key] = nil
+        if result.image == nil {
+            await CloudThumbnailFailureCache.shared.markFailure(key)
+        } else {
+            await CloudThumbnailFailureCache.shared.clear(key)
+        }
+        return result
+    }
+
     private static func generate(cacheURL: URL, mount: CloudMount, path: String,
                                  password: String, isVideo: Bool) async -> CloudThumbnailResult {
         let empty = CloudThumbnailResult(image: nil, size: nil, duration: nil)

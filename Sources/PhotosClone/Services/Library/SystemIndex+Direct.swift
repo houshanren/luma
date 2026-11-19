@@ -142,8 +142,11 @@ extension SystemIndex {
             hasAestheticScore: assetColumns.contains("ZOVERALLAESTHETICSCORE"),
             hasUniformTypeIdentifier: assetColumns.contains("ZUNIFORMTYPEIDENTIFIER"),
             hasSpatialType: assetColumns.contains("ZSPATIALTYPE"))
-        let total = ((try? db.query("SELECT COUNT(*) AS c FROM ZASSET WHERE ZKIND IN (0, 1)"))
-            .flatMap { $0.first?["c"]?.int }) ?? 0
+        let total = ((try? db.query("SELECT SUM(ZCACHEDCOUNT) AS c FROM ZMOMENT WHERE ZSTARTDATE IS NOT NULL"))
+            .flatMap { $0.first?["c"]?.int })
+            // 兜底：极老的库没有 ZMOMENT 缓存计数时才退回整表计数（百万级要几秒）。
+            ?? ((try? db.query("SELECT COUNT(*) AS c FROM ZASSET WHERE ZKIND IN (0, 1)"))
+                .flatMap { $0.first?["c"]?.int }) ?? 0
         let index = SystemIndex(database: db,
                                 libraryURL: libraryURL,
                                 name: libraryURL.deletingPathExtension().lastPathComponent,
@@ -267,18 +270,28 @@ extension SystemIndex {
                 snapshot = value
                 await publish(value)
             }
-            // 全库精确扫描：补齐没有索引的项（截屏 / 录屏 / RAW / 最近保存等）。
-            if var slow = Self.computeDirectCounts(libraryURL: self.libraryURL, direct: direct) {
-                slow.monthCounts = snapshot?.monthCounts
-                slow.monthVideos = snapshot?.monthVideos
-                slow.monthFavorites = snapshot?.monthFavorites
-                slow.monthSamples = snapshot?.monthSamples
-                slow.yearSamples = snapshot?.yearSamples
-                slow.monthCovers = snapshot?.monthCovers
-                slow.yearCovers = snapshot?.yearCovers
-                slow.covers = snapshot?.covers
-                slow.fingerprint = fingerprint
-                await publish(slow)
+            // 截屏 / 导入 / 最近查看 / 存储统计这几项没有可用的轻量索引：
+            // 已有历史快照时沿用上次结果，只更新指纹；否则每次图库变动后的启动
+            // 都要把 26GB 主表扫一遍（实测几十秒到几分钟），期间翻页 / 相簿全被拖慢。
+            if var value = snapshot {
+                if previous == nil,
+                   var slow = Self.computeDirectCounts(libraryURL: self.libraryURL, direct: direct) {
+                    // 第一次打开这个图库（还没有任何历史快照）：只跑一次全库精确扫描补齐。
+                    slow.monthCounts = value.monthCounts
+                    slow.monthVideos = value.monthVideos
+                    slow.monthFavorites = value.monthFavorites
+                    slow.monthSamples = value.monthSamples
+                    slow.yearSamples = value.yearSamples
+                    slow.monthCovers = value.monthCovers
+                    slow.yearCovers = value.yearCovers
+                    slow.covers = value.covers
+                    slow.fingerprint = fingerprint
+                    await publish(slow)
+                } else {
+                    value.fingerprint = fingerprint
+                    snapshot = value
+                    await publish(value)
+                }
             }
             await MainActor.run { self.directCountsWarmupTask = nil }
         }
@@ -648,6 +661,55 @@ extension SystemIndex {
 
     private static func storeDirectCountsSnapshot(_ snapshot: SystemDirectCounts, libraryPath: String) {
         let file = directCountsFile(libraryPath: libraryPath)
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    // MARK: - 地图数据快照
+
+    /// 带定位照片的快照：图库没变时直接复用，跳过每次启动都要扫一遍地点索引（外接盘约数秒）。
+    private struct SystemDirectGeoSnapshot: Codable {
+        static let currentVersion = 1
+        var version: Int
+        var fingerprint: String
+        var photos: [PhotoItem]
+    }
+
+    private static func directGeoFile(libraryPath: String) -> URL {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in libraryPath.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return LibraryPaths.systemIndexCacheDir
+            .appendingPathComponent("DirectGeo-\(String(hash, radix: 16)).json")
+    }
+
+    private static func loadDirectGeoSnapshot(libraryPath: String,
+                                              fingerprint: String) -> [PhotoItem]? {
+        let file = directGeoFile(libraryPath: libraryPath)
+        // 快照只适合「带定位照片不多」的图库：文件过大时不读也不写，免得解码更慢、占内存。
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? NSNumber,
+              size.intValue < 24 * 1024 * 1024,
+              let data = try? Data(contentsOf: file),
+              let snapshot = try? JSONDecoder().decode(SystemDirectGeoSnapshot.self, from: data),
+              snapshot.version == SystemDirectGeoSnapshot.currentVersion,
+              snapshot.fingerprint == fingerprint,
+              !snapshot.photos.isEmpty else { return nil }
+        return snapshot.photos
+    }
+
+    private static func storeDirectGeoSnapshot(_ photos: [PhotoItem],
+                                               libraryPath: String,
+                                               fingerprint: String) {
+        // 带定位照片很多的图库不落盘：快照会非常大，解码反而比重新扫索引更慢。
+        guard photos.count <= 60_000 else { return }
+        let snapshot = SystemDirectGeoSnapshot(version: SystemDirectGeoSnapshot.currentVersion,
+                                               fingerprint: fingerprint,
+                                               photos: photos)
+        let file = directGeoFile(libraryPath: libraryPath)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
@@ -1036,9 +1098,10 @@ extension SystemIndex {
     /// 直连模式的总数：只用快照 / 系统自带计数，绝不在主线程扫全库。
     func directSummary(_ query: SystemQuery) -> PhotoQuerySummary {
         let snapshot = directCounts
-        // 带搜索词或筛选条件时快照回答不了：直接数 Photos.sqlite。
+        // 带搜索词、筛选或时间区间时快照回答不了：直接数 Photos.sqlite。
         // 调用方（窗口 / 总览加载）都在后台线程，不会卡住主线程。
-        if !query.tokens.isEmpty || query.filter != .all {
+        if !query.tokens.isEmpty || query.filter != .all
+            || query.startDate != nil || query.endDate != nil {
             return directSQLSummary(query)
         }
         switch query.scope {
@@ -1662,6 +1725,13 @@ extension SystemIndex {
         return ids
     }
 
+    /// 只读缓存：命中时调用方可以立刻出封面，不必等查询。
+    func cachedAlbumPreviewPhotos(_ albumID: Int64, limit: Int) -> [PhotoItem]? {
+        directAlbumCacheLock.lock()
+        defer { directAlbumCacheLock.unlock() }
+        return directAlbumPreviewCache["\(albumID)#\(limit)"]
+    }
+
     func directAlbumPreviewPhotos(_ albumID: Int64, limit: Int) -> [PhotoItem] {
         guard limit > 0, let albumTable = direct?.albumTable, let albumColumn = direct?.albumColumn else { return [] }
         let cacheKey = "\(albumID)#\(limit)"
@@ -1703,6 +1773,30 @@ extension SystemIndex {
         directAlbumPreviewCache[cacheKey] = photos
         directAlbumCacheLock.unlock()
         return photos
+    }
+
+    /// 某一年的收藏封面：沿收藏部分索引按日期范围取前几张，
+    /// 用于收藏汇总还没算完时先把年份卡片填上真实照片。
+    func favoriteCovers(year: Int, limit: Int) -> [PhotoItem] {
+        guard direct != nil, limit > 0 else { return [] }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        guard let start = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
+              let end = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) else {
+            return []
+        }
+        let sql = """
+            SELECT \(directSelect)
+            \(directFrom)
+            WHERE a.ZTRASHEDSTATE = 0 AND a.ZHIDDEN = 0 AND a.ZFAVORITE = 1
+              AND a.ZDATECREATED >= ? AND a.ZDATECREATED < ?
+            ORDER BY a.ZDATECREATED DESC
+            LIMIT \(limit)
+            """
+        let binds: [Any?] = [start.timeIntervalSince1970 - 978307200,
+                             end.timeIntervalSince1970 - 978307200]
+        guard let rows = try? database.query(sql, binds) else { return [] }
+        return rows.compactMap { directPhoto(from: $0) }
     }
 
     func directPersonAssetIDs(_ personID: Int64) -> [UUID] {
@@ -1943,7 +2037,8 @@ extension SystemIndex {
             clauses.append("\(active) AND a.ZADJUSTMENTTIMESTAMP IS NOT NULL")
         case .recentlyViewed:
             let cutoff = (query.viewedCutoff ?? Self.directViewedCutoff).timeIntervalSince1970
-            clauses.append("\(active) AND (aa.ZLASTVIEWEDDATE + 978307200) >= \(cutoff)")
+            // 同样直接比较原始列，才能命中 Z_AdditionalAssetAttributes_forRecentlyViewed。
+            clauses.append("\(active) AND aa.ZLASTVIEWEDDATE >= \(cutoff - 978307200)")
         case .duplicates:
             clauses.append("\(active) AND a.ZDUPLICATEASSETVISIBILITYSTATE > 0")
         case .recentlySaved:
@@ -1958,7 +2053,7 @@ extension SystemIndex {
         case .revisit:
             let captureCutoff = Date().addingTimeInterval(-LibraryHealthTuning.revisitCaptureAge).timeIntervalSince1970
             let viewCutoff = Date().addingTimeInterval(-LibraryHealthTuning.revisitViewAge).timeIntervalSince1970
-            clauses.append("\(active) AND (a.ZDATECREATED + 978307200) <= \(captureCutoff) AND (aa.ZLASTVIEWEDDATE IS NULL OR (aa.ZLASTVIEWEDDATE + 978307200) < \(viewCutoff))")
+            clauses.append("\(active) AND a.ZDATECREATED <= \(captureCutoff - 978307200) AND (aa.ZLASTVIEWEDDATE IS NULL OR aa.ZLASTVIEWEDDATE < \(viewCutoff - 978307200))")
         case .withLocation:
             clauses.append("\(active) AND \(Self.directLocationClause)")
         case .album(let id):
@@ -2015,11 +2110,14 @@ extension SystemIndex {
             }
         }
 
+        // 日期范围必须直接比较 `a.ZDATECREATED`（Core Data 秒），
+        // 写成 `(a.ZDATECREATED + 978307200) >= ?` 会让 Apple 的日期索引失效：
+        // 同样一条「某年收藏」计数实测从 0.37 秒退化到 66 秒。
         if let start = query.startDate {
-            clauses.append("(a.ZDATECREATED + 978307200) >= \(start.timeIntervalSince1970)")
+            clauses.append("a.ZDATECREATED >= \(start.timeIntervalSince1970 - 978307200)")
         }
         if let end = query.endDate {
-            clauses.append("(a.ZDATECREATED + 978307200) < \(end.timeIntervalSince1970)")
+            clauses.append("a.ZDATECREATED < \(end.timeIntervalSince1970 - 978307200)")
         }
         if query.onlyFavorites {
             if favoriteAdds.isEmpty && favoriteRemoves.isEmpty {
@@ -2131,13 +2229,33 @@ extension SystemIndex {
     // MARK: - 地图 / 位置样本
 
     /// 后台准备地图数据，完成后复用侧边栏计数的回调通知界面刷新。
+    /// 地图只用到全库里极小一部分带 GPS 的照片，但取这些行仍要扫一遍地点索引；
+    /// 图库没变过时直接读上次的快照，变了才延迟一段时间、用 background 优先级重扫，
+    /// 避免和首屏 / 翻页抢外接盘的磁盘带宽。
     func startDirectGeoWarmup() {
         guard direct != nil, directGeoWarmupTask == nil, directGeoPhotos == nil else { return }
         let select = directSelect
         let from = directFrom
-        directGeoWarmupTask = Task.detached(priority: .utility) { [weak self] in
+        let libraryPath = libraryURL.path
+        let fingerprint = Self.libraryFingerprint(libraryURL)
+        directGeoWarmupTask = Task.detached(priority: .background) { [weak self] in
             guard let self else { return }
+            if let cached = Self.loadDirectGeoSnapshot(libraryPath: libraryPath,
+                                                       fingerprint: fingerprint) {
+                await MainActor.run {
+                    self.directGeoWarmupTask = nil
+                    self.directGeoPhotos = cached
+                    self.directPlaceTokenIndex = Self.makePlaceTokenIndex(cached)
+                    self.onDirectCountsReady?()
+                }
+                return
+            }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
             let photos = self.computeDirectGeoPhotos(select: select, from: from)
+            if let photos {
+                Self.storeDirectGeoSnapshot(photos, libraryPath: libraryPath, fingerprint: fingerprint)
+            }
             let placeIndex = photos.map(Self.makePlaceTokenIndex)
             await MainActor.run {
                 self.directGeoWarmupTask = nil

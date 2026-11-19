@@ -39,38 +39,65 @@ fi
 chmod +x "$APP/Contents/MacOS/$EXEC"
 
 # MKV / AVI 等容器系统无法解码，App 内置静态 ffmpeg / ffprobe 负责转封装与抽帧。
-# 首次构建从 npm registry 下载到 Vendor/ffmpeg 并复用（不提交仓库）。
+# ffmpeg 使用带 libzimg（zscale + tonemap）的静态包：HDR 源转码时能做色调映射，
+# 不再依赖用户自行安装 Homebrew ffmpeg。首次构建下载到 Vendor/ffmpeg 并复用（不提交仓库）。
 FFMPEG_DIR="Vendor/ffmpeg"
 mkdir -p "$FFMPEG_DIR"
 case "$(uname -m)" in
     arm64)
-        FFMPEG_URL="https://registry.npmjs.org/@ffmpeg-installer/darwin-arm64/-/darwin-arm64-4.1.5.tgz"
+        FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
         FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-arm64/-/darwin-arm64-5.0.1.tgz"
         ;;
     *)
-        FFMPEG_URL="https://registry.npmjs.org/@ffmpeg-installer/darwin-x64/-/darwin-x64-4.1.0.tgz"
+        FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/snapshot/ffmpeg.zip"
         FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-x64/-/darwin-x64-5.1.0.tgz"
         ;;
 esac
-fetch_tool() {
-    tool="$1"
-    url="$2"
-    dest="$FFMPEG_DIR/$tool"
-    if [ -x "$dest" ]; then return 0; fi
-    echo "下载内置 $tool …"
+fetch_ffmpeg() {
+    dest="$FFMPEG_DIR/ffmpeg"
+    if [ -x "$dest" ]; then
+        # 旧静态包不含 zscale：检测到缺滤镜就重新下载，避免发布不具备 HDR 映射能力的包。
+        if "$dest" -hide_banner -filters 2>/dev/null | grep -q "zscale"; then return 0; fi
+        echo "内置 ffmpeg 缺少 zscale，重新下载…"
+        rm -f "$dest"
+    fi
+    echo "下载内置 ffmpeg …"
     work="$(mktemp -d)"
-    if ! curl -fsSL --retry 3 --max-time 600 -o "$work/pkg.tgz" "$url"; then
-        echo "警告：下载 $tool 失败，本次构建不内置（运行时回退系统 ffmpeg）"
+    if ! curl -fsSL --retry 3 --max-time 900 -o "$work/ffmpeg.zip" "$FFMPEG_URL"; then
+        echo "警告：下载 ffmpeg 失败，本次构建不内置（运行时回退系统 ffmpeg）"
+        rm -rf "$work"
+        return 0
+    fi
+    unzip -q -o "$work/ffmpeg.zip" -d "$work"
+    if [ ! -f "$work/ffmpeg" ]; then
+        echo "警告：压缩包内未找到 ffmpeg"
+        rm -rf "$work"
+        return 0
+    fi
+    cp "$work/ffmpeg" "$dest"
+    chmod +x "$dest"
+    rm -rf "$work"
+    if ! "$dest" -hide_banner -filters 2>/dev/null | grep -q "zscale"; then
+        echo "警告：内置 ffmpeg 不含 zscale，HDR 色调映射将不可用"
+    fi
+}
+fetch_probe() {
+    dest="$FFMPEG_DIR/ffprobe"
+    if [ -x "$dest" ]; then return 0; fi
+    echo "下载内置 ffprobe …"
+    work="$(mktemp -d)"
+    if ! curl -fsSL --retry 3 --max-time 600 -o "$work/pkg.tgz" "$FFPROBE_URL"; then
+        echo "警告：下载 ffprobe 失败，本次构建不内置（运行时回退系统 ffprobe）"
         rm -rf "$work"
         return 0
     fi
     tar -xzf "$work/pkg.tgz" -C "$work"
-    cp "$work/package/$tool" "$dest"
+    cp "$work/package/ffprobe" "$dest"
     chmod +x "$dest"
     rm -rf "$work"
 }
-fetch_tool ffmpeg "$FFMPEG_URL"
-fetch_tool ffprobe "$FFPROBE_URL"
+fetch_ffmpeg
+fetch_probe
 if [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ]; then
     mkdir -p "$APP/Contents/Resources/bin"
     cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$APP/Contents/Resources/bin/"

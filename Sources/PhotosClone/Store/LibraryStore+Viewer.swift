@@ -18,7 +18,11 @@ extension LibraryStore {
             cinemaPlaybackPhoto = nil
         }
         viewerContextPhotos = context
-        viewerID = id
+        // 只让查看器的插入 / 移除参与动画：整窗级的 animation 会把网格、
+        // 工具栏和选中态的更新一起塞进弹簧动画，开合时容易出现残影或掉帧。
+        withAnimation(AppSettings.shared.motion.overlay) {
+            viewerID = id
+        }
         selection = [id]
         recordView(id)
         // 打开新照片时丢掉上一次的下标缓存，按当前查询重新算一次序号与邻居，
@@ -36,7 +40,9 @@ extension LibraryStore {
 
     func closeViewer() {
         let lastID = viewerID
-        viewerID = nil
+        withAnimation(AppSettings.shared.motion.overlay) {
+            viewerID = nil
+        }
         cinemaPlaybackPhoto = nil
         viewerStrip = []
         viewerStripKey = nil
@@ -45,8 +51,9 @@ extension LibraryStore {
         viewerPositionCache = nil
         clearViewerBurstState()
         // 「所有照片」时间轴里翻页可能已经走出已加载窗口：返回网格时把它滚回来。
+        // 用最小滚动：目标本来就可见时不动，避免关闭动画期间网格整体跳位。
         if let lastID, isTimelineScope, isPagedScope {
-            revealInWindow(lastID)
+            revealInWindow(lastID, minimal: true)
         }
     }
 

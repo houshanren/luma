@@ -3,6 +3,7 @@ import AVKit
 import AVFoundation
 import AppKit
 import QuartzCore
+import UniformTypeIdentifiers
 
 // MARK: - 视频画面
 
@@ -90,6 +91,8 @@ struct VideoScrubber: View {
     let buffered: Double
     /// 轨道与进度点颜色：画面控制条用白色，窗口工具栏跟随明暗外观。
     var tint: Color = .white
+    /// 进度点的描边色：白点配深描边，彩色点配白描边，深浅底上都能看清。
+    var knobBorder: Color = .white.opacity(0.6)
     let onSeek: (Double) -> Void
     let onCommit: (Double) -> Void
 
@@ -98,7 +101,9 @@ struct VideoScrubber: View {
     @State private var dragValue: Double = 0
 
     private var isExpanded: Bool { isHovering || isDragging }
-    private var trackHeight: CGFloat { isExpanded ? 5 : 3.5 }
+    private var trackHeight: CGFloat { isExpanded ? 4.5 : 3 }
+    private var knobSize: CGFloat { isExpanded ? 12 : 8 }
+    private var haloSize: CGFloat { isExpanded ? 21 : 14 }
 
     private func clamp(_ value: Double) -> Double {
         min(1, max(0, value))
@@ -108,21 +113,31 @@ struct VideoScrubber: View {
         GeometryReader { proxy in
             let width = max(1, proxy.size.width)
             let value = clamp(isDragging ? dragValue : progress)
+            let playedWidth = width * value
             ZStack(alignment: .leading) {
+                // 轨道：内凹细槽 + 细描边，像一条嵌进玻璃里的轨道。
                 Capsule()
-                    .fill(tint.opacity(0.18))
+                    .fill(tint.opacity(0.13))
                     .frame(height: trackHeight)
+                    .overlay {
+                        Capsule().strokeBorder(tint.opacity(0.10), lineWidth: 0.5)
+                    }
+
+                // 缓冲段：更浅的一层，能看出已加载范围。
                 Capsule()
-                    .fill(tint.opacity(0.38))
+                    .fill(tint.opacity(0.26))
                     .frame(width: width * clamp(buffered), height: trackHeight)
+
+                // 已播放段：渐变轨道，收尾处更亮。
                 Capsule()
-                    .fill(tint)
-                    .frame(width: width * value, height: trackHeight)
-                Circle()
-                    .fill(tint)
-                    .frame(width: isExpanded ? 12 : 9, height: isExpanded ? 12 : 9)
-                    .shadow(color: .black.opacity(0.45), radius: 2.5)
-                    .offset(x: width * value - (isExpanded ? 6 : 4.5))
+                    .fill(LinearGradient(colors: [tint.opacity(0.45), tint.opacity(0.95)],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(width: playedWidth, height: trackHeight)
+
+                // 进度点：外圈柔光 + 实心圆 + 细描边，悬停 / 拖动时整体放大。
+                knob
+                    .offset(x: playedWidth - knobSize / 2)
+                    .animation(.spring(response: 0.26, dampingFraction: 0.72), value: isExpanded)
             }
             .frame(maxHeight: .infinity, alignment: .center)
             .contentShape(Rectangle())
@@ -139,9 +154,27 @@ struct VideoScrubber: View {
                     }
             )
         }
-        .frame(height: 20)
+        .frame(height: 16)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+        }
+    }
+
+    /// 进度点：一团柔光托着一颗镜头对焦点似的小圆。
+    private var knob: some View {
+        ZStack {
+            Circle()
+                .fill(tint.opacity(isExpanded ? 0.32 : 0.16))
+                .frame(width: haloSize, height: haloSize)
+                .blur(radius: isExpanded ? 3.5 : 2.5)
+
+            Circle()
+                .fill(tint)
+                .frame(width: knobSize, height: knobSize)
+                .overlay {
+                    Circle().strokeBorder(knobBorder, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.30), radius: 2, y: 1)
         }
     }
 }
@@ -202,9 +235,12 @@ private struct VideoControlButton: View {
 struct VideoPlayerStage: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var viewer: ViewerModel
     let photo: PhotoItem
     /// 播放状态由查看器持有：顶栏融合模式下，窗口工具栏要用同一份状态渲染播放控件。
     @ObservedObject var model: VideoPlayerModel
+    /// 音轨 / 字幕状态：与窗口顶栏共享同一份。
+    @ObservedObject var ui: VideoPlaybackUI
     /// 手动旋转角度同样提到查看器，顶栏按钮与画面共用。
     @Binding var quarterTurns: Int
     /// 保存当前帧需要读取查看器里的照片与旋转状态，由查看器提供。
@@ -231,6 +267,20 @@ struct VideoPlayerStage: View {
     @State private var isTranscoding = false
     /// 边下边播：ffmpeg 转封装 + 本机回环 HLS 服务，随播放进度释放。
     @State private var streamSession: VideoStreamSession?
+    /// 当前边下边播的模式：转封装失败后降级为重编码。
+    @State private var streamMode: VideoStreamSession.Mode = .remux
+    /// 当前会话的起播位置；拖动到未生成区间会用 -ss 重新起流。
+    @State private var streamOffset: Double = 0
+    @State private var streamAudioIndex = 0
+    @State private var isRestartingStream = false
+    /// 探测到的完整时长 / 编码信息：跳转后的新会话仍按完整时间轴显示进度。
+    @State private var probeDuration: Double = 0
+    @State private var probeIsHEVC = false
+    @State private var probeIsHDR = false
+    @State private var probeAudioCount = 0
+    @State private var probeAudioTracks: [AudioTrackInfo] = []
+    /// 播放中定期清理旧分片，给长片一个可控的磁盘窗口。
+    @State private var trimTask: Task<Void, Never>?
     /// 控制层是否处于“刚操作过”的可见状态；播放中静止数秒后自动淡出。
     @State private var controlsShown = true
     @State private var hideControlsTask: Task<Void, Never>?
@@ -272,6 +322,11 @@ struct VideoPlayerStage: View {
 
     private var activeFailure: String? { failureMessage ?? model.errorMessage }
 
+    /// 当前时间点应显示的外挂字幕（已套用字幕偏移）。
+    private var activeSubtitle: String? {
+        ui.cue(at: model.currentTime)?.text
+    }
+
     var body: some View {
         GeometryReader { proxy in
         ZStack {
@@ -311,12 +366,33 @@ struct VideoPlayerStage: View {
                 failureView(failure)
             }
 
+            if activeFailure == nil, let subtitle = activeSubtitle {
+                VStack {
+                    Spacer()
+                    Text(subtitle)
+                        .font(.system(size: settings.subtitleFontSize, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(settings.subtitleBackground ? Color.black.opacity(0.55) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .shadow(color: .black.opacity(settings.subtitleBackground ? 0.6 : 0.9), radius: 3, y: 1)
+                        .frame(maxWidth: 860)
+                        .padding(.horizontal, 40)
+                        .padding(.bottom, 118)
+                }
+                .allowsHitTesting(false)
+            }
+
             if activeFailure == nil {
                 centerPlayButton
-                // 顶栏融合由窗口工具栏渲染控件；全屏沉浸没有工具栏，仍用画面内控制条。
-                if settings.videoControlPlacement == .floating || !transparentBackground {
+                // 顶栏融合由窗口工具栏渲染控件；视频真全屏时工具栏被隐藏，改用画面内控制条。
+                if settings.videoControlPlacement == .floating || !transparentBackground
+                    || viewer.videoImmersiveFullScreen {
                     controls(stage: proxy.size)
                 }
+                // 顶栏融合模式下音轨 / 字幕入口在窗口工具栏的播放舱里。
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -338,7 +414,18 @@ struct VideoPlayerStage: View {
                 hideControlsTask?.cancel()
                 controlsShown = true
             }
+            // 暂停时挂起转码进程，避免在后台把整部片转成缓存。
+            streamSession?.setGenerationActive(playing)
         }
+        // 转封装后的 HLS 也可能在解码阶段失败：这时必须把「转换为兼容格式」入口放出来，
+        // 否则用户只能停在错误页。真正的兼容性判断由 ffmpeg 转码兜底。
+        .onChange(of: model.errorMessage) { _, message in
+            guard message != nil, hasLoadedVideo, FFmpeg.isAvailable, sourceURL != nil else { return }
+            canTranscode = true
+        }
+        // 原生容器的音轨组就绪 / 切换后，把选项同步给顶栏与画面内菜单。
+        .onChange(of: model.audioOptions.count) { _, _ in refreshAudioChoices() }
+        .onChange(of: model.selectedAudio) { _, _ in refreshAudioChoices() }
         .task(id: photo.id) {
             loadGeneration &+= 1
             let generation = loadGeneration
@@ -352,9 +439,49 @@ struct VideoPlayerStage: View {
             sourceURL = nil
             sourceHeaders = [:]
             hasLoadedVideo = false
+            streamMode = .remux
+            streamOffset = 0
+            streamAudioIndex = 0
+            isRestartingStream = false
+            probeDuration = 0
+            probeIsHEVC = false
+            probeIsHDR = false
+            probeAudioCount = 0
+            probeAudioTracks = []
+            ui.reset()
             model.onPlaybackEnd = {
                 guard settings.autoPlayNextVideo else { return }
                 store.playNextVideo(after: photo.id)
+            }
+            // 所有界面跳转（进度条 / 工具栏 / 快捷键）统一走路由器：
+            // 云盘拖到未生成区间时重建流，已完成缓存的 HLS 直接 seek。
+            model.seekRouter = { target in
+                guard let session = streamSession else { return false }
+                if session.isCompleteCache { return false }
+                let horizon = model.bufferedTime
+                // 已删除分片不能再回放：早于保留窗口时重新起流。
+                let retained = session.retainedStartSeconds
+                if target < retained - 1 || target > horizon + 8 {
+                    restartStreaming(at: target)
+                    return true
+                }
+                return false
+            }
+            ui.onMessage = { store.showToast($0) }
+            ui.onSelectStreamAudio = { index in
+                if streamSession != nil {
+                    switchAudio(to: index)
+                } else if index < model.audioOptions.count {
+                    model.selectAudio(model.audioOptions[index])
+                }
+            }
+            trimTask?.cancel()
+            trimTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    guard !Task.isCancelled, let session = streamSession else { continue }
+                    session.trim(before: model.currentTime)
+                }
             }
             quarterTurns = 0
             videoSize = .zero
@@ -365,6 +492,9 @@ struct VideoPlayerStage: View {
             FullScreenDiagnostics.log("video stage disappear \(photo.originalName)")
             loadGeneration &+= 1
             hideControlsTask?.cancel()
+            trimTask?.cancel()
+            trimTask = nil
+            model.seekRouter = nil
             model.stop()
             cloudResourceLoader?.invalidate()
             cloudResourceLoader = nil
@@ -416,18 +546,20 @@ struct VideoPlayerStage: View {
             if hasCommand {
                 store.viewerStepVideo(-1)
             } else {
-                model.seek(by: settings.videoSeekStep)
+                seekPlayback(to: model.currentTime + settings.videoSeekStep)
             }
             return true
         case 125:
             if hasCommand {
                 store.viewerStepVideo(1)
             } else {
-                model.seek(by: -settings.videoSeekStep)
+                seekPlayback(to: model.currentTime - settings.videoSeekStep)
             }
             return true
         case 49:
             // 空格与系统「照片」一致：收起查看器回到图库；播放/暂停用 K 或回车。
+            // 长按的重复事件直接吞掉，避免刚打开又被关掉。
+            guard !event.isARepeat else { return true }
             store.closeViewer()
             return true
         case 36:
@@ -456,11 +588,11 @@ struct VideoPlayerStage: View {
             return true
         }
         if ShortcutStore.matches(event, .videoForward) {
-            model.seek(by: 10)
+            seekPlayback(to: model.currentTime + 10)
             return true
         }
         if ShortcutStore.matches(event, .videoBackward) {
-            model.seek(by: -10)
+            seekPlayback(to: model.currentTime - 10)
             return true
         }
         if ShortcutStore.matches(event, .videoAspect) {
@@ -572,10 +704,16 @@ struct VideoPlayerStage: View {
                 HStack(spacing: 8) {
                     Text(formatPlayerTime(model.currentTime))
                         .frame(width: 38, alignment: .trailing)
-                    VideoScrubber(progress: progress, buffered: buffered) { value in
-                        model.seek(to: value * model.duration)
+                    VideoScrubber(progress: progress,
+                                  buffered: buffered,
+                                  knobBorder: .black.opacity(0.35)) { value in
+                        let target = value * model.duration
+                        // 拖动过程中只对已生成区间做实时预览，否则每移动一像素就重建一次流。
+                        if streamSession == nil || target <= model.bufferedTime {
+                            model.seek(to: target)
+                        }
                     } onCommit: { value in
-                        model.seek(to: value * model.duration)
+                        seekPlayback(to: value * model.duration)
                     }
                     Text(durationText)
                         .frame(width: 38, alignment: .leading)
@@ -597,10 +735,10 @@ struct VideoPlayerStage: View {
                     }
                     .disabled(!hasPrevVideo)
                     VideoControlButton(icon: "gobackward.10", help: "后退 10 秒 (J)") {
-                        model.seek(by: -10)
+                        seekPlayback(to: model.currentTime - 10)
                     }
                     VideoControlButton(icon: "goforward.10", help: "前进 10 秒 (L)") {
-                        model.seek(by: 10)
+                        seekPlayback(to: model.currentTime + 10)
                     }
                     VideoControlButton(icon: "forward.end", help: "下一个视频 (⌘↓)") {
                         store.viewerStepVideo(1)
@@ -630,6 +768,8 @@ struct VideoPlayerStage: View {
                     Spacer(minLength: 6)
 
                     speedMenu
+
+                    VideoMediaMenuButtons(ui: ui, model: model)
 
                     VideoControlButton(icon: "repeat", active: model.isLooping,
                                        help: model.isLooping ? "关闭循环播放" : "循环播放") {
@@ -807,6 +947,176 @@ struct VideoPlayerStage: View {
         String(format: "%g×", value)
     }
 
+    // MARK: - 跳转与流重建
+
+    /// 云盘边下边播的已生成区间随 ffmpeg 进度增长，拖到未生成位置时用 -ss 重新起流。
+    private func seekPlayback(to target: Double) {
+        model.requestSeek(to: target)
+    }
+
+    private func switchAudio(to index: Int) {
+        guard streamSession != nil, index != streamAudioIndex else { return }
+        let target = model.currentTime
+        streamAudioIndex = index
+        refreshAudioChoices()
+        restartStreaming(at: target)
+    }
+
+    /// 把 HLS 音轨或原生 AV 音轨统一映射成菜单里的选项。
+    private func refreshAudioChoices() {
+        if streamSession != nil {
+            if !probeAudioTracks.isEmpty {
+                ui.updateAudio(choices: probeAudioTracks.map {
+                    VideoPlaybackUI.AudioChoice(index: $0.ordinal, title: $0.displayName)
+                }, selected: streamAudioIndex)
+            } else {
+                let count = max(0, probeAudioCount)
+                ui.updateAudio(choices: (0..<count).map {
+                    VideoPlaybackUI.AudioChoice(index: $0, title: "音轨 \($0 + 1)")
+                }, selected: streamAudioIndex)
+            }
+        } else {
+            let choices = model.audioOptions.enumerated().map {
+                VideoPlaybackUI.AudioChoice(index: $0.offset, title: $0.element.displayName)
+            }
+            let selected = model.selectedAudio.flatMap { model.audioOptions.firstIndex(of: $0) } ?? 0
+            ui.updateAudio(choices: choices, selected: selected)
+        }
+    }
+
+    private func restartStreaming(at target: Double) {
+        guard streamSession != nil, !isRestartingStream else {
+            model.seek(to: target)
+            return
+        }
+        isRestartingStream = true
+        isPreparing = true
+        let generation = loadGeneration
+        // 往前留 1 秒，避免落到关键帧前面导致开头一小段缺失。
+        let offset = max(0, target - 1)
+        let mode = streamMode
+        let audio = streamAudioIndex
+        Task { @MainActor in
+            // 云盘直链可能已过期：跳转前重新解析一次，避免重建流仍用旧地址。
+            if photo.isCloud, let refreshed = try? await store.cloudStreamOrThrow(for: photo) {
+                sourceURL = refreshed.url
+                sourceHeaders = refreshed.headers
+            }
+            // 旧的流先停掉，避免两个 ffmpeg 同时读同一份网盘文件。
+            streamSession?.stop()
+            streamSession = nil
+            let started = await startStreaming(generation: generation, autoplay: true,
+                                               offset: offset, mode: mode, audioIndex: audio)
+            if started, generation == loadGeneration {
+                model.seek(to: target)
+            }
+            isRestartingStream = false
+            isPreparing = false
+        }
+    }
+
+    /// 云盘直链失效时重新解析；代理的下载线程会阻塞等待结果。
+    private func cloudRefreshClosure() -> (() -> (URL, [String: String])?)? {
+        guard photo.isCloud else { return nil }
+        return {
+            // 在主线程阻塞等待会死锁（解析本身要回主线程）。
+            guard !Thread.isMainThread else { return nil }
+            let semaphore = DispatchSemaphore(value: 0)
+            var result: (URL, [String: String])?
+            Task { @MainActor in
+                if let stream = try? await store.cloudStreamOrThrow(for: photo) {
+                    result = (stream.url, stream.headers)
+                }
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 20)
+            return result
+        }
+    }
+
+    /// 启动转封装会话；编码不兼容时自动降级为重编码 H.264。
+    private func startStreaming(generation: Int, autoplay: Bool, offset: Double,
+                                mode initialMode: VideoStreamSession.Mode,
+                                audioIndex: Int) async -> Bool {
+        guard let sourceURL else { return false }
+        var mode = initialMode
+        var attempt = 0
+        while attempt < 2 {
+            let session = VideoStreamSession(
+                photoID: photo.id,
+                source: sourceURL,
+                headers: sourceHeaders,
+                trustSelfSigned: store.cloudMount(for: photo.cloudMountID)?.trustSelfSigned ?? false,
+                mode: mode,
+                startOffset: offset,
+                isHEVC: probeIsHEVC,
+                isHDR: probeIsHDR,
+                audioIndex: audioIndex,
+                audioChannels: probeAudioTracks.first(where: { $0.ordinal == audioIndex })?.channels
+                    ?? probeAudioTracks.first?.channels ?? 2,
+                refreshSource: cloudRefreshClosure())
+            do {
+                // 起流要做目录清理、拉起 ffmpeg、等服务写首段：全部是阻塞操作，
+                // 放后台执行，否则打开视频的瞬间界面会停住。
+                let starting = Task.detached(priority: .userInitiated) {
+                    try await session.start()
+                }
+                let playlist = try await withTaskCancellationHandler {
+                    try await starting.value
+                } onCancel: {
+                    starting.cancel()
+                }
+                guard generation == loadGeneration, !Task.isCancelled else {
+                    session.stop()
+                    return false
+                }
+                streamSession?.stop()
+                streamSession = session
+                streamMode = mode
+                streamOffset = offset
+                streamAudioIndex = audioIndex
+                refreshAudioChoices()
+                var probe = VideoProbe()
+                probe.hasVideoTrack = true
+                probe.isPlayable = true
+                probe.duration = probeDuration
+                probe.size = videoSize
+                model.load(url: playlist, probe: probe, autoplay: autoplay,
+                           loop: settings.loopVideoByDefault,
+                           muted: settings.muteVideoByDefault,
+                           timelineOffset: offset)
+                hasLoadedVideo = true
+                failureMessage = nil
+                isPreparing = false
+                canTranscode = false
+                // 打开时未自动播放：首段已就绪，先挂起后台生成。
+                session.setGenerationActive(autoplay)
+                return true
+            } catch {
+                session.stop()
+                guard generation == loadGeneration, !Task.isCancelled else { return false }
+                // 网盘 / 网络失败：重编码也没用，直接暴露转码入口与错误原因。
+                if session.failureIsSource {
+                    failureMessage = "边下边播启动失败：\(error.localizedDescription)"
+                    canTranscode = true
+                    isPreparing = false
+                    return false
+                }
+                if mode == .remux {
+                    Diagnostics.record("转封装失败，降级为重编码：\(error.localizedDescription)")
+                    mode = .transcode
+                    attempt += 1
+                    continue
+                }
+                failureMessage = "边下边播启动失败：\(error.localizedDescription)"
+                canTranscode = true
+                isPreparing = false
+                return false
+            }
+        }
+        return false
+    }
+
     private func failureView(_ message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle")
@@ -914,6 +1224,31 @@ struct VideoPlayerStage: View {
         // 两者都由资源加载器代取，探测与播放都拿到明确的 Content-Type。
         var playbackAsset: AVAsset?
         var playbackURL = source?.url
+        // 官方转码的 HLS 播放列表：AVPlayer 原生支持，不能交给 ffmpeg 按字节读取。
+        if let source, source.isHLS {
+            sourceURL = source.url
+            sourceHeaders = source.headers
+            assetOptions = [CloudPlayback.headerFieldsKey: source.headers]
+            var probe = VideoProbe()
+            probe.hasVideoTrack = true
+            probe.isPlayable = true
+            probe.duration = photo.duration ?? 0
+            if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+                probe.size = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
+            }
+            videoSize = probe.size
+            model.load(url: source.url, options: assetOptions, probe: probe, autoplay: autoplay,
+                       loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+            hasLoadedVideo = true
+            isPreparing = false
+            probeDuration = probe.duration
+            probeIsHEVC = false
+            probeIsHDR = false
+            probeAudioCount = 0
+            probeAudioTracks = []
+            ui.loadSiblingIfAvailable(sourceURL: sourceURL)
+            return
+        }
         if let source {
             sourceURL = source.url
             sourceHeaders = source.headers
@@ -953,6 +1288,13 @@ struct VideoPlayerStage: View {
                 }
                 hasLoadedVideo = true
                 isPreparing = false
+                probeDuration = probe.duration
+                probeIsHEVC = probe.isHEVC
+                probeIsHDR = probe.isHDR
+                probeAudioCount = probe.audioTrackCount
+                probeAudioTracks = probe.audioTracks
+                refreshAudioChoices()
+                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
             }
             failedProbe = probe
@@ -985,6 +1327,13 @@ struct VideoPlayerStage: View {
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
                 hasLoadedVideo = true
                 isPreparing = false
+                probeDuration = cachedProbe.duration
+                probeIsHEVC = cachedProbe.isHEVC
+                probeIsHDR = cachedProbe.isHDR
+                probeAudioCount = cachedProbe.audioTrackCount
+                probeAudioTracks = cachedProbe.audioTracks
+                refreshAudioChoices()
+                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
             }
         }
@@ -1007,6 +1356,13 @@ struct VideoPlayerStage: View {
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
                 hasLoadedVideo = true
                 isPreparing = false
+                probeDuration = probe.duration
+                probeIsHEVC = probe.isHEVC
+                probeIsHDR = probe.isHDR
+                probeAudioCount = probe.audioTrackCount
+                probeAudioTracks = probe.audioTracks
+                refreshAudioChoices()
+                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
             }
             failedProbe = probe
@@ -1015,44 +1371,33 @@ struct VideoPlayerStage: View {
         // 系统不支持的容器（MKV / AVI…）：ffmpeg 边下载边封装成 fMP4 HLS，
         // 第一段分片就绪即可播放，不必等整部文件下载 / 转换完。
         let formatName = Self.formatDescription(name: photo.originalName, codec: failedProbe?.codec)
-        if let sourceURL, FFmpeg.isAvailable {
+        if let failedProbe {
+            probeDuration = failedProbe.duration > 0 ? failedProbe.duration : (photo.duration ?? 0)
+            // MKV 这类容器 AVFoundation 探测不到编码，用网盘列表里的元数据补齐，
+            // 否则 HEVC 转封装不会写 hvc1 标签，AVPlayer 会直接拒绝播放。
+            probeIsHEVC = failedProbe.isHEVC || photo.videoCodec?.lowercased() == "hevc"
+            probeIsHDR = failedProbe.isHDR
+            probeAudioCount = failedProbe.audioTrackCount
+            probeAudioTracks = failedProbe.audioTracks
+            if failedProbe.size.width > 0, failedProbe.size.height > 0 {
+                videoSize = failedProbe.size
+            } else if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+                videoSize = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
+            }
+        }
+        if sourceURL != nil, FFmpeg.isAvailable {
             // 不弹「正在准备」告警卡片：直接进入播放界面转圈，首段就绪后自动开播。
             failureMessage = nil
             isPreparing = true
-            let session = VideoStreamSession(photoID: photo.id,
-                                             source: sourceURL,
-                                             headers: sourceHeaders,
-                                             trustSelfSigned: store.cloudMount(for: photo.cloudMountID)?.trustSelfSigned ?? false)
-            do {
-                let playlist = try await session.start()
-                guard generation == loadGeneration, !Task.isCancelled else {
-                    session.stop()
-                    return
-                }
-                streamSession = session
-                var probe = VideoProbe()
-                probe.hasVideoTrack = true
-                probe.isPlayable = true
-                probe.duration = failedProbe?.duration ?? 0
-                probe.size = failedProbe?.size ?? .zero
-                videoSize = probe.size
-                model.load(url: playlist, probe: probe, autoplay: autoplay,
-                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
-                hasLoadedVideo = true
-                failureMessage = nil
-                isPreparing = false
-                canTranscode = false
-                return
-            } catch {
-                session.stop()
-                // 翻页 / 关闭播放器导致的取消不算失败，也不要弹提示。
-                guard generation == loadGeneration, !Task.isCancelled else { return }
-                isPreparing = false
-                failureMessage = "边下边播启动失败：\(error.localizedDescription)"
-                // 兜底：仍可走完整转换（下载完再播放）。
-                canTranscode = true
+            streamMode = .remux
+            streamOffset = 0
+            streamAudioIndex = 0
+            if await startStreaming(generation: generation, autoplay: autoplay,
+                                    offset: 0, mode: .remux, audioIndex: 0) {
+                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
             }
+            return
         }
 
         isPreparing = false
@@ -1074,21 +1419,21 @@ struct VideoPlayerStage: View {
         return codec ?? "未知编码"
     }
 
-    private func resolveSource() async -> (url: URL, headers: [String: String])? {
+    private func resolveSource() async -> (url: URL, headers: [String: String], isHLS: Bool)? {
         if photo.isCloud {
             do {
                 let stream = try await store.cloudStreamOrThrow(for: photo)
-                return (stream.url, stream.headers)
+                return (stream.url, stream.headers, stream.isHLS)
             } catch {
                 streamFailure = error.localizedDescription
                 return nil
             }
         }
-        return (LibraryPaths.sourceURL(for: photo), [:])
+        return (LibraryPaths.sourceURL(for: photo), [:], false)
     }
 
     private func cachedTranscodeURL() -> URL? {
-        LibraryPaths.transcodes.appendingPathComponent(photo.id.uuidString + ".mp4")
+        LibraryPaths.transcodes.appendingPathComponent(photo.id.uuidString + ".mp4", isDirectory: false)
     }
 
     private func transcodeAndPlay() {
@@ -1106,9 +1451,11 @@ struct VideoPlayerStage: View {
                         source: sourceURL,
                         headers: headers,
                         trustSelfSigned: store.cloudMount(for: photo.cloudMountID)?.trustSelfSigned ?? false,
+                        toneMapHDR: probeIsHDR,
                         destination: destination)
                 } else {
-                    try await VideoSupport.transcode(source: sourceURL, destination: destination)
+                    try await VideoSupport.transcode(source: sourceURL, destination: destination,
+                                                     toneMapHDR: probeIsHDR)
                 }
                 let probe = await VideoSupport.probe(url: destination)
                 // 转换期间已经翻到别的照片：不要再把结果塞进播放器。
@@ -1119,12 +1466,16 @@ struct VideoPlayerStage: View {
                     return
                 }
                 videoSize = probe.size
+                probeDuration = probe.duration
+                streamOffset = 0
                 model.load(url: destination, probe: probe, autoplay: true,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
                 hasLoadedVideo = true
                 failureMessage = nil
                 canTranscode = false
                 isTranscoding = false
+                VideoCacheManager.trimIfNeeded()
+                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 store.showToast("已转换为兼容格式并开始播放")
             } catch {
                 guard generation == loadGeneration else { return }
@@ -1176,7 +1527,7 @@ struct VideoDeckButton: View {
     }
 }
 
-/// 工具栏左侧的播放控制组：紧挨返回按钮，与工具栏共用同一行。
+/// 播放舱里的播放控制组：上一个 / 后退 10 秒 / 播放 / 前进 10 秒 / 下一个。
 struct VideoToolbarTransport: View {
     @ObservedObject var model: VideoPlayerModel
     let hasPrev: Bool
@@ -1185,7 +1536,7 @@ struct VideoToolbarTransport: View {
     let onNext: () -> Void
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 1) {
             VideoDeckButton(icon: "backward.end.fill", help: "上一个视频 (⌘↑)") {
                 onPrev()
             }
@@ -1194,13 +1545,13 @@ struct VideoToolbarTransport: View {
             transportDivider
 
             VideoDeckButton(icon: "gobackward.10", help: "后退 10 秒 (J)") {
-                model.seek(by: -10)
+                model.requestSeek(to: model.currentTime - 10)
             }
 
             playButton
 
             VideoDeckButton(icon: "goforward.10", help: "前进 10 秒 (L)") {
-                model.seek(by: 10)
+                model.requestSeek(to: model.currentTime + 10)
             }
 
             transportDivider
@@ -1210,9 +1561,8 @@ struct VideoToolbarTransport: View {
             }
             .disabled(!hasNext)
         }
-        // 工具栏会把胶囊背景贴着内容绘制：这里留出内边距，图标才不会顶到胶囊边缘。
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
+        // 播放舱内已经留了内边距：这里只需要一点点空隙，避免按钮贴着分隔线。
+        .padding(.horizontal, 1)
         .fixedSize()
     }
 
@@ -1220,7 +1570,7 @@ struct VideoToolbarTransport: View {
         Rectangle()
             .fill(Color.primary.opacity(0.10))
             .frame(width: 1, height: 13)
-            .padding(.horizontal, 1)
+            .padding(.horizontal, 2)
     }
 
     private var playButton: some View {
@@ -1228,10 +1578,10 @@ struct VideoToolbarTransport: View {
             model.togglePlay()
         } label: {
             Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 10.5, weight: .bold))
                 .foregroundStyle(.white)
                 .contentTransition(.symbolEffect(.replace))
-                .frame(width: 28, height: 28)
+                .frame(width: 26, height: 26)
                 .background {
                     Circle()
                         .fill(Color.accentColor)
@@ -1243,6 +1593,7 @@ struct VideoToolbarTransport: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, 2)
         .animation(.snappy(duration: 0.2), value: model.isPlaying)
         .help(model.isPlaying ? "暂停 (K)" : "播放 (K)")
     }
@@ -1273,36 +1624,43 @@ struct VideoToolbarProgress: View {
     var body: some View {
         HStack(spacing: 7) {
             Text(formatPlayerTime(model.currentTime))
-                .frame(width: 38, alignment: .trailing)
+                .frame(width: 36, alignment: .trailing)
                 .contentTransition(.numericText())
 
+            // 轨道用强调色：与信息行的进度圆环同一套语言，进度点带柔光。
             VideoScrubber(progress: progress,
                           buffered: buffered,
-                          tint: Color.primary.opacity(0.78)) { value in
+                          tint: Color.accentColor) { value in
                 model.seek(to: value * model.duration)
             } onCommit: { value in
-                model.seek(to: value * model.duration)
+                model.requestSeek(to: value * model.duration)
             }
-            .frame(minWidth: 120, idealWidth: 190, maxWidth: 220)
+            // 播放舱宽度固定，进度条吃掉中间的全部宽度，翻页时长度不变。
+            .frame(minWidth: 120, maxWidth: .infinity)
 
             Text(durationText)
-                .frame(width: 44, alignment: .leading)
+                .frame(width: 40, alignment: .leading)
                 .contentTransition(.numericText())
                 .contentShape(Rectangle())
                 .onTapGesture { showsRemaining.toggle() }
                 .help("点击切换已播 / 剩余时长")
         }
-        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+        .font(.system(size: 10, weight: .medium, design: .monospaced))
         .monospacedDigit()
         .foregroundStyle(.secondary)
         .help("拖动进度条定位")
     }
 }
 
-/// 工具栏音量：扬声器图标（点击静音/恢复）+ 紧凑滑杆。
-/// 顶栏融合模式把控制条收进了工具栏，音量大小也要能直接拖，不再只藏在菜单里。
-struct VideoToolbarVolume: View {
+/// 进度条右侧的音量：平时只是一枚扬声器图标，鼠标移上去向左展开一条可拖动的小轨道，
+/// 移开自动收起；点图标静音。轨道与进度条同一套配色和进度点样式，展开过程带弹簧动画。
+struct VideoInlineVolume: View {
     @ObservedObject var model: VideoPlayerModel
+
+    @State private var isHovering = false
+    @State private var isDragging = false
+
+    private var isExpanded: Bool { isHovering || isDragging }
 
     private var icon: String {
         if model.isMuted || model.volume == 0 { return "speaker.slash.fill" }
@@ -1312,32 +1670,76 @@ struct VideoToolbarVolume: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
+            volumeRail
+                .frame(width: isExpanded ? 84 : 0, height: 16)
+                .opacity(isExpanded ? 1 : 0)
+                .clipped()
+
             Button {
                 if model.volume == 0 {
-                    model.volume = 1
+                    model.volume = 0.6
                     model.isMuted = false
                 } else {
                     model.isMuted.toggle()
                 }
             } label: {
                 Image(systemName: icon)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(Color.primary.opacity(0.82))
-                    .frame(width: 18, height: 22)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(0.78))
+                    .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(model.isMuted ? "取消静音 (M)" : "静音 (M)")
-
-            Slider(value: $model.volume, in: 0...1) { editing in
-                if editing, model.isMuted { model.isMuted = false }
-            }
-            .controlSize(.mini)
-            .frame(width: 72)
-            .help("音量")
+            .help(model.isMuted ? "取消静音（移入展开音量）" : "静音（移入展开音量）")
         }
-        .fixedSize()
+        .onHover { inside in
+            isHovering = inside
+        }
+        .animation(.spring(response: 0.28, dampingFraction: 0.84), value: isExpanded)
+    }
+
+    private var volumeRail: some View {
+        GeometryReader { proxy in
+            let width = max(1, proxy.size.width)
+            let value = model.isMuted ? 0 : min(1, max(0, model.volume))
+            let knobSize: CGFloat = isDragging ? 10 : 7
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(height: 3)
+                    .overlay {
+                        Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    }
+
+                Capsule()
+                    .fill(LinearGradient(colors: [Color.accentColor.opacity(0.40),
+                                                  Color.accentColor],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(width: width * value, height: 3)
+
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: knobSize, height: knobSize)
+                    .overlay {
+                        Circle().strokeBorder(.white.opacity(0.6), lineWidth: 0.8)
+                    }
+                    .shadow(color: Color.accentColor.opacity(0.40), radius: 3)
+                    .offset(x: width * value - knobSize / 2)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        isDragging = true
+                        let next = min(1, max(0, gesture.location.x / width))
+                        model.volume = next
+                        if model.isMuted, next > 0 { model.isMuted = false }
+                    }
+                    .onEnded { _ in isDragging = false }
+            )
+        }
     }
 }
 
@@ -1424,4 +1826,113 @@ func formatPlayerTime(_ seconds: Double) -> String {
         return String(format: "%d:%02d:%02d", hours, minutes, secs)
     }
     return String(format: "%d:%02d", minutes, secs)
+}
+
+/// 音轨 / 字幕菜单：顶栏与画面内控制条共用同一组状态与交互。
+struct VideoMediaMenuButtons: View {
+    enum Style {
+        /// 叠在画面上：白色图标 + 深色底。
+        case overlay
+        /// 窗口工具栏 / 播放舱：跟随系统明暗。
+        case toolbar
+    }
+
+    @ObservedObject var ui: VideoPlaybackUI
+    @ObservedObject var model: VideoPlayerModel
+    var style: Style = .overlay
+
+    var body: some View {
+        HStack(spacing: 2) {
+            if ui.audioChoices.count > 1 { audioMenu }
+            subtitleMenu
+        }
+    }
+
+    private var audioMenu: some View {
+        Menu {
+            ForEach(ui.audioChoices) { choice in
+                Button {
+                    ui.selectAudio(choice.index)
+                } label: {
+                    let title = choice.title.isEmpty ? "音轨 \(choice.index + 1)" : choice.title
+                    if choice.index == ui.selectedAudioIndex {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+            }
+        } label: {
+            icon("waveform", active: false)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("音轨")
+    }
+
+    private var subtitleMenu: some View {
+        Menu {
+            Button("载入字幕文件…") { ui.pickSubtitle() }
+            if ui.hasSubtitle {
+                Button("关闭字幕") { ui.clearSubtitle() }
+                Divider()
+                Button("字幕延后 0.5 秒") { ui.adjustOffset(0.5) }
+                Button("字幕提前 0.5 秒") { ui.adjustOffset(-0.5) }
+                Button("重置偏移（当前 \(offsetText)）") { ui.resetOffset() }
+            }
+            if !model.legibleOptions.isEmpty {
+                Divider()
+                ForEach(model.legibleOptions.indices, id: \.self) { index in
+                    let option = model.legibleOptions[index]
+                    Button {
+                        ui.clearSubtitle()
+                        model.selectLegible(option)
+                    } label: {
+                        if model.selectedLegible == option {
+                            Label(option.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(option.displayName)
+                        }
+                    }
+                }
+                if model.selectedLegible != nil {
+                    Button("关闭内嵌字幕") { model.selectLegible(nil) }
+                }
+            }
+        } label: {
+            icon(ui.hasSubtitle || model.selectedLegible != nil ? "captions.bubble.fill" : "captions.bubble",
+                 active: ui.hasSubtitle || model.selectedLegible != nil)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("字幕")
+    }
+
+    private var offsetText: String {
+        String(format: "%+.1fs", ui.subtitleOffset)
+    }
+
+    private func icon(_ name: String, active: Bool) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(foreground(active))
+            .frame(width: 26, height: style == .overlay ? 26 : 24)
+            .background {
+                RoundedRectangle(cornerRadius: style == .overlay ? 7 : 6, style: .continuous)
+                    .fill(background(active))
+            }
+            .contentShape(Rectangle())
+    }
+
+    private func foreground(_ active: Bool) -> Color {
+        if active { return Color.accentColor }
+        return style == .overlay ? Color.white.opacity(0.86) : Color.primary.opacity(0.82)
+    }
+
+    private func background(_ active: Bool) -> Color {
+        if active { return Color.accentColor.opacity(style == .overlay ? 0.2 : 0.16) }
+        return style == .overlay ? Color.white.opacity(0.001) : Color.primary.opacity(0.001)
+    }
 }

@@ -4,13 +4,17 @@ import SwiftUI
 /// 「个人收藏」汇总：顶栏切换维度，每一屏只展示该维度的分类卡片，点卡片下钻。
 struct FavoritesDigestView: View {
     @EnvironmentObject private var store: LibraryStore
+    /// 骨架阶段按年份取到的真实封面（汇总算完后由正式数据接管）。
+    @State private var quickCovers: [String: [PhotoItem]] = [:]
 
     var body: some View {
         Group {
             if let digest = store.favoritesDigest, digest.hasContent {
                 dimensionView(digest)
+            } else if store.favoritesViewMode == .years, !store.favoritesQuickYearBuckets.isEmpty {
+                quickYearsWall
             } else if store.isLoadingFavoritesDigest || store.favoritesDigest == nil {
-                loadingState
+                skeletonState
             } else {
                 emptyState
             }
@@ -19,6 +23,129 @@ struct FavoritesDigestView: View {
             store.loadFavoritesDigestIfNeeded()
         }
         .animation(.snappy(duration: 0.22), value: store.favoritesViewMode)
+    }
+
+    // MARK: - 骨架（占位优先）
+
+    /// 正式汇总要读上万条收藏，先把已有的计数快照画出来：
+    /// 年份与数量是准确的，封面与其余维度随汇总到达填入，避免整屏只有转圈。
+    @ViewBuilder
+    private var skeletonState: some View {
+        switch store.favoritesViewMode {
+        case .all, .years:
+            yearsSkeleton
+        case .kinds, .places, .cameras, .people:
+            genericSkeleton(store.favoritesViewMode)
+        }
+    }
+
+    private var yearsSkeleton: some View {
+        let buckets = store.favoritesQuickYearBuckets
+        let subtitle: String
+        if let total = store.favoritesQuickTotal, !buckets.isEmpty {
+            subtitle = "\(buckets.count) 个年份 · \(total.formatted()) 项收藏"
+        } else {
+            subtitle = "正在汇总收藏…"
+        }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                header(mode: .years, subtitle: subtitle, highlight: nil, covers: [])
+                if buckets.isEmpty {
+                    DigestYearSkeletonCard(year: nil, count: nil, photos: [],
+                                           height: 246, featured: true)
+                    skeletonGrid(minimum: 210, maximum: 330, height: 158, spacing: 16)
+                } else {
+                    if let first = buckets.first {
+                        DigestYearSkeletonCard(year: first.year,
+                                               count: first.count,
+                                               photos: quickCovers[first.year] ?? [],
+                                               height: 246,
+                                               featured: true)
+                    }
+                    let rest = Array(buckets.dropFirst())
+                    if !rest.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 330),
+                                                     spacing: 16)],
+                                  alignment: .leading,
+                                  spacing: 16) {
+                            ForEach(rest, id: \.year) { bucket in
+                                DigestYearSkeletonCard(year: bucket.year,
+                                                       count: bucket.count,
+                                                       photos: quickCovers[bucket.year] ?? [],
+                                                       height: 158,
+                                                       featured: false)
+                            }
+                        }
+                    }
+                }
+                loadingHint
+            }
+            .padding(.horizontal, 26)
+            .padding(.top, 18)
+            .padding(.bottom, 70)
+        }
+        .background { wallBackdrop }
+        .task(id: coverTaskKey(buckets.map(\.year))) {
+            guard quickCovers.isEmpty, !buckets.isEmpty else { return }
+            let loaded = await store.favoritesQuickYearCovers(years: buckets.map(\.year))
+            guard !loaded.isEmpty else { return }
+            quickCovers = loaded
+        }
+    }
+
+    /// 封面预取的触发条件：年份集合或图库签名变化时重新取一次。
+    private func coverTaskKey(_ years: [String]) -> String {
+        years.joined(separator: ",") + "#" + store.systemIndexSignature
+    }
+
+    private func genericSkeleton(_ mode: FavoritesViewMode) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                header(mode: mode, subtitle: "正在汇总收藏…", highlight: nil, covers: [])
+                skeletonGrid(minimum: mode == .people ? 118 : 230,
+                             maximum: mode == .people ? 160 : 360,
+                             height: mode == .people ? 150 : 176,
+                             spacing: 14)
+                loadingHint
+            }
+            .padding(.horizontal, 26)
+            .padding(.top, 18)
+            .padding(.bottom, 70)
+        }
+        .background { wallBackdrop }
+    }
+
+    private func skeletonGrid(minimum: CGFloat,
+                              maximum: CGFloat,
+                              height: CGFloat,
+                              spacing: CGFloat) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: minimum, maximum: maximum),
+                                     spacing: spacing)],
+                  alignment: .leading,
+                  spacing: spacing) {
+            ForEach(0..<8, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(LinearGradient(colors: [Color.primary.opacity(0.10),
+                                                  Color.primary.opacity(0.04)],
+                                         startPoint: .topLeading,
+                                         endPoint: .bottomTrailing))
+                    .frame(height: height)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
+                    }
+            }
+        }
+    }
+
+    private var loadingHint: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            Text("正在汇总收藏…")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder
@@ -34,6 +161,70 @@ struct FavoritesDigestView: View {
             camerasWall(digest)
         case .people:
             peopleWall(digest)
+        }
+    }
+
+    // MARK: - 年份（快速版，正式汇总未完成时）
+
+    /// 用后台计数快照 + 每年少量封面直接画出可点击的年份墙。
+    /// 上万条收藏的正式汇总要读几秒，这里让用户一进来就能看到最近年份并点进去。
+    @ViewBuilder
+    private var quickYearsWall: some View {
+        let buckets = quickYearBuckets
+        let total = store.favoritesQuickTotal ?? buckets.reduce(0) { $0 + $1.count }
+        if buckets.isEmpty {
+            skeletonState
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header(mode: .years,
+                           subtitle: "\(buckets.count) 个年份 · \(total.formatted()) 项收藏",
+                           highlight: buckets.first.map {
+                               "最近 \($0.selection.key) 年 · \($0.count.formatted()) 张"
+                           },
+                           covers: buckets.compactMap { $0.photos.first })
+                    if let featured = buckets.first {
+                        DigestYearFeatureCard(bucket: featured) {
+                            store.selectFavoritesBucket(featured.selection)
+                        }
+                    }
+                    let rest = Array(buckets.dropFirst())
+                    if !rest.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 330),
+                                                     spacing: 16)],
+                                  alignment: .leading,
+                                  spacing: 16) {
+                            ForEach(rest) { bucket in
+                                DigestYearCard(bucket: bucket) {
+                                    store.selectFavoritesBucket(bucket.selection)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 26)
+                .padding(.top, 18)
+                .padding(.bottom, 70)
+            }
+            .background { wallBackdrop }
+            .task(id: coverTaskKey(buckets.map { $0.selection.key })) {
+                guard quickCovers.isEmpty else { return }
+                quickCovers = await store.favoritesQuickYearCovers(years: buckets.map { $0.selection.key })
+            }
+        }
+    }
+
+    /// 用计数快照拼出与正式汇总同构的年份卡片：数量准确，封面随后补齐。
+    private var quickYearBuckets: [FavoritesDigestBucket] {
+        store.favoritesQuickYearBuckets.map { item in
+            FavoritesDigestBucket(
+                selection: FavoritesBucketSelection(dimension: .year,
+                                                   key: item.year,
+                                                   title: "\(item.year) 年",
+                                                   subtitle: nil),
+                count: item.count,
+                photos: quickCovers[item.year] ?? []
+            )
         }
     }
 
@@ -202,24 +393,27 @@ struct FavoritesDigestView: View {
             .padding(.top, 18)
             .padding(.bottom, 70)
         }
-        .background {
-            ZStack {
-                LinearGradient(colors: [Color.accentColor.opacity(0.09), Color.clear],
-                               startPoint: .topLeading,
-                               endPoint: .center)
-                Circle()
-                    .fill(Color.accentColor.opacity(0.10))
-                    .frame(width: 540, height: 540)
-                    .blur(radius: 100)
-                    .offset(x: -280, y: -220)
-                Circle()
-                    .fill(Color.purple.opacity(0.06))
-                    .frame(width: 460, height: 460)
-                    .blur(radius: 90)
-                    .offset(x: 320, y: 180)
-            }
-            .ignoresSafeArea()
+        .background { wallBackdrop }
+    }
+
+    /// 维度页与骨架页共用的背景。
+    private var wallBackdrop: some View {
+        ZStack {
+            LinearGradient(colors: [Color.accentColor.opacity(0.09), Color.clear],
+                           startPoint: .topLeading,
+                           endPoint: .center)
+            Circle()
+                .fill(Color.accentColor.opacity(0.10))
+                .frame(width: 540, height: 540)
+                .blur(radius: 100)
+                .offset(x: -280, y: -220)
+            Circle()
+                .fill(Color.purple.opacity(0.06))
+                .frame(width: 460, height: 460)
+                .blur(radius: 90)
+                .offset(x: 320, y: 180)
         }
+        .ignoresSafeArea()
     }
 
     private func header(mode: FavoritesViewMode,
@@ -357,18 +551,6 @@ struct FavoritesDigestView: View {
         .padding(.bottom, 50)
     }
 
-    private var loadingState: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.large)
-            Text("正在汇总收藏…")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, 50)
-    }
-
     private var emptyState: some View {
         VStack(spacing: 14) {
             ZStack {
@@ -462,6 +644,59 @@ private struct DigestYearFeatureCard: View {
         .onHover { hovered = $0 }
         .animation(.snappy(duration: 0.18), value: hovered)
         .help("只看 \(year) 年的收藏")
+    }
+}
+
+// MARK: - 年份骨架卡片
+
+/// 汇总未就绪时的年份卡片占位：年份与数量来自后台计数快照，封面留空。
+private struct DigestYearSkeletonCard: View {
+    let year: String?
+    let count: Int?
+    let photos: [PhotoItem]
+    let height: CGFloat
+    let featured: Bool
+
+    private var hasPhotos: Bool { !photos.isEmpty }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if hasPhotos {
+                DigestMosaic(photos: photos)
+                LinearGradient(colors: [.black.opacity(0.82),
+                                        .black.opacity(0.22),
+                                        .clear],
+                               startPoint: .bottom,
+                               endPoint: .top)
+            } else {
+                LinearGradient(colors: [Color.accentColor.opacity(0.16),
+                                        Color.primary.opacity(0.05)],
+                               startPoint: .topLeading,
+                               endPoint: .bottomTrailing)
+            }
+
+            VStack(alignment: .leading, spacing: featured ? 6 : 3) {
+                Text(year ?? "—")
+                    .font(.system(size: featured ? 48 : 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(hasPhotos
+                                     ? Color.white
+                                     : Color.secondary.opacity(year == nil ? 0.25 : 0.62))
+                Text(count.map { "\($0.formatted()) 张收藏" } ?? "正在统计…")
+                    .font(.system(size: featured ? 12 : 10.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(hasPhotos ? Color.white.opacity(0.82)
+                                               : Color.secondary.opacity(0.7))
+            }
+            .padding(featured ? 20 : 14)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: featured ? 18 : 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: featured ? 18 : 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(hasPhotos ? 0.12 : 0.08), lineWidth: 0.8)
+        }
     }
 }
 

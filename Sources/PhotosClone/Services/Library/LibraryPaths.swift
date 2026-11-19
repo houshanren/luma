@@ -209,10 +209,27 @@ enum LibraryPaths {
     }
 
     /// 由官方「照片」创建的原生图库：带 Apple 的 Photos.sqlite。
+    /// 结论不会在运行期变化，缓存起来：外置盘上一次 lstat 可能阻塞几秒，
+    /// 而 SwiftUI body / 查询会高频访问这里，不能每次都碰磁盘。
     static func isNativeLibrary(_ url: URL) -> Bool {
-        url.pathExtension.lowercased() == "photoslibrary"
-            && FileManager.default.fileExists(atPath: url.appendingPathComponent("database/Photos.sqlite").path)
+        guard url.pathExtension.lowercased() == "photoslibrary" else { return false }
+        let key = url.standardizedFileURL.path
+        nativeLock.lock()
+        if let cached = nativeCache[key] {
+            nativeLock.unlock()
+            return cached
+        }
+        nativeLock.unlock()
+        let value = FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("database/Photos.sqlite").path)
+        nativeLock.lock()
+        nativeCache[key] = value
+        nativeLock.unlock()
+        return value
     }
+
+    private static let nativeLock = NSLock()
+    private static var nativeCache: [String: Bool] = [:]
 
     /// 任何 .photoslibrary 包（原生库或本 App 创建的库）都可作为容器。
     static func isLibraryContainer(_ url: URL) -> Bool {
@@ -294,17 +311,17 @@ enum LibraryPaths {
         }
         return derivatives
             .appendingPathComponent(shard(for: photo.id), isDirectory: true)
-            .appendingPathComponent(photo.id.uuidString + "_1_105_c.jpeg")
+            .appendingPathComponent(photo.id.uuidString + "_1_105_c.jpeg", isDirectory: false)
     }
 
     /// 网格快速层缩略图（约 192px）：独立小文件，滚动时秒开，缺失时按需生成。
     static func quickThumbnailURL(for photo: PhotoItem) -> URL {
         if photo.isSystem {
-            return systemThumbs.appendingPathComponent(photo.id.uuidString + "_q.jpg")
+            return systemThumbs.appendingPathComponent(photo.id.uuidString + "_q.jpg", isDirectory: false)
         }
         return derivatives
             .appendingPathComponent(shard(for: photo.id), isDirectory: true)
-            .appendingPathComponent(photo.id.uuidString + "_q.jpg")
+            .appendingPathComponent(photo.id.uuidString + "_q.jpg", isDirectory: false)
     }
 
     static func sourceURL(for photo: PhotoItem) -> URL {
@@ -312,15 +329,17 @@ enum LibraryPaths {
             return URL(fileURLWithPath: path)
         }
         if let editedFilename = photo.editedFilename {
-            return edited.appendingPathComponent(editedFilename)
+            return edited.appendingPathComponent(editedFilename, isDirectory: false)
         }
         return originalURL(for: photo)
     }
 
+    /// 注意：单参数的 `appendingPathComponent` 会为了判断目录去 lstat，
+    /// 图库常在外置盘上，这条路径每次打开预览都会被调用，必须显式给 isDirectory。
     static func originalURL(for photo: PhotoItem) -> URL {
         originals
             .appendingPathComponent(shard(for: photo.id), isDirectory: true)
-            .appendingPathComponent(photo.filename)
+            .appendingPathComponent(photo.filename, isDirectory: false)
     }
 
     static func exportURL(for photo: PhotoItem) -> URL {
@@ -328,7 +347,7 @@ enum LibraryPaths {
             return URL(fileURLWithPath: path)
         }
         if let editedFilename = photo.editedFilename {
-            return edited.appendingPathComponent(editedFilename)
+            return edited.appendingPathComponent(editedFilename, isDirectory: false)
         }
         return originalURL(for: photo)
     }
@@ -341,7 +360,7 @@ enum LibraryPaths {
         guard let filename = photo.livePhotoFilename, !filename.isEmpty else { return nil }
         return originals
             .appendingPathComponent(shard(for: photo.id), isDirectory: true)
-            .appendingPathComponent(filename)
+            .appendingPathComponent(filename, isDirectory: false)
     }
 
     static func shard(for id: UUID) -> String {

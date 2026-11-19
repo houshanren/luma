@@ -101,6 +101,21 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// 视频转码 / 边下边播缓存容量上限（GB）；超过后按最近最少使用淘汰。
+    @Published var videoCacheLimitGB: Int {
+        didSet { UserDefaults.standard.set(videoCacheLimitGB, forKey: SettingsKeys.videoCacheLimitGB) }
+    }
+
+    /// 外挂字幕字号。
+    @Published var subtitleFontSize: Double {
+        didSet { UserDefaults.standard.set(subtitleFontSize, forKey: SettingsKeys.subtitleFontSize) }
+    }
+
+    /// 外挂字幕是否显示半透明底色。
+    @Published var subtitleBackground: Bool {
+        didSet { UserDefaults.standard.set(subtitleBackground, forKey: SettingsKeys.subtitleBackground) }
+    }
+
     /// 「最近删除」自动清理的保留天数；0 表示不自动清理。（随图库保存）
     @Published var trashRetentionDays: Int {
         didSet { persistLibraryInt(SettingsKeys.trashRetentionDays, trashRetentionDays) }
@@ -195,6 +210,9 @@ final class AppSettings: ObservableObject {
         videoSeekStep = defaults.object(forKey: SettingsKeys.videoSeekStep) as? Double ?? 5
         videoControlPlacement = VideoControlPlacement(
             rawValue: defaults.string(forKey: SettingsKeys.videoControlPlacement) ?? "") ?? .topIntegrated
+        videoCacheLimitGB = defaults.object(forKey: SettingsKeys.videoCacheLimitGB) as? Int ?? 20
+        subtitleFontSize = defaults.object(forKey: SettingsKeys.subtitleFontSize) as? Double ?? 15
+        subtitleBackground = defaults.object(forKey: SettingsKeys.subtitleBackground) as? Bool ?? true
         // 默认豆瓣：免 Key，开箱即可刮削。
         cinemaProvider = CinemaProvider(rawValue: defaults.string(forKey: SettingsKeys.cinemaProvider) ?? "") ?? .douban
         cinemaAPIKey = defaults.string(forKey: SettingsKeys.cinemaAPIKey) ?? ""

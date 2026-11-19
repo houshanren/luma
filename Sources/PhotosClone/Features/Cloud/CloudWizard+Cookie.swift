@@ -23,10 +23,10 @@ extension CloudSetupWizardView {
 
             VStack(alignment: .leading, spacing: 8) {
                 if isAliyunCookie {
-                    bullet("1", "用浏览器打开并登录 www.alipan.com")
-                    bullet("2", "按 ⌥⌘I 打开开发者工具 →「应用 / Application」→「本地存储」")
-                    bullet("3", "展开 https://www.alipan.com 的 token，复制 refresh_token 整段（以 ey 开头）")
-                    bullet("4", "粘贴到下面测试；也可以直接粘贴含 refresh_token 的整段 Cookie")
+                    bullet("1", "打开阿里云盘令牌工具（AList 提供，扫码授权即可，不需要开发者资质）")
+                    bullet("2", "用阿里云盘手机 App 扫码并在手机上确认授权")
+                    bullet("3", "页面会显示 refresh_token=…，复制整行（令牌以 eyJ 开头）")
+                    bullet("4", "粘贴到下面测试；网页 localStorage 里的 token 不能用，网页令牌会被开放平台接口拒绝")
                 } else {
                     bullet("1", "用 Chrome / Edge / Safari 打开并登录 pan.quark.cn")
                     bullet("2", "按 ⌥⌘I 打开开发者工具，切到「网络」，刷新页面")
@@ -36,8 +36,9 @@ extension CloudSetupWizardView {
             }
 
             HStack(spacing: 8) {
-                Button(isAliyunCookie ? "打开阿里云盘" : "打开夸克网盘") {
-                    open(isAliyunCookie ? "https://www.alipan.com" : "https://pan.quark.cn")
+                Button(isAliyunCookie ? "打开令牌工具" : "打开夸克网盘") {
+                    open(isAliyunCookie ? "https://alist.nn.ci/tool/aliyundrive/request"
+                                        : "https://pan.quark.cn")
                 }
                 Button("从剪贴板粘贴") {
                     if let text = NSPasteboard.general.string(forType: .string) {
@@ -77,7 +78,7 @@ extension CloudSetupWizardView {
                 Spacer()
                 if isAliyunCookie {
                     Text(AliyunCookieAuth.extractRefreshToken(cookieText) == nil
-                         ? "未识别到 refresh_token"
+                         ? "未识别到 refresh_token（应以 eyJ 开头）"
                          : "已识别 refresh_token")
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(AliyunCookieAuth.extractRefreshToken(cookieText) == nil

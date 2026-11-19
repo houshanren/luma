@@ -261,7 +261,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 1. 先判断该能力属于“读取 / 派生 / 写入 / 端侧分析”哪一类，再对照上表确定三种范围的可用性；
 2. 可派生（纯内存计算）的能力优先在系统图库实现，不能因为“只读”就不给入口；
 3. 需要写原图、写元数据或写 Apple 数据库的能力：系统图库默认只保留拷贝出口，只有官方库作为当前图库时才允许经 PhotoKit 真实编辑 / 删除；网盘只保留上传（WebDAV）或置灰；
-4. 展示层复用现有组件（`SectionHeaderView`、网格组件、相簿卡片、`CategoryOverviewView`、`MoreItemsOverviewView`），同一入口的名称、图标与排序在三个范围保持一致；新增展示形式必须同时接入 `GalleryView` 与 `CloudBrowserView`；
+4. 展示层复用现有组件（`SectionHeaderView`、网格组件、相簿卡片、`CategoryOverviewView`、`MoreItemsOverviewView`），同一入口的名称、图标与排序在三个范围保持一致；网盘照片网格与拾光 / 系统图库共用 `GalleryView` 的网格与顶部栏，不得再维护第二套网格；
 5. 新增 `SidebarItem` 必须同步 `sidebarTitle`、`isSystemScope`、`navigationParent`、`isGridScopeForCommands`、`GalleryView` 的 `isGridScope` / `supportsZoomControl` / `content`、`EmptyStateView`，并补 `README.md`；
 6. 端侧识别 / 派生结果必须同时进入内存与落库缓存：内存结果参与 `visibleStateKey` / 汇总缓存键，保证识别过程中网格与场景计数会刷新；落库走 `system_analysis` / `derived_reports` / `cloud_assets`，并提供回填方法。系统图库的识别必须持续增量（每批 200 张、逐张刷新），不得只跑固定一批就停下；但**不得在打开图库时自动开跑**，只有用户主动开启过（`systemAnalysisAutoResume`）才由 `resumeSystemAnalysisIfNeeded()` 对新增照片续跑。
 
@@ -280,8 +280,8 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 ## 8. 时间轴与网格 UI 约定
 
-- `store.isTimelineScope`（仅 `.library` / `.systemLibrary`）才允许「年 / 月 / 所有照片」分段与总览卡片。
-- 照片显示形式由 `store.thumbnailAspect`（`ThumbnailAspect`：正方形 / 完整宽高比 / 瀑布流 / 列表）决定，本地图库、系统图库与网盘共用同一设置；新增形式必须同时接入 `GalleryView.sectionGrid` 与 `CloudBrowserView` 的网格分支。
+- `store.isTimelineScope`（`.library` / `.systemLibrary`，以及网盘的「全部项目」根页面）才允许「年 / 月 / 所有照片」分段与总览卡片；网盘的媒体类型、更多项目、目录相簿、分类总览与专用页面都不算。
+- 照片显示形式由 `store.thumbnailAspect`（`ThumbnailAspect`：正方形 / 完整宽高比 / 瀑布流 / 列表）决定，本地图库、系统图库与网盘共用同一设置；新增形式只需接入 `GalleryView.sectionGrid`，网盘通过 `isTimelineScope` 走同一条网格链路。
 - 非时间轴范围 `store.sections` 必须返回单段（无年/月分段、无段头），保证相簿与文件夹是普通网格。
 - 相簿 / 文件夹链路的上一级由 `LibraryStore.navigationParent` 统一给出，工具栏左侧显示「返回上一级」按钮，菜单「照片 › 返回上一级」与 `⌘[` 复用同一个方法（`navigateUp()`）；不要在视图里各自拼父级判断。
 - 年总览：每年一张拼图卡片（最多 4 张照片），点击 `openMonths(of:)`；月总览：按月分段、按天卡片，点击 `openAllPhotos(at:)` 定位。大图库改用 `store.yearBuckets` / `store.monthGroups`（SQL 分区，最多 4 张样本 + 真实总数），不要为了总览遍历全部照片。
@@ -325,12 +325,14 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 网络请求失败必须转为用户可读中文错误（`WebDAVError` / `CloudOAuthError`），不要直接抛英文 `NSError` 文案。
 - 网盘目录缓存以 `mountID + path` 为键；退出网盘或切换目录时不要泄漏 `Task`。
 - 网盘侧边栏的「媒体类型 / 更多项目」分区标题与拾光、系统图库一致，点标题打开卡片总览（`CloudOverviewSection`，状态在 `CloudBrowserModel.overview`）；选中具体范围、进入子目录、切换挂载或换库时必须清空总览，否则会停留在旧目录的卡片墙。总览卡片复用 `AlbumCoverImage` 与同一套布局，封面取当前目录里属于该范围的第一张。
+- 网盘侧边栏的树结构与系统图库一致：影院（网盘自有）→ 媒体类型 → 更多项目 → 场景 → 相簿（不再有「固定」分区）。必须与拾光 / 系统图库共用 `SidebarSectionHeader` / `SidebarCategoryRow`：入口顺序、图标、标题与显示条件分别由 `MediaTypeKey.cloudCases`、`CloudScope.moreItems(counts:analyzedCount:)` 统一定义，侧边栏与总览共用同一份定义，不要另写一套行样式。「全部项目」由网盘行承担，媒体类型不再单列；数量为 0 的媒体类型、重复项目与尚未识别的包含文字按系统图库规则隐藏；没有目录相簿时隐藏相簿分区。分区标题点击只打开总览（`openCloudOverview`），再次点击不退回网格。媒体类型与场景默认收起（折叠状态键含 `v2`，旧版本保存的展开态不沿用）。「更多项目」必须与系统图库同名同序，包括只读能力入口：图库整理（`CloudScope.ratings`，评分 / 旗标 / 色标写 `cloud_marks`，不写网盘）、最近编辑 / 最近删除 / 导入项目（`CloudReadOnlyScopeView` 只读说明页）；最近保存按网盘文件修改时间（`addedAt`）取最近 30 天。
 - 网络存储网格必须使用 `store.cloudVisiblePhotos`（已统一处理范围、搜索、筛选、排序并缓存），不要直接遍历 `cloudPhotos` 生成可见列表；`CloudBrowserModel.revision` 参与缓存失效。打开网盘时侧边栏要展开该挂载的「媒体类型 / 场景 / 更多项目」：范围由 `CloudScope` 表示，行高亮比较的是 `cloudModel.scope` 而不是 `sidebarItem`（`sidebarItem` 始终是 `.cloudMount(id)`）；`cloudVisiblePhotos` 与 `visibleStateKey` 的缓存键必须包含 `String(describing: cloudModel.scope)` 与 `cloudModel.analysis.count`，否则切换范围后网格不刷新。
+- 网盘照片网格不得再自建：`GalleryView` 的 `.cloudMount` 分支只负责分派，普通照片列表直接复用 `photoContent`（同一套网格、顶部栏、空态与预取）；分类总览走 `CloudOverviewView`，人物 / 位置 / 关键词 / 体检 / 重复项目 / 地图走各自的网盘专用页面，图库整理复用 `OrganizeStudioView`（数据源切到 `cloudPhotos`），最近编辑 / 最近删除 / 导入项目走 `CloudReadOnlyScopeView`。`isTimelineScope` 只对网盘「全部项目」根页面为真，目录相簿、媒体类型、最近保存与「更多项目」照片页都是普通网格；`setCloudScope` / `selectCloudFolder` 与 `navigate(to:)` 共用 `clearTransientBrowsingState()`，换范围时清理选择、搜索与筛选。
 - 网盘侧边栏的分区收起状态必须放在 `CloudMountDetailView` **自己的 `@State`** 里，挂载行的展开箭头用 `SidebarView.collapsedCloudMounts`（每个网盘独立，`cloudMountRow` 的箭头与名称是两个并排按钮，不能把 Button 套进 Button）。把收起状态放到外层 `@State` + `ForEach` 闭包里曾出现「点了收起条目还在」的问题，不要改回去。
 - 网盘场景 / 图内文字识别：只允许经 `LibraryStore.analyzeCloudContent()` 触发，逐张用 `cloudThumbnail(for:)` 取缩略图后调用 `PhotoIntelligence.analyze(cgImage:)`，每次最多 120 张、可取消；结果写 `CloudBrowserModel.analysis` 并经 `saveCloudAnalysis` 落 `cloud_assets`，搜索与信息面板通过 `LibraryStore+Intelligence` 的回退读取，禁止写入 `asset_analysis` 或网盘。进入目录时由 `hydrateCloudCache` 回填，远端文件大小变化即作废。
 - 网盘 EXIF：解析集中在 `Services/Cloud/CloudEXIF`，只读文件头部（`probeRange` = 前 256KB；SMB 用 `SMBClient.fileURL` 读本地挂载文件，WebDAV 用 `WebDAVClient.data(path:byteRange:)`，官方网盘用 `CloudService.stream` 直链 + Range），禁止为读 EXIF 下载整张原图；JPEG 截断数据回退到内置 TIFF/IFD 解析（GPS 三个 RATIONAL、日期、Make/Model/Lens、曝光参数）。编排在 `Store/LibraryStore+CloudInfo.swift`：目录载入后自动读取前 200 张（`cloudMetadataPageSize`），可取消、可「继续读取」，结果写回 `PhotoItem` 与 `cloudDirectoryCache`（内存）并经 `saveCloudEXIF` 落 `cloud_assets`；换挂载 / 换库只清内存，断开挂载才 `purgeCloudAssets`。
 - 网盘地图 / 位置：`geoPhotos` 在 `isCloudScope` 时返回 `cloudGeoPhotos`，`PhotoMapView` / `PlaceStatisticsView` 原样复用；缺少地名时由 `resolveMissingCloudPlacesIfNeeded()` 用本机逆地理编码补齐（写 `PlaceCache.json`，不写网盘）。
-- 网盘人物：`scanCloudPeople()` 逐张 `cloudThumbnail` → `FaceClusterEngine.analyze(cgImage:assetID:)` → `assign`，结果同时写 `CloudBrowserModel.people` 与 `cloud_people` / `cloud_person_assets`（`markCloudPeopleScanned` 记录已扫描路径），打开挂载时由 `loadCloudCacheForMount` 回填；页面为 `CloudPeopleView`，禁止调用本地 `startFaceClustering()`（它依赖本地缩略图与数据库）。
+- 网盘人物：`scanCloudPeople()` 逐张 `cloudThumbnail` → `FaceClusterEngine.analyze(cgImage:assetID:)` → `assign`，结果同时写 `CloudBrowserModel.people` 与 `cloud_people` / `cloud_person_assets`（`markCloudPeopleScanned` 记录已扫描路径），打开挂载时由 `loadCloudCacheForMount` 回填；页面为 `CloudPeopleView`，禁止调用本地 `startFaceClustering()`（它依赖本地缩略图与数据库）。人物列表与详情必须与系统图库共用 `PeoplePersonCardShell`、`PersonDetailHero`、`PersonInsightSummaryView` / `PersonMapPanel(source: .cloud)` 与 `PersonAvatarLoader`：卡片尺寸、筛选、悬停、摘要 / 地图 / 全部影像三档在同一套组件内实现，不要另写卡片或详情页。
 - 网盘重复项目：`cloudDuplicateGroups` 用 `DuplicateDetector.groups(from:)` 纯内存计算，页面 `CloudDuplicatesView` 只读展示并提示到网盘 App 合并；不得调用 `mergeDuplicateGroup` 或删除网盘文件。
 - 网盘图库体检：范围 `CloudScope.health` → `CloudHealthView`，扫描只经 `scanCloudHealth()`：当前目录最多 500 张，逐张 `cloudThumbnail` 后调用 `PhotoQuality.sharpness(cgImage:)` 与 `PhotoIntelligence.feature(cgImage:)`，归并复用 `LibraryStore.buildSimilarGroups`，结果写 `CloudBrowserModel.healthReport` 并由 `persistCloudHealthReport` 落 `derived_reports`（key 含挂载 + 目录）；不提供删除 / 清理按钮，只能预览并引导到网盘 App。
 - 网盘相似检索：`findSimilarPhotos(to:)` 在 `isCloudScope` 时转到 `findSimilarCloudPhotos`，对当前目录最多 80 张现算 `PhotoIntelligence.feature`（`cloudFeature` 会落 `cloud_assets`），结果写入 `similarScope`；`cloudVisiblePhotos` 会按 `similarScope.ids` 过滤，切换范围 / 进入目录 / 换挂载必须清空。

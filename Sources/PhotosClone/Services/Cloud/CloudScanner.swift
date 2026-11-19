@@ -86,7 +86,24 @@ enum CloudScanner {
 
         let root = mount.kind == .baidu ? "/" : ""
         var queue: [String] = [root]
-        var visited: Set<String> = [root]
+        // 阿里云盘的媒体经常放在「资源库」而不是默认盘，只扫默认盘会几乎为空；
+        // 这里把账号下的每个盘都挂成一个虚拟根目录，扫描器按普通目录遍历即可。
+        if mount.kind == .aliyun,
+           let token = try? await CloudService.accessToken(for: mount),
+           let drives = try? await AliyunOAuth.drives(accessToken: token),
+           !drives.isEmpty {
+            let virtualRoots = drives.map {
+                CloudEntry(path: "\($0.id)|root",
+                           name: $0.label,
+                           isDirectory: true,
+                           size: 0,
+                           modifiedAt: nil,
+                           contentType: nil)
+            }
+            await onBatch(Batch(media: [], folders: virtualRoots, container: root), 0, 0)
+            queue = virtualRoots.map(\.path)
+        }
+        var visited: Set<String> = Set(queue)
         var seenFolders: Set<String> = []
         var seenMedia: Set<String> = []
         var removedFolderPaths: Set<String> = []

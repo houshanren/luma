@@ -119,12 +119,12 @@ extension LibraryStore {
 
     /// 选中一个文件夹相簿；`nil` 表示回到整个网盘。
     func selectCloudFolder(path: String?) {
+        // 与 `navigate(to:)` 一致：点当前相簿也把搜索 / 筛选 / 选择回正。
+        clearTransientBrowsingState()
         guard cloudModel.selectedFolderPath != path else { return }
         cloudModel.selectedFolderPath = path
         cloudModel.overview = nil
         cloudModel.scope = .all
-        similarScope = nil
-        selectedPlace = nil
         cloudVisibleCacheKey = nil
         cloudScopeCountsCacheKey = nil
         cloudModel.thumbnailPrefetchTask?.cancel()
@@ -132,6 +132,17 @@ extension LibraryStore {
         if let mountID = currentCloudMountID {
             presentCloudAlbumPhotos(mountID: mountID)
         }
+    }
+
+    /// 回到整个网盘的照片列表，但保持当前范围 / 总览状态（由调用方决定）。
+    /// 与拾光一致：媒体类型、更多项目与分区总览都是整库口径，不受当前相簿限制。
+    func showCloudRootPhotos() {
+        guard cloudModel.selectedFolderPath != nil,
+              let mountID = currentCloudMountID else { return }
+        cloudModel.selectedFolderPath = nil
+        presentCloudAlbumPhotos(mountID: mountID)
+        cloudVisibleCacheKey = nil
+        cloudScopeCountsCacheKey = nil
     }
 
     /// 打开挂载的网盘图库：先显示上次扫描快照，再按需在后台续扫。
@@ -491,7 +502,8 @@ extension LibraryStore {
 
     /// 网盘条目路径的语义版本：递增会让旧快照失效并触发一次全量重扫。
     /// 2：修复 WebDAV 子目录里的文件被记成裸文件名（导致播放 404）。
-    private static let cloudSnapshotPathVersion = 2
+    /// 3：阿里云盘路径改为「盘ID|文件ID」，覆盖默认盘 / 资源库 / 备份盘。
+    private static let cloudSnapshotPathVersion = 3
 
     private func saveCloudAlbumSnapshot(mountID: UUID, complete: Bool = false) {
         guard let store = metadataStore, !cloudModel.scanPhotos.isEmpty else { return }
@@ -549,7 +561,8 @@ extension LibraryStore {
                                remoteID: photo.cloudRemoteID,
                                thumbnailURL: photo.cloudThumbnailURL,
                                isVideo: photo.isVideo,
-                               folderPath: mediaFolders[path])
+                               folderPath: mediaFolders[path],
+                               codec: photo.videoCodec)
     }
 
     private func albumPhoto(record: CloudScanRecord, mount: CloudMount) -> PhotoItem {
@@ -564,6 +577,7 @@ extension LibraryStore {
         entry.pixelWidth = record.width
         entry.pixelHeight = record.height
         entry.duration = record.duration
+        entry.codecName = record.codec
         return makeCloudPhoto(mount: mount, entry: entry)
     }
 
@@ -951,11 +965,19 @@ extension LibraryStore {
         item.cloudRemoteID = entry.remoteID
         item.cloudThumbnailURL = entry.thumbnailURL
         item.cloudRestricted = entry.isRestricted ? true : nil
+        item.videoCodec = entry.codecName
         item.duration = entry.duration
+        // 「最近保存」按网盘文件的修改时间判断；EXIF 之后会改写拍摄时间，这里保留一份落盘时间。
+        item.addedAt = entry.modifiedAt ?? Date.distantPast
         let keywordKey = Self.cloudFavoriteKey(mountID: mount.id, path: entry.path)
         item.isFavorite = cloudFavorites.contains(keywordKey)
         if let tags = cloudKeywords[keywordKey], !tags.isEmpty {
             item.keywords = tags
+        }
+        if let mark = cloudMarks[keywordKey] {
+            item.rating = mark.rating
+            item.flag = mark.flag
+            item.colorLabel = mark.colorLabel
         }
         item.viewedAt = cloudModel.viewedAt[item.id]
         return item
@@ -1066,6 +1088,59 @@ extension LibraryStore {
 
     /// 当前图库自己的网盘关键词（写在该图库的 SQLite settings 表）。
     static let cloudKeywordsSettingKey = "cloud_keywords"
+
+    // MARK: - 云照片的本地评分 / 旗标 / 色标（不写回网盘）
+
+    func loadCloudMarks() {
+        guard let json = metadataStore?.setting(Self.cloudMarksSettingKey),
+              let data = json.data(using: .utf8),
+              let map = try? JSONDecoder().decode([String: CloudMark].self, from: data) else {
+            cloudMarks = [:]
+            return
+        }
+        cloudMarks = map
+    }
+
+    func persistCloudMarks() {
+        guard let data = try? JSONEncoder().encode(cloudMarks),
+              let json = String(data: data, encoding: .utf8) else { return }
+        metadataStore?.setSetting(Self.cloudMarksSettingKey, json)
+    }
+
+    /// 给一批云照片改评分 / 旗标 / 色标：只更新本地记录与当前列表，不修改网盘上的文件。
+    func updateCloudMarks(_ ids: Set<UUID>, mutate: (inout CloudMark) -> Bool) {
+        guard !ids.isEmpty else { return }
+        var changed = false
+        var list = cloudPhotos
+        for index in list.indices where ids.contains(list[index].id) {
+            guard let mountID = list[index].cloudMountID,
+                  let path = list[index].cloudPath else { continue }
+            let key = Self.cloudFavoriteKey(mountID: mountID, path: path)
+            var mark = cloudMarks[key] ?? CloudMark()
+            guard mutate(&mark) else { continue }
+            changed = true
+            if mark.isEmpty {
+                cloudMarks.removeValue(forKey: key)
+            } else {
+                cloudMarks[key] = mark
+            }
+            list[index].rating = mark.rating
+            list[index].flag = mark.flag
+            list[index].colorLabel = mark.colorLabel
+        }
+        guard changed else { return }
+        cloudPhotos = list
+        for photo in list where ids.contains(photo.id) {
+            updateCachedCloudPhoto(photo)
+        }
+        persistCloudMarks()
+        cloudScopeCountsCacheKey = nil
+        cloudVisibleCacheKey = nil
+        cloudModel.metadataRevision += 1
+    }
+
+    /// 当前图库自己的网盘评分 / 旗标 / 色标（写在该图库的 SQLite settings 表）。
+    static let cloudMarksSettingKey = "cloud_marks"
 
     func applyCloudPixelSize(photoID: UUID, size: CGSize) {
         guard let index = cloudPhotos.firstIndex(where: { $0.id == photoID }) else { return }
@@ -1205,8 +1280,23 @@ extension LibraryStore {
                 return image
             }
         }
-        guard let mount = cloudMount(for: photo.cloudMountID),
-              mount.kind == .webdav || mount.kind == .smb else { return nil }
+        guard let mount = cloudMount(for: photo.cloudMountID) else { return nil }
+        // 阿里 / 百度 / 夸克没有服务端缩略图：视频用 ffmpeg 读直链抽一帧，避免网格一直空白。
+        if mount.kind != .webdav, mount.kind != .smb {
+            guard photo.isVideo,
+                  let stream = try? await cloudStreamOrThrow(for: photo) else { return nil }
+            let fallback = await CloudThumbnailLoader.shared.remotePoster(
+                for: photo, stream: stream, trustSelfSigned: mount.trustSelfSigned)
+            if let size = fallback.size, size.width > 0, size.height > 0 {
+                applyCloudPixelSize(photoID: photo.id, size: size)
+            }
+            if let duration = fallback.duration, duration > 0 {
+                applyCloudDuration(photoID: photo.id, duration: duration)
+            }
+            guard let image = fallback.image else { return nil }
+            ImageLoader.cacheCloudThumbnail(image, for: photo)
+            return image
+        }
         let result = await CloudThumbnailLoader.shared.thumbnail(for: photo,
                                                                  mount: mount,
                                                                  password: cloudPassword(for: mount.id))

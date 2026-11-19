@@ -585,53 +585,6 @@ final class MetadataStore {
                 PRIMARY KEY (mount_id, person_id, asset_id)
             );
             """)
-        // 全库检索索引（「问一问」与标签治理共用）。
-        // 文档表与 FTS 表分离：FTS 只是召回通道，排序与过滤都在文档表上做。
-        try db.execute("""
-            CREATE TABLE IF NOT EXISTS search_docs (
-                doc_id TEXT PRIMARY KEY NOT NULL,
-                asset_id TEXT NOT NULL,
-                title TEXT,
-                keywords TEXT,
-                labels TEXT,
-                ocr TEXT,
-                place TEXT,
-                people TEXT,
-                camera TEXT,
-                captured_at REAL,
-                updated_at REAL NOT NULL
-            );
-            """)
-        try db.execute("CREATE INDEX IF NOT EXISTS idx_search_docs_asset ON search_docs(asset_id);")
-        // 中文子串检索只能靠 trigram；旧系统没有该分词器时退回默认分词，词法召回降级但不报错。
-        do {
-            try db.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
-                    doc_id UNINDEXED, title, keywords, labels, ocr, place, people, camera,
-                    tokenize = 'trigram'
-                );
-                """)
-        } catch {
-            try? db.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
-                    doc_id UNINDEXED, title, keywords, labels, ocr, place, people, camera
-                );
-                """)
-        }
-        // 768 维图像特征的符号位量化（96 字节/张），用于向量召回预筛。
-        try db.execute("""
-            CREATE TABLE IF NOT EXISTS search_vectors (
-                doc_id TEXT PRIMARY KEY NOT NULL,
-                bits BLOB NOT NULL,
-                updated_at REAL NOT NULL
-            );
-            """)
-        try db.execute("""
-            CREATE TABLE IF NOT EXISTS search_state (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT
-            );
-            """)
         // 旧库补列：最近查看时间（「值得重看」用）。
         try addColumnIfNeeded("assets", "viewed_at", "REAL")
         try db.execute("PRAGMA user_version = 7;")

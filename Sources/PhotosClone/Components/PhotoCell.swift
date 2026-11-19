@@ -403,21 +403,23 @@ struct PhotoCell: View {
                 hoverPoint = nil
             }
         }
-        .onTapGesture(count: 2) {
-            openPhotoBySettings()
-        }
-        .onTapGesture {
-            // 单击只负责选择；打开走双击（或键盘回车），避免点选时被查看器打断。
-            let flags = NSEvent.modifierFlags
-            if flags.contains(.command) || flags.contains(.shift) {
-                store.handleTap(photo.id)
-            } else if selectionModel.ids.contains(photo.id), selectionModel.ids.count > 1 {
-                // 在多选中再次单击其中一项：保留多选，只更新锚点。
-                store.selectionAnchorID = photo.id
-            } else {
-                store.handleTap(photo.id)
+        .photoClickActions(
+            single: {
+                // 单击只负责选择；打开走双击（或键盘回车），避免点选时被查看器打断。
+                let flags = NSEvent.modifierFlags
+                if flags.contains(.command) || flags.contains(.shift) {
+                    store.handleTap(photo.id)
+                } else if selectionModel.ids.contains(photo.id), selectionModel.ids.count > 1 {
+                    // 在多选中再次单击其中一项：保留多选，只更新锚点。
+                    store.selectionAnchorID = photo.id
+                } else {
+                    store.handleTap(photo.id)
+                }
+            },
+            double: {
+                openPhotoBySettings()
             }
-        }
+        )
         .onDrop(of: [.text], isTargeted: nil) { providers, location in
             guard let albumID = store.currentAlbumID else { return false }
             PhotoDrag.loadIDs(from: providers) { ids in
@@ -836,6 +838,48 @@ struct PhotoFramePreferenceKey: PreferenceKey {
 /// 框选用的单元格位置缓存。用引用类型保存，更新时不触发视图重排。
 final class PhotoFrameCache {
     var frames: [UUID: CGRect] = [:]
+}
+
+// MARK: - 单击 / 双击
+
+/// 单击立即回调、双击额外回调的点击处理。
+///
+/// SwiftUI 同时挂 `onTapGesture(count: 2)` 与单击手势时，单击要等双击判定超时才回调，
+/// 网格里表现为「点一下要等一下才选中」。这里只保留一个单击手势，双击靠系统的点击计数
+/// （拿不到事件时退回双击间隔判断）识别：第一下点击立刻选中，双击再打开查看器。
+private struct PhotoClickModifier: ViewModifier {
+    let single: () -> Void
+    let double: () -> Void
+
+    @State private var lastClickTime: TimeInterval = 0
+
+    func body(content: Content) -> some View {
+        content.onTapGesture {
+            if isDoubleClick() {
+                self.double()
+            } else {
+                self.single()
+            }
+        }
+    }
+
+    private func isDoubleClick() -> Bool {
+        if let clickCount = NSApp.currentEvent?.clickCount, clickCount >= 2 {
+            return true
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let isDouble = now - lastClickTime <= NSEvent.doubleClickInterval
+        lastClickTime = isDouble ? 0 : now
+        return isDouble
+    }
+}
+
+extension View {
+    /// 单击立即生效（无双击判定延迟）；双击时在单击之外再触发 `double`。
+    func photoClickActions(single: @escaping () -> Void,
+                           double: @escaping () -> Void) -> some View {
+        modifier(PhotoClickModifier(single: single, double: double))
+    }
 }
 
 // MARK: - 「加入相簿」的层级菜单

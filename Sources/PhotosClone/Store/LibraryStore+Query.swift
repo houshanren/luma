@@ -28,8 +28,6 @@ extension LibraryStore {
         case .moreItems: return "更多项目"
         case .keywords:
             return selectedKeyword.map { "关键词：#\($0)" } ?? "关键词"
-        case .ask: return "问一问"
-        case .tagGovernance: return "标签治理"
         case .album(let id): return albums.first(where: { $0.id == id })?.name ?? "相簿"
         case .smartAlbum(let id): return smartAlbums.first(where: { $0.id == id })?.name ?? "智能相簿"
         case .folder(let id): return folders.first(where: { $0.id == id })?.name ?? "文件夹"
@@ -43,7 +41,7 @@ extension LibraryStore {
         case .ocrTexts: return "包含文字"
         case .scene(let id): return SceneCatalog.category(id: id)?.title ?? "场景"
         case .health: return "图库体检"
-        case .ratings, .flags, .colorLabels: return "整理工作室"
+        case .ratings, .flags, .colorLabels: return "图库整理"
         case .blurry: return "可能模糊"
         case .similarDuplicates: return "相似备选"
         case .largeVideos: return "过大视频"
@@ -86,7 +84,7 @@ extension LibraryStore {
         case .systemImportSession: return "导入项目"
         case .systemRevisit: return "值得重看"
         case .systemHealth: return "图库体检"
-        case .systemRatings, .systemFlags, .systemColorLabels: return "整理工作室"
+        case .systemRatings, .systemFlags, .systemColorLabels: return "图库整理"
         case .systemScenes: return "场景"
         case .systemScene(let id): return SceneCatalog.category(id: id)?.title ?? "场景"
         case .systemOcrTexts: return "包含文字"
@@ -99,6 +97,8 @@ extension LibraryStore {
                let folder = cloudModel.scanFolders.first(where: { $0.path == path }) {
                 return folder.name
             }
+            // 与拾光 / 系统图库一致：选中媒体类型或「更多项目」入口后，标题就是该范围。
+            if cloudModel.scope != .all { return cloudModel.scope.title }
             return cloudMounts.first(where: { $0.id == id })?.name ?? "网络存储"
         case .cloudCinema(let id):
             return cloudMounts.first(where: { $0.id == id }).map { "\($0.name) · 影院" } ?? "影院"
@@ -161,6 +161,12 @@ extension LibraryStore {
             return selectedKeyword != nil ? (.keywords, "关键词") : (.moreItems, "更多项目")
         case .systemKeywords:
             return selectedKeyword != nil ? (.systemKeywords, "关键词") : (.systemMoreItems, "更多项目")
+        case .cloudMount(let id):
+            // 网盘与拾光 / 系统图库一致：分类、相簿与总览都能返回上一层。
+            guard cloudModel.overview != nil
+                    || cloudModel.selectedFolderPath != nil
+                    || cloudModel.scope != .all else { return nil }
+            return (.cloudMount(id), cloudMounts.first(where: { $0.id == id })?.name ?? "网络存储")
         default:
             return nil
         }
@@ -171,8 +177,10 @@ extension LibraryStore {
         if case .cloudMount = sidebarItem {
             if cloudModel.overview != nil {
                 showCloudOverview(nil)
-            } else {
+            } else if cloudModel.selectedFolderPath != nil {
                 cloudGoUp()
+            } else if cloudModel.scope != .all {
+                setCloudScope(cloudModel.scope.keywordOverviewParent ?? .all)
             }
             return
         }
@@ -183,7 +191,9 @@ extension LibraryStore {
     /// 「返回上一级」是否可用：网盘目录链与分类总览也算一层。
     var canNavigateUp: Bool {
         if case .cloudMount = sidebarItem {
-            return cloudModel.overview != nil || cloudModel.selectedFolderPath != nil
+            return cloudModel.overview != nil
+                || cloudModel.selectedFolderPath != nil
+                || cloudModel.scope != .all
         }
         return navigationParent != nil
     }
@@ -273,6 +283,10 @@ extension LibraryStore {
 
     /// 当前是否是照片网格页面（用于菜单项的可用状态）。
     var isGridScopeForCommands: Bool {
+        // 网盘与拾光 / 系统图库一致：普通照片列表才是网格，总览与专用页面不是。
+        if isCloudScope {
+            return cloudModel.overview == nil && !cloudModel.scope.usesDedicatedView
+        }
         switch sidebarItem {
         case .keywords, .systemKeywords:
             // 关键词总览是卡片墙；进入某个关键词后是照片列表。
@@ -299,8 +313,16 @@ extension LibraryStore {
     }
 
     /// 只有「图库」这一层需要年/月时间轴总览，相簿与文件夹保持普通网格。
+    /// 网盘与拾光 / 系统图库一致：只有整个网盘（全部项目）是「图库」页，
+    /// 媒体类型、更多项目与目录相簿都是相簿级普通网格。
     var isTimelineScope: Bool {
-        sidebarItem == .library || sidebarItem == .systemLibrary
+        if sidebarItem == .library || sidebarItem == .systemLibrary { return true }
+        if isCloudScope {
+            return cloudModel.overview == nil
+                && cloudModel.selectedFolderPath == nil
+                && cloudModel.scope == .all
+        }
+        return false
     }
 
     /// 「个人收藏」使用独立的浏览方式（全部 / 年 / 类型）。
@@ -309,16 +331,15 @@ extension LibraryStore {
     }
 
     /// 「图库」页与官方「照片」一致：新照片在底部，进入时先看最新，
-    /// 向上滚动翻看更早的照片。系统图库与本地拾光图库适用；
+    /// 向上滚动翻看更早的照片。系统图库、拾光图库与网盘的「全部项目」适用；
     /// 筛选 / 搜索 / 其它排序时仍按普通降序展示。
-    /// 网络存储的网格由 `CloudBrowserView` 自己按月分段、最新在上，不套用底部时间轴。
     var timelineShowsNewestAtBottom: Bool {
         guard grouping == .all, sortKey == .capturedAt, !sortAscending,
               photoFilter == .all, keywordFilter == nil, !hasMetadataFilters,
               selectedPlace == nil, selectedPerson == nil, similarScope == nil,
               searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         if isSystemScope { return isTimelineScope && isSystemPagedScope }
-        if isCloudScope { return false }
+        if isCloudScope { return isTimelineScope }
         return sidebarItem == .library
     }
 
@@ -473,7 +494,7 @@ extension LibraryStore {
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
         case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .systemHealth, .ask, .tagGovernance, .cinema, .cloudCinema:
+             .systemHealth, .cinema, .cloudCinema:
             // 总览页只展示分类卡片，不返回照片。
             return []
         case .systemFavorites:
@@ -835,6 +856,7 @@ extension LibraryStore {
             String(cloudModel.analysis.count),
             String(cloudModel.metadataRevision),
             String(cloudModel.people.count),
+            String(cloudModel.viewedAt.count),
             similarScope?.sourceID.uuidString ?? "",
             String(similarScope?.ids.count ?? 0),
             searchText,
@@ -858,6 +880,8 @@ extension LibraryStore {
         case .duplicates:
             let ids = cloudDuplicatePhotoIDs
             items = items.filter { ids.contains($0.id) }
+        case .recentlyViewed:
+            items = items.filter { cloudPhoto($0, matches: .recentlyViewed) }
         case let scope:
             items = items.filter { cloudPhoto($0, matches: scope) }
         }
@@ -875,7 +899,19 @@ extension LibraryStore {
             let peopleByID = Dictionary(uniqueKeysWithValues: localPeople.map { ($0.id, $0) })
             items = items.filter { matchesSearch($0, query: query, peopleByID: peopleByID) }
         }
-        let sorted = sortedByCurrentKey(items)
+        let sorted: [PhotoItem]
+        if case .recentlyViewed = cloudModel.scope {
+            // 与系统图库一致：按本机查看时间倒序，不再套用网格排序。
+            let viewed = cloudModel.viewedAt
+            sorted = items.sorted {
+                (viewed[$0.id] ?? .distantPast) > (viewed[$1.id] ?? .distantPast)
+            }
+        } else if case .recentlySaved = cloudModel.scope {
+            // 最近保存：按网盘文件的修改时间倒序，与系统图库的「最近保存」一致。
+            sorted = items.sorted { $0.addedAt > $1.addedAt }
+        } else {
+            sorted = sortedByCurrentKey(items)
+        }
         cloudVisibleCacheKey = key
         cloudVisibleCacheValue = sorted
         return sorted

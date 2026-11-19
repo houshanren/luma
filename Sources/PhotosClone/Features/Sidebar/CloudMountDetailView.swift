@@ -16,34 +16,36 @@ struct CloudMountDetailView: View {
     @State private var hoveredScope: String?
     @State private var expandedFolders: Set<String> = []
     @State private var hoveredFolder: String?
-    @State private var hoveredAllAlbums = false
     @State private var hoveredCinema = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             cinemaRow
-            sectionHeader("媒体类型", key: "media", topPadding: 8,
-                          onTap: { openOverview(.mediaTypes) },
-                          menu: {
-                              if cloud.isScanningMetadata {
-                                  Button("停止读取照片信息") { store.cancelCloudMetadataScan() }
-                              } else if store.cloudMetadataPendingCount > 0 {
-                                  Button("读取照片信息（EXIF）…") { store.scanCloudMetadata() }
-                              }
-                          })
-            if !collapsed.contains("media") {
-                mediaRows
-                metadataStatusRow
+            // 与系统图库同一套层级：影院（网盘自有）→ 媒体类型 → 更多项目 → 场景 → 相簿。
+            // 与系统图库一致：没有可用媒体类型且没有 EXIF 待读时，整个分区不占位。
+            if !visibleMediaTypes.isEmpty
+                || cloud.isScanningMetadata
+                || store.cloudMetadataPendingCount > 0 {
+                sectionHeader("媒体类型", key: "media", topPadding: 8, section: .mediaTypes,
+                              menu: {
+                                  if cloud.isScanningMetadata {
+                                      Button("停止读取照片信息") { store.cancelCloudMetadataScan() }
+                                  } else if store.cloudMetadataPendingCount > 0 {
+                                      Button("读取照片信息（EXIF）…") { store.scanCloudMetadata() }
+                                  }
+                              })
+                if !collapsed.contains("media") {
+                    mediaRows
+                    metadataStatusRow
+                }
             }
 
-            sectionHeader("更多项目", key: "more", topPadding: 12,
-                          onTap: { openOverview(.moreItems) })
+            sectionHeader("更多项目", key: "more", section: .moreItems)
             if !collapsed.contains("more") {
                 moreItemRows
             }
 
-            sectionHeader("场景", key: "scenes", topPadding: 12,
-                          onTap: { openOverview(.scenes) },
+            sectionHeader("场景", key: "scenes", section: .scenes,
                           menu: {
                               if cloud.isAnalyzing {
                                   Button("停止识别") { store.cancelCloudContentAnalysis() }
@@ -55,39 +57,58 @@ struct CloudMountDetailView: View {
                 sceneBody
             }
 
-            sectionHeader("相簿", key: "albums", topPadding: 12,
-                          onTap: { openOverview(.folders) },
-                          menu: {
-                              Button(store.isCloudScanning ? "停止扫描" : "重新扫描网盘") {
-                                  if store.isCloudScanning {
-                                      store.stopCloudAlbumScan()
-                                  } else {
-                                      store.beginCloudAlbumScan(mountID: mountID)
+            // 与系统图库一致：没有目录相簿时隐藏「相簿」分区（扫描期间保留进度提示）。
+            if hasAlbums {
+                sectionHeader("相簿", key: "albums", section: .folders,
+                              menu: {
+                                  Button(store.isCloudScanning ? "停止扫描" : "重新扫描网盘") {
+                                      if store.isCloudScanning {
+                                          store.stopCloudAlbumScan()
+                                      } else {
+                                          store.beginCloudAlbumScan(mountID: mountID)
+                                      }
                                   }
-                              }
-                          })
-            if !collapsed.contains("albums") {
-                albumRows
+                              })
+                if !collapsed.contains("albums") {
+                    albumRows
+                }
             }
         }
         // 分类的收起状态按网盘分别保存，下次打开同一网盘时恢复。
+        // 没有保存过时按默认：媒体类型与场景收起，更多项目与相簿展开。
         .onAppear {
-            collapsed = SidebarStateStorage.stringSet(collapsedKey)
+            collapsed = SidebarStateStorage.hasValue(collapsedKey)
+                ? SidebarStateStorage.stringSet(collapsedKey)
+                : ["media", "scenes"]
         }
         .onChange(of: collapsed) { _, value in
             SidebarStateStorage.save(collapsedKey, value)
         }
     }
 
+    /// 当前可展示的媒体类型：与系统图库一样，数量为 0 的类型不占位。
+    private var visibleMediaTypes: [MediaTypeKey] {
+        let counts = store.cloudScopeCounts
+        return MediaTypeKey.cloudCases.filter { key in
+            guard let scope = key.cloudScope else { return false }
+            return counts.count(for: scope) > 0
+        }
+    }
+
+    private var hasAlbums: Bool {
+        !store.cloudRootFolders.isEmpty || cloud.scanPhase.isScanning
+    }
+
     private var collapsedKey: String {
         SidebarStateStorage.Key.cloudDetailSections(mountID)
     }
 
-    /// 是否正在浏览这个网盘的列表本身。
+    /// 是否正在浏览这个网盘的列表本身（影院页不算：进影院时高亮只留给影院行）。
     /// 网盘的分段 / 相簿选中状态记在共享的浏览模型里，只有当前网盘才该亮；
-    /// 否则进入影院后「全部项目」仍高亮，多个实例时每个展开的树还会重复亮同一行。
+    /// 否则进入影院后整库行仍高亮，多个实例时每个展开的树还会重复亮同一行。
     private var isBrowsingThisMount: Bool {
-        store.currentCloudMountID == mountID
+        if case .cloudMount(let id) = store.sidebarItem { return id == mountID }
+        return false
     }
 
     /// 影院与「视频 / 相簿」是并列的两个入口：在影院里点任何一个列表入口，
@@ -100,7 +121,7 @@ struct CloudMountDetailView: View {
 
     private func openOverview(_ section: CloudOverviewSection) {
         leaveCinemaIfNeeded()
-        store.showCloudOverview(section)
+        store.openCloudOverview(section)
     }
 
     // MARK: - 影院（归属这个网盘）
@@ -165,24 +186,31 @@ struct CloudMountDetailView: View {
         }
     }
 
-    // MARK: - 更多项目（与图库同一套条目与顺序）
+    // MARK: - 更多项目（与系统图库同一套条目、顺序与显示条件）
 
     @ViewBuilder
     private var moreItemRows: some View {
+        // 条目、顺序与显示条件全部取自 `CloudScope.moreItems`，与总览卡片墙共用一份定义。
+        // 只读能力（图库整理 / 最近编辑 / 最近保存 / 最近删除 / 导入项目）也在相同位置，
+        // 点开后是同一套右侧页面。
         let counts = store.cloudScopeCounts
-        scopeRow(.favorites, count: counts.favorites)
-        if counts.duplicates > 0 {
-            scopeRow(.duplicates, count: counts.duplicates)
+        ForEach(CloudScope.moreItems(counts: counts, analyzedCount: store.cloudAnalyzedCount),
+                id: \.self) { scope in
+            scopeRow(scope,
+                     trailingIcon: scope == .trash ? "lock.fill" : nil,
+                     helpText: moreItemHelp(scope))
         }
-        if counts.text > 0 {
-            scopeRow(.text, count: counts.text)
+    }
+
+    /// 与系统图库同位入口的补充说明（只读能力在网盘里没有真实数据）。
+    private func moreItemHelp(_ scope: CloudScope) -> String? {
+        switch scope {
+        case .recentlyEdited: return "网盘为只读，没有编辑记录"
+        case .recentlySaved: return "按网盘文件的修改时间，列出最近 30 天保存的项目"
+        case .trash: return "网盘不提供最近删除，请在网盘 App 或网页中管理"
+        case .imports: return "网盘不产生导入批次"
+        default: return nil
         }
-        scopeRow(.keywords, count: counts.keywords.count)
-        scopeRow(.revisit, count: counts.revisit)
-        scopeRow(.health, count: counts.health)
-        scopeRow(.map, count: counts.located)
-        scopeRow(.places, count: counts.located)
-        scopeRow(.people, count: counts.people)
     }
 
     /// EXIF 读取进度：网盘照片的拍摄时间、相机与 GPS 全部来自文件头部，不下载原图。
@@ -209,7 +237,7 @@ struct CloudMountDetailView: View {
                         .font(.system(size: LumaMetrics.sidebarIconSize))
                         .foregroundStyle(Color.accentColor)
                         .frame(width: LumaMetrics.sidebarIconColumn)
-                    Text("读取照片信息（剩余 \(store.cloudMetadataPendingCount) 张）")
+                    Text("继续读取照片信息（剩余 \(store.cloudMetadataPendingCount) 张）")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -221,31 +249,17 @@ struct CloudMountDetailView: View {
             }
             .buttonStyle(.plain)
             .help("从文件头部读取拍摄时间、相机、镜头与 GPS，用于地图、位置与值得重看")
-        } else if store.cloudMetadataScannedCount > 0, store.cloudLocatedCount > 0 {
-            Text("已读取 \(store.cloudMetadataScannedCount) 张的拍摄信息，其中 \(store.cloudLocatedCount) 张带位置")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 2)
         }
     }
 
-    // MARK: - 媒体类型
+    // MARK: - 媒体类型（与拾光同一组类型、顺序与显示条件）
 
     @ViewBuilder
     private var mediaRows: some View {
-        let counts = store.cloudScopeCounts
-        scopeRow(.all, count: counts.count(for: .all))
-        scopeRow(.videos, count: counts.videos)
-        scopeRow(.photos, count: counts.photos)
-        if counts.screenshots > 0 {
-            scopeRow(.screenshots, count: counts.screenshots)
-        }
-        if counts.animated > 0 {
-            scopeRow(.animated, count: counts.animated)
-        }
-        if counts.raws > 0 {
-            scopeRow(.raws, count: counts.raws)
+        ForEach(visibleMediaTypes) { key in
+            if let scope = key.cloudScope {
+                scopeRow(scope)
+            }
         }
     }
 
@@ -334,7 +348,6 @@ struct CloudMountDetailView: View {
     @ViewBuilder
     private var albumRows: some View {
         let folders = store.cloudRootFolders
-        allAlbumsRow
         if folders.isEmpty {
             if cloud.scanPhase.isScanning {
                 HStack(spacing: 7) {
@@ -362,36 +375,6 @@ struct CloudMountDetailView: View {
                 }
             }
         }
-    }
-
-    /// 与图库「所有相簿」同一行：回到整个网盘。
-    private var allAlbumsRow: some View {
-        Button {
-            leaveCinemaIfNeeded()
-            store.showCloudOverview(nil)
-            store.selectCloudFolder(path: nil)
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: "rectangle.stack")
-                    .font(.system(size: LumaMetrics.sidebarIconSize))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: LumaMetrics.sidebarIconColumn)
-                Text("所有相簿")
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-            .contentShape(Rectangle())
-            .background {
-                // 根目录的高亮由网盘行承担，这里只保留悬停反馈。
-                LumaRowHighlight(active: false, hovered: hoveredAllAlbums)
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hoveredAllAlbums = $0 }
-        .help("回到整个网盘")
     }
 
     private func folderNode(_ node: CloudFolderNode, level: Int) -> AnyView {
@@ -485,68 +468,27 @@ struct CloudMountDetailView: View {
 
     // MARK: - 分区头与行
 
+    /// 分区头与拾光 / 系统图库共用 `SidebarSectionHeader`：同一套强调色细线、悬停按钮与点击区域。
     private func sectionHeader<MenuContent: View>(
         _ title: String,
         key: String,
         topPadding: CGFloat = 12,
-        onTap: (() -> Void)? = nil,
-        @ViewBuilder menu: () -> MenuContent = { EmptyView() }
+        section: CloudOverviewSection? = nil,
+        @ViewBuilder menu: @escaping () -> MenuContent = { EmptyView() }
     ) -> some View {
-        let isCollapsed = collapsed.contains(key)
-        let hovering = hoveredSection == key
-
-        return HStack(spacing: 2) {
-            if let onTap {
-                Button(action: onTap) {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("打开\(title)总览")
-            } else {
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            if hovering {
-                Menu {
-                    Button(isCollapsed ? "展开" : "收起") { toggle(key) }
-                    menu()
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 16)
-                .help("更多")
-            }
-            if hovering || isCollapsed {
-                Button {
-                    toggle(key)
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isCollapsed ? -90 : 0))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(isCollapsed ? "展开" : "收起")
-            }
+        let openAction: (() -> Void)? = section.map { value in
+            { openOverview(value) }
         }
-        .padding(.horizontal, 8)
-        .padding(.top, topPadding)
-        .padding(.bottom, 3)
-        .contentShape(Rectangle())
+        return SidebarSectionHeader(
+            title: title,
+            collapsed: collapsed.contains(key),
+            active: section.map { cloud.overview == $0 } ?? false,
+            topPadding: topPadding,
+            isHovered: hoveredSection == key,
+            onOpen: openAction,
+            onToggle: { toggle(key) },
+            menu: menu
+        )
         .onHover { inside in
             hoveredSection = inside ? key : (hoveredSection == key ? nil : hoveredSection)
         }
@@ -562,41 +504,28 @@ struct CloudMountDetailView: View {
         }
     }
 
-    private func scopeRow(_ scope: CloudScope, count: Int) -> some View {
-        // 「全部项目」是网盘默认范围，高亮由网盘行承担；选中相簿时高亮留给相簿行，
-        // 保证同一时刻只亮一行。
-        let selected = scope != .all
-            && isBrowsingThisMount
-            && cloud.overview == nil
-            && store.cloudSelectedFolderPath == nil
-            && cloud.scope == scope
-        return Button {
-            leaveCinemaIfNeeded()
-            store.setCloudScope(scope)
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: scope.icon)
-                    .font(.system(size: LumaMetrics.sidebarIconSize))
-                    .foregroundStyle(scope == .favorites ? Color.pink : Color.accentColor)
-                    .frame(width: LumaMetrics.sidebarIconColumn)
-                Text(scope.title)
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if count > 0 {
-                    Text("\(count)")
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
+    /// 分类行与拾光共用 `SidebarCategoryRow`：同一套图标列、字号、内边距、悬停高亮与点击选中的表现。
+    private func scopeRow(_ scope: CloudScope, count: Int? = nil,
+                          trailingIcon: String? = nil,
+                          helpText: String? = nil) -> some View {
+        SidebarCategoryRow(
+            icon: scope.icon,
+            title: scope.title,
+            iconColor: scope == .favorites ? .pink
+                : (scope == .ratings ? .yellow : (scope == .trash ? .secondary : .accentColor)),
+            trailingIcon: trailingIcon,
+            count: count,
+            isActive: isBrowsingThisMount
+                && cloud.overview == nil
+                && store.cloudSelectedFolderPath == nil
+                && cloud.scope == scope,
+            isHovered: hoveredScope == scope.key,
+            helpText: helpText ?? scope.title,
+            action: {
+                leaveCinemaIfNeeded()
+                store.setCloudScope(scope)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-            .contentShape(Rectangle())
-            .background {
-                LumaRowHighlight(active: selected, hovered: hoveredScope == scope.key)
-            }
-        }
-        .buttonStyle(.plain)
+        )
         .onHover { hovering in
             if hovering {
                 hoveredScope = scope.key
@@ -604,7 +533,5 @@ struct CloudMountDetailView: View {
                 hoveredScope = nil
             }
         }
-        .help(scope.title)
-        .accessibilityLabel(scope.title)
     }
 }

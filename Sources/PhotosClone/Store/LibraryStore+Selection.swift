@@ -119,7 +119,9 @@ extension LibraryStore {
     }
 
     /// 让分页窗口包含指定照片：已加载就直接滚动，否则重新取目标附近的一页。
-    func revealInWindow(_ id: UUID) {
+    /// - Parameter minimal: 目标已可见时不再移动（关闭查看器时使用，避免网格整体跳位）。
+    func revealInWindow(_ id: UUID, minimal: Bool = false) {
+        scrollTargetMinimal = minimal
         if isSystemPagedScope {
             if systemWindowPhotos.contains(where: { $0.id == id }) {
                 scrollTargetID = id

@@ -14,6 +14,11 @@ extension CloudSetupWizardView {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                credentialCandidateSection(smbCandidates, noun: "SMB") { candidate in
+                    applySMBCandidate(candidate)
+                }
+
                 discoverySection
 
                 labeledField("地址", text: $smbAddress, prompt: "smb://192.168.1.10/photo")
@@ -364,6 +369,27 @@ extension CloudSetupWizardView {
     }
 
     // MARK: 动作
+
+    private var smbCandidates: [CloudCredentialCandidate] {
+        credentialCandidates.filter { $0.mount.kind == .smb }
+    }
+
+    /// 选中钥匙串候选：带入地址、账号与密码后直接发现共享。
+    private func applySMBCandidate(_ candidate: CloudCredentialCandidate) {
+        smbAddress = candidate.mount.baseURL
+        smbUsername = candidate.mount.username
+        smbPassword = candidate.hasPassword ? store.cloudPassword(for: candidate.mount.id) : ""
+        reusedSMBMountName = candidate.mount.name
+        smbVerified = false
+        availableShares = []
+        resetBrowseState()
+        guard candidate.hasPassword else {
+            status = "已带入「\(candidate.mount.name)」的地址与账号，钥匙串里没有密码，请补填后点「发现共享」。"
+            statusIsError = false
+            return
+        }
+        discoverShares(host: SMBClient.pieces(candidate.mount.baseURL)?.host)
+    }
 
     /// 复用已保存的 SMB 连接：同一主机直接沿用账号与钥匙串里的密码，免得二次输入。
     ///

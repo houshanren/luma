@@ -44,10 +44,20 @@ enum VideoFormats {
 enum FFmpeg {
     static let executable: URL? = locate("ffmpeg")
     static let probe: URL? = locate("ffprobe")
+    /// 支持 zscale + tonemap 的 ffmpeg：优先用内置静态包（已带 libzimg），
+    /// 内置包缺失或过旧时退回系统 / Homebrew ffmpeg。
+    static let toneMapExecutable: URL? = locate("ffmpeg", requiredFilters: ["zscale", "tonemap"])
 
     static var isAvailable: Bool { executable != nil }
 
-    private static func locate(_ name: String) -> URL? {
+    /// 转码时按需选择可做色调映射的二进制。
+    static func executable(preferToneMap: Bool) -> URL? {
+        if preferToneMap, let toneMapExecutable { return toneMapExecutable }
+        return executable
+    }
+
+    private static func locate(_ name: String,
+                               requiredFilters: [String] = []) -> URL? {
         let fm = FileManager.default
         var candidates: [String] = []
         // 优先使用 App 内置的静态 ffmpeg（由 build.sh 打进 Contents/Resources/bin）。
@@ -61,11 +71,22 @@ enum FFmpeg {
             "/usr/bin/\(name)",
             "/opt/local/bin/\(name)"
         ]
-        for path in candidates where fm.isExecutableFile(atPath: path) {
-            Diagnostics.record("视频组件：使用 \(path)")
+        var searchPaths = candidates
+        if let whichPath = which(name) { searchPaths.append(whichPath) }
+        for path in searchPaths where fm.isExecutableFile(atPath: path) {
+            if !requiredFilters.isEmpty {
+                guard supportsFilters(URL(fileURLWithPath: path), requiredFilters) else { continue }
+                Diagnostics.record("视频组件：HDR 色调映射使用 \(path)")
+            } else {
+                Diagnostics.record("视频组件：使用 \(path)")
+            }
             return URL(fileURLWithPath: path)
         }
-        guard fm.isExecutableFile(atPath: "/usr/bin/which") else { return nil }
+        return nil
+    }
+
+    private static func which(_ name: String) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/which") else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         process.arguments = [name]
@@ -81,12 +102,49 @@ enum FFmpeg {
         guard process.terminationStatus == 0 else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty, fm.isExecutableFile(atPath: path) else { return nil }
-        return URL(fileURLWithPath: path)
+        return path.isEmpty ? nil : path
+    }
+
+    private static func supportsFilters(_ url: URL, _ required: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = url
+        process.arguments = ["-hide_banner", "-filters"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return required.allSatisfy { text.contains($0) }
     }
 }
 
 // MARK: - 视频探测与转换
+
+/// 音轨信息：用于播放器的音轨菜单展示语言 / 声道 / 编码。
+struct AudioTrackInfo: Identifiable, Equatable {
+    /// 在音频流中的序号（0 起），与 ffmpeg 的 `-map 0:a:N` 对应。
+    let ordinal: Int
+    let codec: String
+    let channels: Int
+    let language: String?
+    let title: String?
+
+    var id: Int { ordinal }
+
+    var displayName: String {
+        var parts: [String] = []
+        if let title, !title.isEmpty { parts.append(title) }
+        if let language, !language.isEmpty, language.lowercased() != "und" {
+            parts.append(language)
+        }
+        if channels > 0 {
+            parts.append(channels == 6 ? "5.1" : channels == 8 ? "7.1" : channels == 2 ? "立体声" : "\(channels) 声道")
+        }
+        if !codec.isEmpty { parts.append(codec) }
+        return parts.joined(separator: " · ")
+    }
+}
 
 struct VideoProbe {
     var isPlayable = false
@@ -94,6 +152,14 @@ struct VideoProbe {
     var duration: Double = 0
     var size: CGSize = .zero
     var codec: String?
+    /// HEVC 转封装时需要显式写 hvc1 标签，AVFoundation 不认 ffmpeg 默认的 hev1。
+    var isHEVC = false
+    /// HDR（PQ / HLG）：转码时按需做色调映射，避免 SDR 屏幕发灰。
+    var isHDR = false
+    /// 音轨数量：HLS 转封装一次只映射一条，用来决定是否显示音轨切换。
+    var audioTrackCount = 0
+    /// 音轨明细（ffprobe 能拿到语言 / 声道 / 编码）。
+    var audioTracks: [AudioTrackInfo] = []
 }
 
 enum VideoError: LocalizedError {
@@ -119,10 +185,22 @@ enum VideoSupport {
     static func probe(url: URL, options: [String: Any] = [:]) async -> VideoProbe {
         var probe = await probe(asset: AVURLAsset(url: url, options: options))
         if !probe.isPlayable || probe.duration <= 0 || probe.size.width <= 0 {
-            let fallback = ffprobeMetadata(url: url)
+            // 云端 MKV 的 ffprobe 也必须带鉴权头，否则拿不到时长 / 音轨数 / HDR 信息。
+            let headers = options[CloudPlayback.headerFieldsKey] as? [String: String] ?? [:]
+            // ffprobe 是阻塞子进程：外置盘 / 网盘片源动辄几秒到几十秒，
+            // 一定不能跑在调用方线程（打开视频时就是主线程）上，否则整个 App 像卡死。
+            let fallback = await Task.detached(priority: .userInitiated) {
+                headers.isEmpty
+                    ? ffprobeMetadata(url: url, timeout: 30)
+                    : ffprobeMetadata(url: url, headers: headers, timeout: 30)
+            }.value
             if probe.duration <= 0 { probe.duration = fallback.duration }
             if probe.size.width <= 0 { probe.size = fallback.size }
             if probe.codec == nil { probe.codec = fallback.codec }
+            if !probe.isHEVC { probe.isHEVC = fallback.isHEVC }
+            if !probe.isHDR { probe.isHDR = fallback.isHDR }
+            if probe.audioTrackCount == 0 { probe.audioTrackCount = fallback.audioTrackCount }
+            if probe.audioTracks.isEmpty { probe.audioTracks = fallback.audioTracks }
         }
         return probe
     }
@@ -146,8 +224,18 @@ enum VideoSupport {
             probe.size = CGSize(width: abs(oriented.width), height: abs(oriented.height))
             if let formats = try? await track.load(.formatDescriptions), let first = formats.first {
                 probe.codec = codecDisplayName(CMFormatDescriptionGetMediaSubType(first))
+                probe.isHEVC = probe.codec == "HEVC"
+                if let extensions = CMFormatDescriptionGetExtensions(first) as? [String: Any] {
+                    let primaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
+                    let transfer = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
+                    // 常量在不同 SDK 上的 Swift 导入名不一致，直接比对字符串值。
+                    probe.isHDR = primaries == "ITU_R_2020"
+                        || transfer == "SMPTE_ST_2084"
+                        || transfer == "ITU_R_2100_HLG"
+                }
             }
         }
+        probe.audioTrackCount = ((try? await asset.loadTracks(withMediaType: .audio)) ?? []).count
         return probe
     }
 
@@ -180,19 +268,21 @@ enum VideoSupport {
 
     /// 远端视频探测：WebDAV 需要 Basic 认证头等，ffprobe 同样要带上。
     static func ffprobeMetadata(url: URL, headers: [String: String],
-                                tlsInsecure: Bool = false) -> VideoProbe {
-        guard !headers.isEmpty || tlsInsecure else { return ffprobeMetadata(url: url) }
+                                tlsInsecure: Bool = false,
+                                timeout: TimeInterval? = nil) -> VideoProbe {
+        guard !headers.isEmpty || tlsInsecure else { return ffprobeMetadata(url: url, timeout: timeout) }
         var input: [String] = []
         if tlsInsecure { input += ["-tls_verify", "0"] }
         input += inputArguments(url: url, headers: headers)
-        return ffprobeMetadata(inputArguments: input)
+        return ffprobeMetadata(inputArguments: input, timeout: timeout)
     }
 
-    static func ffprobeMetadata(url: URL) -> VideoProbe {
-        ffprobeMetadata(inputArguments: ["-i", url.path])
+    static func ffprobeMetadata(url: URL, timeout: TimeInterval? = nil) -> VideoProbe {
+        ffprobeMetadata(inputArguments: ["-i", url.path], timeout: timeout)
     }
 
-    private static func ffprobeMetadata(inputArguments: [String]) -> VideoProbe {
+    private static func ffprobeMetadata(inputArguments: [String],
+                                        timeout: TimeInterval? = nil) -> VideoProbe {
         var probe = VideoProbe()
         guard let ffprobe = FFmpeg.probe else { return probe }
         let process = Process()
@@ -201,13 +291,29 @@ enum VideoSupport {
                              "-show_format", "-show_streams"] + inputArguments
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        // stderr 直接丢弃：用 Pipe 却不读，ffprobe 报错一多就会写满管道而永久阻塞。
+        process.standardError = FileHandle.nullDevice
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
             return probe
         }
-        process.waitUntilExit()
+        if let timeout {
+            if finished.wait(timeout: .now() + timeout) == .timedOut {
+                process.terminate()
+                if finished.wait(timeout: .now() + 2) == .timedOut, process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                process.terminationHandler = nil
+                Diagnostics.record("ffprobe 探测超时（\(Int(timeout)) 秒），已终止")
+                return probe
+            }
+        } else {
+            finished.wait()
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return probe }
 
@@ -240,7 +346,25 @@ enum VideoSupport {
         }
         if let codec = video["codec_name"] as? String {
             probe.codec = prettyCodec(codec)
+            probe.isHEVC = codec.lowercased() == "hevc"
         }
+        // HDR 判定：PQ（smpte2084）/ HLG（arib-std-b67）或 BT.2020 色域。
+        let primaries = (video["color_primaries"] as? String)?.lowercased()
+        let transfer = (video["color_transfer"] as? String)?.lowercased()
+        probe.isHDR = primaries == "bt2020"
+            || transfer == "smpte2084"
+            || transfer == "arib-std-b67"
+        let audioStreams = streams.filter { ($0["codec_type"] as? String) == "audio" }
+        probe.audioTracks = audioStreams.enumerated().map { offset, stream in
+            let tags = stream["tags"] as? [String: Any]
+            return AudioTrackInfo(
+                ordinal: offset,
+                codec: (stream["codec_name"] as? String).map(prettyCodec) ?? "",
+                channels: stream["channels"] as? Int ?? 0,
+                language: tags?["language"] as? String,
+                title: tags?["title"] as? String)
+        }
+        probe.audioTrackCount = probe.audioTracks.count
         return probe
     }
 
@@ -347,14 +471,29 @@ enum VideoSupport {
     }
 
     /// 用 ffmpeg 转成 H.264 + AAC 的 MP4，供系统不支持解码的容器播放。
-    static func transcode(source: URL, destination: URL) async throws {
-        try await transcode(inputArguments: ["-i", source.path], destination: destination)
+    /// HDR 源按需做色调映射，避免 SDR 屏幕发灰 / 过曝。
+    static func transcode(source: URL, destination: URL, toneMapHDR: Bool = false) async throws {
+        try await transcode(inputArguments: ["-i", source.path],
+                            destination: destination,
+                            toneMapHDR: toneMapHDR)
     }
+
+    /// HDR → SDR 色调映射参数；内置 ffmpeg 不带 zscale 时返回空，退化为普通转码。
+    static func hdrToneMapArguments(toneMapHDR: Bool) -> [String] {
+        guard toneMapHDR, supportsToneMapping else { return [] }
+        return ["-vf", "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+                + "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p",
+                "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+    }
+
+    /// 是否有可用的 zscale + tonemap（内置静态包已带 libzimg，缺失时回退系统 ffmpeg）。
+    static var supportsToneMapping: Bool { FFmpeg.toneMapExecutable != nil }
 
     /// 云端视频转码：ffmpeg 直接从远端读取（带认证头）。
     /// 先尝试把视频流无损封装进 MP4（仅音频转 AAC），系统仍无法播放时再全量转 H.264。
     static func transcodeRemote(source: URL, headers: [String: String],
                                 trustSelfSigned: Bool = false,
+                                toneMapHDR: Bool = false,
                                 destination: URL) async throws {
         guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
         try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
@@ -384,11 +523,18 @@ enum VideoSupport {
             }
             try? FileManager.default.removeItem(at: remuxed)
         }
-        try await transcode(inputArguments: inputArguments, destination: destination)
+        // HDR 源不能走无损封装时，必须做色调映射后再编码。
+        try await transcode(inputArguments: inputArguments,
+                            destination: destination,
+                            toneMapHDR: toneMapHDR || metadata.isHDR)
     }
 
-    private static func transcode(inputArguments: [String], destination: URL) async throws {
-        guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
+    private static func transcode(inputArguments: [String], destination: URL,
+                                  toneMapHDR: Bool) async throws {
+        let toneMap = hdrToneMapArguments(toneMapHDR: toneMapHDR)
+        guard let ffmpeg = FFmpeg.executable(preferToneMap: !toneMap.isEmpty) else {
+            throw VideoError.transcodeUnavailable
+        }
         try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         let partial = destination.deletingLastPathComponent()
@@ -398,9 +544,13 @@ enum VideoSupport {
         arguments += inputArguments
         arguments += ["-map", "0:v:0",
                       "-map", "0:a:0?",
-                      "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-                      "-pix_fmt", "yuv420p",
-                      "-c:a", "aac", "-b:a", "160k",
+                      "-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+        if toneMap.isEmpty {
+            arguments += ["-pix_fmt", "yuv420p"]
+        } else {
+            arguments += toneMap
+        }
+        arguments += ["-c:a", "aac", "-b:a", "160k",
                       "-movflags", "+faststart",
                       partial.path]
         let status = try await run(ffmpeg, arguments)

@@ -96,28 +96,33 @@ enum PersonAvatarLoader {
         // 裁切图缺失或损坏时退回关键照片：有关键人脸几何时按官方「照片」的
         // 口径裁出脸部特写，没有几何才退回整张缩略图。
         if image == nil, let id = request.fallbackPhotoID, let photo = store.anyPhoto(id: id) {
-            let face = request.faceGeometry
-            let maxPixel = request.maxPixel
-            image = await Task.detached(priority: .utility) {
-                // 脸部特写只占照片的一小块，直接用头像档位解码会糊：
-                // 按几何反推「裁切边长 ≥ 显示档位」所需的解码长边。
-                let neededPixel: CGFloat = face.map { geometry in
-                    let needed = Double(maxPixel)
-                        / (faceCropExpansion * max(geometry.size, 0.01) * 1.1)
-                    return CGFloat(min(needed, 2600))
-                } ?? maxPixel
-                // 网格缩略图长边最多 1200px，小脸（约四成人物）裁出的特写不够显示档位，
-                // 这类情况直接从原图解码；视频或原图不可用时退回缩略图。
-                var source = neededPixel > 1200
-                    ? ImageLoader.displayImage(for: photo, maxPixel: neededPixel)
-                    : nil
-                if source == nil {
-                    source = ImageLoader.gridThumbnail(for: photo, maxPixel: min(neededPixel, 1024))
-                }
-                guard let thumbnail = source else { return nil }
-                guard let face else { return thumbnail }
-                return faceCropped(thumbnail, face: face) ?? thumbnail
-            }.value
+            if photo.isCloud {
+                // 网盘人物：直接走云端缩略图，与网格 / 人物卡片使用同一份缓存。
+                image = await store.cloudThumbnail(for: photo)
+            } else {
+                let face = request.faceGeometry
+                let maxPixel = request.maxPixel
+                image = await Task.detached(priority: .utility) {
+                    // 脸部特写只占照片的一小块，直接用头像档位解码会糊：
+                    // 按几何反推「裁切边长 ≥ 显示档位」所需的解码长边。
+                    let neededPixel: CGFloat = face.map { geometry in
+                        let needed = Double(maxPixel)
+                            / (faceCropExpansion * max(geometry.size, 0.01) * 1.1)
+                        return CGFloat(min(needed, 2600))
+                    } ?? maxPixel
+                    // 网格缩略图长边最多 1200px，小脸（约四成人物）裁出的特写不够显示档位，
+                    // 这类情况直接从原图解码；视频或原图不可用时退回缩略图。
+                    var source = neededPixel > 1200
+                        ? ImageLoader.displayImage(for: photo, maxPixel: neededPixel)
+                        : nil
+                    if source == nil {
+                        source = ImageLoader.gridThumbnail(for: photo, maxPixel: min(neededPixel, 1024))
+                    }
+                    guard let thumbnail = source else { return nil }
+                    guard let face else { return thumbnail }
+                    return faceCropped(thumbnail, face: face) ?? thumbnail
+                }.value
+            }
         }
 
         if let image {

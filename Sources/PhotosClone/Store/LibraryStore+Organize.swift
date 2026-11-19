@@ -16,6 +16,18 @@ extension LibraryStore {
             scrollTargetID = nil
             timelineJumpLandingID = nil
         }
+        // 拾光 / 系统图库 / 网盘共用同一套浏览态清理，网盘换范围时也调用这里。
+        clearTransientBrowsingState()
+        if case .cloudMount(let id) = item {
+            openCloudMount(id)
+        }
+        prewarmOpenedCollection(item)
+        loadPhotoKitMediaTypesIfNeeded()
+    }
+
+    /// 切换浏览范围时清理的临时状态：选择、查看器、搜索、筛选与二级详情。
+    /// 拾光 / 系统图库走 `navigate(to:)`，网盘走 `setCloudScope` / `selectCloudFolder`，三处行为一致。
+    func clearTransientBrowsingState() {
         selection.removeAll()
         viewerID = nil
         searchText = ""
@@ -27,11 +39,6 @@ extension LibraryStore {
         selectedPerson = nil
         similarScope = nil
         selectedFavoriteBucket = nil
-        if case .cloudMount(let id) = item {
-            openCloudMount(id)
-        }
-        prewarmOpenedCollection(item)
-        loadPhotoKitMediaTypesIfNeeded()
     }
 
     /// 打开相簿 / 文件夹后预热前若干张快速缩略图（解码一次并写入本地快速层缓存），

@@ -15,6 +15,10 @@ extension CloudSetupWizardView {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                credentialCandidateSection(webdavCandidates, noun: "WebDAV") { candidate in
+                    applyWebDAVCandidate(candidate)
+                }
+
                 labeledField("地址", text: $address, prompt: "http://192.168.1.10:5005/photo")
                 labeledField("用户名", text: $username, prompt: "WebDAV 账号")
                 labeledSecureField("密码", text: $password, prompt: "WebDAV 密码")
@@ -225,6 +229,26 @@ extension CloudSetupWizardView {
     }
 
     // MARK: 动作
+
+    private var webdavCandidates: [CloudCredentialCandidate] {
+        credentialCandidates.filter { $0.mount.kind == .webdav }
+    }
+
+    /// 选中钥匙串候选：带入地址、账号与密码后直接测试连接。
+    private func applyWebDAVCandidate(_ candidate: CloudCredentialCandidate) {
+        address = candidate.mount.baseURL
+        username = candidate.mount.username
+        trustSelfSigned = candidate.mount.trustSelfSigned
+        password = candidate.hasPassword ? store.cloudPassword(for: candidate.mount.id) : ""
+        resetWebDAVBrowse()
+        if candidate.hasPassword {
+            testWebDAV()
+        } else {
+            networkVerified = false
+            status = "已带入「\(candidate.mount.name)」的地址与账号，钥匙串里没有密码，请补填后再测试。"
+            statusIsError = false
+        }
+    }
 
     /// 重新测试连接时回到「当前全部」，避免上一次选中的子目录继续生效。
     func resetWebDAVBrowse() {

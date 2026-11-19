@@ -30,9 +30,8 @@ struct CloudMountSidebarRow: View {
     /// 否则网盘行、全部项目、所有相簿会同时点亮。
     private var showsMountHighlight: Bool {
         guard isMountSelected else { return false }
-        // 分区总览没有独立的行，锚点留在网盘行。
-        if cloud.overview != nil { return true }
-        return cloud.scope == .all && cloud.selectedFolderPath == nil
+        // 与拾光一致：分区总览打开时高亮落在分区标题上，网盘行让位。
+        return cloud.overview == nil && cloud.scope == .all && cloud.selectedFolderPath == nil
     }
     /// 打开这个网盘的影院时仍算「当前网盘」：分类树保持展开，但高亮只留给真正选中的那一行。
     private var isCurrent: Bool {

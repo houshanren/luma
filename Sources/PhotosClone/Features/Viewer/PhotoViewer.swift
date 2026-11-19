@@ -38,6 +38,8 @@ struct PhotoViewerView: View {
     @State private var confirmBurstKeep = false
     /// 视频手动旋转角度：画面与顶栏按钮共用。
     @State private var videoQuarterTurns = 0
+    /// 顶栏与画面内控制条共享的音轨 / 字幕状态。
+    @StateObject private var videoUI = VideoPlaybackUI()
     /// 顶栏时间点击后显示剩余时长。
     @State private var videoShowsRemainingTime = false
 
@@ -383,30 +385,26 @@ struct PhotoViewerView: View {
         embedded && settings.videoControlPlacement == .topIntegrated && (photo?.isVideo ?? false)
     }
 
-    /// 顶栏播放舱：上行保留地点、拍摄时间、地理位置与序号圆环，下行是进度与时间。
+    /// 顶栏播放舱：上行是拍摄信息与序号，下行是进度与时间。
+    /// 宽度固定、高度压到两行最紧凑的一档：翻页时胶囊尺寸不变，画面也不会被工具栏遮住太多。
     private func videoToolbarDeck(_ photo: PhotoItem) -> some View {
-        VStack(spacing: 2) {
+        // 工具栏本身已经有一层玻璃胶囊：这里不再叠自己的背景，只保留内容。
+        VStack(spacing: 0) {
             videoToolbarInfoLine(photo)
-            VideoToolbarProgress(model: videoModel,
-                                 showsRemaining: $videoShowsRemainingTime)
+            HStack(spacing: 6) {
+                VideoToolbarProgress(model: videoModel,
+                                     showsRemaining: $videoShowsRemainingTime)
+                    .frame(maxWidth: .infinity)
+                // 音量收在进度右端：移入图标向左展开一条可拖动的小轨道，不占常驻宽度。
+                VideoInlineVolume(model: videoModel)
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 3)
-        .background {
-            Capsule(style: .continuous)
-                .fill(.regularMaterial)
-        }
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(
-                    LinearGradient(colors: [Color.primary.opacity(0.16),
-                                            Color.primary.opacity(0.04)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: 0.6)
-        }
-        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
-        // 工具栏中央的空位有限：内容可以在 240–460 之间伸缩，避免压到左右两端的控件。
-        .frame(minWidth: 240, idealWidth: 380, maxWidth: 460)
+        // 两行内容贴住胶囊上沿时会被切掉：顶部留出一点余量，底部相应收紧，整体高度不变。
+        .padding(.top, 5)
+        .padding(.bottom, 0)
+        // 固定宽度：尽量容下标题 / 时间 / 地点 / 序号，翻页时不再左右跳动。
+        .frame(width: 560)
         .help(photo.displayTitle)
     }
 
@@ -433,10 +431,7 @@ struct PhotoViewerView: View {
             }
 
             if photo.hasKnownCaptureDate {
-                Text(DateText.dayFormatter.string(from: photo.capturedAt))
-                    .foregroundStyle(Color.primary.opacity(0.82))
-                Text(DateText.timeFormatter.string(from: photo.capturedAt))
-                    .foregroundStyle(Color.primary.opacity(0.62))
+                captureStamp(photo.capturedAt, size: 11)
             } else {
                 Text("时间未知")
                     .foregroundStyle(Color.primary.opacity(0.62))
@@ -455,17 +450,30 @@ struct PhotoViewerView: View {
             if let currentIndex {
                 infoSeparator
                 progressRing
-                Text("\((currentIndex + 1).formatted())")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.primary)
-                Text("/ \(totalCount.formatted())")
-                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.primary.opacity(0.62))
+                // 与照片模式的序号写法一致：当前序号 + 总数，播放舱变宽后不再省略总数。
+                HStack(spacing: 2) {
+                    Text("\((currentIndex + 1).formatted())")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .contentTransition(.numericText())
+                    Text("/ \(totalCount.formatted())")
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.primary.opacity(0.62))
+                }
+                .lineLimit(1)
+                .fixedSize()
             }
+
+        }
+        // 信息行整体居中，音轨 / 字幕按钮浮在右端，避免把信息拽到左侧。
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .trailing) {
+            // 音轨 / 字幕入口：与画面内控制条、顶栏保持同一份状态。
+            VideoMediaMenuButtons(ui: videoUI, model: videoModel, style: .toolbar)
         }
         .font(.system(size: 11, weight: .medium))
         .lineLimit(1)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     private func rotateVideoPlayer() {
@@ -537,17 +545,7 @@ struct PhotoViewerView: View {
             }
 
             if photo.hasKnownCaptureDate {
-                Text(DateText.dayFormatter.string(from: photo.capturedAt))
-                    .font(.system(size: 11.5, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.primary.opacity(0.85))
-                    .lineLimit(1)
-
-                Text(DateText.timeFormatter.string(from: photo.capturedAt))
-                    .font(.system(size: 11.5, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.primary.opacity(0.62))
-                    .lineLimit(1)
+                captureStamp(photo.capturedAt, size: 11.5)
             } else {
                 Text("时间未知")
                     .font(.system(size: 11.5, weight: .medium))
@@ -597,6 +595,27 @@ struct PhotoViewerView: View {
         .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
         .help(photo.displayTitle)
         .accessibilityElement(children: .combine)
+    }
+
+    /// 拍摄时间：年月日 + 时分秒。突出「月日」，时间整体弱化成次级信息；
+    /// 秒不加强调色，保持顶栏安静。
+    private func captureStamp(_ date: Date, size: CGFloat) -> some View {
+        HStack(spacing: 5) {
+            Text(DateText.dayFormatter.string(from: date))
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.primary.opacity(0.95))
+            Rectangle()
+                .fill(Color.primary.opacity(0.18))
+                .frame(width: 0.8, height: size - 2)
+            Text(DateText.secondTimeFormatter.string(from: date))
+                .foregroundStyle(Color.primary.opacity(0.58))
+        }
+        .font(.system(size: size, weight: .medium))
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityLabel("拍摄于 \(DateText.dayFormatter.string(from: date)) "
+                            + DateText.secondTimeFormatter.string(from: date))
     }
 
     /// 实况标记：和地点、时间同一套信息语言，不再依赖画面上的角标。
@@ -698,35 +717,37 @@ struct PhotoViewerView: View {
     private var embeddedToolbar: some ToolbarContent {
         if let photo {
             ToolbarItem(placement: .navigation) {
-                Button {
-                    // 视频全屏里「返回」只退出系统全屏：画面继续播放，查看器不关、不回列表。
-                    if viewer.videoImmersiveFullScreen {
-                        FullScreenDiagnostics.log("toolbarBack -> exit fullscreen")
-                        hostWindow?.toggleFullScreen(nil)
-                    } else {
-                        FullScreenDiagnostics.log("toolbarBack -> close viewer")
-                        store.closeViewer()
+                // 返回与视频播放控制放在同一个工具栏项里：系统会把它们收进同一块玻璃胶囊，
+                // 和照片模式一样只占最左侧一条，不再多出一块悬空的控制条。
+                HStack(spacing: 8) {
+                    Button {
+                        // 视频全屏里「返回」只退出系统全屏：画面继续播放，查看器不关、不回列表。
+                        if viewer.videoImmersiveFullScreen {
+                            FullScreenDiagnostics.log("toolbarBack -> exit fullscreen")
+                            hostWindow?.toggleFullScreen(nil)
+                        } else {
+                            FullScreenDiagnostics.log("toolbarBack -> close viewer")
+                            store.closeViewer()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 26, height: 24)
+                            .contentShape(Rectangle())
                     }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 26, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help(viewer.videoImmersiveFullScreen ? "退出全屏 (Esc)" : "返回图库 (Esc)")
-            }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)
+                    .help(viewer.videoImmersiveFullScreen ? "退出全屏 (Esc)" : "返回图库 (Esc)")
 
-            // 顶栏融合：播放控制紧跟返回按钮，和工具栏共用同一行。
-            if showsVideoToolbarControls {
-                ToolbarItem(placement: .navigation) {
-                    VideoToolbarTransport(model: videoModel,
-                                          hasPrev: store.hasAdjacentVideo(from: photo.id, delta: -1),
-                                          hasNext: store.hasAdjacentVideo(from: photo.id, delta: 1),
-                                          onPrev: { store.viewerStepVideo(-1) },
-                                          onNext: { store.viewerStepVideo(1) })
+                    if showsVideoToolbarControls {
+                        VideoToolbarTransport(model: videoModel,
+                                              hasPrev: store.hasAdjacentVideo(from: photo.id, delta: -1),
+                                              hasNext: store.hasAdjacentVideo(from: photo.id, delta: 1),
+                                              onPrev: { store.viewerStepVideo(-1) },
+                                              onNext: { store.viewerStepVideo(1) })
+                    }
                 }
+                .padding(.horizontal, showsVideoToolbarControls ? 3 : 0)
             }
 
             // 连拍选择模式：与官方「照片」一致，左上角显示「连拍快照（N张照片）」。
@@ -799,9 +820,9 @@ struct PhotoViewerView: View {
                     .buttonStyle(.borderedProminent)
                     .help("完成连拍选择")
                 } else {
+                    // 视频规格与照片操作共用同一块操作胶囊：
+                    // 播放选项 / 全屏排在信息、胶片条等照片操作之前，顺序与参考图一致。
                     if showsVideoToolbarControls {
-                        // 顶栏融合模式（控制条在工具栏）时，音量调节也留在工具栏里。
-                        VideoToolbarVolume(model: videoModel)
                         VideoToolbarOptions(model: videoModel,
                                             quarterTurns: videoQuarterTurns,
                                             onRotate: rotateVideoPlayer,
@@ -809,12 +830,6 @@ struct PhotoViewerView: View {
                         VideoDeckButton(icon: "arrow.up.left.and.arrow.down.right",
                                         help: "全屏 (F)",
                                         action: toggleVideoFullScreen)
-
-                        // 播放控制与文件操作之间留一道分隔，右侧不再挤成一排。
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.12))
-                            .frame(width: 1, height: 14)
-                            .padding(.horizontal, 3)
                     }
 
                     Button {
@@ -824,9 +839,8 @@ struct PhotoViewerView: View {
                     }
                     .help("信息")
 
-                    // 连拍的帧条只在选择模式浮出，普通浏览时不提供胶片条开关；
-                    // 视频顶栏融合时也收起，给中部播放舱让出宽度。
-                    if burstMembers.isEmpty, !showsVideoToolbarControls {
+                    // 连拍的帧条只在选择模式浮出，普通浏览时不提供胶片条开关。
+                    if burstMembers.isEmpty {
                         Button {
                             settings.viewerFilmstrip.toggle()
                         } label: {
@@ -861,15 +875,13 @@ struct PhotoViewerView: View {
                         .help("智能美化…")
                     }
 
-                    if !showsVideoToolbarControls {
-                        Button {
-                            store.presentSlideshow()
-                        } label: {
-                            Image(systemName: "play.rectangle")
-                        }
-                        .disabled(store.visibleCount == 0)
-                        .help("幻灯片播放")
+                    Button {
+                        store.presentSlideshow()
+                    } label: {
+                        Image(systemName: "play.rectangle")
                     }
+                    .disabled(store.visibleCount == 0)
+                    .help("幻灯片播放")
 
                     if burstMembers.count > 1 {
                         Button {
@@ -980,6 +992,7 @@ struct PhotoViewerView: View {
                     // 视频只缩放画面本身，播放控件保持原尺寸；放大后同样可以拖动。
                     VideoPlayerStage(photo: photo,
                                      model: videoModel,
+                                     ui: videoUI,
                                      quarterTurns: $videoQuarterTurns,
                                      onCaptureFrame: { captureVideoFrame() },
                                      transparentBackground: embedded,
@@ -1516,9 +1529,25 @@ struct PhotoViewerView: View {
         Menu {
             Button("导出…") { store.export(photo.id) }
             Button("打印…") { store.printCommand() }
-            Button("幻灯片播放") { store.presentSlideshow() }
-            Button(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图") {
-                settings.viewerFilmstrip.toggle()
+            // 窗口内浏览时，幻灯片 / 胶片条 / 信息 / 收藏 / 共享都在工具栏右侧有独立按钮，
+            // 菜单里不再重复；全屏查看器的顶部只有一排圆钮，这些入口继续保留在这里。
+            if !embedded {
+                Button("幻灯片播放") { store.presentSlideshow() }
+                Button(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图") {
+                    settings.viewerFilmstrip.toggle()
+                }
+                Button(viewer.showInfoPanel ? "隐藏信息面板" : "显示信息面板") {
+                    viewer.showInfoPanel.toggle()
+                }
+                if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                    Button(photo.isFavorite ? "取消收藏" : "收藏") {
+                        store.toggleFavorite(photo.id)
+                    }
+                }
+                ShareLink(items: store.shareURLs) {
+                    Text("共享…")
+                }
+                .disabled(store.shareURLs.isEmpty)
             }
             if !photo.isCloud || store.isCurrentCloudSMB {
                 Button("在访达中显示") { store.revealInFinder(photo.id) }
@@ -1570,10 +1599,23 @@ struct PhotoViewerView: View {
                 }
             }
         } label: {
+            // 工具栏里与其他图标同尺寸、同风格，不自绘圆底；
+            // 全屏查看器顶部是一排圆形材质按钮，这里保持同样的圆钮外观。
             Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: 34, height: 34)
-                .background(.ultraThinMaterial, in: Circle())
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: embedded ? 26 : 34, height: embedded ? 24 : 34)
+                .background {
+                    if !embedded {
+                        Circle().fill(.ultraThinMaterial)
+                    }
+                }
+                .overlay {
+                    if !embedded {
+                        Circle().strokeBorder(.white.opacity(0.14), lineWidth: 0.6)
+                    }
+                }
+                .shadow(color: .black.opacity(embedded ? 0 : 0.18), radius: 6, y: 2)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -1768,7 +1810,8 @@ struct PhotoViewerView: View {
         }
 
         // 空格：与系统「照片」一致，打开后再次按下即收起查看器回到图库。
-        if event.keyCode == 49,
+        // 长按的重复事件不处理，避免「刚打开又被关掉」的闪烁。
+        if event.keyCode == 49, !event.isARepeat,
            flags.intersection([.shift, .option, .control]).isEmpty {
             store.closeViewer()
             return true

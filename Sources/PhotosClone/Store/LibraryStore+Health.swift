@@ -505,7 +505,8 @@ extension LibraryStore {
         guard !photos[index].isCloud, !photos[index].isSystem else { return }
         let now = Date()
         if let last = photos[index].viewedAt, now.timeIntervalSince(last) < 3600 { return }
-        photos[index].viewedAt = now
+        // 只写数据库，不改内存里的 photos：它的 didSet 会推进 contentRevision，
+        // 大图库开图那一刻会把窗口 / 分段 / 日期索引 / 总览全部重算，表现为卡一下。
         metadataStore?.setViewedAt(id, date: now)
     }
 }

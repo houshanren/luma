@@ -15,6 +15,14 @@ final class VideoPlayerModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isPipAvailable = false
     @Published private(set) var isPipActive = false
+    /// 可选音轨 / 内嵌字幕（AVFoundation 原生容器与 HLS 音轨组）。
+    @Published private(set) var audioOptions: [AVMediaSelectionOption] = []
+    @Published private(set) var selectedAudio: AVMediaSelectionOption?
+    @Published private(set) var legibleOptions: [AVMediaSelectionOption] = []
+    @Published private(set) var selectedLegible: AVMediaSelectionOption?
+    /// 从第几秒开始播放：云盘跳转后会话从目标位置重新起流，
+    /// 播放器时间轴从 0 开始，对外统一换算成完整时间轴。
+    private(set) var timelineOffset: Double = 0
 
     @Published var speed: Double = 1
     @Published var volume: Double = 1 {
@@ -32,9 +40,19 @@ final class VideoPlayerModel: ObservableObject {
     private var pipObservers: Set<AnyCancellable> = []
     private var endObserver: NSObjectProtocol?
     private weak var pipController: AVPictureInPictureController?
+    private var audioGroup: AVMediaSelectionGroup?
+    private var legibleGroup: AVMediaSelectionGroup?
     private var pendingAutoplay = false
     /// 播放到结尾且未开启循环时回调，用于自动连播下一个视频。
     var onPlaybackEnd: (@MainActor () -> Void)?
+    /// 云盘流式播放的跳转路由：返回 true 表示调用方（播放页）已经重建了流，本次不再直接 seek。
+    var seekRouter: ((Double) -> Bool)?
+
+    /// 界面上的跳转统一走这里：云盘未生成区间会触发重新起流。
+    func requestSeek(to seconds: Double) {
+        if let seekRouter, seekRouter(seconds) { return }
+        seek(to: seconds)
+    }
 
     init() {
         installTimeObserver()
@@ -84,15 +102,21 @@ final class VideoPlayerModel: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let seconds = time.seconds
-                if seconds.isFinite { self.currentTime = max(0, seconds) }
+                if seconds.isFinite {
+                    self.currentTime = max(0, seconds + self.timelineOffset)
+                }
                 guard let item = self.player.currentItem else { return }
                 // 边下边播的 HLS 时长会随分片写入增长，取较大值更新进度条上限。
                 let value = CMTimeGetSeconds(item.duration)
-                if value.isFinite, value > self.duration { self.duration = value }
+                if value.isFinite, value > 0 {
+                    let total = value + self.timelineOffset
+                    if total > self.duration { self.duration = total }
+                }
                 if let range = item.loadedTimeRanges.last?.timeRangeValue {
                     let end = CMTimeGetSeconds(CMTimeAdd(range.start, range.duration))
                     if end.isFinite {
-                        let clamped = self.duration > 0 ? min(end, self.duration) : end
+                        let absolute = end + self.timelineOffset
+                        let clamped = self.duration > 0 ? min(absolute, self.duration) : absolute
                         if clamped > self.bufferedTime { self.bufferedTime = clamped }
                     }
                 }
@@ -101,15 +125,18 @@ final class VideoPlayerModel: ObservableObject {
     }
 
     func load(url: URL, options: [String: Any] = [:], probe: VideoProbe,
-              autoplay: Bool = true, loop: Bool = false, muted: Bool = false) {
+              autoplay: Bool = true, loop: Bool = false, muted: Bool = false,
+              timelineOffset: Double = 0) {
         load(asset: AVURLAsset(url: url, options: options), probe: probe,
-             autoplay: autoplay, loop: loop, muted: muted)
+             autoplay: autoplay, loop: loop, muted: muted, timelineOffset: timelineOffset)
     }
 
     /// 直接装载 AVAsset：PhotoKit 返回的云端 / 共享相簿素材没有本地文件 URL。
     func load(asset: AVAsset, probe: VideoProbe,
-              autoplay: Bool = true, loop: Bool = false, muted: Bool = false) {
+              autoplay: Bool = true, loop: Bool = false, muted: Bool = false,
+              timelineOffset: Double = 0) {
         resetForNewItem()
+        self.timelineOffset = max(0, timelineOffset)
         duration = probe.duration
         isLooping = loop
         isMuted = muted
@@ -137,6 +164,13 @@ final class VideoPlayerModel: ObservableObject {
         isBuffering = false
         isPlaying = false
         pendingAutoplay = false
+        timelineOffset = 0
+        audioOptions = []
+        selectedAudio = nil
+        legibleOptions = []
+        selectedLegible = nil
+        audioGroup = nil
+        legibleGroup = nil
     }
 
     private func observe(_ item: AVPlayerItem) {
@@ -148,7 +182,11 @@ final class VideoPlayerModel: ObservableObject {
                 case .readyToPlay:
                     self.errorMessage = nil
                     let value = CMTimeGetSeconds(item.duration)
-                    if value.isFinite, value > self.duration { self.duration = value }
+                    if value.isFinite, value > 0 {
+                        let total = value + self.timelineOffset
+                        if total > self.duration { self.duration = total }
+                    }
+                    self.refreshMediaOptions(for: item)
                     if self.pendingAutoplay {
                         self.pendingAutoplay = false
                         self.play()
@@ -184,8 +222,8 @@ final class VideoPlayerModel: ObservableObject {
     func play() {
         guard player.currentItem != nil else { return }
         if duration > 0, currentTime >= duration - 0.05 {
-            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-            currentTime = 0
+            // 从本段起点重新播：跳转会话的时间轴 0 对应 timelineOffset。
+            seek(to: timelineOffset)
         }
         player.playImmediately(atRate: Float(speed))
     }
@@ -203,10 +241,12 @@ final class VideoPlayerModel: ObservableObject {
     }
 
     func seek(to seconds: Double) {
-        let upper = duration > 0 ? duration : seconds
-        let target = min(max(0, seconds), upper)
+        let lower = timelineOffset
+        let upper = duration > 0 ? max(lower, duration) : max(lower, seconds)
+        let target = min(max(seconds, lower), upper)
         currentTime = target
-        player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+        let local = max(0, target - timelineOffset)
+        player.seek(to: CMTime(seconds: local, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
@@ -223,6 +263,46 @@ final class VideoPlayerModel: ObservableObject {
         guard let item = player.currentItem else { return }
         if isPlaying { pause() }
         item.step(byCount: count)
+    }
+
+    // MARK: 音轨 / 内嵌字幕
+
+    /// 装载完成后读取可切换的音轨与内嵌字幕（HLS 只有音轨组）。
+    private func refreshMediaOptions(for item: AVPlayerItem) {
+        let asset = item.asset
+        Task { @MainActor [weak self] in
+            guard let self, self.player.currentItem === item else { return }
+            if let group = try? await asset.loadMediaSelectionGroup(for: .audible) {
+                self.audioGroup = group
+                self.audioOptions = group.options
+                self.selectedAudio = item.currentMediaSelection.selectedMediaOption(in: group)
+            }
+            if let group = try? await asset.loadMediaSelectionGroup(for: .legible) {
+                self.legibleGroup = group
+                self.legibleOptions = group.options
+                self.selectedLegible = item.currentMediaSelection.selectedMediaOption(in: group)
+            }
+        }
+    }
+
+    func selectAudio(_ option: AVMediaSelectionOption?) {
+        guard let group = audioGroup, let item = player.currentItem else { return }
+        if let option {
+            item.select(option, in: group)
+        } else {
+            item.select(nil, in: group)
+        }
+        selectedAudio = option
+    }
+
+    func selectLegible(_ option: AVMediaSelectionOption?) {
+        guard let group = legibleGroup, let item = player.currentItem else { return }
+        if let option {
+            item.select(option, in: group)
+        } else {
+            item.select(nil, in: group)
+        }
+        selectedLegible = option
     }
 
     // MARK: 画中画

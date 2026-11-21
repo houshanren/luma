@@ -39,7 +39,7 @@ extension LibraryStore {
     var cloudBreadcrumbRootID: String { cloudBreadcrumbChain.first?.id ?? "" }
 
     /// 根目录标识：百度用 "/"，其余用 ""。
-    private func cloudRootPath(for mount: CloudMount) -> String {
+    func cloudRootPath(for mount: CloudMount) -> String {
         mount.kind == .baidu ? "/" : ""
     }
 

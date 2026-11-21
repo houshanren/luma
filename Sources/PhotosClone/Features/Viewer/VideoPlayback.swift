@@ -93,12 +93,19 @@ struct VideoScrubber: View {
     var tint: Color = .white
     /// 进度点的描边色：白点配深描边，彩色点配白描边，深浅底上都能看清。
     var knobBorder: Color = .white.opacity(0.6)
+    /// 总时长：用于预览气泡上的时间标签。
+    var duration: Double = 0
+    /// 悬停 / 拖动时取该比例处的画面帧；为空则不显示预览。
+    var thumbnailPreview: ((Double) async -> NSImage?)?
     let onSeek: (Double) -> Void
     let onCommit: (Double) -> Void
 
     @State private var isDragging = false
     @State private var isHovering = false
     @State private var dragValue: Double = 0
+    @State private var previewImage: NSImage?
+    @State private var previewFraction: Double?
+    @State private var previewTask: Task<Void, Never>?
 
     private var isExpanded: Bool { isHovering || isDragging }
     private var trackHeight: CGFloat { isExpanded ? 4.5 : 3 }
@@ -140,16 +147,31 @@ struct VideoScrubber: View {
                     .animation(.spring(response: 0.26, dampingFraction: 0.72), value: isExpanded)
             }
             .frame(maxHeight: .infinity, alignment: .center)
+            .overlay(alignment: .topLeading) {
+                previewBubble(width: width)
+            }
             .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let point):
+                    isHovering = true
+                    requestPreview(clamp(point.x / width))
+                case .ended:
+                    isHovering = false
+                    if !isDragging { clearPreview() }
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         isDragging = true
                         dragValue = clamp(gesture.location.x / width)
+                        requestPreview(dragValue)
                         onSeek(dragValue)
                     }
                     .onEnded { _ in
                         isDragging = false
+                        clearPreview()
                         onCommit(dragValue)
                     }
             )
@@ -157,7 +179,74 @@ struct VideoScrubber: View {
         .frame(height: 16)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+            if !hovering, !isDragging { clearPreview() }
         }
+    }
+
+    @ViewBuilder
+    private func previewBubble(width: CGFloat) -> some View {
+        if let previewImage, let previewFraction {
+            let bubbleWidth: CGFloat = 168
+            let bubbleHeight: CGFloat = 95
+            let x = min(max(0, width * previewFraction - bubbleWidth / 2), max(0, width - bubbleWidth))
+            Image(nsImage: previewImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: bubbleWidth, height: bubbleHeight)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(.white.opacity(0.28), lineWidth: 0.7)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if duration > 0 {
+                        Text(formatPreviewTime(duration * previewFraction))
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2.5)
+                            .background(.black.opacity(0.55), in: Capsule(style: .continuous))
+                            .padding(6)
+                    }
+                }
+                .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
+                .offset(x: x, y: -(bubbleHeight + 12))
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
+    }
+
+    private func requestPreview(_ fraction: Double) {
+        guard let thumbnailPreview else { return }
+        previewFraction = fraction
+        previewTask?.cancel()
+        previewTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 130_000_000)
+            guard !Task.isCancelled else { return }
+            let image = await thumbnailPreview(fraction)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.12)) { previewImage = image }
+        }
+    }
+
+    private func clearPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewImage = nil
+        previewFraction = nil
+    }
+
+    private func formatPreviewTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        let total = Int(seconds)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
     }
 
     /// 进度点：一团柔光托着一颗镜头对焦点似的小圆。
@@ -176,6 +265,224 @@ struct VideoScrubber: View {
                 }
                 .shadow(color: .black.opacity(0.30), radius: 2, y: 1)
         }
+    }
+}
+
+// MARK: - 缓冲提示
+
+/// 起播 / 缓冲 / 跳转落地前的等待动画：一圈渐变弧 + 呼吸光点。
+/// 延迟 0.22 秒出现，本地秒开或短跳转不会闪一下白圈。
+private struct VideoBufferingOverlay: View {
+    let active: Bool
+    var label: String = "缓冲中"
+
+    @State private var visible = false
+    @State private var spinning = false
+    @State private var pulsing = false
+
+    var body: some View {
+        Group {
+            if visible {
+                VStack(spacing: 9) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.12), lineWidth: 2.4)
+                        Circle()
+                            .trim(from: 0, to: 0.62)
+                            .stroke(AngularGradient(colors: [Color.accentColor.opacity(0.15),
+                                                             Color.accentColor,
+                                                             LumaBrand.cyan],
+                                                    center: .center,
+                                                    startAngle: .degrees(0),
+                                                    endAngle: .degrees(360)),
+                                    style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+                            .rotationEffect(.degrees(spinning ? 360 : 0))
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 4, height: 4)
+                            .scaleEffect(pulsing ? 1.7 : 0.7)
+                            .opacity(pulsing ? 0.32 : 1)
+                    }
+                    .frame(width: 40, height: 40)
+
+                    Text(label)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.62))
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 15)
+                .background(.ultraThinMaterial,
+                            in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.6)
+                }
+                .shadow(color: .black.opacity(0.32), radius: 18, y: 8)
+                .transition(.opacity.combined(with: .scale(scale: 0.94)))
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: visible)
+        .allowsHitTesting(false)
+        .task(id: active) {
+            guard active else {
+                visible = false
+                spinning = false
+                pulsing = false
+                return
+            }
+            // 等一小会儿再出现：进度条小跳一下不该闪出加载动画。
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            visible = true
+            withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
+                spinning = true
+            }
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                pulsing = true
+            }
+        }
+    }
+}
+
+/// 起播等待页：模糊缩略图 + 片名 + 缓慢漂移的短句，替代纯黑屏。
+/// 没有缩略图（网络 / 云盘源）时退回深色渐变，同样不会留一块空白。
+private struct VideoLoadingStage: View {
+    let active: Bool
+    let title: String
+    let thumbnail: NSImage?
+
+    @State private var visible = false
+    @State private var spinning = false
+    @State private var drifting = false
+    @State private var hintIndex = 0
+
+    private static let hints = [
+        "正在唤醒放映机",
+        "正在接通片源",
+        "正在准备第一帧",
+        "正在校对音轨与字幕",
+        "马上就好"
+    ]
+
+    var body: some View {
+        ZStack {
+            if visible {
+                backdrop
+                content
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .animation(.easeOut(duration: 0.24), value: visible)
+        .allowsHitTesting(false)
+        .task(id: active) {
+            guard active else {
+                visible = false
+                spinning = false
+                drifting = false
+                return
+            }
+            // 本地秒开时不要闪一下：等一小会儿再露面。
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            visible = true
+            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+                spinning = true
+            }
+            // 背景极慢地推近，等待时不至于完全静止。
+            withAnimation(.easeInOut(duration: 9).repeatForever(autoreverses: true)) {
+                drifting = true
+            }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_600_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.35)) {
+                    hintIndex = (hintIndex + 1) % Self.hints.count
+                }
+            }
+        }
+    }
+
+    private var backdrop: some View {
+        Color.clear
+            .overlay {
+                if let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    LinearGradient(colors: [Color(white: 0.13), Color(white: 0.04)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+            }
+            .blur(radius: thumbnail == nil ? 0 : 44, opaque: true)
+            .scaleEffect(drifting ? 1.12 : 1.05)
+            .overlay {
+                LinearGradient(colors: [.black.opacity(0.32), .black.opacity(0.74)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+    }
+
+    private var content: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.12), lineWidth: 2.6)
+                Circle()
+                    .trim(from: 0, to: 0.62)
+                    .stroke(AngularGradient(colors: [Color.accentColor.opacity(0.12),
+                                                     Color.accentColor,
+                                                     LumaBrand.cyan],
+                                            center: .center,
+                                            startAngle: .degrees(0),
+                                            endAngle: .degrees(360)),
+                            style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+                    .rotationEffect(.degrees(spinning ? 360 : 0))
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 4, height: 4)
+            }
+            .frame(width: 46, height: 46)
+
+            VStack(spacing: 7) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+
+                ZStack {
+                    Text(Self.hints[hintIndex])
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.52))
+                        .id(hintIndex)
+                        .transition(.opacity.combined(with: .offset(y: 4)))
+                }
+                .frame(height: 15)
+            }
+            .frame(maxWidth: 460)
+        }
+        .padding(.horizontal, 48)
+        .shadow(color: .black.opacity(0.4), radius: 20, y: 6)
+    }
+}
+
+/// 工具栏播放按钮里的迷你缓冲环。
+private struct VideoMiniSpinner: View {
+    @State private var spinning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.62)
+            .stroke(Color.white, style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
+            .frame(width: 11, height: 11)
+            .rotationEffect(.degrees(spinning ? 360 : 0))
+            .onAppear {
+                withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+                    spinning = true
+                }
+            }
     }
 }
 
@@ -260,6 +567,8 @@ struct VideoPlayerStage: View {
     @State private var hasLoadedVideo = false
     @State private var assetOptions: [String: Any] = [:]
     @State private var isPreparing = true
+    /// 起播阶段的底图：本地视频直接读缩略图做模糊背景，网络源没有就退回渐变。
+    @State private var loadingThumbnail: NSImage?
     @State private var failureMessage: String?
     /// 云端直链获取失败的具体原因（授权、文件 ID、接口错误等）。
     @State private var streamFailure: String?
@@ -279,6 +588,10 @@ struct VideoPlayerStage: View {
     @State private var probeIsHDR = false
     @State private var probeAudioCount = 0
     @State private var probeAudioTracks: [AudioTrackInfo] = []
+    /// ffprobe 补齐的完整技术信息：码率 / 帧率 / HDR / 章节。
+    @State private var playbackProbe = VideoProbe()
+    /// I 键播放信息叠加。
+    @State private var showPlaybackInfo = false
     /// 播放中定期清理旧分片，给长片一个可控的磁盘窗口。
     @State private var trimTask: Task<Void, Never>?
     /// 控制层是否处于“刚操作过”的可见状态；播放中静止数秒后自动淡出。
@@ -322,9 +635,210 @@ struct VideoPlayerStage: View {
 
     private var activeFailure: String? { failureMessage ?? model.errorMessage }
 
+    /// 还没有第一帧：源解析中，或播放器已装片但 item 还没 ready。
+    /// 这段时间最容易看起来「黑屏 / 像被暂停了」，用起播提示兜住。
+    private var isFirstFramePending: Bool {
+        guard activeFailure == nil else { return false }
+        return isPreparing || (hasLoadedVideo && !model.isItemReady)
+    }
+
+    /// 读取本地缩略图做起播背景；网络 / 云盘视频没有对应文件时返回 nil。
+    private func fileExistsThumbnail() -> NSImage? {
+        let url = LibraryPaths.thumbnailURL(for: photo)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return NSImage(contentsOf: url)
+    }
+
+    /// 等待层：起播用整页遮挡，出画面后的卡顿用紧凑胶囊。
+    @ViewBuilder
+    private var waitingLayer: some View {
+        if activeFailure == nil {
+            VideoLoadingStage(active: isFirstFramePending,
+                              title: photo.title ?? photo.originalName,
+                              thumbnail: loadingThumbnail)
+            if !isFirstFramePending {
+                VideoBufferingOverlay(active: model.isStalled, label: "缓冲中")
+            }
+        }
+    }
+
     /// 当前时间点应显示的外挂字幕（已套用字幕偏移）。
     private var activeSubtitle: String? {
         ui.cue(at: model.currentTime)?.text
+    }
+
+    private var subtitleTextColor: Color {
+        switch settings.subtitleColor {
+        case "yellow": return Color(red: 1.0, green: 0.86, blue: 0.38)
+        case "cyan": return Color(red: 0.45, green: 0.95, blue: 0.98)
+        case "green": return Color(red: 0.58, green: 0.98, blue: 0.66)
+        default: return .white
+        }
+    }
+
+    private func subtitleBottomPadding(in size: CGSize) -> CGFloat {
+        switch settings.subtitlePosition {
+        case "middle": return max(160, size.height * 0.34)
+        case "lower": return 190
+        default: return 118
+        }
+    }
+
+    // MARK: 播放信息 / 章节
+
+    /// I 键信息叠加：码率 / 帧率 / HDR / 音轨 / 章节，全部来自起播后补的 ffprobe。
+    private var playbackInfoOverlay: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(LumaBrand.amber)
+                Text("播放信息")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 12)
+                Button {
+                    showPlaybackInfo = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 18, height: 18)
+                        .background(Color.white.opacity(0.08), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("关闭 (I)")
+            }
+
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 0.7)
+
+            infoLine("画面", playbackResolutionText)
+            infoLine("编码", playbackCodecText)
+            infoLine("码率", playbackBitrateText)
+            infoLine("帧率", playbackFrameRateText)
+            infoLine("HDR", playbackProbe.hdrLabel ?? (playbackProbe.isHDR ? "HDR" : "SDR"))
+            infoLine("音轨", playbackAudioText)
+            infoLine("章节", playbackProbe.chapters.isEmpty ? "无" : "\(playbackProbe.chapters.count) 个")
+            if let burn = ui.burnSubtitleName {
+                infoLine("烧录", burn)
+            }
+            infoLine("输出", "系统默认输出")
+        }
+        .padding(14)
+        .frame(width: 266)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.black.opacity(0.42))
+                }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+        }
+        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+    }
+
+    private func infoLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.42))
+                .frame(width: 30, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.88))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var playbackResolutionText: String {
+        let size = playbackProbe.size.width > 0 ? playbackProbe.size : videoSize
+        guard size.width > 0, size.height > 0 else { return "—" }
+        return "\(Int(size.width))×\(Int(size.height))"
+    }
+
+    private var playbackCodecText: String {
+        var parts: [String] = []
+        if let codec = playbackProbe.codec ?? photo.videoCodec, !codec.isEmpty {
+            parts.append(codec.uppercased())
+        }
+        if let container = playbackProbe.containerName, !container.isEmpty {
+            parts.append(container)
+        }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    private var playbackBitrateText: String {
+        let bitrate = playbackProbe.bitrate
+        guard bitrate > 0 else { return "—" }
+        if bitrate >= 1_000_000 {
+            return String(format: "%.1f Mbps", Double(bitrate) / 1_000_000)
+        }
+        return "\(bitrate / 1000) kbps"
+    }
+
+    private var playbackFrameRateText: String {
+        playbackProbe.frameRate > 0
+            ? String(format: "%.2f fps", playbackProbe.frameRate)
+            : "—"
+    }
+
+    private var playbackAudioText: String {
+        let tracks = playbackProbe.audioTracks.isEmpty ? probeAudioTracks : playbackProbe.audioTracks
+        guard let first = tracks.first else { return "—" }
+        let base = first.displayName.isEmpty ? "音轨 1" : first.displayName
+        return tracks.count > 1 ? "\(base) · 共 \(tracks.count) 轨" : base
+    }
+
+    /// 章节跳转：⌥← / ⌥→ 与章节菜单共用；没有章节时返回 false，让按键继续走原逻辑。
+    @discardableResult
+    private func seekChapter(step: Int) -> Bool {
+        let chapters = playbackProbe.chapters.sorted { $0.start < $1.start }
+        guard chapters.count > 1 else { return false }
+        if step > 0 {
+            guard let next = chapters.first(where: { $0.start > model.currentTime + 0.6 }) else {
+                return true
+            }
+            seekPlayback(to: next.start)
+        } else {
+            if let index = chapters.lastIndex(where: { $0.start <= model.currentTime - 2 }) {
+                seekPlayback(to: chapters[index].start)
+            } else {
+                seekPlayback(to: chapters[0].start)
+            }
+        }
+        return true
+    }
+
+    private var chapterMenu: some View {
+        Menu {
+            ForEach(playbackProbe.chapters) { chapter in
+                Button {
+                    seekPlayback(to: chapter.start)
+                } label: {
+                    if model.currentTime >= chapter.start - 0.4, model.currentTime < chapter.end {
+                        Label(chapter.title, systemImage: "checkmark")
+                    } else {
+                        Text(chapter.title)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "list.bullet.rectangle.portrait")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.86))
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("章节（⌥← / ⌥→）")
     }
 
     var body: some View {
@@ -354,13 +868,9 @@ struct VideoPlayerStage: View {
                 tapLayer
             }
 
-            if isPreparing || (model.isBuffering && model.isPlaying) {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-                    .frame(width: 56, height: 56)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
+            // 起播阶段：模糊缩略图 + 片名 + 轮换短句，别让用户盯着一块黑屏。
+            // 出画面之后的卡顿 / 跳转才用紧凑的缓冲胶囊。
+            waitingLayer
 
             if let failure = activeFailure {
                 failureView(failure)
@@ -371,7 +881,7 @@ struct VideoPlayerStage: View {
                     Spacer()
                     Text(subtitle)
                         .font(.system(size: settings.subtitleFontSize, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(subtitleTextColor)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
@@ -380,7 +890,7 @@ struct VideoPlayerStage: View {
                         .shadow(color: .black.opacity(settings.subtitleBackground ? 0.6 : 0.9), radius: 3, y: 1)
                         .frame(maxWidth: 860)
                         .padding(.horizontal, 40)
-                        .padding(.bottom, 118)
+                        .padding(.bottom, subtitleBottomPadding(in: proxy.size))
                 }
                 .allowsHitTesting(false)
             }
@@ -393,6 +903,18 @@ struct VideoPlayerStage: View {
                     controls(stage: proxy.size)
                 }
                 // 顶栏融合模式下音轨 / 字幕入口在窗口工具栏的播放舱里。
+            }
+
+            if showPlaybackInfo, activeFailure == nil {
+                VStack {
+                    HStack {
+                        Spacer()
+                        playbackInfoOverlay
+                    }
+                    Spacer()
+                }
+                .padding(18)
+                .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -429,6 +951,23 @@ struct VideoPlayerStage: View {
         .task(id: photo.id) {
             loadGeneration &+= 1
             let generation = loadGeneration
+            // 起播底图：本地视频的缩略图先垫一层模糊背景，网络源没有就退回渐变。
+            loadingThumbnail = fileExistsThumbnail()
+            // 网络资源：用当前剧集的封面做起播底图，海报已缓存时几乎瞬间就有。
+            if loadingThumbnail == nil,
+               let context = store.catalogPlaybackContexts[photo.id],
+               !context.item.coverURL.isEmpty {
+                let source = context.source
+                let cover = context.item.coverURL
+                let targetID = photo.id
+                Task { @MainActor in
+                    let image = await CatalogArtworkCache.shared.image(source: source,
+                                                                       urlString: cover,
+                                                                       quick: true)
+                    guard photo.id == targetID, let image else { return }
+                    loadingThumbnail = image
+                }
+            }
             // 先停掉上一个视频：新视频的 URL / 探测还是要等一会，
             // 期间旧音频继续播会让"画面已经是别的照片，声音还在"。
             model.stop()
@@ -448,6 +987,8 @@ struct VideoPlayerStage: View {
             probeIsHDR = false
             probeAudioCount = 0
             probeAudioTracks = []
+            playbackProbe = VideoProbe()
+            showPlaybackInfo = false
             ui.reset()
             model.onPlaybackEnd = {
                 guard settings.autoPlayNextVideo else { return }
@@ -475,10 +1016,34 @@ struct VideoPlayerStage: View {
                     model.selectAudio(model.audioOptions[index])
                 }
             }
+            ui.onBurnSubtitleChanged = {
+                guard sourceURL != nil else {
+                    store.showToast("当前视频没有可读取的源文件，无法烧录字幕")
+                    return
+                }
+                let target = model.currentTime
+                streamSession?.stop()
+                streamSession = nil
+                hasLoadedVideo = false
+                isPreparing = true
+                let generation = loadGeneration
+                Task { @MainActor in
+                    let started = await startStreaming(generation: generation, autoplay: true,
+                                                       offset: max(0, target - 1),
+                                                       resumeAt: target,
+                                                       mode: .transcode,
+                                                       audioIndex: streamAudioIndex)
+                    if !started, generation == loadGeneration {
+                        model.seek(to: target)
+                    }
+                    isPreparing = false
+                }
+            }
             trimTask?.cancel()
             trimTask = Task { @MainActor in
                 while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    // 3 秒一次：既滚动清理旧分片，也让生成提前量及时收敛（大文件不写满磁盘）。
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
                     guard !Task.isCancelled, let session = streamSession else { continue }
                     session.trim(before: model.currentTime)
                 }
@@ -487,6 +1052,7 @@ struct VideoPlayerStage: View {
             videoSize = .zero
             refreshVideoNeighbors()
             await load(generation: generation)
+            await loadTechnicalProbe(generation: generation)
         }
         .onDisappear {
             FullScreenDiagnostics.log("video stage disappear \(photo.originalName)")
@@ -496,6 +1062,7 @@ struct VideoPlayerStage: View {
             trimTask = nil
             model.seekRouter = nil
             model.stop()
+            DisplayModeMatcher.restore()
             cloudResourceLoader?.invalidate()
             cloudResourceLoader = nil
             streamSession?.stop()
@@ -516,8 +1083,53 @@ struct VideoPlayerStage: View {
         }
     }
 
-    /// 视频快捷键：← / → 翻页，↑ / ↓ 按设置步长快进快退（默认 5 秒）；J / L 固定 10 秒；
-    /// ⌘ 方向键只切换上一个 / 下一个视频，避免与翻页冲突。
+    /// 起播后再补一次 ffprobe：拿码率 / 帧率 / HDR / 章节，供 I 键信息叠加与章节菜单使用。
+    /// 不阻塞起播；HLS 播放列表与不存在的本地文件直接跳过。
+    private func loadTechnicalProbe(generation: Int) async {
+        guard let url = sourceURL else { return }
+        if url.pathExtension.lowercased() == "m3u8" { return }
+        if url.isFileURL, !FileManager.default.fileExists(atPath: url.path) { return }
+        let probe = await VideoSupport.technicalProbe(url: url, options: assetOptions)
+        guard generation == loadGeneration, !Task.isCancelled else { return }
+        guard probe.hasVideoTrack || !probe.chapters.isEmpty else { return }
+
+        var merged = playbackProbe
+        if probe.size.width > 0 { merged.size = probe.size }
+        if let codec = probe.codec { merged.codec = codec }
+        merged.isHDR = merged.isHDR || probe.isHDR
+        merged.isDolbyVision = merged.isDolbyVision || probe.isDolbyVision
+        if let label = probe.hdrLabel, !label.isEmpty { merged.hdrLabel = label }
+        if probe.bitrate > 0 { merged.bitrate = probe.bitrate }
+        if probe.frameRate > 0 { merged.frameRate = probe.frameRate }
+        if let container = probe.containerName { merged.containerName = container }
+        if !probe.chapters.isEmpty { merged.chapters = probe.chapters }
+        if probe.audioTracks.count > merged.audioTracks.count { merged.audioTracks = probe.audioTracks }
+        merged.duration = max(merged.duration, probe.duration)
+        playbackProbe = merged
+        applyDisplayRate(merged.frameRate)
+        // 预热接管 / 转封装起流时音轨信息可能为空：探测到后补齐菜单。
+        if merged.audioTracks.count > probeAudioTracks.count {
+            probeAudioTracks = merged.audioTracks
+            probeAudioCount = merged.audioTracks.count
+            refreshAudioChoices()
+        }
+    }
+
+    /// 按片源帧率切显示器刷新率：设置里可关，找不到合适模式会自动保持原样。
+    private func applyDisplayRate(_ rate: Double) {
+        guard settings.matchDisplayFrameRate, rate > 1 else { return }
+        DisplayModeMatcher.match(frameRate: rate)
+    }
+
+    /// 当前播放的是网络资源的分集（每一集都是一个虚拟视频）。
+    private var isCatalogPlayback: Bool {
+        store.catalogPlaybackContext(for: photo.id) != nil
+    }
+
+    /// 视频快捷键：
+    /// - 本地视频：← / → 翻页，↑ / ↓ 按设置步长快进快退（默认 5 秒）；J / L 固定 10 秒。
+    /// - 网络资源（剧集）：← / → 快退 / 快进，↑ / ↓ 切换上一集 / 下一集。
+    /// - ⌘ 方向键始终只切换上一个 / 下一个视频。
     private func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let hasCommand = flags.contains(.command)
@@ -525,12 +1137,23 @@ struct VideoPlayerStage: View {
         // 可自定义快捷键允许 ⌥ / ⌃ / ⇧ 组合，先于固定键位匹配。
         if !hasCommand, handleCustomShortcut(event) { return true }
 
+        // ⌥← / ⌥→：上一章 / 下一章；I：播放信息叠加。
+        if flags == .option, event.keyCode == 123, seekChapter(step: -1) { return true }
+        if flags == .option, event.keyCode == 124, seekChapter(step: 1) { return true }
+        if event.keyCode == 34, flags.isEmpty {
+            showPlaybackInfo.toggle()
+            return true
+        }
+
         guard !flags.contains(.control), !flags.contains(.option) else { return false }
 
+        let catalogPlayback = isCatalogPlayback
         switch event.keyCode {
         case 123:
             if hasCommand {
                 store.viewerStepVideo(-1)
+            } else if catalogPlayback {
+                seekPlayback(to: model.currentTime - settings.videoSeekStep)
             } else {
                 store.viewerStep(-1)
             }
@@ -538,19 +1161,21 @@ struct VideoPlayerStage: View {
         case 124:
             if hasCommand {
                 store.viewerStepVideo(1)
+            } else if catalogPlayback {
+                seekPlayback(to: model.currentTime + settings.videoSeekStep)
             } else {
                 store.viewerStep(1)
             }
             return true
         case 126:
-            if hasCommand {
+            if hasCommand || catalogPlayback {
                 store.viewerStepVideo(-1)
             } else {
                 seekPlayback(to: model.currentTime + settings.videoSeekStep)
             }
             return true
         case 125:
-            if hasCommand {
+            if hasCommand || catalogPlayback {
                 store.viewerStepVideo(1)
             } else {
                 seekPlayback(to: model.currentTime - settings.videoSeekStep)
@@ -649,7 +1274,8 @@ struct VideoPlayerStage: View {
     }
 
     private var centerPlayButton: some View {
-        let visible = !model.isPlaying && !isPreparing && activeFailure == nil
+        // 缓冲 / 跳转时不要露出播放按钮，否则看起来像是被暂停了。
+        let visible = !model.isPlaying && !isPreparing && !model.isStalled && activeFailure == nil
         return Button {
             model.play()
             revealControls()
@@ -706,7 +1332,13 @@ struct VideoPlayerStage: View {
                         .frame(width: 38, alignment: .trailing)
                     VideoScrubber(progress: progress,
                                   buffered: buffered,
-                                  knobBorder: .black.opacity(0.35)) { value in
+                                  knobBorder: .black.opacity(0.35),
+                                  duration: model.duration,
+                                  thumbnailPreview: { fraction in
+                                      await VideoScrubThumbnails.image(player: model.player,
+                                                                       fraction: fraction,
+                                                                       duration: model.duration)
+                                  }) { value in
                         let target = value * model.duration
                         // 拖动过程中只对已生成区间做实时预览，否则每移动一像素就重建一次流。
                         if streamSession == nil || target <= model.bufferedTime {
@@ -730,17 +1362,21 @@ struct VideoPlayerStage: View {
                                        help: model.isPlaying ? "暂停 (K)" : "播放 (K)") {
                         model.togglePlay()
                     }
-                    VideoControlButton(icon: "backward.end", help: "上一个视频 (⌘↑)") {
+                    VideoControlButton(icon: "backward.end",
+                                       help: isCatalogPlayback ? "上一集 (↑)" : "上一个视频 (⌘↑)") {
                         store.viewerStepVideo(-1)
                     }
                     .disabled(!hasPrevVideo)
-                    VideoControlButton(icon: "gobackward.10", help: "后退 10 秒 (J)") {
+                    VideoControlButton(icon: "gobackward.10",
+                                       help: isCatalogPlayback ? "后退 10 秒 (J / ←)" : "后退 10 秒 (J)") {
                         seekPlayback(to: model.currentTime - 10)
                     }
-                    VideoControlButton(icon: "goforward.10", help: "前进 10 秒 (L)") {
+                    VideoControlButton(icon: "goforward.10",
+                                       help: isCatalogPlayback ? "前进 10 秒 (L / →)" : "前进 10 秒 (L)") {
                         seekPlayback(to: model.currentTime + 10)
                     }
-                    VideoControlButton(icon: "forward.end", help: "下一个视频 (⌘↓)") {
+                    VideoControlButton(icon: "forward.end",
+                                       help: isCatalogPlayback ? "下一集 (↓)" : "下一个视频 (⌘↓)") {
                         store.viewerStepVideo(1)
                     }
                     .disabled(!hasNextVideo)
@@ -768,6 +1404,14 @@ struct VideoPlayerStage: View {
                     Spacer(minLength: 6)
 
                     speedMenu
+
+                    if playbackProbe.chapters.count > 1 {
+                        chapterMenu
+                    }
+                    VideoControlButton(icon: "info.circle", active: showPlaybackInfo,
+                                       help: "播放信息 (I)") {
+                        showPlaybackInfo.toggle()
+                    }
 
                     VideoMediaMenuButtons(ui: ui, model: model)
 
@@ -996,6 +1640,7 @@ struct VideoPlayerStage: View {
         let offset = max(0, target - 1)
         let mode = streamMode
         let audio = streamAudioIndex
+        let seekStartedAt = Date()
         Task { @MainActor in
             // 云盘直链可能已过期：跳转前重新解析一次，避免重建流仍用旧地址。
             if photo.isCloud, let refreshed = try? await store.cloudStreamOrThrow(for: photo) {
@@ -1006,10 +1651,14 @@ struct VideoPlayerStage: View {
             streamSession?.stop()
             streamSession = nil
             let started = await startStreaming(generation: generation, autoplay: true,
-                                               offset: offset, mode: mode, audioIndex: audio)
-            if started, generation == loadGeneration {
+                                               offset: offset, resumeAt: target,
+                                               mode: mode, audioIndex: audio)
+            if !started, generation == loadGeneration {
                 model.seek(to: target)
             }
+            let elapsed = Int(Date().timeIntervalSince(seekStartedAt) * 1000)
+            let remote = photo.isCloud ? "网盘" : "本地"
+            Diagnostics.record("拖拽起流 \(photo.originalName) \(remote) → \(Int(target))s 用时 \(elapsed)ms")
             isRestartingStream = false
             isPreparing = false
         }
@@ -1035,11 +1684,17 @@ struct VideoPlayerStage: View {
     }
 
     /// 启动转封装会话；编码不兼容时自动降级为重编码 H.264。
+    /// 起流：`offset` 是 ffmpeg 的读取位置（会再对齐到关键帧），
+    /// `resumeAt` 是播放器最终要落到的绝对秒数（装片后先定位再开播）。
     private func startStreaming(generation: Int, autoplay: Bool, offset: Double,
+                                resumeAt: Double? = nil,
                                 mode initialMode: VideoStreamSession.Mode,
                                 audioIndex: Int) async -> Bool {
         guard let sourceURL else { return false }
+        let startedAt = Date()
         var mode = initialMode
+        // 烧录字幕必须重编码，不能沿用 remux。
+        if ui.burnSubtitleURL != nil { mode = .transcode }
         var attempt = 0
         while attempt < 2 {
             let session = VideoStreamSession(
@@ -1054,6 +1709,7 @@ struct VideoPlayerStage: View {
                 audioIndex: audioIndex,
                 audioChannels: probeAudioTracks.first(where: { $0.ordinal == audioIndex })?.channels
                     ?? probeAudioTracks.first?.channels ?? 2,
+                burnSubtitle: ui.burnSubtitleURL,
                 refreshSource: cloudRefreshClosure())
             do {
                 // 起流要做目录清理、拉起 ffmpeg、等服务写首段：全部是阻塞操作，
@@ -1073,7 +1729,9 @@ struct VideoPlayerStage: View {
                 streamSession?.stop()
                 streamSession = session
                 streamMode = mode
-                streamOffset = offset
+                // 会话会把读取位置对齐到关键帧：时间轴以对齐点为 0，再前跳到目标。
+                let base = session.playbackStartOffset
+                streamOffset = base
                 streamAudioIndex = audioIndex
                 refreshAudioChoices()
                 var probe = VideoProbe()
@@ -1084,13 +1742,19 @@ struct VideoPlayerStage: View {
                 model.load(url: playlist, probe: probe, autoplay: autoplay,
                            loop: settings.loopVideoByDefault,
                            muted: settings.muteVideoByDefault,
-                           timelineOffset: offset)
+                           timelineOffset: base,
+                           startAt: resumeAt)
                 hasLoadedVideo = true
                 failureMessage = nil
                 isPreparing = false
                 canTranscode = false
                 // 打开时未自动播放：首段已就绪，先挂起后台生成。
                 session.setGenerationActive(autoplay)
+                // 记录首段耗时：真实网盘上判断缓冲快慢就看这一条。
+                let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+                let remote = sourceURL.isFileURL ? "本地" : "网盘"
+                Diagnostics.record("首段就绪 \(photo.originalName) \(remote) mode=\(mode) "
+                                   + "offset=\(Int(offset)) 对齐=\(Int(base)) 用时 \(elapsed)ms")
                 return true
             } catch {
                 session.stop()
@@ -1173,6 +1837,21 @@ struct VideoPlayerStage: View {
                     .background(.white.opacity(0.16), in: Capsule())
                     .help("在网盘连接页检查授权状态或重新登录")
                 }
+                // 站点直链解析失败（如 CDN 拒绝请求）时，退回原站详情页播放。
+                if isCatalogPlayback,
+                   let context = store.catalogPlaybackContext(for: photo.id),
+                   let pageURL = URL(string: context.episode.pageURL) {
+                    Button("在浏览器中播放") {
+                        NSWorkspace.shared.open(pageURL)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(0.16), in: Capsule())
+                    .help("在默认浏览器打开该条目的原始播放页")
+                }
                 Button("重试") {
                     Task { await load(generation: loadGeneration) }
                 }
@@ -1201,6 +1880,8 @@ struct VideoPlayerStage: View {
 
     private func load(generation: Int) async {
         FullScreenDiagnostics.log("video load start \(photo.originalName) generation=\(generation)")
+        // 换片先恢复系统刷新率，探测到新片帧率后再匹配。
+        DisplayModeMatcher.restore()
         isPreparing = true
         failureMessage = nil
         streamFailure = nil
@@ -1215,6 +1896,46 @@ struct VideoPlayerStage: View {
         streamSession = nil
 
         let autoplay = settings.autoPlayVideo
+        // 影院续播：装片时就落在记录位置，不会先播片头再跳过去。
+        let resumeOffset = store.cinemaResumeOffset(for: photo.id)
+
+        // 上一集快看完时预热好的下一集：首段已生成，直接接管，省掉解析直链与探测。
+        if ui.burnSubtitleURL == nil,
+           let warm = store.takePrewarmedCinemaStream(for: photo.id) {
+            sourceURL = warm.sourceURL
+            sourceHeaders = warm.headers
+            assetOptions = [CloudPlayback.headerFieldsKey: warm.headers]
+            streamSession = warm.session
+            streamMode = .remux
+            streamOffset = 0
+            streamAudioIndex = 0
+            var probe = VideoProbe()
+            probe.hasVideoTrack = true
+            probe.isPlayable = true
+            probe.duration = max(photo.duration ?? 0, warm.duration)
+            if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+                probe.size = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
+            }
+            videoSize = probe.size
+            probeDuration = probe.duration
+            probeIsHEVC = photo.videoCodec?.lowercased() == "hevc"
+            probeIsHDR = false
+            probeAudioCount = 0
+            probeAudioTracks = []
+            playbackProbe = probe
+            model.load(url: warm.playlistURL, probe: probe, autoplay: autoplay,
+                       loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                       startAt: resumeOffset)
+            hasLoadedVideo = true
+            isPreparing = false
+            failureMessage = nil
+            canTranscode = false
+            warm.session.setGenerationActive(autoplay)
+            refreshAudioChoices()
+            ui.loadSiblingIfAvailable(sourceURL: sourceURL)
+            return
+        }
+
         let source = await resolveSource()
         guard generation == loadGeneration, !Task.isCancelled else { return }
         var failedProbe: VideoProbe?
@@ -1238,7 +1959,8 @@ struct VideoPlayerStage: View {
             }
             videoSize = probe.size
             model.load(url: source.url, options: assetOptions, probe: probe, autoplay: autoplay,
-                       loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+                       loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                       startAt: resumeOffset)
             hasLoadedVideo = true
             isPreparing = false
             probeDuration = probe.duration
@@ -1246,6 +1968,7 @@ struct VideoPlayerStage: View {
             probeIsHDR = false
             probeAudioCount = 0
             probeAudioTracks = []
+            playbackProbe = probe
             ui.loadSiblingIfAvailable(sourceURL: sourceURL)
             return
         }
@@ -1269,7 +1992,8 @@ struct VideoPlayerStage: View {
 
         // 原图路径存在才探测：iCloud / 共享相簿项目在 Photos.sqlite 里有路径，本机却没有文件。
         let canUseLocal = playbackURL.map { photo.isCloud || FileManager.default.fileExists(atPath: $0.path) } ?? false
-        if let playbackURL, canUseLocal {
+        // 烧录字幕必须经过 ffmpeg 重编码，跳过系统原生直接播放。
+        if let playbackURL, canUseLocal, ui.burnSubtitleURL == nil {
             let probe: VideoProbe
             if let playbackAsset {
                 probe = await VideoSupport.probe(asset: playbackAsset)
@@ -1281,10 +2005,12 @@ struct VideoPlayerStage: View {
                 videoSize = probe.size
                 if let playbackAsset {
                     model.load(asset: playbackAsset, probe: probe, autoplay: autoplay,
-                               loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+                               loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                               startAt: resumeOffset)
                 } else {
                     model.load(url: playbackURL, options: assetOptions, probe: probe, autoplay: autoplay,
-                               loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+                               loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                               startAt: resumeOffset)
                 }
                 hasLoadedVideo = true
                 isPreparing = false
@@ -1293,6 +2019,8 @@ struct VideoPlayerStage: View {
                 probeIsHDR = probe.isHDR
                 probeAudioCount = probe.audioTrackCount
                 probeAudioTracks = probe.audioTracks
+                playbackProbe = probe
+                applyDisplayRate(probe.frameRate)
                 refreshAudioChoices()
                 ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
@@ -1317,14 +2045,16 @@ struct VideoPlayerStage: View {
         // 翻页后旧任务可能刚从 await 恢复：不再往播放器里装上一个视频。
         guard generation == loadGeneration, !Task.isCancelled else { return }
 
-        if let cached = cachedTranscodeURL(), FileManager.default.fileExists(atPath: cached.path) {
+        if ui.burnSubtitleURL == nil,
+           let cached = cachedTranscodeURL(), FileManager.default.fileExists(atPath: cached.path) {
             let cachedProbe = await VideoSupport.probe(url: cached)
             guard generation == loadGeneration, !Task.isCancelled else { return }
             if cachedProbe.hasVideoTrack, cachedProbe.isPlayable {
                 sourceURL = cached
                 videoSize = cachedProbe.size
                 model.load(url: cached, probe: cachedProbe, autoplay: autoplay,
-                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                           startAt: resumeOffset)
                 hasLoadedVideo = true
                 isPreparing = false
                 probeDuration = cachedProbe.duration
@@ -1332,6 +2062,8 @@ struct VideoPlayerStage: View {
                 probeIsHDR = cachedProbe.isHDR
                 probeAudioCount = cachedProbe.audioTrackCount
                 probeAudioTracks = cachedProbe.audioTracks
+                playbackProbe = cachedProbe
+                applyDisplayRate(cachedProbe.frameRate)
                 refreshAudioChoices()
                 ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
@@ -1353,7 +2085,8 @@ struct VideoPlayerStage: View {
                 sourceURL = resolved.url
                 videoSize = probe.size
                 model.load(asset: resolved.asset, probe: probe, autoplay: autoplay,
-                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                           startAt: resumeOffset)
                 hasLoadedVideo = true
                 isPreparing = false
                 probeDuration = probe.duration
@@ -1361,6 +2094,8 @@ struct VideoPlayerStage: View {
                 probeIsHDR = probe.isHDR
                 probeAudioCount = probe.audioTrackCount
                 probeAudioTracks = probe.audioTracks
+                playbackProbe = probe
+                applyDisplayRate(probe.frameRate)
                 refreshAudioChoices()
                 ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
@@ -1379,9 +2114,17 @@ struct VideoPlayerStage: View {
             probeIsHDR = failedProbe.isHDR
             probeAudioCount = failedProbe.audioTrackCount
             probeAudioTracks = failedProbe.audioTracks
+            playbackProbe = failedProbe
             if failedProbe.size.width > 0, failedProbe.size.height > 0 {
                 videoSize = failedProbe.size
             } else if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+                videoSize = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
+            }
+        }
+        // 烧录字幕跳过了系统原生探测：用列表元数据补齐时长 / 尺寸，转码流才有正确的进度条。
+        if ui.burnSubtitleURL != nil {
+            if probeDuration <= 0 { probeDuration = photo.duration ?? 0 }
+            if videoSize == .zero, photo.pixelWidth > 0, photo.pixelHeight > 0 {
                 videoSize = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
             }
         }
@@ -1390,10 +2133,14 @@ struct VideoPlayerStage: View {
             failureMessage = nil
             isPreparing = true
             streamMode = .remux
-            streamOffset = 0
+            // 续播直接从目标位置起流，省掉「先播片头再重建流」的一跳。
+            let startOffset = resumeOffset ?? 0
+            streamOffset = startOffset
             streamAudioIndex = 0
             if await startStreaming(generation: generation, autoplay: autoplay,
-                                    offset: 0, mode: .remux, audioIndex: 0) {
+                                    offset: startOffset,
+                                    resumeAt: startOffset > 0 ? startOffset : nil,
+                                    mode: .remux, audioIndex: 0) {
                 ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
             }
@@ -1420,6 +2167,17 @@ struct VideoPlayerStage: View {
     }
 
     private func resolveSource() async -> (url: URL, headers: [String: String], isHLS: Bool)? {
+        // 网络资源：按虚拟分集取当前集的播放直链。
+        if let context = store.catalogPlaybackContext(for: photo.id) {
+            do {
+                let stream = try await store.catalog.stream(source: context.source,
+                                                            episode: context.episode)
+                return (stream.url, stream.headers, stream.isHLS)
+            } catch {
+                streamFailure = error.localizedDescription
+                return nil
+            }
+        }
         if photo.isCloud {
             do {
                 let stream = try await store.cloudStreamOrThrow(for: photo)
@@ -1468,6 +2226,7 @@ struct VideoPlayerStage: View {
                 videoSize = probe.size
                 probeDuration = probe.duration
                 streamOffset = 0
+                applyDisplayRate(probe.frameRate)
                 model.load(url: destination, probe: probe, autoplay: true,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
                 hasLoadedVideo = true
@@ -1534,29 +2293,35 @@ struct VideoToolbarTransport: View {
     let hasNext: Bool
     let onPrev: () -> Void
     let onNext: () -> Void
+    /// 网络资源剧集：↑ / ↓ 切集，← / → 快进快退。
+    var episodeMode: Bool = false
 
     var body: some View {
         HStack(spacing: 1) {
-            VideoDeckButton(icon: "backward.end.fill", help: "上一个视频 (⌘↑)") {
+            VideoDeckButton(icon: "backward.end.fill",
+                            help: episodeMode ? "上一集 (↑)" : "上一个视频 (⌘↑)") {
                 onPrev()
             }
             .disabled(!hasPrev)
 
             transportDivider
 
-            VideoDeckButton(icon: "gobackward.10", help: "后退 10 秒 (J)") {
+            VideoDeckButton(icon: "gobackward.10",
+                            help: episodeMode ? "后退 10 秒 (J / ←)" : "后退 10 秒 (J)") {
                 model.requestSeek(to: model.currentTime - 10)
             }
 
             playButton
 
-            VideoDeckButton(icon: "goforward.10", help: "前进 10 秒 (L)") {
+            VideoDeckButton(icon: "goforward.10",
+                            help: episodeMode ? "前进 10 秒 (L / →)" : "前进 10 秒 (L)") {
                 model.requestSeek(to: model.currentTime + 10)
             }
 
             transportDivider
 
-            VideoDeckButton(icon: "forward.end.fill", help: "下一个视频 (⌘↓)") {
+            VideoDeckButton(icon: "forward.end.fill",
+                            help: episodeMode ? "下一集 (↓)" : "下一个视频 (⌘↓)") {
                 onNext()
             }
             .disabled(!hasNext)
@@ -1577,10 +2342,17 @@ struct VideoToolbarTransport: View {
         Button {
             model.togglePlay()
         } label: {
-            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 10.5, weight: .bold))
+            ZStack {
+                if model.isStalled {
+                    // 缓冲中不显示暂停图标：换成小转环，跟画面里的等待动画一致。
+                    VideoMiniSpinner()
+                } else {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
                 .foregroundStyle(.white)
-                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 26, height: 26)
                 .background {
                     Circle()
@@ -1844,7 +2616,8 @@ struct VideoMediaMenuButtons: View {
     var body: some View {
         HStack(spacing: 2) {
             if ui.audioChoices.count > 1 { audioMenu }
-            subtitleMenu
+            // 顶栏只保留音轨入口：字幕在画面内控制条与「视频 › 字幕」菜单里切换。
+            if style == .overlay { subtitleMenu }
         }
     }
 
@@ -1874,6 +2647,27 @@ struct VideoMediaMenuButtons: View {
     private var subtitleMenu: some View {
         Menu {
             Button("载入字幕文件…") { ui.pickSubtitle() }
+            Button("烧录字幕（PGS / SUP / ASS）…") { ui.pickBurnInSubtitle() }
+            if let burnName = ui.burnSubtitleName {
+                Button("关闭烧录：\(burnName)") { ui.clearBurnInSubtitle() }
+            }
+            if ui.canSearchOnlineSubtitles {
+                Button(ui.onlineSubtitleLoading ? "正在搜索在线字幕…" : "在线搜索字幕…") {
+                    ui.searchOnlineSubtitles()
+                }
+                .disabled(ui.onlineSubtitleLoading)
+                if !ui.onlineSubtitles.isEmpty {
+                    Menu("选择在线字幕") {
+                        ForEach(ui.onlineSubtitles) { match in
+                            Button(subtitleOptionTitle(match)) {
+                                ui.downloadOnlineSubtitle(match)
+                            }
+                        }
+                    }
+                } else if let hint = ui.onlineSubtitleHint {
+                    Text(hint)
+                }
+            }
             if ui.hasSubtitle {
                 Button("关闭字幕") { ui.clearSubtitle() }
                 Divider()
@@ -1912,6 +2706,13 @@ struct VideoMediaMenuButtons: View {
 
     private var offsetText: String {
         String(format: "%+.1fs", ui.subtitleOffset)
+    }
+
+    private func subtitleOptionTitle(_ match: CinemaSubtitleMatch) -> String {
+        var parts = [match.languageTitle, match.title]
+        if let release = match.release, !release.isEmpty { parts.append(release) }
+        if let downloads = match.downloads, downloads > 0 { parts.append("↓\(downloads)") }
+        return parts.joined(separator: " · ")
     }
 
     private func icon(_ name: String, active: Bool) -> some View {

@@ -18,17 +18,37 @@ enum VideoCacheManager {
     }
 
     /// 按修改时间从旧到新删除，直到总量回到上限以内。
+    /// 留 10% 余量：一次预热 / 一部新片不会立刻又触发清理。
     static func trimIfNeeded() {
         let limit = limitBytes
         guard limit > 0 else { return }
-        let items = entries().sorted { $0.date < $1.date }
+        let target = Int64(Double(limit) * 0.9)
+        // 正在播放 / 预热的会话目录不能删，交给 cleanupOrphans 处理。
+        let items = entries()
+            .filter { !$0.url.lastPathComponent.contains("-session-") }
+            .sorted { $0.date < $1.date }
         var total = items.reduce(Int64(0)) { $0 + $1.size }
         var index = 0
-        while total > limit, index < items.count {
+        while total > target, index < items.count {
             try? FileManager.default.removeItem(at: items[index].url)
             total -= items[index].size
             index += 1
         }
+    }
+
+    /// 启动时清理异常退出留下的会话目录（`*-session-*.hls` 不会成为可复用缓存）。
+    static func cleanupOrphans(maxAge: TimeInterval = 6 * 3600) {
+        let now = Date()
+        for entry in entries() where entry.url.lastPathComponent.contains("-session-") {
+            guard now.timeIntervalSince(entry.date) > maxAge else { continue }
+            try? FileManager.default.removeItem(at: entry.url)
+        }
+        trimIfNeeded()
+    }
+
+    /// 命中缓存时更新修改时间：LRU 按「最后一次播放」而不是「第一次生成」淘汰。
+    static func touch(_ url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
     }
 
     static func clear() {

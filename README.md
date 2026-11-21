@@ -97,9 +97,9 @@
   - **图片与视频**：搜索与按类型筛选、收藏 / 取消收藏、隐藏 / 取消隐藏、添加 / 移除关键词、设置标题、原地压缩（有损可调质量与长边；无损保持像素，JPEG 只去元数据、其它格式转 PNG）、自动美化（生成可还原的美化副本，保留原图）、移入最近删除、从最近删除恢复、选中、在查看器中打开（视频即播放）。
   - **浏览**：切换到图库 / 收藏 / 视频 / 截屏 / 已隐藏 / 最近删除 / 指定相簿 / 指定文件夹 / 场景，并可同时设置筛选、搜索词与排序。
   - 不支持永久删除、导入、编辑原图或修改文件；系统图库连接与网盘只读，官方「照片」图库作为当前库时只写收藏 / 隐藏 / 关键词等补充元数据。
-- 智能助手面板首屏提供两张主推案例（压缩这组照片、按时间地点建相簿）与四张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频），点击示例即填入输入框；对话开始后保留一条轻量示例条。
-- 常用案例：`把这 3 张照片压到长边 2048、质量 80`、`把这组照片做无损压缩`、`把去年在上海拍的照片整理成相簿`、`把这 8 张照片自动美化一下`、`按主题建 4 个相簿`、`把视频放进「旅行」`、`从最近删除恢复刚才那批`。
-- 工具共 **26 个**：检索与浏览 5（`search_photos` / `list_albums` / `list_folders` / `list_videos` / `navigate`）、选择与打开 2（`select_photos` / `open_photo`）、相簿 7（`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover`）、文件夹 3（`create_folder` / `rename_folder` / `delete_folder`）、图片与视频 5（`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title`）、压缩 1（`compress_photos`）、美化 1（`beautify_photos`）、最近删除 2（`trash_photos` / `restore_photos`）。其中 19 个写操作必须先经用户确认；系统图库、网盘与官方「照片」库按现有权限矩阵限制。
+- 智能助手面板首屏提供两张主推案例（压缩这组照片、按时间地点建相簿）与五张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频 / 网络资源），点击示例即填入输入框；对话开始后保留一条轻量示例条。
+- 常用案例：`把这 3 张照片压到长边 2048、质量 80`、`把这组照片做无损压缩`、`把去年在上海拍的照片整理成相簿`、`把这 8 张照片自动美化一下`、`按主题建 4 个相簿`、`把视频放进「旅行」`、`从最近删除恢复刚才那批`、`搜一下 XX 并播放第一条`、`把今天新片加入稍后看`。
+- 工具共 **42 个**：照片检索与浏览 4（`search_photos` / `list_albums` / `list_folders` / `list_videos`）、导航与选择 3（`navigate` / `select_photos` / `open_photo`）、相簿与文件夹 10（`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover` / `create_folder` / `rename_folder` / `delete_folder`）、图片与视频 7（`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title` / `compress_photos` / `beautify_photos`）、最近删除 2（`trash_photos` / `restore_photos`）、影院 7（`list_cinema_items` / `list_cinema_scopes` / `cinema_tree` / `search_cinema_candidates` / `apply_cinema_match` / `scrape_cinema` / `match_cinema`）、网络资源 9（`list_catalog_sources` / `search_catalog` / `catalog_new_today` / `list_catalog_following` / `list_catalog_watchlist` / `browse_catalog` / `play_catalog_item` / `set_catalog_watchlist` / `follow_catalog_person`）。其中 24 个写操作必须先经用户确认；系统图库、网盘与官方「照片」库按现有权限矩阵限制。
 - 每次请求最多带 40 张候选照片的元数据，避免把整个图库塞进提示词；更大范围的检索通过「应用筛选」回到现有搜索与分页管线完成。
 - API Key 只保存在 macOS 钥匙串（service `com.baymax.luma.ai`），不写入图库数据库、`UserDefaults` 或日志；模型配置与对话记录随当前图库保存，切换图库会切换到各自的对话。
 

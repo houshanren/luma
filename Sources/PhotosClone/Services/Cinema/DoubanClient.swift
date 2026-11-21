@@ -67,7 +67,8 @@ struct DoubanClient: CinemaMetadataSource {
                                backdropURL: nil,
                                overview: nil,
                                rating: nil,
-                               voteCount: nil)
+                               voteCount: nil,
+                               provider: .douban)
         }
     }
 

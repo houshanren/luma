@@ -165,7 +165,20 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("字幕背景", isOn: $settings.subtitleBackground)
-                Text("外挂字幕的字号与半透明底色；时间轴偏移可在播放器的字幕菜单里临时调整。")
+                Picker("字幕颜色", selection: $settings.subtitleColor) {
+                    Text("白色").tag("white")
+                    Text("黄色").tag("yellow")
+                    Text("青色").tag("cyan")
+                    Text("绿色").tag("green")
+                }
+                .pickerStyle(.segmented)
+                Picker("字幕位置", selection: $settings.subtitlePosition) {
+                    Text("底部").tag("bottom")
+                    Text("偏上").tag("lower")
+                    Text("中间").tag("middle")
+                }
+                .pickerStyle(.segmented)
+                Text("外挂字幕的字号、颜色、位置与半透明底色；时间轴偏移可在播放器的字幕菜单里临时调整。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

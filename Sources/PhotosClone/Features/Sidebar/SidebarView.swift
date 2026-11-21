@@ -4,10 +4,13 @@ import UniformTypeIdentifiers
 
 /// 「固定」分区拖拽排序用的自定义类型，避免和照片拖拽（纯文本）互相干扰。
 let pinnedSidebarDragType = UTType(exportedAs: "com.luma.sidebar-pinned-item")
+/// 网络资源拖拽排序：拖动只调整源顺序，不会与照片 / 固定项混淆。
+let catalogSourceDragType = UTType(exportedAs: "com.luma.sidebar-catalog-source")
 
 struct SidebarView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
+    @EnvironmentObject private var catalog: CatalogBrowserModel
     @EnvironmentObject private var settings: AppSettings
     /// 侧边栏相簿默认全部收起，只记录被用户展开的文件夹，避免一次渲染上千行。
     /// 展开 / 收起状态写入本地，下次启动沿用上次的层级。
@@ -28,9 +31,9 @@ struct SidebarView: View {
     /// 默认收起的分区被用户主动展开后的记录；没有记录时按默认收起。
     @State private var expandedSections: Set<String> =
         SidebarStateStorage.stringSet(SidebarStateStorage.Key.expandedSections)
-    /// 每个图库默认收起「媒体类型」与「场景」，其余分区默认展开。
+    /// 每个图库默认收起「拾光」整组，以及「媒体类型」与「场景」。
     private static let defaultCollapsedSections: Set<String> = [
-        "luma.media", "luma.scenes", "sys.media", "sys.scenes"
+        "luma", "luma.media", "luma.scenes", "sys.media", "sys.scenes"
     ]
     @State private var hoveredSection: String?
     @State private var namePrompt: NamePromptPayload?
@@ -39,6 +42,8 @@ struct SidebarView: View {
     @State private var showResetAnalysisConfirm = false
     @State private var showResetSystemAnalysisConfirm = false
     @State private var showRestartSystemAnalysisConfirm = false
+    /// 网络资源拖拽排序时的目标行：用来画一条落点提示线。
+    @State private var catalogDropTargetID: UUID?
 
     var body: some View {
         ScrollView {
@@ -52,106 +57,106 @@ struct SidebarView: View {
                 if !isCollapsed("luma") {
                     sidebarRow(.library, icon: "photo.stack", title: "图库")
                     sidebarRow(.collections, icon: "square.stack.3d.up", title: "精选集")
-                }
 
-                sectionHeader("固定", key: "luma.fixed")
-                if !isCollapsed("luma.fixed") {
-                    pinnedRows(system: false)
-                }
+                    sectionHeader("固定", key: "luma.fixed", indent: 8)
+                    if !isCollapsed("luma.fixed") {
+                        pinnedRows(system: false)
+                    }
 
-                sectionHeader("媒体类型", key: "luma.media", navigateTo: .mediaTypes)
-                if !isCollapsed("luma.media") {
-                    // 与系统「照片」一致：数量为 0 的媒体类型不占位。
-                    ForEach(MediaTypeKey.localCases) { key in
-                        if (mediaTypeCounts[key] ?? 0) > 0 {
-                            sidebarRow(key.item(system: false), icon: key.icon, title: key.title,
-                                       pinKey: key.rawValue)
+                    sectionHeader("媒体类型", key: "luma.media", indent: 8, navigateTo: .mediaTypes)
+                    if !isCollapsed("luma.media") {
+                        // 与系统「照片」一致：数量为 0 的媒体类型不占位。
+                        ForEach(MediaTypeKey.localCases) { key in
+                            if (mediaTypeCounts[key] ?? 0) > 0 {
+                                sidebarRow(key.item(system: false), icon: key.icon, title: key.title,
+                                           pinKey: key.rawValue)
+                            }
                         }
                     }
-                }
 
-                sectionHeader("更多项目", key: "luma.more", navigateTo: .moreItems)
-                if !isCollapsed("luma.more") {
-                    // 顺序与「更多项目」总览页保持一致。
-                    sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏", color: .pink, pinKey: "favorites")
-                    sidebarRow(.health, icon: "stethoscope", title: "图库体检", pinKey: "health")
-                    sidebarRow(.ratings, icon: "square.grid.2x2", title: "图库整理", color: .yellow,
-                               pinKey: "ratings")
-                    sidebarRow(.revisit, icon: "clock.arrow.circlepath", title: "值得重看", pinKey: "revisit")
-                    if store.duplicateCount > 0 {
-                        sidebarRow(.duplicates, icon: "square.on.square", title: "重复项目", pinKey: "duplicates")
-                    }
-                    sidebarRow(.map, icon: "map", title: "地图", pinKey: "map")
-                    sidebarRow(.places, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
-                    sidebarRow(.people, icon: "person.crop.square", title: "人物", pinKey: "people")
-                    sidebarRow(.keywords, icon: "tag", title: "关键词", pinKey: "keywords")
-                    if store.analyzedCount > 0 {
-                        sidebarRow(.ocrTexts, icon: "text.viewfinder", title: "包含文字", pinKey: "ocrTexts")
-                    }
-                    sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑", pinKey: "recentlyEdited")
-                    sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存", pinKey: "recentlySaved")
-                    trashRow(pinKey: "trash")
-                    sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目", pinKey: "imports")
-                    if store.hiddenCount > 0 {
-                        sidebarRow(.hidden, icon: "eye.slash", title: "已隐藏", color: .secondary, pinKey: "hidden")
-                    }
-                }
-
-                sectionHeader("场景", key: "luma.scenes", navigateTo: .scenes) {
-                    if store.isAnalyzingIntelligence {
-                        Button("停止分析") { store.cancelIntelligenceAnalysis() }
-                    } else {
-                        Button(store.analyzedCount > 0 ? "分析新照片…" : "分析照片内容…") {
-                            store.analyzeIntelligence()
+                    sectionHeader("更多项目", key: "luma.more", indent: 8, navigateTo: .moreItems)
+                    if !isCollapsed("luma.more") {
+                        // 顺序与「更多项目」总览页保持一致。
+                        sidebarRow(.favorites, icon: "heart.fill", title: "个人收藏", color: .pink, pinKey: "favorites")
+                        sidebarRow(.health, icon: "stethoscope", title: "图库体检", pinKey: "health")
+                        sidebarRow(.ratings, icon: "square.grid.2x2", title: "图库整理", color: .yellow,
+                                   pinKey: "ratings")
+                        sidebarRow(.revisit, icon: "clock.arrow.circlepath", title: "值得重看", pinKey: "revisit")
+                        if store.duplicateCount > 0 {
+                            sidebarRow(.duplicates, icon: "square.on.square", title: "重复项目", pinKey: "duplicates")
                         }
+                        sidebarRow(.map, icon: "map", title: "地图", pinKey: "map")
+                        sidebarRow(.places, icon: "mappin.and.ellipse", title: "位置", pinKey: "places")
+                        sidebarRow(.people, icon: "person.crop.square", title: "人物", pinKey: "people")
+                        sidebarRow(.keywords, icon: "tag", title: "关键词", pinKey: "keywords")
                         if store.analyzedCount > 0 {
-                            Button("重新分析全部照片…") {
-                                store.reanalyzeIntelligence()
+                            sidebarRow(.ocrTexts, icon: "text.viewfinder", title: "包含文字", pinKey: "ocrTexts")
+                        }
+                        sidebarRow(.recentlyEdited, icon: "slider.horizontal.3", title: "最近编辑", pinKey: "recentlyEdited")
+                        sidebarRow(.recentlySaved, icon: "square.and.arrow.down", title: "最近保存", pinKey: "recentlySaved")
+                        trashRow(pinKey: "trash")
+                        sidebarRow(.imports, icon: "square.and.arrow.down.on.square", title: "导入项目", pinKey: "imports")
+                        if store.hiddenCount > 0 {
+                            sidebarRow(.hidden, icon: "eye.slash", title: "已隐藏", color: .secondary, pinKey: "hidden")
+                        }
+                    }
+
+                    sectionHeader("场景", key: "luma.scenes", indent: 8, navigateTo: .scenes) {
+                        if store.isAnalyzingIntelligence {
+                            Button("停止分析") { store.cancelIntelligenceAnalysis() }
+                        } else {
+                            Button(store.analyzedCount > 0 ? "分析新照片…" : "分析照片内容…") {
+                                store.analyzeIntelligence()
                             }
-                            Button("重置（清空结果）…", role: .destructive) {
-                                showResetAnalysisConfirm = true
+                            if store.analyzedCount > 0 {
+                                Button("重新分析全部照片…") {
+                                    store.reanalyzeIntelligence()
+                                }
+                                Button("重置（清空结果）…", role: .destructive) {
+                                    showResetAnalysisConfirm = true
+                                }
+                            }
+                        }
+                        if store.hasAnyScene {
+                            Divider()
+                            Button("生成场景智能相簿") {
+                                store.createSceneSmartAlbums()
                             }
                         }
                     }
-                    if store.hasAnyScene {
-                        Divider()
-                        Button("生成场景智能相簿") {
-                            store.createSceneSmartAlbums()
+                    if !isCollapsed("luma.scenes") {
+                        sceneSectionBody
+                    }
+
+                    sectionHeader("相簿", key: "luma.albums", indent: 8, navigateTo: .allAlbums) {
+                        Button("新建相簿") {
+                            store.showNewAlbumSheet = true
                         }
-                    }
-                }
-                if !isCollapsed("luma.scenes") {
-                    sceneSectionBody
-                }
-
-                sectionHeader("相簿", key: "luma.albums", navigateTo: .allAlbums) {
-                    Button("新建相簿") {
-                        store.showNewAlbumSheet = true
-                    }
-                    Button("新建智能相簿…") {
-                        store.presentSmartAlbumEditor()
-                    }
-                }
-                if !isCollapsed("luma.albums") {
-                    sidebarRow(.allAlbums, icon: "rectangle.stack", title: "所有相簿")
-
-                    ForEach(store.rootFolders()) { folder in
-                        folderNode(folder, level: 0)
-                    }
-                    ForEach(store.rootAlbums) { album in
-                        albumRow(album, level: 0)
-                    }
-                }
-
-                if !store.smartAlbums.isEmpty {
-                    sectionHeader("智能相簿", key: "luma.smart") {
                         Button("新建智能相簿…") {
                             store.presentSmartAlbumEditor()
                         }
                     }
-                    if !isCollapsed("luma.smart") {
-                        ForEach(store.smartAlbums) { album in
-                            smartAlbumRow(album)
+                    if !isCollapsed("luma.albums") {
+                        sidebarRow(.allAlbums, icon: "rectangle.stack", title: "所有相簿")
+
+                        ForEach(store.rootFolders()) { folder in
+                            folderNode(folder, level: 0)
+                        }
+                        ForEach(store.rootAlbums) { album in
+                            albumRow(album, level: 0)
+                        }
+                    }
+
+                    if !store.smartAlbums.isEmpty {
+                        sectionHeader("智能相簿", key: "luma.smart", indent: 8) {
+                            Button("新建智能相簿…") {
+                                store.presentSmartAlbumEditor()
+                            }
+                        }
+                        if !isCollapsed("luma.smart") {
+                            ForEach(store.smartAlbums) { album in
+                                smartAlbumRow(album)
+                            }
                         }
                     }
                 }
@@ -159,6 +164,7 @@ struct SidebarView: View {
                 systemSection
                 }
                 cloudSection
+                catalogSection
             }
             .padding(.horizontal, 8)
             .padding(.top, 8)
@@ -725,6 +731,7 @@ struct SidebarView: View {
         _ title: String,
         key: String,
         topPadding: CGFloat = 16,
+        indent: CGFloat = 0,
         navigateTo: SidebarItem? = nil,
         @ViewBuilder menu: @escaping () -> MenuContent = { EmptyView() }
     ) -> some View {
@@ -733,6 +740,7 @@ struct SidebarView: View {
             collapsed: isCollapsed(key),
             active: navigateTo.map { $0 == store.sidebarItem } ?? false,
             topPadding: topPadding,
+            indent: indent,
             isHovered: hoveredSection == key,
             onOpen: navigateTo.map { item in { store.navigate(to: item) } },
             onToggle: {
@@ -1336,6 +1344,108 @@ struct SidebarView: View {
         }
     }
 
+    // MARK: - Network resources (catalog)
+
+    @ViewBuilder
+    private var catalogSection: some View {
+        sectionHeader("网络资源", key: "catalog", navigateTo: .catalogSources) {
+            Button("导入资源…") {
+                store.presentCatalogWizard()
+            }
+            Button("清除全部海报缓存") {
+                catalog.clearAllArtwork()
+            }
+        }
+
+        if !isCollapsed("catalog") {
+            if catalog.sources.isEmpty {
+                Button {
+                    store.presentCatalogWizard()
+                } label: {
+                    HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                        Image(systemName: "play.rectangle.on.rectangle")
+                            .font(.system(size: LumaMetrics.sidebarIconSize))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: LumaMetrics.sidebarIconColumn)
+                        Text("导入网络资源…")
+                            .font(.system(size: LumaMetrics.sidebarTextSize))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                // 总览入口单独一行：侧边栏里点得到「全部资源」，不必猜标题能不能点。
+                Button {
+                    store.navigate(to: .catalogSources)
+                } label: {
+                    HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                        Image(systemName: "square.grid.2x2.fill")
+                            .font(.system(size: LumaMetrics.sidebarIconSize))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: LumaMetrics.sidebarIconColumn)
+                        Text("全部资源")
+                            .font(.system(size: LumaMetrics.sidebarTextSize))
+                        Spacer(minLength: 0)
+                        if !catalog.newSourceIDs.isEmpty {
+                            Text("\(catalog.newSourceIDs.count)")
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.red.opacity(0.85), in: Capsule(style: .continuous))
+                        } else {
+                            Text("\(catalog.sources.count)")
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
+                    .background {
+                        LumaRowHighlight(active: store.sidebarItem == .catalogSources,
+                                         hovered: hoveredItem == .catalogSources
+                                             && hoveredItemScope == "catalog")
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering {
+                        hoveredItem = .catalogSources
+                        hoveredItemScope = "catalog"
+                    } else if hoveredItem == .catalogSources, hoveredItemScope == "catalog" {
+                        hoveredItem = nil
+                    }
+                }
+                ForEach(catalog.sources) { source in
+                    CatalogSidebarRow(source: source,
+                                      isDropTarget: catalogDropTargetID == source.id)
+                        .onDrop(of: [catalogSourceDragType],
+                                delegate: CatalogSourceReorderDropDelegate(
+                                    target: source.id,
+                                    catalog: catalog,
+                                    onTargeted: { targeted in
+                                        if targeted {
+                                            catalogDropTargetID = source.id
+                                        } else if catalogDropTargetID == source.id {
+                                            catalogDropTargetID = nil
+                                        }
+                                    }))
+                }
+                // 拖到列表末尾 → 排到最后，顺序同样作用于跨源搜索与聚合。
+                Color.clear
+                    .frame(height: 6)
+                    .onDrop(of: [catalogSourceDragType],
+                            delegate: CatalogSourceEndDropDelegate(catalog: catalog))
+            }
+        }
+    }
+
     private func systemFolderNode(_ folder: SystemFolderInfo, level: Int, scope: String = "system") -> AnyView {
         let isExpanded = expandedSystemFolders.contains(folder.id)
         let children = store.systemChildren(of: folder.id)
@@ -1547,6 +1657,84 @@ struct PinnedEndDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         loadPinnedDragID(from: info) { id in
             store.movePinnedToEnd(id: id)
+        }
+    }
+}
+
+/// 网络资源的拖动数据：只带源 id，顺序落盘在源列表里。
+func catalogSourceDragProvider(_ id: UUID) -> NSItemProvider {
+    let provider = NSItemProvider()
+    provider.registerDataRepresentation(forTypeIdentifier: catalogSourceDragType.identifier,
+                                        visibility: .ownProcess) { completion in
+        completion(Data(id.uuidString.utf8), nil)
+        return nil
+    }
+    return provider
+}
+
+private func loadCatalogSourceDragID(from info: DropInfo,
+                                     completion: @escaping (UUID) -> Void) -> Bool {
+    guard let provider = info.itemProviders(for: [catalogSourceDragType]).first else {
+        return false
+    }
+    provider.loadDataRepresentation(forTypeIdentifier: catalogSourceDragType.identifier) { data, _ in
+        guard let data, let raw = String(data: data, encoding: .utf8),
+              let id = UUID(uuidString: raw) else { return }
+        DispatchQueue.main.async {
+            completion(id)
+        }
+    }
+    return true
+}
+
+struct CatalogSourceReorderDropDelegate: DropDelegate {
+    let target: UUID
+    let catalog: CatalogBrowserModel
+    var onTargeted: (Bool) -> Void = { _ in }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [catalogSourceDragType])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropEntered(info: DropInfo) {
+        onTargeted(true)
+    }
+
+    func dropExited(info: DropInfo) {
+        onTargeted(false)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        onTargeted(false)
+        return loadCatalogSourceDragID(from: info) { id in
+            withAnimation(.easeOut(duration: 0.16)) {
+                catalog.moveSource(id, before: target)
+            }
+        }
+    }
+}
+
+/// 拖到网络资源列表末尾：移到最后一位。
+struct CatalogSourceEndDropDelegate: DropDelegate {
+    let catalog: CatalogBrowserModel
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [catalogSourceDragType])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        loadCatalogSourceDragID(from: info) { id in
+            withAnimation(.easeOut(duration: 0.16)) {
+                catalog.moveSourceToEnd(id)
+            }
         }
     }
 }

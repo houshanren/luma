@@ -447,7 +447,7 @@ struct FolderOption: Identifiable {
     let path: String
 }
 
-enum SidebarItem: Hashable {
+enum SidebarItem: Hashable, Codable {
     case library
     /// 影院：刮削后的电影 / 电视剧库。
     case cinema
@@ -508,6 +508,8 @@ enum SidebarItem: Hashable {
     case systemLibraries
     /// 网络存储列表总览（侧边栏「网络存储」分区头点击进入）。
     case cloudStorages
+    /// 网络资源总览（侧边栏「网络资源」分区头点击进入）。
+    case catalogSources
     case systemAlbum(Int64)
     case systemFolder(Int64)
     case systemFavorites
@@ -555,6 +557,8 @@ enum SidebarItem: Hashable {
     case cloudMount(UUID)
     /// 某一个网盘实例自己的影院（刮削结果与海报都归属这个网盘）。
     case cloudCinema(UUID)
+    /// 网络资源（影视源）：与网盘并列，但没有文件树与本地索引。
+    case catalogSource(UUID)
 
     /// 是否属于只读的系统「照片」图库范围。
     var isSystemScope: Bool {

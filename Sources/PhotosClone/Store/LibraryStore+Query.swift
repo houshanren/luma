@@ -56,6 +56,7 @@ extension LibraryStore {
             return selectedKeyword.map { "关键词：#\($0)" } ?? "关键词"
         case .systemLibraries: return "系统图库"
         case .cloudStorages: return "网络存储"
+        case .catalogSources: return "网络资源"
         case .systemAlbum(let id): return systemAlbums.first(where: { $0.id == id })?.name ?? "系统相簿"
         case .systemFolder(let id): return systemFolders.first(where: { $0.id == id })?.name ?? "系统文件夹"
         case .systemFavorites: return "个人收藏"
@@ -102,6 +103,9 @@ extension LibraryStore {
             return cloudMounts.first(where: { $0.id == id })?.name ?? "网络存储"
         case .cloudCinema(let id):
             return cloudMounts.first(where: { $0.id == id }).map { "\($0.name) · 影院" } ?? "影院"
+        case .catalogSource(let id):
+            // 分类信息由顶栏舱体承担，窗口标题只保留资源名，避免两处重复。
+            return catalogModel.sources.first(where: { $0.id == id })?.name ?? "网络资源"
         }
     }
 
@@ -295,7 +299,9 @@ extension LibraryStore {
              .allAlbums, .folder, .systemFolder, .people, .cloudMount, .duplicates,
              .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .systemDuplicates, .systemImports, .systemHealth, .health:
+             .catalogSources,
+             .systemDuplicates, .systemImports, .systemHealth, .health,
+             .videos, .systemVideos:
             return false
         default:
             return true
@@ -494,7 +500,8 @@ extension LibraryStore {
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
         case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .systemHealth, .cinema, .cloudCinema:
+             .catalogSources,
+             .systemHealth, .cinema, .cloudCinema, .catalogSource:
             // 总览页只展示分类卡片，不返回照片。
             return []
         case .systemFavorites:
@@ -1261,6 +1268,10 @@ extension LibraryStore {
         // 影院打开的视频可能不在当前网盘目录里，直接使用快照。
         if let cinemaPlaybackPhoto, cinemaPlaybackPhoto.id == viewerID {
             return cinemaPlaybackPhoto
+        }
+        // 网络资源的虚拟分集同样不在图库里，按播放上下文直接取。
+        if let catalogPhoto = catalogPlaybackPhoto(for: viewerID) {
+            return catalogPhoto
         }
         // 查看器 body 会多次读取当前照片，缓存一次避免重复线性查找。
         if let cache = viewerPhotoCache, cache.id == viewerID, cache.revision == contentRevision {

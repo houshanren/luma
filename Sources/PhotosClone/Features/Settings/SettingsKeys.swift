@@ -37,6 +37,8 @@ enum SettingsKeys {
     static let organizeDimension = "settings.organizeDimension"
     /// 「个人收藏」的浏览方式（全部 / 年 / 类型 / 地点 / 相机 / 人物）。
     static let favoritesViewMode = "settings.favoritesViewMode"
+    /// 侧边栏当前停留的页面：下次打开从这个页面继续。
+    static let sidebarItem = "settings.sidebarItem"
     static let motion = "settings.motion"
     static let cardCornerRadius = "settings.cardCornerRadius"
     static let hoverLift = "settings.hoverLift"
@@ -53,10 +55,20 @@ enum SettingsKeys {
     static let videoControlPlacement = "settings.video.controlPlacement"
     /// 视频转码 / 边下边播缓存的总容量上限（GB）。
     static let videoCacheLimitGB = "settings.video.cacheLimitGB"
+    /// 按片源帧率切换显示器刷新率（24p → 24Hz）。
+    static let videoMatchDisplayRate = "settings.video.matchDisplayRate"
+    /// 网络资源海报缓存上限（GB）。
+    static let posterCacheLimitGB = "settings.catalog.posterCacheLimitGB"
+    /// 缓存上限默认值迁移标记（海报 10 GB / 视频 50 GB）。
+    static let cacheLimitDefaultsVersion = "settings.cacheLimitDefaults.v2"
     /// 外挂字幕字号。
     static let subtitleFontSize = "settings.video.subtitleFontSize"
     /// 外挂字幕是否显示半透明底色。
     static let subtitleBackground = "settings.video.subtitleBackground"
+    /// 外挂字幕颜色：white / yellow / cyan / green。
+    static let subtitleColor = "settings.video.subtitleColor"
+    /// 外挂字幕位置：bottom / lower / middle。
+    static let subtitlePosition = "settings.video.subtitlePosition"
     static let trashRetentionDays = "settings.trash.retentionDays"
     static let importCreateAlbums = "settings.import.createAlbums"
     static let importPreserveStructure = "settings.import.preserveStructure"
@@ -69,6 +81,8 @@ enum SettingsKeys {
 
     // MARK: 影院刮削
     static let cinemaProvider = "settings.cinema.provider"
+    /// 刮削源尝试顺序（rawValue 数组），第一位即首选源。
+    static let cinemaSourceOrder = "settings.cinema.sourceOrder"
     static let cinemaAPIKey = "settings.cinema.apiKey"
     static let cinemaLanguage = "settings.cinema.language"
     static let cinemaAPIBase = "settings.cinema.apiBase"
@@ -76,6 +90,10 @@ enum SettingsKeys {
     static let cinemaAutoScrape = "settings.cinema.autoScrape"
     static let cinemaDoubanBase = "settings.cinema.doubanBase"
     static let cinemaDoubanCookie = "settings.cinema.doubanCookie"
+    static let cinemaTVDBKey = "settings.cinema.tvdbKey"
+    static let cinemaTVDBPin = "settings.cinema.tvdbPin"
+    static let cinemaSubtitleAPIKey = "settings.cinema.subtitleAPIKey"
+    static let cinemaParentalLevel = "settings.cinema.parentalLevel"
 
     /// 单个本地能力是否启用。模型文件存放在本机 Application Support，开关只表示用不用。
     static func modelEnabled(_ id: String) -> String {

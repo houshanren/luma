@@ -1,14 +1,77 @@
 import SwiftUI
 import AppKit
 
-/// 设置 › 影院：数据源选择、凭据配置、连接测试与批量刮削。
+private enum CinemaSettingsTab: String, CaseIterable, Identifiable {
+    case scrape
+    case subtitle
+    case display
+    case playback
+    case sources
+    case parental
+    case advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .scrape: return "刮削"
+        case .subtitle: return "字幕"
+        case .display: return "显示"
+        case .playback: return "播放"
+        case .sources: return "来源"
+        case .parental: return "家长"
+        case .advanced: return "高级"
+        }
+    }
+}
+
+private enum CinemaClearAction: String, Identifiable {
+    case index
+    case progress
+    case lists
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .index: return "清除刮削结果？"
+        case .progress: return "清除观看记录？"
+        case .lists: return "清除自定义清单？"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .index: return "会删除这个影院的海报、评分、简介与未识别列表；影片文件不受影响。"
+        case .progress: return "会清空继续观看、观看历史与详情页进度；影片与刮削结果不受影响。"
+        case .lists: return "会删除所有自定义清单；收藏、想看与影片文件不受影响。"
+        }
+    }
+}
+
+/// 设置 › 影院：刮削、显示、播放与高级维护。
 struct CinemaSettingsSection: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: AppSettings
 
     @State private var revealKey = false
     @State private var revealCookie = false
-    @State private var showAdvanced = false
+    @State private var tab: CinemaSettingsTab = .scrape
+    @State private var pendingClear: CinemaClearAction?
+    @State private var pinInput = ""
+    @State private var pinUnlockInput = ""
+    @State private var pinConfigured = false
+    @State private var pinMessage: String?
+    /// 当前展开配置的数据源；没配置的源打开页面时自动展开。
+    @State private var expandedProvider: CinemaProvider?
+    /// 每个源单独的连通性结果，互不影响。
+    @State private var providerChecks: [CinemaProvider: CinemaConnectionResult] = [:]
+    @State private var testingProviders: Set<CinemaProvider> = []
+
+    @AppStorage("cinema_show_rating_badge") private var showRatingBadge = true
+    @AppStorage("cinema_show_format_badge") private var showFormatBadge = true
+    @AppStorage("cinema_open_detail_on_click") private var openDetailOnClick = true
+    @AppStorage("cinema_resume_playback") private var resumePlayback = true
 
     private let languages: [(id: String, title: String)] = [
         ("zh-CN", "简体中文"),
@@ -22,24 +85,921 @@ struct CinemaSettingsSection: View {
         !settings.cinemaAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var tvdbConfigured: Bool {
+        !settings.cinemaTVDBKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                providerPicker
-                providerNote
-                if settings.cinemaProvider == .tmdb {
-                    tmdbConfig
-                } else {
-                    doubanConfig
+        VStack(alignment: .leading, spacing: 0) {
+            tabBar
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch tab {
+                    case .scrape:
+                        scrapeContent
+                    case .subtitle:
+                        subtitleContent
+                    case .display:
+                        displayContent
+                    case .playback:
+                        playbackContent
+                    case .sources:
+                        sourcesContent
+                    case .parental:
+                        parentalContent
+                    case .advanced:
+                        advancedContent
+                    }
                 }
-                behaviorCard
-                footer
+                .padding(18)
             }
-            .padding(18)
         }
-        .onChange(of: settings.cinemaProvider) { _, _ in
-            store.cinemaConnectionResult = nil
+        // 字幕账号 / PIN 只在真正打开对应页面时读一次；CinemaKeychain 内部还有进程内缓存。
+        .task(id: tab) {
+            switch tab {
+            case .scrape:
+                // 没填 Key 的源直接展开配置，省得用户自己找。
+                if expandedProvider == nil {
+                    expandedProvider = settings.cinemaSourceOrder.first { !isProviderConfigured($0) }
+                }
+            case .subtitle:
+                settings.loadSubtitleCredentialsIfNeeded()
+            case .parental:
+                pinConfigured = CinemaKeychain.has(.parentalPIN)
+            default:
+                break
+            }
+        }
+        .confirmationDialog(pendingClear?.title ?? "确认清除",
+                            isPresented: Binding(
+                                get: { pendingClear != nil },
+                                set: { if !$0 { pendingClear = nil } }
+                            ),
+                            presenting: pendingClear) { action in
+            Button("清除", role: .destructive) {
+                performClear(action)
+                pendingClear = nil
+            }
+            Button("取消", role: .cancel) {
+                pendingClear = nil
+            }
+        } message: { action in
+            Text(action.message)
+        }
+    }
+
+    /// 二级 tab：等宽铺满，视觉上像一级图标 tab 的下一层。
+    private var tabBar: some View {
+        HStack(spacing: 2) {
+            ForEach(CinemaSettingsTab.allCases) { item in
+                let selected = tab == item
+                Button {
+                    withAnimation(.easeOut(duration: 0.14)) { tab = item }
+                } label: {
+                    Text(item.title)
+                        .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.primary.opacity(0.10))
+                            }
+                        }
+                        .overlay(alignment: .bottom) {
+                            if selected {
+                                Capsule()
+                                    .fill(LumaBrand.violet)
+                                    .frame(height: 2)
+                                    .padding(.horizontal, 9)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.6)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+
+    // MARK: 刮削
+
+    private var scrapeContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            sourceListCard
+            behaviorCard
+            footer
+        }
+    }
+
+    /// 三个源独立成行：左边名称，右边配置状态与连通性；顺序就是刮削顺序。
+    private var sourceListCard: some View {
+        card {
+            HStack(spacing: 8) {
+                Text("数据源")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Text("从上到下依次尝试，第一位是首选")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                Text("拖动调整顺序")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.quaternary)
+            }
+
+            VStack(spacing: 0) {
+                let order = settings.cinemaSourceOrder
+                ForEach(Array(order.enumerated()), id: \.element) { index, provider in
+                    providerRow(provider, index: index)
+                    if index < order.count - 1 {
+                        Divider()
+                            .opacity(0.45)
+                            .padding(.leading, 62)
+                    }
+                }
+            }
+        }
+    }
+
+    private func providerRow(_ provider: CinemaProvider, index: Int) -> some View {
+        let configured = isProviderConfigured(provider)
+        let expanded = expandedProvider == provider
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                // 拖动把手 + 序号：序号就是刮削尝试顺序。
+                VStack(spacing: 1) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(index == 0 ? LumaBrand.violet : Color.secondary)
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(width: 24)
+                .contentShape(Rectangle())
+                .draggable(provider.rawValue) {
+                    Label(provider.title, systemImage: providerIcon(provider))
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(providerAccent(provider).opacity(0.2)))
+                }
+                .help("拖动调整刮削顺序")
+
+                Button {
+                    toggleProvider(provider)
+                } label: {
+                    HStack(spacing: 9) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(providerAccent(provider).opacity(0.14))
+                            Image(systemName: providerIcon(provider))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(providerAccent(provider))
+                        }
+                        .frame(width: 28, height: 28)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 5) {
+                                Text(provider.title)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                if index == 0 {
+                                    Text("首选")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                        .foregroundStyle(LumaBrand.violet)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1.5)
+                                        .background(Capsule().fill(LumaBrand.violet.opacity(0.13)))
+                                }
+                            }
+                            Text(provider.tagline)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                providerStatusPill(provider, configured: configured)
+
+                Button {
+                    testProvider(provider)
+                } label: {
+                    Image(systemName: "bolt.horizontal.circle")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+                .disabled(testingProviders.contains(provider) || (!configured && provider != .douban))
+                .help("测试 \(provider.title) 连通性")
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .frame(width: 12)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleProvider(provider) }
+            }
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+            .dropDestination(for: String.self) { items, _ in
+                guard let raw = items.first,
+                      let dragged = CinemaProvider(rawValue: raw),
+                      dragged != provider else { return false }
+                moveProvider(dragged, before: provider)
+                return true
+            }
+            .contextMenu {
+                Button("测试连接") { testProvider(provider) }
+                if index > 0 {
+                    Button("上移") { swapProvider(provider, by: -1) }
+                }
+                if index < settings.cinemaSourceOrder.count - 1 {
+                    Button("下移") { swapProvider(provider, by: 1) }
+                }
+            }
+
+            if expanded {
+                providerFields(provider)
+                    .padding(.leading, 34)
+                    .padding(.bottom, 12)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: expanded)
+    }
+
+    /// 右侧状态：连通结果优先，其次是「已配置 / 未配置」。
+    @ViewBuilder
+    private func providerStatusPill(_ provider: CinemaProvider, configured: Bool) -> some View {
+        if testingProviders.contains(provider) {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text("测试中")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.secondary.opacity(0.10)))
+        } else if let check = providerChecks[provider] {
+            let color = check.ok ? Color.green : Color.orange
+            HStack(spacing: 4) {
+                Image(systemName: check.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 9.5))
+                Text(check.ok ? "连通" : "不通")
+                    .font(.system(size: 9.5, weight: .semibold))
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.12)))
+            .help(check.message)
+        } else if !configured {
+            Text("未配置")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.secondary.opacity(0.10)))
+        } else {
+            Text(provider == .douban ? "免 Key" : "已配置")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.green)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.green.opacity(0.12)))
+        }
+    }
+
+    /// 展开后的配置：每个源只出现自己的输入项，互不混在一起。
+    @ViewBuilder
+    private func providerFields(_ provider: CinemaProvider) -> some View {
+        switch provider {
+        case .tmdb:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Group {
+                        if revealKey {
+                            TextField("API Key（v3）或 Read Access Token（v4）", text: $settings.cinemaAPIKey)
+                        } else {
+                            SecureField("API Key（v3）或 Read Access Token（v4）", text: $settings.cinemaAPIKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11.5))
+                    Button(revealKey ? "隐藏" : "显示") { revealKey.toggle() }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                }
+                HStack(spacing: 8) {
+                    Text("刮削语言")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $settings.cinemaLanguage) {
+                        ForEach(languages, id: \.id) { item in
+                            Text(item.title).tag(item.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 116)
+                    Spacer(minLength: 0)
+                    Button("粘贴") { paste(into: $settings.cinemaAPIKey) }
+                    Button("申请 API Key") { open("https://www.themoviedb.org/settings/api") }
+                }
+                .controlSize(.small)
+                Text("没填 Key 时自动跳过，继续用下面的源。国内网络可在「高级」里换 TMDB 镜像。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .tvdb:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Group {
+                        if revealKey {
+                            TextField("TheTVDB API Key（v4）", text: $settings.cinemaTVDBKey)
+                        } else {
+                            SecureField("TheTVDB API Key（v4）", text: $settings.cinemaTVDBKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11.5))
+                    Button("粘贴") { paste(into: $settings.cinemaTVDBKey) }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                }
+                HStack(spacing: 8) {
+                    Text("订阅 PIN")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    SecureField("普通 Key 留空", text: $settings.cinemaTVDBPin)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5))
+                        .frame(maxWidth: 180)
+                    Spacer(minLength: 0)
+                    Button("申请 Key") { open("https://thetvdb.com/api-information") }
+                }
+                .controlSize(.small)
+                Text("TVDB 只补基础资料与分集；演职员 / 预告仍由 TMDB 提供，建议两个都配。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .douban:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Text("接口")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .leading)
+                    TextField("https://movie.douban.com", text: $settings.cinemaDoubanBase)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5))
+                }
+                HStack(spacing: 6) {
+                    Text("Cookie")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .leading)
+                    Group {
+                        if revealCookie {
+                            TextField("可选：被限流时填", text: $settings.cinemaDoubanCookie)
+                        } else {
+                            SecureField("可选：被限流时填", text: $settings.cinemaDoubanCookie)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11.5))
+                    Button(revealCookie ? "隐藏" : "显示") { revealCookie.toggle() }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                }
+                Text("免 Key。被限流（403 / 418）时换镜像地址或填 Cookie 再试。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func isProviderConfigured(_ provider: CinemaProvider) -> Bool {
+        switch provider {
+        case .tmdb: return tmdbConfigured
+        case .tvdb: return tvdbConfigured
+        case .douban: return true
+        }
+    }
+
+    private func providerAccent(_ provider: CinemaProvider) -> Color {
+        switch provider {
+        case .tmdb: return LumaBrand.violet
+        case .douban: return LumaBrand.mint
+        case .tvdb: return LumaBrand.amber
+        }
+    }
+
+    private func toggleProvider(_ provider: CinemaProvider) {
+        withAnimation(.easeOut(duration: 0.14)) {
+            expandedProvider = expandedProvider == provider ? nil : provider
+        }
+    }
+
+    private func testProvider(_ provider: CinemaProvider) {
+        guard !testingProviders.contains(provider) else { return }
+        testingProviders.insert(provider)
+        providerChecks[provider] = nil
+        Task { @MainActor in
+            let result = await store.testCinemaProvider(provider)
+            providerChecks[provider] = result
+            testingProviders.remove(provider)
+        }
+    }
+
+    /// 拖动到某一行上：插到它前面。
+    private func moveProvider(_ dragged: CinemaProvider, before target: CinemaProvider) {
+        var order = settings.cinemaSourceOrder
+        guard order.contains(dragged), dragged != target else { return }
+        order.removeAll { $0 == dragged }
+        let index = order.firstIndex(of: target) ?? order.count
+        order.insert(dragged, at: index)
+        withAnimation(.easeOut(duration: 0.16)) { settings.cinemaSourceOrder = order }
+    }
+
+    private func swapProvider(_ provider: CinemaProvider, by delta: Int) {
+        var order = settings.cinemaSourceOrder
+        guard let index = order.firstIndex(of: provider) else { return }
+        let target = index + delta
+        guard order.indices.contains(target) else { return }
+        withAnimation(.easeOut(duration: 0.16)) {
+            order.swapAt(index, target)
+            settings.cinemaSourceOrder = order
+        }
+    }
+
+    // MARK: 显示
+
+    private var displayContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            settingsGroup("浏览", icon: "rectangle.grid.2x2.fill", note: "改动即时生效") {
+                settingRow("默认视图", detail: "进入影院时先看到的布局") {
+                    Picker("", selection: $store.cinemaViewMode) {
+                        ForEach(CinemaViewMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                }
+                settingRow("默认排序") {
+                    Picker("", selection: $store.cinemaSort) {
+                        ForEach(CinemaSort.allCases) { sort in
+                            Text(sort.title).tag(sort)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                }
+                settingToggle("显示评分角标",
+                              detail: "卡片右上角的星级与分数",
+                              isOn: $showRatingBadge)
+                settingToggle("显示规格角标",
+                              detail: "只保留最重要的 1–2 个音画标记",
+                              isOn: $showFormatBadge)
+                settingToggle("点击卡片打开详情",
+                              detail: "关闭后点卡片直接播放",
+                              isOn: $openDetailOnClick,
+                              divider: false)
+                settingNote("海报墙固定 2:3，书架固定 16:9；卡片只放关键规格，完整资料在详情页。")
+            }
+        }
+    }
+
+    // MARK: 字幕
+
+    private var subtitleContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            settingsGroup("在线字幕",
+                          icon: "captions.bubble.fill",
+                          status: settings.cinemaSubtitleAPIKey.isEmpty ? ("未配置", false) : ("已配置", true)) {
+                settingField("API Key",
+                             detail: "用于搜索字幕",
+                             placeholder: "OpenSubtitles API Key",
+                             text: $settings.cinemaSubtitleAPIKey,
+                             secure: true,
+                             reveal: $revealKey)
+                settingField("账号",
+                             detail: "下载字幕时登录",
+                             placeholder: "OpenSubtitles 用户名",
+                             text: $settings.cinemaSubtitleUsername)
+                settingField("密码",
+                             detail: "只存 macOS 钥匙串",
+                             placeholder: "OpenSubtitles 密码",
+                             text: $settings.cinemaSubtitlePassword,
+                             secure: true,
+                             divider: false)
+                settingActions {
+                    Button("注册账号") {
+                        open("https://www.opensubtitles.com/en/users/sign_up")
+                    }
+                    Button("申请 API Key") {
+                        open("https://www.opensubtitles.com/en/consumers")
+                    }
+                }
+                .controlSize(.small)
+                settingNote("同名外挂字幕仍然优先；在线结果会缓存到本机，下载需要填账号与密码。")
+            }
+
+            settingsGroup("字幕样式", icon: "textformat.size", note: "所有视频默认值") {
+                settingRow("字号") {
+                    Picker("", selection: $settings.subtitleFontSize) {
+                        ForEach([13.0, 15.0, 18.0, 21.0], id: \.self) { value in
+                            Text("\(Int(value)) pt").tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 100)
+                }
+                settingRow("颜色") {
+                    Picker("", selection: $settings.subtitleColor) {
+                        Text("白色").tag("white")
+                        Text("黄色").tag("yellow")
+                        Text("青色").tag("cyan")
+                        Text("绿色").tag("green")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
+                }
+                settingRow("位置") {
+                    Picker("", selection: $settings.subtitlePosition) {
+                        Text("底部").tag("bottom")
+                        Text("偏上").tag("lower")
+                        Text("中间").tag("middle")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
+                }
+                settingToggle("半透明底色",
+                              detail: "深色底让字幕在亮画面上更清楚",
+                              isOn: $settings.subtitleBackground,
+                              divider: false)
+                settingNote("播放器里还能临时调时间轴偏移；这里改的是所有视频的默认样式。")
+            }
+        }
+    }
+
+    // MARK: 播放
+
+    private var playbackContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            settingsGroup("起播", icon: "play.circle.fill", note: "对影院内所有视频生效") {
+                settingToggle("从上次位置继续",
+                              detail: "点开有观看记录的影片时接着播",
+                              isOn: $resumePlayback)
+                settingToggle("播完自动连播",
+                              detail: "按当前列表顺序播下一集",
+                              isOn: $settings.autoPlayNextVideo)
+                settingToggle("默认循环播放",
+                              detail: "单个视频结束后从头继续",
+                              isOn: $settings.loopVideoByDefault)
+                settingToggle("打开时静音",
+                              detail: "播放中仍可用 M 键取消静音",
+                              isOn: $settings.muteVideoByDefault,
+                              divider: false)
+                settingNote("进度每 10 秒保存一次，关闭播放器时强制保存。")
+            }
+
+            settingsGroup("画面与控制", icon: "rectangle.on.rectangle") {
+                settingToggle("按片源帧率切刷新率",
+                              detail: "24p 片源切到 24Hz，减少 3:2 抖动；退出播放自动恢复",
+                              isOn: $settings.matchDisplayFrameRate)
+                settingRow("快进 / 快退步长", detail: "视频里 ↑ / ↓ 的跳转距离") {
+                    Picker("", selection: $settings.videoSeekStep) {
+                        ForEach([1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { value in
+                            Text("\(Int(value)) 秒").tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 100)
+                }
+                settingRow("播放控制条", detail: settings.videoControlPlacement.detail) {
+                    Picker("", selection: $settings.videoControlPlacement) {
+                        ForEach(VideoControlPlacement.allCases) { placement in
+                            Text(placement.title).tag(placement)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+            }
+
+            settingsGroup("转码缓存", icon: "internaldrive", note: "本机临时分片") {
+                settingRow("缓存上限", detail: "超过上限先清理最旧的分片") {
+                    Picker("", selection: $settings.videoCacheLimitGB) {
+                        ForEach([0, 5, 10, 20, 50, 100], id: \.self) { value in
+                            Text(value == 0 ? "不限制" : "\(value) GB").tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                }
+                settingNote("云盘边下边播与拖拽产生的临时分片，只影响本机磁盘占用。")
+            }
+        }
+    }
+
+    // MARK: 来源
+
+    private var sourcesContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            settingsGroup("来源状态", icon: "externaldrive.connected.to.line.below", note: "各自独立刮削") {
+                sourceRow(icon: "internaldrive",
+                          name: "本地图库",
+                          detail: "\(store.cinemaEntries(for: .local).count) 个影院条目",
+                          active: store.cinemaActiveScope == .local,
+                          divider: !store.cloudMounts.isEmpty)
+                ForEach(store.cloudMounts) { mount in
+                    sourceRow(icon: "externaldrive.connected.to.line.below",
+                              name: mount.name,
+                              detail: "\(mount.kind.title) · \(store.cinemaEntries(for: .mount(mount.id)).count) 个影院条目",
+                              active: store.cinemaActiveScope == .mount(mount.id),
+                              divider: mount.id != store.cloudMounts.last?.id)
+                }
+                if store.cloudMounts.isEmpty {
+                    settingNote("还没有网络存储；添加后每个来源都会拥有独立的影院与刮削结果。")
+                }
+            }
+
+            settingsGroup("添加来源", icon: "plus.circle.fill") {
+                settingRow("网络存储", detail: "SMB / WebDAV / 阿里云盘 / 百度网盘 / 夸克") {
+                    Button {
+                        store.presentCloudWizard()
+                    } label: {
+                        Label("添加…", systemImage: "plus")
+                    }
+                    .controlSize(.small)
+                }
+                settingNote("添加向导会检查协议、地址与凭据并做一次连接测试；影院索引按来源分别保存，移除来源不会删除它。")
+            }
+        }
+    }
+
+    private func sourceRow(icon: String,
+                           name: String,
+                           detail: String,
+                           active: Bool,
+                           divider: Bool = true) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(active ? LumaBrand.violet : Color.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text(detail)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if active {
+                    Text("当前")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(LumaBrand.violet)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(LumaBrand.violet.opacity(0.12)))
+                }
+            }
+            .padding(.vertical, 7)
+            if divider { rowDivider }
+        }
+    }
+
+    // MARK: 家长控制
+
+    private var parentalContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            settingsGroup("分级限制",
+                          icon: "hand.raised.fill",
+                          status: settings.cinemaParentalLevel == .off ? ("已关闭", true) : ("已启用", true)) {
+                settingRow("允许的最高分级", detail: settings.cinemaParentalLevel.detail) {
+                    Picker("", selection: $settings.cinemaParentalLevel) {
+                        ForEach(CinemaParentalLevel.allCases) { level in
+                            Text(level.title).tag(level)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 260)
+                }
+                if store.cinemaParentalEnabled {
+                    settingRow("本次会话", detail: "退出应用或切换分级后自动重新上锁") {
+                        HStack(spacing: 8) {
+                            Text(store.cinemaParentalUnlocked ? "已解锁" : "已上锁")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(store.cinemaParentalUnlocked ? Color.green : LumaBrand.coral)
+                            if store.cinemaParentalUnlocked {
+                                Button("重新上锁") { store.lockCinemaParental() }
+                                    .controlSize(.small)
+                            } else {
+                                SecureField("PIN", text: $pinUnlockInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 11))
+                                    .frame(width: 96)
+                                Button("解锁") {
+                                    if store.unlockCinemaParental(pin: pinUnlockInput) {
+                                        pinUnlockInput = ""
+                                        pinMessage = nil
+                                    } else {
+                                        pinMessage = "PIN 不正确，请重试。"
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                    settingRow("当前来源受限", divider: false) {
+                        Text("\(store.cinemaRestrictedCount(for: store.cinemaActiveScope)) 个条目")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                settingNote("分级来自 TMDB 详情，打开详情页或重新刮削后才会补全；无法识别分级的条目默认放行。")
+            }
+            .onChange(of: settings.cinemaParentalLevel) { _, _ in
+                store.lockCinemaParental()
+            }
+
+            settingsGroup("PIN",
+                          icon: "lock.fill",
+                          status: pinConfigured ? ("已设置", true) : ("未设置", false)) {
+                settingRow("解锁 PIN", detail: "至少 4 位数字；只保存在 macOS 钥匙串") {
+                    HStack(spacing: 8) {
+                        SecureField("PIN", text: $pinInput)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11.5))
+                            .frame(width: 120)
+                        Button("保存") { savePIN() }
+                            .controlSize(.small)
+                            .disabled(pinInput.trimmingCharacters(in: .whitespaces).count < 4)
+                        if pinConfigured {
+                            Button("清除") { clearPIN() }
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                if let pinMessage {
+                    Text(pinMessage)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 6)
+                }
+                settingNote("忘记 PIN 时清除后重新设置即可；不会写入图库数据库。")
+            }
+        }
+    }
+
+    private func savePIN() {
+        let trimmed = pinInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 4 else {
+            pinMessage = "PIN 至少 4 位。"
+            return
+        }
+        CinemaKeychain.set(trimmed, for: .parentalPIN)
+        pinInput = ""
+        pinConfigured = true
+        pinMessage = "PIN 已保存。"
+        store.lockCinemaParental()
+    }
+
+    private func clearPIN() {
+        CinemaKeychain.remove(.parentalPIN)
+        pinConfigured = false
+        pinMessage = "已清除 PIN；解锁时不再校验。"
+        store.cinemaParentalUnlocked = true
+    }
+
+    // MARK: 高级
+
+    private var advancedContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            settingsGroup("当前影院", icon: "film.stack", note: scopeTitle) {
+                settingRow("条目") {
+                    Text("\(scopeEntries.count) 个 · 已识别 \(matchedCount)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                settingRow("观看记录") {
+                    Text("\(store.cinemaProgress.count) 条")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                settingRow("自定义清单", divider: false) {
+                    Text("\(store.cinemaLists.count) 个")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            settingsGroup("接口与镜像", icon: "network") {
+                settingField("TMDB 接口",
+                             placeholder: "https://api.themoviedb.org/3",
+                             text: $settings.cinemaAPIBase)
+                settingField("图片地址",
+                             placeholder: "https://image.tmdb.org/t/p",
+                             text: $settings.cinemaImageBase,
+                             divider: false)
+                settingNote("访问不了 TMDB 时填自建反代或镜像前缀；只影响之后的请求。")
+            }
+
+            settingsGroup("维护", icon: "wrench.and.screwdriver") {
+                settingRow("重新刮削全部", detail: "覆盖当前影院已识别的结果") {
+                    Button {
+                        Task { await store.scrapeCinema(for: store.cinemaActiveScope, force: true) }
+                    } label: {
+                        Label("重新刮削", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .controlSize(.small)
+                }
+                settingRow("清除刮削结果", detail: "只删本机索引，影片文件不受影响") {
+                    Button("清除…") { pendingClear = .index }
+                        .controlSize(.small)
+                }
+                settingRow("清除观看记录", detail: "清空继续观看与全部进度") {
+                    Button("清除…") { pendingClear = .progress }
+                        .controlSize(.small)
+                }
+                settingRow("清除自定义清单", detail: "收藏与想看不受影响") {
+                    Button("清除…") { pendingClear = .lists }
+                        .controlSize(.small)
+                }
+                settingRow("已忽略的视频", detail: "恢复后下次刮削会重新处理") {
+                    Button("恢复（\(ignoredCount)）") {
+                        store.restoreCinemaIgnored(for: store.cinemaActiveScope)
+                    }
+                    .controlSize(.small)
+                    .disabled(ignoredCount == 0)
+                }
+                settingNote("危险操作都会二次确认；只删除本机索引 / 进度 / 清单，不删除影片文件。")
+            }
+        }
+    }
+
+    private var scopeTitle: String {
+        switch store.cinemaActiveScope {
+        case .local:
+            return "本地图库影院"
+        case .mount(let id):
+            return store.cloudMounts.first(where: { $0.id == id })?.name ?? "网盘影院"
+        }
+    }
+
+    private var scopeEntries: [CinemaEntry] {
+        Array(store.cinemaEntries(for: store.cinemaActiveScope).values)
+    }
+
+    private var matchedCount: Int {
+        scopeEntries.filter { $0.matched }.count
+    }
+
+    private var ignoredCount: Int {
+        store.cinemaIgnoredIDs[store.cinemaActiveScope]?.count ?? 0
+    }
+
+    private func performClear(_ action: CinemaClearAction) {
+        switch action {
+        case .index:
+            store.clearCinemaIndex(for: store.cinemaActiveScope)
+        case .progress:
+            store.clearCinemaProgress()
+        case .lists:
+            store.clearCinemaLists()
         }
     }
 
@@ -70,217 +1030,23 @@ struct CinemaSettingsSection: View {
 
     // MARK: 数据源
 
-    private var providerPicker: some View {
-        HStack(spacing: 10) {
-            ForEach(CinemaProvider.allCases) { provider in
-                providerCard(provider)
-            }
-        }
-    }
-
-    private func providerCard(_ provider: CinemaProvider) -> some View {
-        let selected = settings.cinemaProvider == provider
-        return Button {
-            withAnimation(.easeOut(duration: 0.15)) { settings.cinemaProvider = provider }
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: provider == .tmdb ? "globe.americas.fill" : "text.book.closed.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(selected ? LumaBrand.violet : Color.secondary)
-                    Text(provider.title)
-                        .font(.system(size: 12.5, weight: .semibold))
-                    if let badge = provider.badge {
-                        Text(badge)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(selected ? LumaBrand.violet : Color.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Capsule().fill(selected
-                                                       ? LumaBrand.violet.opacity(0.16)
-                                                       : Color.secondary.opacity(0.12)))
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 12))
-                        .foregroundStyle(selected ? LumaBrand.violet : Color.secondary.opacity(0.35))
-                }
-                Text(provider.tagline)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? LumaBrand.violet.opacity(0.08)
-                          : Color(nsColor: .controlBackgroundColor))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(selected ? LumaBrand.violet.opacity(0.55) : Color.primary.opacity(0.08),
-                                  lineWidth: selected ? 1.2 : 0.6)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var providerNote: some View {
-        Text(settings.cinemaProvider == .tmdb
-             ? "TMDB 是官方接口，免费申请，自带背景图，适合绝大多数电影与剧集。国内网络若访问不了，可在下方「高级」里换镜像地址。"
-             : "豆瓣没有公开 API，这里读取它的公开网页接口：中文片名、国产剧命中更准，但没有背景图，也可能被限流。遇到失败可填写 Cookie 或换镜像地址。")
-            .font(.system(size: 10.5))
-            .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: TMDB 配置
-
-    private var tmdbConfig: some View {
-        card {
-            sectionTitle("TMDB 配置", status: tmdbConfigured ? ("已配置", true) : ("待配置", false))
-
-            HStack(spacing: 6) {
-                Group {
-                    if revealKey {
-                        TextField("API Key（v3）或 Read Access Token（v4）", text: $settings.cinemaAPIKey)
-                    } else {
-                        SecureField("API Key（v3）或 Read Access Token（v4）", text: $settings.cinemaAPIKey)
-                    }
-                }
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11.5))
-
-                Button(revealKey ? "隐藏" : "显示") { revealKey.toggle() }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
-            }
-
-            HStack(spacing: 6) {
-                Text("刮削语言")
-                    .font(.system(size: 11.5))
-                Picker("", selection: $settings.cinemaLanguage) {
-                    ForEach(languages, id: \.id) { item in
-                        Text(item.title).tag(item.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 116)
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 8) {
-                Button("打开 TMDB 申请页") {
-                    open("https://www.themoviedb.org/settings/api")
-                }
-                Button("粘贴剪贴板") {
-                    paste(into: $settings.cinemaAPIKey)
-                }
-                Spacer(minLength: 0)
-            }
-            .controlSize(.small)
-
-            Divider().opacity(0.5)
-
-            steps([
-                "打开 TMDB 申请页，注册后申请免费 API Key（类型选 Developer）。",
-                "复制 API Key（v3）或 Read Access Token（v4），粘贴到上面。",
-                "点「测试连接」确认可用，再回影院点「刮削新视频」。"
-            ])
-
-            advanced
-            testRow
-        }
-    }
-
-    private var advanced: some View {
-        DisclosureGroup(isExpanded: $showAdvanced) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Text("接口地址").frame(width: 62, alignment: .leading)
-                    TextField("https://api.themoviedb.org/3", text: $settings.cinemaAPIBase)
-                        .textFieldStyle(.roundedBorder)
-                }
-                HStack(spacing: 6) {
-                    Text("图片地址").frame(width: 62, alignment: .leading)
-                    TextField("https://image.tmdb.org/t/p", text: $settings.cinemaImageBase)
-                        .textFieldStyle(.roundedBorder)
-                }
-                Text("访问不了 TMDB 时，可填自建反代或可用镜像的前缀。")
-            }
-            .font(.system(size: 10.5))
-            .foregroundStyle(.secondary)
-            .padding(.top, 6)
-        } label: {
-            Text("高级：接口与图片镜像")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: 豆瓣配置
-
-    private var doubanConfig: some View {
-        card {
-            sectionTitle("豆瓣配置", status: ("免 Key", true))
-
-            HStack(spacing: 6) {
-                Text("接口地址")
-                    .font(.system(size: 11.5))
-                    .frame(width: 62, alignment: .leading)
-                TextField("https://movie.douban.com", text: $settings.cinemaDoubanBase)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11.5))
-            }
-
-            HStack(spacing: 6) {
-                Text("Cookie")
-                    .font(.system(size: 11.5))
-                    .frame(width: 62, alignment: .leading)
-                Group {
-                    if revealCookie {
-                        TextField("可选：浏览器里 movie.douban.com 的 Cookie", text: $settings.cinemaDoubanCookie)
-                    } else {
-                        SecureField("可选：浏览器里 movie.douban.com 的 Cookie", text: $settings.cinemaDoubanCookie)
-                    }
-                }
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11.5))
-                Button(revealCookie ? "隐藏" : "显示") { revealCookie.toggle() }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
-            }
-
-            Text("Cookie 只在被限流时填写：登录豆瓣后从浏览器开发者工具复制整段 Cookie 即可。")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Divider().opacity(0.5)
-
-            steps([
-                "默认直连 movie.douban.com，不需要申请 Key。",
-                "点「测试连接」，能搜到「流浪地球」就说明可用。",
-                "被限流（403 / 418）时，换镜像地址或填写 Cookie 后重试。"
-            ])
-
-            testRow
+    private func providerIcon(_ provider: CinemaProvider) -> String {
+        switch provider {
+        case .tmdb: return "globe.americas.fill"
+        case .douban: return "text.book.closed.fill"
+        case .tvdb: return "tv.fill"
         }
     }
 
     // MARK: 行为
 
     private var behaviorCard: some View {
-        card {
-            sectionTitle("行为")
-            Toggle("扫描完网盘后自动刮削这个网盘的新视频", isOn: $settings.cinemaAutoScrape)
-                .font(.system(size: 11.5))
-            Text("刮削与播放入口在每个网盘的侧边栏「影院」里；结果和海报只属于那个网盘，互不影响。")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
+        settingsGroup("行为", icon: "bolt.fill") {
+            settingToggle("扫描完自动刮削",
+                          detail: "网盘扫描结束后自动处理这个网盘的新视频",
+                          isOn: $settings.cinemaAutoScrape,
+                          divider: false)
+            settingNote("刮削与播放入口在每个网盘的侧边栏「影院」里；结果和海报只属于那个网盘，互不影响。")
         }
     }
 
@@ -300,74 +1066,6 @@ struct CinemaSettingsSection: View {
 
     // MARK: 组件
 
-    private var testRow: some View {
-        HStack(spacing: 8) {
-            Button {
-                Task { await store.testCinemaConnection() }
-            } label: {
-                Label("测试连接", systemImage: "bolt.horizontal.circle")
-            }
-            .controlSize(.small)
-            .disabled(store.cinemaConnectionTesting)
-
-            if store.cinemaConnectionTesting {
-                ProgressView().controlSize(.small)
-                Text("正在连接…")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-            } else if let result = store.cinemaConnectionResult {
-                Image(systemName: result.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(result.ok ? Color.green : Color.orange)
-                Text(result.message)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("用示例片名搜一次，确认网络与配置可用")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func sectionTitle(_ title: String, status: (text: String, ok: Bool)? = nil) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 12.5, weight: .semibold))
-            if let status {
-                let color = status.ok ? Color.green : Color.orange
-                Text(status.text)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(color)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1.5)
-                    .background(Capsule().fill(color.opacity(0.12)))
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func steps(_ items: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, text in
-                HStack(alignment: .top, spacing: 6) {
-                    Text("\(index + 1)")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14, height: 14)
-                        .background(Circle().fill(Color.secondary.opacity(0.13)))
-                    Text(text)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             content()
@@ -382,6 +1080,162 @@ struct CinemaSettingsSection: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.6)
         }
+    }
+
+    // MARK: 设置行（对齐「通用 / 外观」页的分组表单）
+
+    /// 分组卡：小图标 + 标题（可带状态胶囊 / 右侧说明），下面是若干设置行。
+    private func settingsGroup<Content: View>(_ title: String,
+                                              icon: String,
+                                              note: String? = nil,
+                                              status: (text: String, ok: Bool)? = nil,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(LumaBrand.violet)
+                    .frame(width: 15)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                if let status {
+                    let color = status.ok ? Color.green : Color.orange
+                    Text(status.text)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(color.opacity(0.12)))
+                }
+                Spacer(minLength: 0)
+                if let note {
+                    Text(note)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 11)
+            .padding(.bottom, 3)
+
+            VStack(spacing: 0) {
+                content()
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 9)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.6)
+        }
+    }
+
+    private var rowDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.05))
+            .frame(height: 0.6)
+    }
+
+    /// 一行设置：左侧标题与说明，右侧放控件（开关 / 选择器 / 按钮）。
+    private func settingRow<Control: View>(_ title: String,
+                                           detail: String? = nil,
+                                           divider: Bool = true,
+                                           @ViewBuilder control: () -> Control) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 11.5, weight: .medium))
+                    if let detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 12)
+                control()
+            }
+            .padding(.vertical, 7)
+            if divider { rowDivider }
+        }
+    }
+
+    private func settingToggle(_ title: String,
+                               detail: String? = nil,
+                               isOn: Binding<Bool>,
+                               divider: Bool = true) -> some View {
+        settingRow(title, detail: detail, divider: divider) {
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+    }
+
+    /// 输入行：标题在上，整行输入框在下，和系统设置里的账号 / Key 项一致。
+    private func settingField(_ title: String,
+                              detail: String? = nil,
+                              placeholder: String,
+                              text: Binding<String>,
+                              secure: Bool = false,
+                              reveal: Binding<Bool>? = nil,
+                              divider: Bool = true) -> some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 11.5, weight: .medium))
+                    if let detail {
+                        Text(detail)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    if let reveal {
+                        Button(reveal.wrappedValue ? "隐藏" : "显示") { reveal.wrappedValue.toggle() }
+                            .buttonStyle(.link)
+                            .font(.system(size: 10.5))
+                    }
+                }
+                Group {
+                    if secure, !(reveal?.wrappedValue ?? false) {
+                        SecureField(placeholder, text: text)
+                    } else {
+                        TextField(placeholder, text: text)
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11.5))
+            }
+            .padding(.vertical, 7)
+            if divider { rowDivider }
+        }
+    }
+
+    /// 分组末尾的一行浅色说明。
+    private func settingNote(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+    }
+
+    private func settingActions<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 8) {
+            content()
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 8)
     }
 
     private func open(_ raw: String) {

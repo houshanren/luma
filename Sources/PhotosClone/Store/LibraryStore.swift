@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import SwiftUI
+import Combine
 import CoreLocation
 import UniformTypeIdentifiers
 import LumaCore
@@ -88,6 +89,8 @@ final class LibraryStore: ObservableObject {
                 cardColumnsByScope[cardColumnsScopeKey(for: sidebarItem)] = cardColumns
             }
             persistCardColumns()
+            // 侧边栏记忆：下次打开从当前页面继续。
+            persistSidebarItem(sidebarItem)
             loadSystemLibraryIfNeeded(sidebarItem)
         }
     }
@@ -110,6 +113,29 @@ final class LibraryStore: ObservableObject {
     var favoritesDigestSource: [PhotoItem] = []
     var favoritesDigestLoadedToken = ""
     var favoritesDigestTask: Task<Void, Never>?
+
+    // MARK: 视频页
+    /// 视频页的派生结果（分组、轨道、统计），由 `refreshVideoHubIfNeeded()` 统一生成。
+    @Published var videoHubData = VideoHubData()
+    /// 视频页顶栏筛选：具体年份 + 时长档。
+    @Published var videoHubFilter = VideoHubFilter() {
+        didSet {
+            guard videoHubFilter != oldValue else { return }
+            refreshVideoHubIfNeeded(force: true)
+        }
+    }
+    /// 视频页排列方式（海报墙 / 时间轴）。
+    @Published var videoHubLayout: VideoHubLayout = .wall
+    /// 视频页「视角」维度（精选 / 年份 / 时长 / 地点 / 人物）。
+    @Published var videoHubDimension: VideoHubDimension = .featured
+    var videoHubCacheToken = ""
+    /// 后台汇总用的完整视频列表：只加载一次，筛选在其上内存过滤，不再依赖分页窗口。
+    var videoHubFullVideos: [PhotoItem] = []
+    var videoHubFullToken = ""
+    var videoHubLoadingToken = ""
+    @Published var isVideoHubLoading = false
+    var videoHubLoadTask: Task<Void, Never>?
+
     /// 缩略图 / 卡片尺寸范围（pt）：滑杆、按钮、⌘+ / ⌘-、捏合都按这个范围夹紧。
     static let thumbSizeRange: ClosedRange<Double> = 56...360
 
@@ -407,6 +433,15 @@ final class LibraryStore: ObservableObject {
     @Published var aiConfig = AIConfig()
     @Published var aiIsResponding = false
     @Published var aiError: String?
+    /// 影院「一键智能整理」期间跳过逐轮确认：入口本身就是用户授权，且只放行影院写工具。
+    var aiAutoMatchCinema = false
+    /// 最近一次 search_cinema_candidates 的候选：apply_cinema_match 按 candidate_id 取回完整元数据。
+    var aiCinemaCandidateCache: [String: CinemaMatch] = [:]
+    /// 目录 NFO 缓存：同一目录只解析一次；没有 NFO 的目录也记住。
+    var cinemaNFOByFolder: [String: CinemaNFO] = [:]
+    var cinemaNFOEmptyFolders: Set<String> = []
+    /// 本地目录监听（FSEvents）：只在本地 originals 目录有变化时刷新影院。
+    var localCinemaWatcher: LocalCinemaWatcher?
     @Published var activeMemory: PhotoMemory?
     /// 正在查看的旅行故事线。
     @Published var activeTrip: TripStory?
@@ -552,10 +587,50 @@ final class LibraryStore: ObservableObject {
     @Published var cinemaActiveScope: CinemaScope = .local
     /// 影院顶栏的分段（全部 / 电影 / 电视剧），与内容页共用。
     @Published var cinemaTab: CinemaTab = .all
-    /// 影院的年代筛选（如 2020 表示 2020 年代），nil 表示全部。
-    @Published var cinemaDecade: Int?
-    /// 影院的类型筛选（剧情 / 科幻 / 悬疑……），nil 表示全部。
-    @Published var cinemaGenre: String?
+    /// 影院的浏览姿态（书架 / 海报墙 / 列表）；写入本地偏好，下次进入保持。
+    /// 默认改成海报墙：旧版本默认书架，这里做一次性迁移，之后再改就按用户自己的来。
+    @Published var cinemaViewMode: CinemaViewMode = LibraryStore.initialCinemaViewMode {
+        didSet {
+            UserDefaults.standard.set(cinemaViewMode.rawValue, forKey: "cinema_view_mode")
+        }
+    }
+
+    private static var initialCinemaViewMode: CinemaViewMode {
+        let defaults = UserDefaults.standard
+        let modeKey = "cinema_view_mode"
+        let migratedKey = "cinema_view_mode_wall_default"
+        var raw = defaults.string(forKey: modeKey)
+        if !defaults.bool(forKey: migratedKey) {
+            defaults.set(true, forKey: migratedKey)
+            if raw == nil || raw == CinemaViewMode.shelf.rawValue {
+                raw = CinemaViewMode.wall.rawValue
+                defaults.set(raw, forKey: modeKey)
+            }
+        }
+        return CinemaViewMode(rawValue: raw ?? "") ?? .wall
+    }
+
+    /// 影院的年代筛选（如 2020 表示 2020 年代），空集合表示全部；可多选。
+    @Published var cinemaDecades: Set<Int> = []
+    /// 影院的类型筛选（剧情 / 科幻 / 悬疑……），空集合表示全部；可多选。
+    @Published var cinemaGenres: Set<String> = []
+    /// 分辨率筛选；空集合表示全部；可多选。
+    @Published var cinemaResolutions: Set<CinemaResolutionFilter> = []
+    /// 观看状态筛选；空集合表示全部；可多选。
+    @Published var cinemaWatchFilters: Set<CinemaWatchFilter> = []
+    /// 规格筛选：杜比视界 / HDR / 杜比全景声 / 高帧率；空集合表示全部。
+    @Published var cinemaSpecFilters: Set<CinemaSpecFilter> = []
+    /// 智能筛选：评分 8 以上 / 最近 30 天添加。
+    @Published var cinemaSmartHighRated = false
+    @Published var cinemaSmartRecent = false
+    /// 排序方式；写入本地偏好，下次进入保持。
+    @Published var cinemaSort: CinemaSort = CinemaSort(
+        rawValue: UserDefaults.standard.string(forKey: "cinema_sort") ?? ""
+    ) ?? .recent {
+        didSet {
+            UserDefaults.standard.set(cinemaSort.rawValue, forKey: "cinema_sort")
+        }
+    }
     /// 正在刮削的作用域，用于对应网盘的侧边栏显示进度。
     @Published var cinemaScrapeScope: CinemaScope?
     @Published var cinemaScrapeRunning = false
@@ -567,9 +642,95 @@ final class LibraryStore: ObservableObject {
     @Published var cinemaConnectionResult: CinemaConnectionResult?
     /// 从影院打开的视频快照：即使该网盘目录没有加载，也能直接进查看器播放。
     var cinemaPlaybackPhoto: PhotoItem?
+    /// 影院续播记录，按视频 photoID 索引；只存快照，不依赖刮削索引仍然存在。
+    @Published var cinemaProgress: [UUID: CinemaProgressRecord] = [:]
+    /// 影院本地用户状态：收藏 / 想看 / 个人评分。
+    @Published var cinemaUserStates: [UUID: CinemaUserState] = [:]
+    /// 已忽略的视频：不再参与刮削，也不出现在影院列表里。
+    @Published var cinemaIgnoredIDs: [CinemaScope: Set<UUID>] = [:]
+    /// 正在删除原文件的条目：右键菜单据此禁用重复点击。
+    @Published var cinemaDeletingIDs: Set<UUID> = []
+    /// 自定义清单（手动选片）。
+    @Published var cinemaLists: [CinemaListRecord] = []
+    /// 当前正在按清单筛选；nil 表示未筛选。
+    @Published var cinemaActiveListID: UUID?
+    /// 是否只看收藏。
+    @Published var cinemaFavoritesOnly = false
+    /// 影院搜索面板与观看记录面板的显示状态。
+    @Published var cinemaSearchVisible = false
+    @Published var cinemaHistoryVisible = false
+    /// 影院详情是否正以页面内铺满的方式打开：顶栏控制台据此切到「返回」形态。
+    @Published var cinemaDetailOpen = false
+    /// 顶栏「返回」的自增信号；影院页收到后收起详情。
+    @Published var cinemaDetailCloseTick = 0
+    /// 影院页工具栏的可用宽度（窗口宽 − 侧边栏 − 右侧标题位）：控制台据此折叠。
+    /// 读数由页面内容里的探针写入，控制台被系统暂时隐藏时仍会继续更新。
+    @Published var cinemaAvailableWidth: CGFloat = 780
+    /// 顶栏「新建清单…」请求。
+    @Published var cinemaNewListVisible = false
+    /// 任务中心（刮削与维护记录）。
+    @Published var cinemaTasksVisible = false
+    @Published var cinemaTasks: [CinemaTaskRecord] = []
+    /// 通知中心：任务结果归档（今天 / 本周分组，保留 30 天）。
+    @Published var cinemaNotificationsVisible = false
+    @Published var cinemaNotifications: [CinemaNotification] = []
+    /// 右上角 Toast 栈（最多 3 条）；成功类 4 秒自动消失，失败 / 进度常驻。
+    @Published var cinemaToasts: [CinemaToast] = []
+    var cinemaToastTasks: [UUID: Task<Void, Never>] = [:]
+    /// 家长控制本次会话是否已用 PIN 解锁；退出应用后重新上锁。
+    @Published var cinemaParentalUnlocked = false
+    /// 家长控制解锁面板。
+    @Published var cinemaPINPromptVisible = false
+    /// 相簿里右键「手动匹配」的目标视频；由 RootView 统一弹出匹配面板。
+    @Published var cinemaQuickMatch: CinemaQuickMatchRequest?
+    /// 文件夹视图的刷新信号：匹配 / 刮削 / 清空索引后自增。
+    @Published var cinemaFolderRefreshToken = 0
+    /// 剧集级跳过片头 / 片尾设置，按 CinemSeries.id 索引。
+    @Published var cinemaIntroMarks: [String: CinemaIntroMark] = [:]
+    /// 单集覆盖：按 CinemaEntry.id 索引，优先级高于整部剧的默认值。
+    @Published var cinemaEpisodeIntroMarks: [String: CinemaIntroMark] = [:]
+    /// 已经尝试过在线片头识别的剧集键：查不到的不再反复请求。
+    var cinemaIntroAutoTried: Set<String> = []
+    /// 已经尝试过在线片头识别的单集：失败的不在每次播放时重试。
+    var cinemaEpisodeIntroTried: Set<String> = []
+    /// 下一集预热好的流（只保留一个）。
+    var cinemaPrewarmedStream: CinemaPrewarmedStream?
+    /// 正在预热的任务：换目标时先取消。
+    var cinemaPrewarmTask: Task<Void, Never>?
+    /// 预热目标：避免进度回调每秒都取消重开同一个预热。
+    var cinemaPrewarmTarget: UUID?
+    /// 本次起播是否用了续播位置：用了就不再拿在线片头去改跳转。
+    var cinemaResumeApplied = false
+    /// 当前从影院打开的视频条目：查看器内的播放进度会写回这条记录。
+    var cinemaPlaybackEntry: CinemaEntry?
+    /// 本集是否已经执行过片尾跳过，避免反复 seek。
+    var cinemaOutroSkippedEntry: UUID?
+    /// 续播起播秒数：等播放器载入新条目后消费一次。
+    var cinemaPendingSeek: Double?
+    /// 续播跳转的重试次数与节流时间：云盘起流前 seek 可能暂时无效。
+    var cinemaSeekAttempts = 0
+    var cinemaSeekRetryAt: Date = .distantPast
+    /// 上次进度落盘时间，限制每 10 秒写一次。
+    var cinemaProgressSavedAt: Date = .distantPast
+    /// 查看器播放进度订阅：只在影院播放期间存在。
+    var cinemaProgressCancellable: AnyCancellable?
 
     /// 网盘状态独立成模型；这里保留同名转发，Store 扩展方法无需改动。
     let cloudModel = CloudBrowserModel()
+    /// 网络资源（影视源）状态：与网盘并列，但不参与图库索引与扫描。
+    let catalogModel = CatalogBrowserModel()
+    /// 网络资源播放：每集一个虚拟视频，交给查看器翻页与播放。
+    var catalogPlaybackPhotos: [PhotoItem] = []
+    var catalogPlaybackContexts: [UUID: CatalogPlaybackContext] = [:]
+    /// 续播起播秒数：等播放器载入新分集后消费一次。
+    var catalogPendingSeek: Double?
+    var catalogSeekAttempts = 0
+    var catalogSeekRetryAt: Date = .distantPast
+    var catalogProgressSavedAt: Date = .distantPast
+    var catalogProgressCancellable: AnyCancellable?
+    /// 从网络资源详情页起播时记下的返回目标：关闭播放器后回到该详情，而不是频道列表。
+    var catalogReturnSourceID: UUID?
+    var catalogReturnItem: CatalogItem?
     var cloudMounts: [CloudMount] {
         get { cloudModel.mounts }
         set { cloudModel.mounts = newValue }
@@ -641,6 +802,9 @@ final class LibraryStore: ObservableObject {
     var aiLastCandidateIDs: [UUID] = []
     /// 候选照片的文件名到 id，解析模型直接写文件名的情况。
     var aiLastCandidateNames: [String: UUID] = [:]
+    /// 网络资源工具最近一次返回的候选：ref（`#1`）或 `sourceID|itemID` → 源与条目。
+    /// 播放入口与稍后看都靠它把模型看到的编号还原成具体条目。
+    var aiCatalogCandidates: [String: (sourceID: UUID, item: CatalogItem)] = [:]
     var healthTask: Task<Void, Never>?
     /// 体检任务标识：取消或重新开始后，旧任务不再写回进度与结果。
     var healthScanToken = UUID()
@@ -954,16 +1118,25 @@ final class LibraryStore: ObservableObject {
         loadCloudMarks()
         loadCinemaIndexes()
         migrateLegacyCinemaIndexIfNeeded()
+        startLocalCinemaWatcher()
+        // 上次异常退出可能留下播放会话目录：启动时在后台清掉并做一次容量回收。
+        DispatchQueue.global(qos: .utility).async {
+            VideoCacheManager.cleanupOrphans()
+        }
         loadSmartAlbums()
         loadPinnedItems()
         loadAnalysisIndex()
         loadViewPreferences()
         loadAIState()
 
+        // 侧边栏记忆：有本地记录就从上次的页面开始；没有则继续走下面的默认页。
+        let restoredSidebarItem = restoreSidebarItemIfPossible()
+
         // 当前图库就是官方「照片」图库时，主界面默认展示这个图库的照片；
         // 拾光自己的数据（导入、相簿、收藏）写在该图库第一层 database/ 里，从「拾光」分区进入。
         // 启动时弹出的图库选择器：先不打开任何图库，等用户选定后再进入。
-        if !needsLibrarySetup,
+        if !restoredSidebarItem,
+           !needsLibrarySetup,
            !startsWithLibraryPicker,
            let container = LibraryPaths.containerLibraryURL,
            LibraryPaths.isNativeLibrary(container) {
@@ -979,18 +1152,33 @@ final class LibraryStore: ObservableObject {
         // 与系统「照片」一致：按住 Option 启动时先弹出图库选择器。
         showLibraryPicker = startsWithLibraryPicker
 
+        // 网络资源的源、片单、日历都跟着图库：按当前图库读取一次。
+        catalogModel.loadForCurrentLibrary()
+
+        // 网络资源的播放统一交给查看器：用虚拟分集铺满上下文，左右翻页即切集。
+        catalogModel.onPlayback = { [weak self] request in
+            self?.playCatalog(request)
+        }
+        catalogModel.onPlaylistPlayback = { [weak self] items in
+            self?.playCatalogPlaylist(items)
+        }
+
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.discardPrewarmedCinemaStream()
                 self?.flushMetadata()
             }
         }
     }
 
     deinit {
+        localCinemaWatcher?.stop()
+        cinemaPrewarmTask?.cancel()
+        cinemaPrewarmedStream?.session.stop()
         if let terminateObserver {
             NotificationCenter.default.removeObserver(terminateObserver)
         }
@@ -1139,6 +1327,41 @@ final class LibraryStore: ObservableObject {
         cardColumns = cardColumnsMap[currentScope] ?? cardColumnsValue
         if cardColumnsByScope[currentScope] == nil {
             cardColumnsByScope[currentScope] = cardColumns
+        }
+    }
+
+    /// 恢复上次停留的侧边栏页面；没有记录或页面已失效时返回 false（走默认页）。
+    @discardableResult
+    func restoreSidebarItemIfPossible() -> Bool {
+        guard let store = metadataStore,
+              let raw = store.setting(SettingsKeys.sidebarItem),
+              let data = Data(base64Encoded: raw),
+              let item = try? JSONDecoder().decode(SidebarItem.self, from: data),
+              isRestorableSidebarItem(item) else { return false }
+        sidebarItem = item
+        return true
+    }
+
+    private func persistSidebarItem(_ item: SidebarItem) {
+        guard let data = try? JSONEncoder().encode(item) else { return }
+        persistViewPreference(SettingsKeys.sidebarItem, data.base64EncodedString())
+    }
+
+    /// 带 id 的页面要确认对象还在；回收站之类的临时页面不作为启动页。
+    private func isRestorableSidebarItem(_ item: SidebarItem) -> Bool {
+        switch item {
+        case .trash, .systemTrash:
+            return false
+        case .album(let id):
+            return albums.contains { $0.id == id }
+        case .smartAlbum(let id):
+            return smartAlbums.contains { $0.id == id }
+        case .folder(let id):
+            return folders.contains { $0.id == id }
+        case .cloudMount(let id), .cloudCinema(let id):
+            return cloudMounts.contains { $0.id == id }
+        default:
+            return true
         }
     }
 

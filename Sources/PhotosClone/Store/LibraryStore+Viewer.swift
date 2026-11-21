@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AVFoundation
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
@@ -15,7 +16,12 @@ extension LibraryStore {
     /// 传空数组等价于普通打开（按当前图库查询定位）。
     func openViewer(_ id: UUID, context: [PhotoItem]) {
         if cinemaPlaybackPhoto?.id != id {
+            finishCinemaPlayback()
             cinemaPlaybackPhoto = nil
+        }
+        // 打开的不是虚拟分集时，结束上一次网络资源播放。
+        if catalogPlaybackPhoto(for: id) == nil {
+            finishCatalogPlayback()
         }
         viewerContextPhotos = context
         // 只让查看器的插入 / 移除参与动画：整窗级的 animation 会把网格、
@@ -39,6 +45,8 @@ extension LibraryStore {
     }
 
     func closeViewer() {
+        finishCinemaPlayback()
+        finishCatalogPlayback()
         let lastID = viewerID
         withAnimation(AppSettings.shared.motion.overlay) {
             viewerID = nil
@@ -49,7 +57,10 @@ extension LibraryStore {
         viewerContextPhotos = []
         viewerIndexCache = nil
         viewerPositionCache = nil
+        viewerModel.videoQuarterTurns = 0
         clearViewerBurstState()
+        // 从网络资源详情页起的播：关闭后回到那一页详情，而不是频道列表。
+        restoreCatalogDetailIfNeeded()
         // 「所有照片」时间轴里翻页可能已经走出已加载窗口：返回网格时把它滚回来。
         // 用最小滚动：目标本来就可见时不动，避免关闭动画期间网格整体跳位。
         if let lastID, isTimelineScope, isPagedScope {
@@ -222,6 +233,184 @@ extension LibraryStore {
             index += step
         }
         return false
+    }
+
+    // MARK: - 视频菜单命令
+    //
+    // 「视频」菜单、顶栏播放舱与画面内控制条共用这里的入口：三处只操作同一份
+    // `ViewerModel.videoPlayer` 与旋转角度，状态不会分叉。
+
+    /// 查看器里正在显示的视频；没有视频时菜单项整体置灰。
+    var commandVideo: PhotoItem? {
+        guard let photo = viewerPhoto, photo.isVideo else { return nil }
+        return photo
+    }
+
+    var canControlVideoPlayback: Bool { commandVideo != nil }
+
+    var videoIsMuted: Bool { viewerModel.videoPlayer.isMuted }
+    var videoIsLooping: Bool { viewerModel.videoPlayer.isLooping }
+    var videoUsesFill: Bool { viewerModel.videoPlayer.gravity == .resizeAspectFill }
+    var videoPipActive: Bool { viewerModel.videoPlayer.isPipActive }
+    var videoPipAvailable: Bool { viewerModel.videoPlayer.isPipAvailable }
+    var videoSpeed: Double { viewerModel.videoPlayer.speed }
+
+    var videoCanStepBackward: Bool {
+        guard let id = commandVideo?.id else { return false }
+        return hasAdjacentVideo(from: id, delta: -1)
+    }
+
+    var videoCanStepForward: Bool {
+        guard let id = commandVideo?.id else { return false }
+        return hasAdjacentVideo(from: id, delta: 1)
+    }
+
+    func toggleVideoPlaybackCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.togglePlay()
+    }
+
+    /// 快进 / 快退：与画面内快捷键一致，走 `requestSeek` 以便云盘重建流。
+    func seekVideoCommand(by delta: Double) {
+        guard canControlVideoPlayback else { return }
+        let player = viewerModel.videoPlayer
+        player.requestSeek(to: player.currentTime + delta)
+    }
+
+    func stepVideoFrameCommand(by count: Int) {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.stepFrame(by: count)
+    }
+
+    func toggleVideoMuteCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.isMuted.toggle()
+    }
+
+    func setVideoVolumeCommand(_ volume: Double) {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.volume = volume
+        viewerModel.videoPlayer.isMuted = false
+    }
+
+    // MARK: 音轨 / 字幕
+
+    /// 可切换的音轨：网盘流式播放时是 ffprobe 探测结果，本地视频是 AV 原生音轨组。
+    var videoAudioChoices: [VideoPlaybackUI.AudioChoice] {
+        viewerModel.videoPlaybackUI.audioChoices
+    }
+
+    var videoSelectedAudioIndex: Int {
+        viewerModel.videoPlaybackUI.selectedAudioIndex
+    }
+
+    func selectVideoAudioCommand(_ index: Int) {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlaybackUI.selectAudio(index)
+    }
+
+    var videoLegibleOptions: [AVMediaSelectionOption] {
+        viewerModel.videoPlayer.legibleOptions
+    }
+
+    func isVideoLegibleSelected(_ option: AVMediaSelectionOption) -> Bool {
+        viewerModel.videoPlayer.selectedLegible == option
+    }
+
+    /// 切换内嵌字幕：外挂字幕优先于内嵌字幕，选内嵌时先清掉外挂。
+    func selectVideoLegibleCommand(_ option: AVMediaSelectionOption?) {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlaybackUI.clearSubtitle()
+        viewerModel.videoPlayer.selectLegible(option)
+    }
+
+    var videoHasSubtitle: Bool { viewerModel.videoPlaybackUI.hasSubtitle }
+    /// 视频文件里自带的内嵌字幕是否已选中。
+    var videoHasEmbeddedSubtitle: Bool { viewerModel.videoPlayer.selectedLegible != nil }
+
+    func pickVideoSubtitleCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlaybackUI.pickSubtitle()
+    }
+
+    func clearVideoSubtitleCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlaybackUI.clearSubtitle()
+    }
+
+    func adjustVideoSubtitleOffsetCommand(by delta: Double) {
+        guard canControlVideoPlayback, videoHasSubtitle else { return }
+        viewerModel.videoPlaybackUI.adjustOffset(delta)
+    }
+
+    func resetVideoSubtitleOffsetCommand() {
+        guard canControlVideoPlayback, videoHasSubtitle else { return }
+        viewerModel.videoPlaybackUI.resetOffset()
+    }
+
+    func toggleVideoLoopCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.isLooping.toggle()
+    }
+
+    func toggleVideoGravityCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.gravity = videoUsesFill ? .resizeAspect : .resizeAspectFill
+    }
+
+    func setVideoSpeedCommand(_ speed: Double) {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.setSpeed(speed)
+    }
+
+    func rotateVideoDisplayCommand() {
+        guard canControlVideoPlayback else { return }
+        withAnimation(.easeInOut(duration: 0.22)) {
+            viewerModel.videoQuarterTurns = (viewerModel.videoQuarterTurns + 1) % 4
+        }
+    }
+
+    func toggleVideoPipCommand() {
+        guard canControlVideoPlayback else { return }
+        viewerModel.videoPlayer.togglePip()
+    }
+
+    func toggleVideoFullScreenCommand() {
+        guard canControlVideoPlayback else { return }
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(nil)
+    }
+
+    /// 保存当前帧：与画面朝向一致（「视频」菜单与顶栏、画面内控制条共用）。
+    func saveVideoFrameCommand() {
+        guard let photo = commandVideo else { return }
+        let turns = viewerModel.videoQuarterTurns
+        let player = viewerModel.videoPlayer
+        Task { @MainActor in
+            guard let frame = await player.currentFrameImage() else {
+                showToast("无法获取当前帧")
+                return
+            }
+            let image = turns == 0
+                ? frame
+                : (ImageTransform.rotate(frame, degrees: turns * 90) ?? frame)
+            let panel = NSSavePanel()
+            let base = (photo.originalName as NSString).deletingPathExtension
+            panel.nameFieldStringValue = base + "-截图.png"
+            panel.canCreateDirectories = true
+            panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            let rep = NSBitmapImageRep(cgImage: image)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                showToast("截图保存失败")
+                return
+            }
+            do {
+                try data.write(to: url)
+                showToast("已保存截图")
+            } catch {
+                showToast("截图保存失败：\(error.localizedDescription)")
+            }
+        }
     }
 
     /// 查看器显示的序号（0 起）：默认就是查询顺序；

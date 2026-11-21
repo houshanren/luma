@@ -509,6 +509,33 @@ enum AliyunOAuth {
         return url
     }
 
+    /// 删除文件：官方没有单独的删除端点，走批量接口里的 `/file/delete`。
+    /// 注意需要 `file:all` 写入权限；只有读权限的授权会返回 AccessDenied。
+    static func delete(driveID: String, fileID: String, accessToken: String) async throws {
+        let object = try await post(path: "/adrive/v3/batch", body: [
+            "requests": [[
+                "id": UUID().uuidString,
+                "method": "POST",
+                "url": "/file/delete",
+                "body": ["drive_id": driveID, "file_id": fileID]
+            ]]
+        ], accessToken: accessToken)
+        let responses = object["responses"] as? [[String: Any]] ?? []
+        guard let first = responses.first else {
+            throw CloudOAuthError.api("阿里云盘没有返回删除结果")
+        }
+        let status = (first["status"] as? NSNumber)?.intValue ?? 0
+        let body = first["body"] as? [String: Any] ?? [:]
+        let code = (body["code"] as? String) ?? ""
+        if status >= 400 || !code.isEmpty {
+            let message = (body["message"] as? String) ?? code
+            if code.lowercased().contains("access") || status == 403 {
+                throw CloudOAuthError.api("阿里云盘授权没有写入权限，请在「来源」里重新授权后再删除")
+            }
+            throw CloudOAuthError.api(message.isEmpty ? "阿里云盘拒绝删除（\(status)）" : message)
+        }
+    }
+
     // MARK: 内部
 
     private static func parseEntry(_ item: [String: Any], driveID: String) -> CloudEntry? {
@@ -777,6 +804,34 @@ enum BaiduOAuth {
         return result
     }
 
+    /// 删除文件：xpan filemanager 的 `opera=delete`，filelist 传完整路径数组。
+    static func delete(paths: [String], accessToken: String) async throws {
+        guard !paths.isEmpty else { return }
+        var components = URLComponents(string: panBase + "/rest/2.0/xpan/file")
+        components?.queryItems = [
+            URLQueryItem(name: "method", value: "filemanager"),
+            URLQueryItem(name: "access_token", value: accessToken),
+            URLQueryItem(name: "opera", value: "delete"),
+            URLQueryItem(name: "async", value: "0")
+        ]
+        guard let url = components?.url else { throw CloudOAuthError.api("地址无效") }
+        let listData = (try? JSONSerialization.data(withJSONObject: paths)) ?? Data("[]".utf8)
+        let listText = String(data: listData, encoding: .utf8) ?? "[]"
+        let encoded = listText.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = "async=0&filelist=\(encoded)".data(using: .utf8)
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let errno = (object["errno"] as? NSNumber)?.intValue ?? 0
+        guard errno == 0 else {
+            let message = (object["errmsg"] as? String) ?? "errno \(errno)"
+            if errno == -6 { throw CloudOAuthError.notAuthorized }
+            throw CloudOAuthError.api(message)
+        }
+    }
+
     // MARK: 内部
 
     private static func parseEntry(_ item: [String: Any]) -> CloudEntry? {
@@ -899,6 +954,57 @@ enum CloudService {
             throw CloudOAuthError.api("SMB 配置无效")
         }
         return try await client.scanTree(path: path)
+    }
+
+    /// 删除单个文件：SMB / WebDAV / 官方网盘各走自己的通道，失败原因原样抛出。
+    static func delete(mount: CloudMount, photo: PhotoItem) async throws {
+        switch mount.kind {
+        case .webdav:
+            guard let client = webdavClient(mount),
+                  let path = photo.cloudPath, !path.isEmpty else {
+                throw CloudOAuthError.api("WebDAV 文件路径无效")
+            }
+            try await client.delete(path: path)
+
+        case .smb:
+            guard let client = smbClient(mount), let path = photo.cloudPath else {
+                throw CloudOAuthError.api("SMB 文件路径无效")
+            }
+            _ = try await client.ensureMounted()
+            guard let url = client.fileURL(path: path) else {
+                throw CloudOAuthError.api("SMB 共享未挂载，请先在侧边栏连接")
+            }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                throw CloudOAuthError.api("SMB 删除失败：\(error.localizedDescription)")
+            }
+
+        case .aliyun:
+            let token = try await accessToken(for: mount)
+            guard let target = AliyunOAuth.splitPath(photo.cloudPath ?? photo.cloudRemoteID,
+                                                     fallbackDrive: mount.remoteDriveID) else {
+                throw CloudOAuthError.api("缺少阿里云盘文件 ID")
+            }
+            try await AliyunOAuth.delete(driveID: target.drive,
+                                         fileID: target.fileID,
+                                         accessToken: token)
+
+        case .baidu:
+            let token = try await accessToken(for: mount)
+            guard let path = photo.cloudPath, !path.isEmpty else {
+                throw CloudOAuthError.api("缺少百度网盘文件路径")
+            }
+            try await BaiduOAuth.delete(paths: [path], accessToken: token)
+
+        case .quark:
+            guard let fid = photo.cloudPath ?? photo.cloudRemoteID, !fid.isEmpty else {
+                throw CloudOAuthError.api("缺少夸克文件 ID")
+            }
+            try await QuarkDrive.delete(fids: [fid],
+                                        cookie: try quarkCookie(for: mount),
+                                        mountID: mount.id)
+        }
     }
 
     static func stream(mount: CloudMount, photo: PhotoItem) async throws -> CloudStreamResource {

@@ -36,10 +36,8 @@ struct PhotoViewerView: View {
     @State private var burstPlayTask: Task<Void, Never>?
     /// 「保留所选，删除其余」的确认卡片。
     @State private var confirmBurstKeep = false
-    /// 视频手动旋转角度：画面与顶栏按钮共用。
-    @State private var videoQuarterTurns = 0
-    /// 顶栏与画面内控制条共享的音轨 / 字幕状态。
-    @StateObject private var videoUI = VideoPlaybackUI()
+    /// 顶栏与画面内控制条共享的音轨 / 字幕状态（由 ViewerModel 持有，「视频」菜单也读这一份）。
+    private var videoUI: VideoPlaybackUI { viewer.videoPlaybackUI }
     /// 顶栏时间点击后显示剩余时长。
     @State private var videoShowsRemainingTime = false
 
@@ -477,46 +475,16 @@ struct PhotoViewerView: View {
     }
 
     private func rotateVideoPlayer() {
-        withAnimation(.easeInOut(duration: 0.22)) {
-            videoQuarterTurns = (videoQuarterTurns + 1) % 4
-        }
+        store.rotateVideoDisplayCommand()
     }
 
     private func toggleVideoFullScreen() {
-        (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(nil)
+        store.toggleVideoFullScreenCommand()
     }
 
     /// 保存当前帧：与画面朝向一致，由查看器统一保存（顶栏与画面内控制条共用）。
     private func captureVideoFrame() {
-        guard let photo else { return }
-        let turns = videoQuarterTurns
-        let model = videoModel
-        Task { @MainActor in
-            guard let frame = await model.currentFrameImage() else {
-                store.showToast("无法获取当前帧")
-                return
-            }
-            let image = turns == 0
-                ? frame
-                : (ImageTransform.rotate(frame, degrees: turns * 90) ?? frame)
-            let panel = NSSavePanel()
-            let base = (photo.originalName as NSString).deletingPathExtension
-            panel.nameFieldStringValue = base + "-截图.png"
-            panel.canCreateDirectories = true
-            panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            let rep = NSBitmapImageRep(cgImage: image)
-            guard let data = rep.representation(using: .png, properties: [:]) else {
-                store.showToast("截图保存失败")
-                return
-            }
-            do {
-                try data.write(to: url)
-                store.showToast("已保存截图")
-            } catch {
-                store.showToast("截图保存失败：\(error.localizedDescription)")
-            }
-        }
+        store.saveVideoFrameCommand()
     }
 
     /// 顶栏中部的照片信息：地点 / 实况 / 拍摄时间 / 地理位置 / 序号。
@@ -744,7 +712,8 @@ struct PhotoViewerView: View {
                                               hasPrev: store.hasAdjacentVideo(from: photo.id, delta: -1),
                                               hasNext: store.hasAdjacentVideo(from: photo.id, delta: 1),
                                               onPrev: { store.viewerStepVideo(-1) },
-                                              onNext: { store.viewerStepVideo(1) })
+                                              onNext: { store.viewerStepVideo(1) },
+                                              episodeMode: store.catalogPlaybackContext(for: photo.id) != nil)
                     }
                 }
                 .padding(.horizontal, showsVideoToolbarControls ? 3 : 0)
@@ -824,7 +793,7 @@ struct PhotoViewerView: View {
                     // 播放选项 / 全屏排在信息、胶片条等照片操作之前，顺序与参考图一致。
                     if showsVideoToolbarControls {
                         VideoToolbarOptions(model: videoModel,
-                                            quarterTurns: videoQuarterTurns,
+                                            quarterTurns: viewer.videoQuarterTurns,
                                             onRotate: rotateVideoPlayer,
                                             onCapture: captureVideoFrame)
                         VideoDeckButton(icon: "arrow.up.left.and.arrow.down.right",
@@ -993,7 +962,7 @@ struct PhotoViewerView: View {
                     VideoPlayerStage(photo: photo,
                                      model: videoModel,
                                      ui: videoUI,
-                                     quarterTurns: $videoQuarterTurns,
+                                     quarterTurns: $viewer.videoQuarterTurns,
                                      onCaptureFrame: { captureVideoFrame() },
                                      transparentBackground: embedded,
                                      zoom: zoom,

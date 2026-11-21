@@ -85,6 +85,20 @@ extension LibraryStore {
 
     // MARK: - 发送
 
+    /// 影院顶栏「一键智能整理」：打开助手、预填整理指令并自动发送。
+    /// 本次运行只跳过影院写工具的逐轮确认 —— 入口本身就是授权，其它写操作仍然要确认。
+    func presentCinemaAutoMatch() {
+        let scope = cinemaActiveScope
+        aiAutoMatchCinema = true
+        aiInput = AILibraryTools.cinemaAutoMatchPrompt(scopeName: cinemaScopeName(scope))
+        showAIAssistant = true
+        // 等面板挂上再发，用户能先看到自己发出的问题。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.showAIAssistant, !self.aiInput.isEmpty else { return }
+            self.sendAIMessage()
+        }
+    }
+
     func sendAIMessage() {
         let question = aiInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !aiIsResponding else { return }
@@ -128,6 +142,7 @@ extension LibraryStore {
 
         aiTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.aiAutoMatchCinema = false }
             var imagePairs: [(UUID, String)] = []
             if imageLimit > 0 {
                 imagePairs = await Task.detached(priority: .userInitiated) {
@@ -198,7 +213,7 @@ extension LibraryStore {
                     }
 
                     toolRounds += 1
-                    if toolRounds > 4 {
+                    if toolRounds > 20 {
                         finalText = "工具调用次数过多，已停止。请换一种问法或缩小范围。"
                         break
                     }
@@ -352,15 +367,100 @@ extension LibraryStore {
             total = self.photos.count
         }
         let analysis = isSystemScope || isCloudScope ? [:] : analysisIndex
-        return AIContextBuilder.make(scopeTitle: sidebarTitle,
-                                     scopeCount: scopeCount,
-                                     libraryTotal: total,
-                                     filterTitle: photoFilter.title,
-                                     searchText: searchText,
-                                     selectionCount: selection.count,
-                                     photos: photos,
-                                     analysis: analysis,
-                                     limit: Self.aiCandidateLimit)
+        var context = AIContextBuilder.make(scopeTitle: sidebarTitle,
+                                            scopeCount: scopeCount,
+                                            libraryTotal: total,
+                                            filterTitle: photoFilter.title,
+                                            searchText: searchText,
+                                            selectionCount: selection.count,
+                                            photos: photos,
+                                            analysis: analysis,
+                                            limit: Self.aiCandidateLimit)
+        // 影院页的照片图库可能是 0 项，但影院里有目录与视频：单独附一份影院快照。
+        if isAICinemaScope {
+            context.cinema = makeAICinemaSnapshot()
+        }
+        return context
+    }
+
+    private var isAICinemaScope: Bool {
+        switch sidebarItem {
+        case .cinema, .cloudCinema: return true
+        default: return false
+        }
+    }
+
+    /// 给助手一份克制的影院快照：目录、计数与少量样本，不把整库塞进提示词。
+    private func makeAICinemaSnapshot() -> AILibraryContext.CinemaSnapshot {
+        let scope = cinemaActiveScope
+        let entries = Array(cinemaEntries(for: scope).values)
+        // 计数以「完整视频清单」为准：从未刮削过的网盘 entries 为空，但仍需要让助手看到视频数。
+        let candidates = cinemaCandidates(for: scope)
+        let matchedIDs = Set(entries.filter(\.matched).map(\.id))
+        let matched = candidates.filter { matchedIDs.contains($0.photo.id) }.count
+        let total = max(candidates.count, entries.count)
+
+        var allFolders: [CinemaFolder] = []
+        var stack = cinemaFolders(for: scope)
+        while let folder = stack.popLast() {
+            allFolders.append(folder)
+            stack.append(contentsOf: folder.children)
+        }
+        let folders = allFolders
+            .sorted { $0.subtreePhotos.count > $1.subtreePhotos.count }
+            .prefix(12)
+            .map { folder in
+                AILibraryContext.CinemaFolderLine(name: folder.name,
+                                                  path: folder.path,
+                                                  videos: folder.subtreePhotos.count,
+                                                  matched: folder.matchedCount)
+            }
+
+        let videos: [AILibraryContext.CinemaVideoLine]
+        if entries.isEmpty {
+            // 还没刮削过：用文件名解析结果给模型一点样本，具体清单让它调用 cinema_tree。
+            videos = candidates
+                .sorted { $0.photo.displayFilename.localizedStandardCompare($1.photo.displayFilename)
+                    == .orderedAscending }
+                .prefix(16)
+                .map { candidate in
+                    let parsed = CinemaScraper.parse(filename: candidate.photo.displayFilename,
+                                                     folderHint: candidate.folderHint)
+                    return AILibraryContext.CinemaVideoLine(
+                        filename: candidate.photo.displayFilename,
+                        title: parsed.title,
+                        matched: false,
+                        season: parsed.season,
+                        episode: parsed.episode,
+                        resolution: candidate.photo.pixelWidth > 0
+                            ? "\(candidate.photo.pixelWidth)×\(candidate.photo.pixelHeight)" : ""
+                    )
+                }
+        } else {
+            videos = entries
+                .sorted { lhs, rhs in
+                    if lhs.matched != rhs.matched { return !lhs.matched }
+                    return lhs.file.capturedAt > rhs.file.capturedAt
+                }
+                .prefix(16)
+                .map { entry in
+                    AILibraryContext.CinemaVideoLine(
+                        filename: entry.file.filename,
+                        title: entry.title,
+                        matched: entry.matched,
+                        season: entry.season,
+                        episode: entry.episode,
+                        resolution: entry.file.pixelWidth > 0
+                            ? "\(entry.file.pixelWidth)×\(entry.file.pixelHeight)" : ""
+                    )
+                }
+        }
+
+        return AILibraryContext.CinemaSnapshot(scopeName: cinemaScopeName(scope),
+                                               total: total,
+                                               matched: matched,
+                                               folders: Array(folders),
+                                               videos: Array(videos))
     }
 
     private func trimAIMessages() {
@@ -376,7 +476,8 @@ extension LibraryStore {
                         "收藏", "取消收藏", "添加关键词", "去掉关键词", "删除关键词", "打标签",
                         "整理成", "重命名", "改名", "移动", "隐藏", "取消隐藏", "恢复",
                         "设为封面", "封面", "改标题", "设置标题", "移入最近删除", "压缩", "美化",
-                        "选中", "打开", "切换到", "筛选", "排序", "直接操作", "执行"]
+                        "选中", "打开", "切换到", "筛选", "排序", "直接操作", "执行",
+                        "匹配", "刮削", "重新识别", "识别一下"]
         return keywords.contains { text.contains($0) }
     }
 }

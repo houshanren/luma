@@ -4,6 +4,7 @@ import AppKit
 struct RootView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
+    @EnvironmentObject private var catalog: CatalogBrowserModel
     @EnvironmentObject private var viewer: ViewerModel
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.openWindow) private var openWindow
@@ -54,6 +55,11 @@ struct RootView: View {
                     .transition(.opacity)
                     .zIndex(8)
             }
+        }
+        .sheet(isPresented: $catalog.showWizard) {
+            CatalogWizardView()
+                .environmentObject(catalog)
+                .environmentObject(store)
         }
         .sheet(isPresented: $store.showNewAlbumSheet) {
             NewAlbumSheet()
@@ -109,6 +115,13 @@ struct RootView: View {
                 .environmentObject(store)
                 .frame(minWidth: 760, minHeight: 520)
         }
+        // 相簿 / 网格右键「手动匹配…」：不用先进入影院，直接在当前窗口完成匹配。
+        .sheet(item: $store.cinemaQuickMatch) { request in
+            CinemaMatchSheet(photos: request.photos) {
+                store.cinemaQuickMatch = nil
+            }
+            .environmentObject(store)
+        }
         .onChange(of: store.showImportSheet) { _, visible in
             if visible {
                 openWindow(id: "import")
@@ -137,6 +150,14 @@ struct RootView: View {
         }
         .onChange(of: viewer.viewerID) { _, newValue in
             FullScreenDiagnostics.log("viewerID -> \(String(describing: newValue)) immersive=\(viewer.videoImmersiveFullScreen)")
+            // 幽灵查看器兜底：ID 还在但照片已找不到时，覆盖层会留下一块空白。
+            // 等一个 runloop 再判断，避免打开瞬间的正常空档被误关。
+            if let newValue {
+                DispatchQueue.main.async {
+                    guard store.viewerID == newValue, store.viewerPhoto == nil else { return }
+                    store.closeViewer()
+                }
+            }
             // 全屏里直接关掉查看器：只退出全屏，布局与侧边栏等系统退出后再恢复，
             // 避免退出动画途中改布局把窗口尺寸算歪（反复进出会让窗口越来越矮）。
             guard newValue == nil, viewer.videoImmersiveFullScreen else { return }
@@ -253,7 +274,7 @@ struct RootView: View {
                 // 环境光垫在内容之下：磨砂侧边栏、浮动胶囊与网格间隙都能透出颜色。
                 LumaAmbientBackground()
                 GalleryView()
-                if settings.viewerLayout == .window, viewer.viewerID != nil {
+                if settings.viewerLayout == .window, store.viewerPhoto != nil {
                     PhotoViewerView(embedded: true)
                         // 视频真全屏：查看器自身伸进顶部安全区，把工具栏空出来的那一条吃掉。
                         // 只加在组件上、不加在整窗或分栏上，避免影响窗口尺寸计算。
@@ -345,7 +366,7 @@ struct RootView: View {
         // 视频真全屏时工具栏会挡住画面：显式隐藏，并用画面内的悬浮控制条接管操作。
         // 退出全屏后由 endVideoImmersiveFullScreen 恢复，窗口尺寸由 restoreWindowFrameAfterFullScreen 兜底。
         viewer.editorID != nil
-            || (viewer.viewerID != nil && settings.viewerLayout == .fullscreen)
+            || (store.viewerPhoto != nil && settings.viewerLayout == .fullscreen)
             || viewer.videoImmersiveFullScreen
     }
 }

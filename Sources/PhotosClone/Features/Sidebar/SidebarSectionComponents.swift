@@ -11,14 +11,19 @@ struct SidebarCategoryRow: View {
     var isActive: Bool = false
     var isHovered: Bool = false
     var helpText: String?
+    /// 传了缩略图就用它替代系统图标（网络资源的分类行用站点真实封面）。
+    var thumbnailSource: CatalogSource?
+    var thumbnailURL: String?
+    /// 二级分类向右缩进，和一级分组拉开层级。
+    var leadingIndent: CGFloat = 8
+    /// 二级分类用小圆点当图标。
+    var iconSize: CGFloat? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: icon)
-                    .font(.system(size: LumaMetrics.sidebarIconSize))
-                    .foregroundStyle(iconColor)
+                iconView
                     .frame(width: LumaMetrics.sidebarIconColumn)
                 Text(title)
                     .font(.system(size: LumaMetrics.sidebarTextSize))
@@ -35,7 +40,8 @@ struct SidebarCategoryRow: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.leading, leadingIndent)
+            .padding(.trailing, 8)
             .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
             .contentShape(Rectangle())
             .background {
@@ -46,6 +52,33 @@ struct SidebarCategoryRow: View {
         .help(helpText ?? title)
         .accessibilityLabel(title)
     }
+
+    @ViewBuilder
+    private var iconView: some View {
+        if let thumbnailSource, let thumbnailURL, !thumbnailURL.isEmpty {
+            // 缩略图固定 20×20：封面是横图，scaledToFill 会向外撑开，
+            // 这里用 Color.clear 兜住尺寸、再裁到圆角方块，避免盖住右边的标题。
+            Color.clear
+                .frame(width: LumaMetrics.sidebarCoverSize,
+                       height: LumaMetrics.sidebarCoverSize)
+                .overlay {
+                    CatalogArtworkImage(source: thumbnailSource,
+                                        urlString: thumbnailURL,
+                                        cornerRadius: LumaMetrics.sidebarCoverRadius)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                           style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                     style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+                }
+        } else {
+            Image(systemName: icon)
+                .font(.system(size: iconSize ?? LumaMetrics.sidebarIconSize))
+                .foregroundStyle(iconColor)
+        }
+    }
 }
 
 /// 可收起的分区头：整行（含左右留白）是点击区，标题可点击打开总览；
@@ -55,6 +88,8 @@ struct SidebarSectionHeader<MenuContent: View>: View {
     let collapsed: Bool
     var active: Bool = false
     var topPadding: CGFloat = 12
+    /// 嵌套在上级分区里时向右缩进，和一级分区拉开层级。
+    var indent: CGFloat = 0
     var isHovered: Bool = false
     var onOpen: (() -> Void)?
     let onToggle: () -> Void
@@ -64,6 +99,7 @@ struct SidebarSectionHeader<MenuContent: View>: View {
          collapsed: Bool,
          active: Bool = false,
          topPadding: CGFloat = 12,
+         indent: CGFloat = 0,
          isHovered: Bool = false,
          onOpen: (() -> Void)? = nil,
          onToggle: @escaping () -> Void,
@@ -72,6 +108,7 @@ struct SidebarSectionHeader<MenuContent: View>: View {
         self.collapsed = collapsed
         self.active = active
         self.topPadding = topPadding
+        self.indent = indent
         self.isHovered = isHovered
         self.onOpen = onOpen
         self.onToggle = onToggle
@@ -94,12 +131,18 @@ struct SidebarSectionHeader<MenuContent: View>: View {
                 .buttonStyle(.plain)
                 .help("打开「\(title)」总览")
             } else {
-                HStack(spacing: 0) {
-                    label
-                    Spacer(minLength: 0)
+                // 没有二级总览的分区：整行点击就展开 / 收起，不必非要点右侧箭头。
+                Button(action: onToggle) {
+                    HStack(spacing: 0) {
+                        label
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                .buttonStyle(.plain)
+                .help(collapsed ? "展开「\(title)」" : "收起「\(title)」")
             }
 
             // 「更多」与收起 / 展开按钮浮在整行点击区之上，各自响应自己的点击。
@@ -156,5 +199,6 @@ struct SidebarSectionHeader<MenuContent: View>: View {
                 .tracking(0.06)
                 .foregroundStyle(active ? Color.accentColor : Color.secondary)
         }
+        .padding(.leading, indent)
     }
 }

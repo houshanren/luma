@@ -14,10 +14,11 @@ enum CinemaMediaKind: String, Codable {
     }
 }
 
-/// 刮削数据源。豆瓣排在最前：免 Key，作为默认数据源。
-enum CinemaProvider: String, CaseIterable, Identifiable {
+/// 刮削数据源。值表示「优先使用哪个」：两个源同时启用，前一个没匹配到再换另一个。
+enum CinemaProvider: String, Codable, CaseIterable, Identifiable {
     case douban
     case tmdb
+    case tvdb
 
     var id: String { rawValue }
 
@@ -25,6 +26,7 @@ enum CinemaProvider: String, CaseIterable, Identifiable {
         switch self {
         case .tmdb: return "TMDB"
         case .douban: return "豆瓣"
+        case .tvdb: return "TVDB"
         }
     }
 
@@ -32,6 +34,7 @@ enum CinemaProvider: String, CaseIterable, Identifiable {
         switch self {
         case .tmdb: return "官方 API · 全球影视 · 海报与背景图"
         case .douban: return "中文影视更全 · 免 Key · 非官方接口"
+        case .tvdb: return "剧集资料与分集更细 · 需 API Key"
         }
     }
 
@@ -39,6 +42,7 @@ enum CinemaProvider: String, CaseIterable, Identifiable {
         switch self {
         case .tmdb: return "推荐"
         case .douban: return "实验性"
+        case .tvdb: return nil
         }
     }
 }
@@ -49,12 +53,13 @@ enum CinemaScope: Hashable {
     case mount(UUID)
 }
 
-/// 影院顶部的分段：全部 / 电影 / 电视剧。
+/// 影院顶部的分段：全部 / 电影 / 电视剧 / 文件夹。
 /// 状态放在 `LibraryStore`，让顶栏控制台与内容页共用同一个选中值。
 enum CinemaTab: String, CaseIterable, Identifiable {
     case all
     case movies
     case shows
+    case folder
 
     var id: String { rawValue }
 
@@ -63,6 +68,7 @@ enum CinemaTab: String, CaseIterable, Identifiable {
         case .all: return "全部"
         case .movies: return "电影"
         case .shows: return "电视剧"
+        case .folder: return "文件夹"
         }
     }
 
@@ -71,6 +77,174 @@ enum CinemaTab: String, CaseIterable, Identifiable {
         case .all: return "film.stack"
         case .movies: return "film"
         case .shows: return "tv"
+        case .folder: return "folder"
+        }
+    }
+}
+
+/// 影院里的一个文件夹节点：可以一层层点进去。
+/// `photos` 是当前目录直属视频；`subtreePhotos` 含所有子目录，用于统计与整目录刮削。
+struct CinemaFolder: Identifiable {
+    var path: String
+    var name: String
+    var parentPath: String?
+    /// 人类可读的目录链（夸克等网盘的 path 是 ID，展示时用它）。
+    var hint: String?
+    var mountID: UUID?
+    var photos: [PhotoItem]
+    var entries: [CinemaEntry]
+    var children: [CinemaFolder]
+    var subtreePhotos: [PhotoItem]
+    var matchedCount: Int
+    var title: String?
+    var kind: CinemaMediaKind?
+    var posterURL: String?
+    var backdropURL: String?
+    var year: Int?
+    var episodeCount: Int
+
+    var id: String { path }
+    var displayPath: String { hint ?? name }
+    var displayTitle: String { title ?? name }
+    var isMatched: Bool { matchedCount > 0 }
+    var totalCount: Int { subtreePhotos.count }
+    var unmatchedCount: Int { max(0, totalCount - matchedCount) }
+    var firstPhoto: PhotoItem? { photos.first ?? subtreePhotos.first }
+    var hasChildren: Bool { !children.isEmpty }
+    var hasVideos: Bool { !photos.isEmpty }
+}
+
+/// 影院的浏览姿态：书架 / 海报墙 / 列表。只改变呈现，不改变数据。
+enum CinemaViewMode: String, CaseIterable, Identifiable {
+    case shelf
+    case wall
+    case card
+    case list
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .shelf: return "书架"
+        case .wall: return "海报墙"
+        case .card: return "卡片"
+        case .list: return "列表"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .shelf: return "rectangle.stack"
+        case .wall: return "square.grid.2x2"
+        case .card: return "rectangle.on.rectangle"
+        case .list: return "list.bullet"
+        }
+    }
+}
+
+/// 影院排序：只改变顺序，不改变集合。
+enum CinemaSort: String, CaseIterable, Identifiable {
+    case recent
+    case rating
+    case year
+    case title
+    case duration
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recent: return "最近添加"
+        case .rating: return "评分"
+        case .year: return "年份"
+        case .title: return "片名"
+        case .duration: return "时长"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .recent: return "最近"
+        case .rating: return "评分"
+        case .year: return "年份"
+        case .title: return "片名"
+        case .duration: return "时长"
+        }
+    }
+}
+
+/// 观看状态筛选：从本地续播记录派生。
+enum CinemaWatchFilter: String, CaseIterable, Identifiable, Hashable {
+    case unwatched
+    case inProgress
+    case finished
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .unwatched: return "未看"
+        case .inProgress: return "进行中"
+        case .finished: return "已看完"
+        }
+    }
+}
+
+/// 分辨率筛选：从文件的像素宽度派生，不做主观画质判断。
+enum CinemaResolutionFilter: String, CaseIterable, Identifiable, Hashable {
+    case uhd4k
+    case fullHD
+    case sd
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .uhd4k: return "4K"
+        case .fullHD: return "1080P / 2K"
+        case .sd: return "720P 及以下"
+        }
+    }
+
+    func matches(_ file: CinemaFile) -> Bool {
+        let width = file.pixelWidth
+        guard width > 0 else { return false }
+        switch self {
+        case .uhd4k: return width >= 3000
+        case .fullHD: return width >= 1800 && width < 3000
+        case .sd: return width < 1800
+        }
+    }
+}
+
+/// 规格筛选：从文件名里的发行标记派生，只做筛选与角标，不参与匹配。
+enum CinemaSpecFilter: String, CaseIterable, Identifiable, Hashable {
+    case dolbyVision
+    case hdr
+    case atmos
+    case highFrameRate
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dolbyVision: return "杜比视界"
+        case .hdr: return "HDR"
+        case .atmos: return "杜比全景声"
+        case .highFrameRate: return "高帧率"
+        }
+    }
+
+    func matches(_ file: CinemaFile) -> Bool {
+        switch self {
+        case .dolbyVision:
+            return file.displayTags.contains("DV")
+        case .hdr:
+            return file.displayTags.contains { $0 == "DV" || $0.hasPrefix("HDR") }
+        case .atmos:
+            return file.displayTags.contains("Atmos")
+        case .highFrameRate:
+            return (file.parsedFrameRate ?? 0) >= 50
         }
     }
 }
@@ -90,6 +264,223 @@ struct CinemaMatch: Hashable {
     var voteCount: Int?
     /// 类型标签（剧情 / 科幻 / 悬疑……），用于影院顶栏的筛选。
     var genres: [String] = []
+    /// 这条结果来自哪个数据源；详情（合集 / 演职员 / 预告）只有 TMDB 能补。
+    var provider: CinemaProvider? = nil
+
+    /// 候选唯一键：不同数据源的数字 ID 可能撞号，比较与去重都带上来源。
+    var sourceKey: String { "\(provider?.rawValue ?? "?")-\(id)" }
+}
+
+/// 演职员一条：只存展示需要的名字、角色、头像与 TMDB 人物 ID（人物页要按 ID 拉作品）。
+struct CinemaCastMember: Codable, Hashable, Identifiable {
+    var name: String
+    var character: String?
+    var profileURL: String?
+    var tmdbID: Int? = nil
+
+    var id: String { name + "|" + (character ?? "") }
+}
+
+/// 人物页「全部作品」里的一条：来自 TMDB combined_credits，不落库。
+struct CinemaPersonCredit: Hashable, Identifiable {
+    var tmdbID: Int
+    var isTV: Bool
+    var title: String
+    var year: Int?
+    var posterURL: String?
+    var character: String?
+    var job: String?
+
+    var id: String { "\(isTV ? "tv" : "movie")-\(tmdbID)" }
+}
+
+/// 人物页数据：简介、出生信息与全部作品。
+struct CinemaPersonProfile: Hashable {
+    var name: String
+    var biography: String?
+    var birthday: String?
+    var placeOfBirth: String?
+    var profileURL: String?
+    var department: String?
+    var credits: [CinemaPersonCredit] = []
+}
+
+/// 合集详情：TMDB 合集简介 + 全集列表（用于算出「下一部未入库」）。
+struct CinemaCollectionPart: Hashable {
+    var tmdbID: Int
+    var title: String
+    var year: Int?
+}
+
+struct CinemaCollectionInfo: Hashable {
+    var id: Int
+    var name: String
+    var overview: String?
+    var parts: [CinemaCollectionPart] = []
+}
+
+/// 交给大模型做季集映射的单个文件（index 从 1 开始，和界面里的序号一致）。
+struct CinemaAIMatchFile: Codable, Hashable {
+    var index: Int
+    var filename: String
+    var detectedEpisode: Int?
+    var durationSeconds: Double?
+    var sizeBytes: Int64?
+}
+
+/// 智能季集映射的输入：剧名、季、文件列表和用户补充要求。
+struct CinemaAIMatchRequest: Codable, Hashable {
+    var title: String
+    var year: Int?
+    var season: Int
+    var files: [CinemaAIMatchFile]
+    var note: String?
+}
+
+/// 智能季集映射的计划：index → 集号；mode / offset 是模型可选调用的工具结果。
+struct CinemaAIMatchPlan: Hashable {
+    var assignments: [Int: Int]
+    var mode: String?
+    var offset: Int?
+    var note: String?
+}
+
+/// 影院通知：任务结果归档，按今天 / 本周分组，仅保留最近 30 天。
+enum CinemaNotificationKind: String, Codable, Hashable {
+    case success
+    case failure
+    case progress
+    case info
+}
+
+struct CinemaNotification: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var kind: CinemaNotificationKind = .info
+    var title: String
+    var detail: String = ""
+    var date: Date = Date()
+    var read = false
+    /// 行内动作标题（处理 / 重试 / 重连）；nil 表示只读通知。
+    var action: String? = nil
+    var scopeKey: String? = nil
+}
+
+/// 右上角 Toast：成功 4 秒消失，失败与进度常驻，最多同时 3 条。
+enum CinemaToastKind: Hashable {
+    case success
+    case failure
+    case progress
+    case info
+}
+
+struct CinemaToast: Identifiable {
+    let id = UUID()
+    var kind: CinemaToastKind
+    var title: String
+    var detail: String?
+    var actionTitle: String?
+    var action: (() -> Void)?
+}
+
+/// TMDB 单集信息：剧集详情里每集的标题、简介与剧照（按 tmdbID + 季缓存进图库设置库）。
+struct CinemaEpisodeInfo: Codable, Hashable {
+    var title: String
+    var overview: String?
+    var stillURL: String?
+}
+
+/// 相簿 / 网格多选右键「手动匹配」的目标：一次可以匹配多个视频（各自按文件名解析季集）。
+struct CinemaQuickMatchRequest: Identifiable {
+    let id = UUID()
+    var photos: [PhotoItem]
+}
+
+/// TMDB 详情补全结果：合集、演职员、预告片与分级。
+struct CinemaDetails: Hashable {
+    var collectionID: Int?
+    var collectionName: String?
+    var cast: [CinemaCastMember] = []
+    var directors: [String] = []
+    var certification: String?
+    var trailerKey: String?
+    // 简介之外的基础资料：详情页「完整信息」用。
+    var tagline: String?
+    /// 电影片长 / 剧集单集时长（分钟）。
+    var runtime: Int?
+    /// 剧集播出状态：Returning Series / Ended 等。
+    var status: String?
+    var releaseDate: String?
+    var originalLanguage: String?
+    var countries: [String] = []
+    var companies: [String] = []
+    /// 剧集播出平台（Networks）。
+    var networks: [String] = []
+    var seasonCount: Int?
+    var episodeCount: Int?
+    var voteCount: Int?
+    var budget: Int64?
+    var revenue: Int64?
+}
+
+/// 家长控制档位：按分级字符串换算，未识别分级的条目默认放行。
+enum CinemaParentalLevel: Int, CaseIterable, Identifiable {
+    case off = 0
+    case child = 1
+    case teen = 3
+    case adult = 4
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "关闭"
+        case .child: return "儿童（G）"
+        case .teen: return "青少年（PG-13）"
+        case .adult: return "成人（R）"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .off: return "不做任何限制。"
+        case .child: return "只显示 G / TV-Y / TV-G 级内容。"
+        case .teen: return "允许到 PG / PG-13 / TV-14。"
+        case .adult: return "允许到 R / NC-17 / TV-MA，即全部分级。"
+        }
+    }
+
+    /// 分级字符串 → 1（G）… 4（R）；无法识别返回 nil。
+    static func level(of certification: String?) -> Int? {
+        guard let raw = certification?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+              !raw.isEmpty else { return nil }
+        switch raw {
+        case "G", "TV-Y", "TV-Y7", "TV-G": return 1
+        case "PG", "TV-PG": return 2
+        case "PG-13", "TV-14": return 3
+        case "R", "NC-17", "TV-MA", "18", "18+": return 4
+        default: return nil
+        }
+    }
+
+    func allows(certification: String?) -> Bool {
+        guard self != .off else { return true }
+        guard let level = Self.level(of: certification) else { return true }
+        return level <= rawValue
+    }
+}
+
+/// 刮削 / 维护任务记录：任务中心据此展示结果并支持失败重试。
+struct CinemaTaskRecord: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    /// 作用域键：local 或网盘 UUID 字符串。
+    var scopeKey: String
+    var scopeName: String
+    var startedAt: Date = Date()
+    var finishedAt: Date?
+    var total: Int = 0
+    var matched: Int = 0
+    var succeeded: Bool = true
+    var message: String = ""
 }
 
 /// 从文件名 + 所在文件夹解析出的基础信息。
@@ -109,10 +500,21 @@ struct CinemaParsedName: Equatable {
     var resolution: String?
 }
 
+/// 剧集级跳过设置：片头 / 片尾各多少秒（0 表示不跳过）。
+/// 按剧（`CinemaSeries.id`）保存，播放时自动应用，对应芝杜的「跳过片头尾」。
+struct CinemaIntroMark: Codable, Hashable {
+    var introSeconds: Int = 0
+    var outroSeconds: Int = 0
+
+    var isEnabled: Bool { introSeconds > 0 || outroSeconds > 0 }
+}
+
 /// 参与刮削的一条候选：文件本身 + 所在目录链（用于补全剧名 / 季 / 年份）。
 struct CinemaCandidate {
     var photo: PhotoItem
     var folderHint: String?
+    /// 所在目录的真实路径（网盘是目录 ID）：文件夹视图靠它还原可钻取的目录树。
+    var folderPath: String?
 }
 
 /// 供影院库渲染与播放的轻量视频快照（不依赖网盘目录是否已加载）。
@@ -150,6 +552,74 @@ struct CinemaFile: Codable, Hashable {
     }
 
     var isCloud: Bool { cloudMountID != nil }
+
+    /// 文件名 / 分辨率里的画质与音质标记。按辨识度排序，用于角标、筛选与详情。
+    /// 有就全列出来：4K / DV / HDR10+ / 10bit / Atmos / DTS-HD / 60fps。
+    var displayTags: [String] {
+        let text = filename.lowercased()
+        var tags: [String] = []
+
+        // 画质分辨率
+        if pixelWidth >= 3000 {
+            tags.append("4K")
+        } else if pixelWidth >= 1800 {
+            tags.append("2K")
+        } else if pixelWidth >= 1200 {
+            tags.append("1080P")
+        }
+
+        // 动态范围
+        if text.range(of: #"(?i)(^|[^a-z0-9])(dv|dovi|dolby[ .]?vision)([^a-z0-9]|$)"#,
+                      options: .regularExpression) != nil,
+           text.range(of: #"dvd"#, options: .regularExpression) == nil {
+            tags.append("DV")
+        }
+        if text.range(of: #"(?i)hdr10\+|hdr10plus"#, options: .regularExpression) != nil {
+            tags.append("HDR10+")
+        } else if text.range(of: #"(?i)(^|[^a-z0-9])hdr10([^a-z0-9]|$)"#,
+                             options: .regularExpression) != nil {
+            tags.append("HDR10")
+        } else if text.range(of: #"(?i)(^|[^a-z0-9])(hdr|hlg)([^a-z0-9]|$)"#,
+                             options: .regularExpression) != nil {
+            tags.append("HDR")
+        }
+        if text.range(of: #"(?i)(^|[^a-z0-9])10[ .]?bit([^a-z0-9]|$)"#,
+                      options: .regularExpression) != nil {
+            tags.append("10bit")
+        }
+
+        // 音质
+        if text.range(of: #"(?i)(^|[^a-z0-9])atmos([^a-z0-9]|$)"#,
+                      options: .regularExpression) != nil {
+            tags.append("Atmos")
+        }
+        if text.range(of: #"(?i)dts[ .:-]?x([^a-z0-9]|$)"#, options: .regularExpression) != nil {
+            tags.append("DTS:X")
+        } else if text.range(of: #"(?i)dts[ .:-]?hd"#, options: .regularExpression) != nil {
+            tags.append("DTS-HD")
+        } else if text.range(of: #"(?i)(^|[^a-z0-9])dts([^a-z0-9]|$)"#,
+                             options: .regularExpression) != nil {
+            tags.append("DTS")
+        }
+        if text.range(of: #"(?i)true[ .]?hd"#, options: .regularExpression) != nil {
+            tags.append("TrueHD")
+        }
+
+        // 高帧率才值得占一个角标
+        if let fps = parsedFrameRate, fps >= 48 {
+            tags.append("\(fps)fps")
+        }
+        return tags
+    }
+
+    /// 文件名里的帧率标记（`60fps` / `120 fps`）；没有则为 nil。
+    var parsedFrameRate: Int? {
+        guard let range = filename.range(of: #"(?i)\d{2,3}\s?fps"#,
+                                         options: .regularExpression) else { return nil }
+        let digits = filename[range].prefix { $0.isNumber }
+        guard let value = Int(digits), value >= 23, value <= 240 else { return nil }
+        return value
+    }
 
     /// 还原成播放器认识的 PhotoItem；本地文件按文件名回到图库中查找。
     var photoItem: PhotoItem {
@@ -195,6 +665,29 @@ struct CinemaEntry: Codable, Identifiable, Hashable {
     var folderHint: String?
     /// 类型标签（剧情 / 科幻 / 悬疑……）。旧版本刮削结果没有这一项，重新刮削即可补齐。
     var genres: [String]? = nil
+    /// 详情补全：所属合集、演职员、导演、分级与预告片。
+    var collectionID: Int? = nil
+    var collectionName: String? = nil
+    var cast: [CinemaCastMember]? = nil
+    var directors: [String]? = nil
+    var certification: String? = nil
+    var trailerKey: String? = nil
+    /// 详情补全的基础资料：宣传语、片长、状态、上映日期、语言 / 国家 / 公司 / 平台等。
+    var tagline: String? = nil
+    var runtime: Int? = nil
+    var releaseDate: String? = nil
+    var originalLanguage: String? = nil
+    var countries: [String]? = nil
+    var companies: [String]? = nil
+    var networks: [String]? = nil
+    var seasonCount: Int? = nil
+    var episodeTotal: Int? = nil
+    var voteCount: Int? = nil
+    var budget: Int64? = nil
+    var revenue: Int64? = nil
+    var status: String? = nil
+    /// 这条结果来自哪个数据源；只有 TMDB 能补详情。
+    var provider: CinemaProvider? = nil
 
     var id: UUID { file.photoID }
 
@@ -217,6 +710,51 @@ struct CinemaEntry: Codable, Identifiable, Hashable {
     var artworkURL: String? { posterURL ?? backdropURL }
     /// 网格单元格是横向的，优先用 backdrop，避免竖版海报被裁得只剩一条。
     var gridArtworkURL: String? { backdropURL ?? posterURL }
+}
+
+/// 影院本地续播记录：只保存播放位置与展示快照，不依赖刮削索引是否仍然存在。
+struct CinemaProgressRecord: Codable, Hashable, Identifiable {
+    var photoID: UUID
+    var mountID: UUID?
+    var title: String
+    var subtitle: String?
+    var artworkURL: String?
+    var position: Double
+    var duration: Double
+    var updatedAt: Date
+
+    var id: UUID { photoID }
+
+    var fraction: Double {
+        guard duration > 0 else { return 0 }
+        return min(1, max(0, position / duration))
+    }
+
+    /// 接近结尾就视为看完，不再出现在「继续观看」里，但仍保留在观看记录中。
+    var isFinished: Bool { duration > 0 && fraction >= 0.95 }
+
+    var remainingSeconds: Double { max(0, duration - position) }
+}
+
+/// 影院本地用户状态：收藏 / 想看 / 个人评分。按视频 photoID 存。
+struct CinemaUserState: Codable, Hashable {
+    var photoID: UUID
+    var favorite: Bool = false
+    var watchlist: Bool = false
+    /// 0–5；nil 表示未评分。
+    var rating: Int?
+    var updatedAt: Date = Date()
+}
+
+/// 自定义清单：手动选片，只存 photoID 引用，不复制元数据。
+struct CinemaListRecord: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var name: String
+    var icon: String = "list.bullet"
+    var itemIDs: [UUID] = []
+    var createdAt: Date = Date()
+
+    var count: Int { itemIDs.count }
 }
 
 /// 同一部剧的多集聚合成一张卡片：影院里按「剧」浏览，而不是一集一张。
@@ -243,6 +781,11 @@ struct CinemaSeries: Identifiable, Hashable {
 
     var artworkURL: String? { posterURL ?? backdropURL }
     var gridArtworkURL: String? { backdropURL ?? posterURL }
+
+    /// 类型标签取自分集（同一部剧各集一致），旧刮削结果可能为空。
+    var genres: [String] {
+        episodes.lazy.compactMap { $0.genres }.first(where: { !$0.isEmpty }) ?? []
+    }
 
     var subtitle: String {
         var parts: [String] = []

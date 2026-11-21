@@ -57,10 +57,14 @@ struct AIAssistantView: View {
         Capability(id: "video", icon: "video",
                    title: "视频",
                    subtitle: "找视频 · 收藏 · 归组",
-                   examples: ["有哪些视频", "把视频放进「旅行」"])
+                   examples: ["有哪些视频", "把视频放进「旅行」"]),
+        Capability(id: "catalog", icon: "play.rectangle.on.rectangle",
+                   title: "网络资源",
+                   subtitle: "跨源搜索 · 播放 · 稍后看",
+                   examples: ["搜一下并播放第一条", "把今天新片加入稍后看"])
     ]
 
-    private let quickExamples = ["压缩选中照片", "自动美化这组", "找去年在上海的照片", "按主题整理相簿", "有哪些视频"]
+    private let quickExamples = ["压缩选中照片", "自动美化这组", "找去年在上海的照片", "按主题整理相簿", "网络资源搜一下今天的更新"]
 
     var body: some View {
         ZStack {
@@ -131,7 +135,7 @@ struct AIAssistantView: View {
                         .font(.system(size: 15, weight: .semibold))
                     badge(store.aiConfig.provider.title)
                     badge("\(AILibraryTools.count) 项能力", accent: true)
-                        .help("共 \(AILibraryTools.count) 项本地工具：检索、浏览、相簿、文件夹、图片与视频、压缩；修改前会弹窗确认")
+                        .help("共 \(AILibraryTools.count) 项本地工具：照片检索与整理、影院刮削、网络资源搜索与播放；修改前会弹窗确认")
                     if store.aiConfig.includeImages {
                         badge("图片理解", icon: "photo")
                     }
@@ -240,7 +244,7 @@ struct AIAssistantView: View {
                         LinearGradient(colors: [.primary, Color.accentColor],
                                        startPoint: .leading, endPoint: .trailing)
                     )
-                Text("检索、整理相簿与文件夹、收藏与关键词、压缩与美化图片，都能直接执行；修改前会弹窗确认。")
+                Text("检索、整理相簿与文件夹、收藏与关键词、压缩与美化图片，以及跨源搜索和播放网络资源，都能直接执行；修改前会弹窗确认。")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -146,6 +146,14 @@ struct AudioTrackInfo: Identifiable, Equatable {
     }
 }
 
+/// 一个视频章节：来自 ffprobe 的 `chapters`，用于播放器章节菜单与快捷键。
+struct VideoChapter: Identifiable, Equatable {
+    let start: Double
+    let end: Double
+    let title: String
+    var id: Double { start }
+}
+
 struct VideoProbe {
     var isPlayable = false
     var hasVideoTrack = false
@@ -156,6 +164,18 @@ struct VideoProbe {
     var isHEVC = false
     /// HDR（PQ / HLG）：转码时按需做色调映射，避免 SDR 屏幕发灰。
     var isHDR = false
+    /// 杜比视界：ffprobe 的 codec_tag_string（dvh1 / dvhe）或 DOVI side data。
+    var isDolbyVision = false
+    /// 展示用 HDR 标记：Dolby Vision / HDR10+ / HDR10 / HLG。
+    var hdrLabel: String?
+    /// 整体码率（bps），来自 format.bit_rate。
+    var bitrate: Int = 0
+    /// 帧率（fps），来自 avg_frame_rate / r_frame_rate 或 AVAssetTrack。
+    var frameRate: Double = 0
+    /// 容器名（format_name，例如 matroska,webm）。
+    var containerName: String?
+    /// 章节列表；没有章节时为空。
+    var chapters: [VideoChapter] = []
     /// 音轨数量：HLS 转封装一次只映射一条，用来决定是否显示音轨切换。
     var audioTrackCount = 0
     /// 音轨明细（ffprobe 能拿到语言 / 声道 / 编码）。
@@ -199,10 +219,31 @@ enum VideoSupport {
             if probe.codec == nil { probe.codec = fallback.codec }
             if !probe.isHEVC { probe.isHEVC = fallback.isHEVC }
             if !probe.isHDR { probe.isHDR = fallback.isHDR }
+            if !probe.isDolbyVision { probe.isDolbyVision = fallback.isDolbyVision }
+            if probe.hdrLabel == nil { probe.hdrLabel = fallback.hdrLabel }
+            if probe.bitrate == 0 { probe.bitrate = fallback.bitrate }
+            if probe.frameRate <= 0 { probe.frameRate = fallback.frameRate }
+            if probe.containerName == nil { probe.containerName = fallback.containerName }
+            if probe.chapters.isEmpty { probe.chapters = fallback.chapters }
             if probe.audioTrackCount == 0 { probe.audioTrackCount = fallback.audioTrackCount }
             if probe.audioTracks.isEmpty { probe.audioTracks = fallback.audioTracks }
         }
         return probe
+    }
+
+    /// 播放信息叠加与章节用：总是跑一次 ffprobe，拿码率 / 帧率 / HDR / 章节等完整字段。
+    /// 调用方在后台任务里 await，不阻塞起播；ffprobe 失败时退回 AVFoundation 探测。
+    static func technicalProbe(url: URL, options: [String: Any] = [:]) async -> VideoProbe {
+        let headers = options[CloudPlayback.headerFieldsKey] as? [String: String] ?? [:]
+        let probed = await Task.detached(priority: .utility) {
+            headers.isEmpty
+                ? ffprobeMetadata(url: url, timeout: 20)
+                : ffprobeMetadata(url: url, headers: headers, timeout: 20)
+        }.value
+        if probed.hasVideoTrack || probed.duration > 0 {
+            return probed
+        }
+        return await probe(asset: AVURLAsset(url: url, options: options))
     }
 
     /// 任意 AVAsset（例如 PhotoKit 返回的云端素材，没有本地 URL）的轨道探测。
@@ -222,6 +263,7 @@ enum VideoSupport {
             let transform = (try? await track.load(.preferredTransform)) ?? .identity
             let oriented = natural.applying(transform)
             probe.size = CGSize(width: abs(oriented.width), height: abs(oriented.height))
+            probe.frameRate = Double(track.nominalFrameRate)
             if let formats = try? await track.load(.formatDescriptions), let first = formats.first {
                 probe.codec = codecDisplayName(CMFormatDescriptionGetMediaSubType(first))
                 probe.isHEVC = probe.codec == "HEVC"
@@ -288,7 +330,7 @@ enum VideoSupport {
         let process = Process()
         process.executableURL = ffprobe
         process.arguments = ["-v", "error", "-print_format", "json",
-                             "-show_format", "-show_streams"] + inputArguments
+                             "-show_format", "-show_streams", "-show_chapters"] + inputArguments
         let pipe = Pipe()
         process.standardOutput = pipe
         // stderr 直接丢弃：用 Pipe 却不读，ffprobe 报错一多就会写满管道而永久阻塞。
@@ -354,6 +396,44 @@ enum VideoSupport {
         probe.isHDR = primaries == "bt2020"
             || transfer == "smpte2084"
             || transfer == "arib-std-b67"
+
+        // 杜比视界：codec_tag_string（dvh1 / dvhe）或 DOVI side data。
+        let sideData = video["side_data_list"] as? [[String: Any]] ?? []
+        let sideTypes = sideData.compactMap { $0["side_data_type"] as? String }
+            .joined(separator: " ").lowercased()
+        let codecTag = (video["codec_tag_string"] as? String)?.lowercased() ?? ""
+        probe.isDolbyVision = codecTag.hasPrefix("dvh") || codecTag == "dovi"
+            || sideTypes.contains("dovi") || sideTypes.contains("dolby vision")
+            || sideData.contains(where: { $0["dv_profile"] != nil })
+        if probe.isDolbyVision {
+            probe.hdrLabel = "Dolby Vision"
+        } else if sideTypes.contains("smpte2094-40") || sideTypes.contains("hdr10+") {
+            probe.hdrLabel = "HDR10+"
+        } else if transfer == "smpte2084" {
+            probe.hdrLabel = "HDR10"
+        } else if transfer == "arib-std-b67" {
+            probe.hdrLabel = "HLG"
+        } else if primaries == "bt2020" {
+            probe.hdrLabel = "HDR"
+        }
+
+        let averageRate = parseFrameRate(video["avg_frame_rate"])
+        probe.frameRate = averageRate > 0 ? averageRate : parseFrameRate(video["r_frame_rate"])
+        if probe.bitrate == 0,
+           let text = format?["bit_rate"] as? String,
+           let value = Int(text) {
+            probe.bitrate = value
+        }
+        probe.containerName = format?["format_name"] as? String
+        probe.chapters = (json["chapters"] as? [[String: Any]] ?? []).enumerated().compactMap { index, item in
+            guard let start = Double((item["start_time"] as? String) ?? "") else { return nil }
+            let end = Double((item["end_time"] as? String) ?? "") ?? start
+            let title = ((item["tags"] as? [String: Any])?["title"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return VideoChapter(start: start,
+                                end: end,
+                                title: (title?.isEmpty == false ? title! : "章节 \(index + 1)"))
+        }
         let audioStreams = streams.filter { ($0["codec_type"] as? String) == "audio" }
         probe.audioTracks = audioStreams.enumerated().map { offset, stream in
             let tags = stream["tags"] as? [String: Any]
@@ -366,6 +446,19 @@ enum VideoSupport {
         }
         probe.audioTrackCount = probe.audioTracks.count
         return probe
+    }
+
+    /// ffprobe 的帧率是 `30000/1001` 这样的分数，也兼容直接的浮点数。
+    private static func parseFrameRate(_ raw: Any?) -> Double {
+        guard let text = raw as? String, !text.isEmpty else { return 0 }
+        let parts = text.split(separator: "/")
+        if parts.count == 2,
+           let numerator = Double(parts[0]),
+           let denominator = Double(parts[1]),
+           denominator > 0 {
+            return numerator / denominator
+        }
+        return Double(text) ?? 0
     }
 
     /// 生成视频缩略图：先走 AVFoundation，失败则用 ffmpeg 抽帧。
@@ -478,12 +571,25 @@ enum VideoSupport {
                             toneMapHDR: toneMapHDR)
     }
 
+    /// HDR → SDR 色调映射的滤镜链（不含 `-vf`，方便和字幕烧录合并成同一条）。
+    static let hdrToneMapChain = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+        + "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+
     /// HDR → SDR 色调映射参数；内置 ffmpeg 不带 zscale 时返回空，退化为普通转码。
     static func hdrToneMapArguments(toneMapHDR: Bool) -> [String] {
         guard toneMapHDR, supportsToneMapping else { return [] }
-        return ["-vf", "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
-                + "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p",
+        return ["-vf", hdrToneMapChain,
                 "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+    }
+
+    /// ffmpeg 的 subtitles 烧录滤镜；路径里的反斜杠、冒号与单引号必须转义。
+    /// 文本字幕（srt / ass / vtt / ssa）由 libass 渲染；PGS / SUP 取决于内置 ffmpeg 的解码能力。
+    static func subtitleBurnFilter(_ url: URL) -> String {
+        let escaped = url.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ":", with: "\\:")
+            .replacingOccurrences(of: "'", with: "\\'")
+        return "subtitles=filename='\(escaped)'"
     }
 
     /// 是否有可用的 zscale + tonemap（内置静态包已带 libzimg，缺失时回退系统 ffmpeg）。

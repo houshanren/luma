@@ -25,15 +25,27 @@ final class RemoteRangeSource {
     private let maxResponseBytes: Int64 = 16 * 1024 * 1024
     /// 只保留最近若干块，避免把整部影片（几十 GB）落在磁盘上。
     private let retainedChunks: Int64 = 8
+    /// 并行预取窗口：千兆网下单条连接往往吃不满，多开几路才能把带宽打满。
+    private let prefetchWindow = 6
+    /// 同时在途的分块下载上限。
+    private let maxParallelChunks = 6
 
-    private let downloadQueue = DispatchQueue(label: "luma.remote.range.download")
+    private let downloadQueue = DispatchQueue(label: "luma.remote.range.download",
+                                              qos: .userInitiated,
+                                              attributes: .concurrent)
     private let resolveLock = NSLock()
     private let stateLock = NSLock()
     private var listenFD: Int32 = -1
     private var session: URLSession?
+    /// 共享的 Range 下载会话：连接复用 + 多路并发，避免每块都新建 URLSession。
+    private var rangeSession: RangeFetchSession?
     private var resolvedMode: UpstreamMode?
     private var cachedContentType: String?
     private var completedChunks = Set<Int64>()
+    private var downloadingChunks = Set<Int64>()
+    private var chunkWaiters: [Int64: DispatchSemaphore] = [:]
+    /// 最近读到过的分块：缓存按它保留，预取不会把正在读的块淘汰掉。
+    private var servedChunk: Int64 = 0
     private var failure: String?
     private var closed = false
 
@@ -57,12 +69,14 @@ final class RemoteRangeSource {
     /// 绑定 127.0.0.1 的随机端口，返回可直接交给 ffmpeg 的地址。
     func start() throws -> URL {
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        let delegate = SessionBehaviour(headers: headers, trustSelfSigned: trustSelfSigned)
+        let delegate = RangeFetchSession(headers: headers, trustSelfSigned: trustSelfSigned)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 3600
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.httpMaximumConnectionsPerHost = 2
+        // 预取要多路并发：每路一条连接，实测单连接吃不完整条千兆带宽。
+        configuration.httpMaximumConnectionsPerHost = maxParallelChunks
+        rangeSession = delegate
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
 
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -110,13 +124,18 @@ final class RemoteRangeSource {
         closed = true
         let fd = listenFD
         listenFD = -1
+        // 唤醒所有等块的线程，让它们尽快退出。
+        let waiters = Array(chunkWaiters.values)
+        chunkWaiters.removeAll()
         stateLock.unlock()
         if fd >= 0 {
             shutdown(fd, SHUT_RDWR)
             close(fd)
         }
+        for waiter in waiters { waiter.signal() }
         session?.invalidateAndCancel()
         session = nil
+        rangeSession = nil
         try? FileManager.default.removeItem(at: cacheDirectory)
     }
 
@@ -390,9 +409,10 @@ final class RemoteRangeSource {
     }
 
     /// 取一段字节。上游对 Range 请求返回 200 时立即取消，避免整文件下载。
+    /// 走共享会话：连接可以复用，多路分块能真正并发跑满带宽。
     private func fetch(range: ClosedRange<Int64>, timeout: TimeInterval,
                        allowRefresh: Bool = true) -> (Data, HTTPURLResponse)? {
-        guard let session else { return nil }
+        guard let session, let rangeSession else { return nil }
         let (url, headerFields) = credentials()
         var request = URLRequest(url: url)
         for (key, value) in headerFields {
@@ -400,33 +420,27 @@ final class RemoteRangeSource {
         }
         request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)",
                          forHTTPHeaderField: "Range")
-        let delegate = ChunkDataDelegate(headers: headerFields, trustSelfSigned: trustSelfSigned)
-        let fetchSession = URLSession(configuration: session.configuration,
-                                      delegate: delegate, delegateQueue: nil)
-        let task = fetchSession.dataTask(with: request)
-        task.resume()
-        let finished = delegate.semaphore.wait(timeout: .now() + timeout) != .timedOut
-        if !finished { task.cancel() }
-        fetchSession.finishTasksAndInvalidate()
-        guard finished, delegate.failure == nil,
-              let response = delegate.response,
-              response.statusCode == 206,
-              !delegate.payload.isEmpty else {
-            let status = delegate.response?.statusCode
-            if allowRefresh, let status, status == 401 || status == 403, refreshCredentials() {
-                Diagnostics.record("网盘地址已过期（HTTP \(status)），重新解析后重试分块")
-                return fetch(range: range, timeout: timeout, allowRefresh: false)
-            }
-            if let message = delegate.failure {
-                record(message)
-            } else if finished {
-                record("网盘未按 Range 返回数据")
-            } else {
-                record("读取网盘数据超时")
-            }
-            return nil
+        let outcome = rangeSession.fetch(request,
+                                         expectedLength: range.upperBound - range.lowerBound + 1,
+                                         session: session,
+                                         timeout: timeout)
+        if let response = outcome.response, response.statusCode == 206,
+           outcome.failure == nil, !outcome.data.isEmpty {
+            return (outcome.data, response)
         }
-        return (delegate.payload, response)
+        let status = outcome.response?.statusCode
+        if allowRefresh, let status, status == 401 || status == 403, refreshCredentials() {
+            Diagnostics.record("网盘地址已过期（HTTP \(status)），重新解析后重试分块")
+            return fetch(range: range, timeout: timeout, allowRefresh: false)
+        }
+        if let message = outcome.failure {
+            record(message)
+        } else if outcome.response != nil {
+            record("网盘未按 Range 返回数据")
+        } else {
+            record("读取网盘数据超时")
+        }
+        return nil
     }
 
     /// 返回请求起点与可选终点；终点为 nil 表示开放式请求（bytes=X-）。
@@ -444,51 +458,117 @@ final class RemoteRangeSource {
         cacheDirectory.appendingPathComponent("\(index).chunk")
     }
 
-    private func ensureChunk(_ index: Int64, total: Int64) -> Bool {
-        downloadQueue.sync { downloadChunk(index, total: total) }
+    private func markServed(_ index: Int64) {
+        stateLock.lock()
+        if index > servedChunk { servedChunk = index }
+        stateLock.unlock()
     }
 
-    /// 必须在 downloadQueue 上调用。
+    /// 确保这一块可用：已完成直接返回；别人在下载就等它；没人下就自己同步下。
+    private func ensureChunk(_ index: Int64, total: Int64) -> Bool {
+        var attempt = 0
+        while attempt < 3 {
+            attempt += 1
+            stateLock.lock()
+            if closed {
+                stateLock.unlock()
+                return false
+            }
+            if completedChunks.contains(index) {
+                stateLock.unlock()
+                return true
+            }
+            if FileManager.default.fileExists(atPath: chunkFile(index).path) {
+                completedChunks.insert(index)
+                stateLock.unlock()
+                return true
+            }
+            if let semaphore = chunkWaiters[index] {
+                stateLock.unlock()
+                _ = semaphore.wait(timeout: .now() + 180)
+                stateLock.lock()
+                let ready = completedChunks.contains(index)
+                stateLock.unlock()
+                if ready { return true }
+                continue   // 那次下载失败：自己认领重试
+            }
+            downloadingChunks.insert(index)
+            chunkWaiters[index] = DispatchSemaphore(value: 0)
+            stateLock.unlock()
+            return downloadChunk(index, total: total)
+        }
+        return false
+    }
+
+    /// 下载一块并落盘，完成后唤醒等这一块的调用方。
     private func downloadChunk(_ index: Int64, total: Int64) -> Bool {
         stateLock.lock()
-        let already = completedChunks.contains(index)
         let isClosed = closed
+        let ready = completedChunks.contains(index)
         stateLock.unlock()
-        if isClosed { return false }
-        if already { return true }
-        if FileManager.default.fileExists(atPath: chunkFile(index).path) {
-            stateLock.lock()
-            completedChunks.insert(index)
-            stateLock.unlock()
+        if isClosed {
+            finishChunk(index, success: false)
+            return false
+        }
+        if ready {
+            finishChunk(index, success: true)
             return true
         }
+        var success = false
         let start = index * chunkSize
         let end = min(start + chunkSize - 1, total - 1)
-        guard let (data, _) = fetch(range: start...end, timeout: 120), !data.isEmpty else {
-            return false
+        if let (data, _) = fetch(range: start...end, timeout: 120), !data.isEmpty {
+            do {
+                try data.write(to: chunkFile(index), options: .atomic)
+                success = true
+            } catch {
+                record("写入分块缓存失败：\(error.localizedDescription)")
+            }
         }
-        do {
-            try data.write(to: chunkFile(index), options: .atomic)
-        } catch {
-            record("写入分块缓存失败：\(error.localizedDescription)")
-            return false
-        }
+        finishChunk(index, success: success)
         stateLock.lock()
-        completedChunks.insert(index)
-        let stale = completedChunks.filter { $0 < index - retainedChunks }
+        let isClosedNow = closed
+        stateLock.unlock()
+        return success && !isClosedNow
+    }
+
+    /// 收尾：登记完成、唤醒等待者，并按读取位置淘汰旧块。
+    private func finishChunk(_ index: Int64, success: Bool) {
+        stateLock.lock()
+        if success { completedChunks.insert(index) }
+        downloadingChunks.remove(index)
+        let waiter = chunkWaiters.removeValue(forKey: index)
+        let stale = completedChunks.filter { $0 < servedChunk - retainedChunks }
         for old in stale {
             completedChunks.remove(old)
             try? FileManager.default.removeItem(at: chunkFile(old))
         }
         stateLock.unlock()
-        return !closed
+        waiter?.signal()
     }
 
-    /// 预取下一块：顺序播放时不必等请求到达才开始下载。
-    private func prefetch(_ index: Int64, total: Int64) {
-        guard index * chunkSize < total else { return }
-        downloadQueue.async { [weak self] in
-            _ = self?.downloadChunk(index, total: total)
+    /// 并行预取：一次把后面几块同时排进下载，多路连接一起抢带宽。
+    private func prefetch(from index: Int64, total: Int64) {
+        var starts: [Int64] = []
+        stateLock.lock()
+        if !closed {
+            var offset = 0
+            while offset < prefetchWindow {
+                let idx = index + Int64(offset)
+                offset += 1
+                if idx * chunkSize >= total { break }
+                if completedChunks.contains(idx) || downloadingChunks.contains(idx) { continue }
+                if downloadingChunks.count >= maxParallelChunks { break }
+                downloadingChunks.insert(idx)
+                chunkWaiters[idx] = DispatchSemaphore(value: 0)
+                starts.append(idx)
+            }
+        }
+        stateLock.unlock()
+        for idx in starts {
+            downloadQueue.async { [weak self] in
+                _ = self?.downloadChunk(idx, total: total)
+            }
         }
     }
 
@@ -497,8 +577,12 @@ final class RemoteRangeSource {
                               total: Int64) -> Bool {
         let firstIndex = lower / chunkSize
         let lastIndex = upper / chunkSize
+        markServed(firstIndex)
+        // 先把预取窗口排满：几路连接同时下，边下边往客户端写。
+        prefetch(from: firstIndex, total: total)
         for index in firstIndex...lastIndex {
             guard ensureChunk(index, total: total) else { return false }
+            markServed(index)
             let chunkStart = index * chunkSize
             let from = max(lower, chunkStart) - chunkStart
             let to = min(upper, chunkStart + chunkSize - 1) - chunkStart
@@ -516,7 +600,7 @@ final class RemoteRangeSource {
                 return true
             }()
             guard wrote else { return false }
-            prefetch(index + 1, total: total)
+            prefetch(from: index + 1, total: total)
         }
         return true
     }
@@ -541,7 +625,8 @@ final class RemoteRangeSource {
                 output.append(data)
             }
         }
-        prefetch(lastIndex + 1, total: total)
+        markServed(lastIndex)
+        prefetch(from: lastIndex + 1, total: total)
         return output
     }
 
@@ -627,45 +712,135 @@ private final class ProbeDelegate: SessionBehaviour, URLSessionDataDelegate {
     }
 }
 
-/// 接收一段 Range 数据；上游返回 200（忽略 Range）时立即取消。
-private final class ChunkDataDelegate: SessionBehaviour, URLSessionDataDelegate {
-    let semaphore = DispatchSemaphore(value: 0)
-    private(set) var response: HTTPURLResponse?
-    private(set) var payload = Data()
-    private(set) var failure: String?
-    private var signalled = false
+/// 共享的 Range 下载会话：多路并发 + 连接复用。
+///
+/// 原来每块都新建一个 URLSession，一块一条新连接，握手和慢启动反复来一遍，
+/// 千兆网也只跑出单连接的速度；这里统一挂在一个会话上，任务按 id 路由，
+/// `httpMaximumConnectionsPerHost` 打开多路，预取才能真正并发。
+private final class RangeFetchSession: NSObject, URLSessionDataDelegate {
+    struct Outcome {
+        var data = Data()
+        var response: HTTPURLResponse?
+        var failure: String?
+    }
+
+    private final class TaskState {
+        let expectedLength: Int64
+        var data = Data()
+        var response: HTTPURLResponse?
+        var failure: String?
+        var signalled = false
+        let semaphore = DispatchSemaphore(value: 0)
+
+        init(expectedLength: Int64) {
+            self.expectedLength = expectedLength
+        }
+    }
+
+    private let headers: [String: String]
+    private let trustSelfSigned: Bool
+    private let lock = NSLock()
+    private var tasks: [Int: TaskState] = [:]
+
+    init(headers: [String: String], trustSelfSigned: Bool) {
+        self.headers = headers
+        self.trustSelfSigned = trustSelfSigned
+    }
+
+    func fetch(_ request: URLRequest, expectedLength: Int64, session: URLSession,
+               timeout: TimeInterval) -> Outcome {
+        let state = TaskState(expectedLength: expectedLength)
+        let task = session.dataTask(with: request)
+        lock.lock()
+        tasks[task.taskIdentifier] = state
+        lock.unlock()
+        task.resume()
+        let finished = state.semaphore.wait(timeout: .now() + timeout) != .timedOut
+        if !finished {
+            state.failure = "读取网盘数据超时"
+            task.cancel()
+        }
+        lock.lock()
+        tasks.removeValue(forKey: task.taskIdentifier)
+        lock.unlock()
+        return Outcome(data: state.data, response: state.response, failure: state.failure)
+    }
+
+    // MARK: 委托
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        var redirected = request
+        for (key, value) in headers {
+            redirected.setValue(value, forHTTPHeaderField: key)
+        }
+        completionHandler(redirected)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard trustSelfSigned,
+              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse else {
-            failure = "网盘没有返回有效响应"
+        guard let state = state(for: dataTask) else {
             completionHandler(.cancel)
-            signal()
             return
         }
-        self.response = http
-        guard http.statusCode == 206 else {
-            failure = "网盘未按 Range 返回数据（HTTP \(http.statusCode)）"
+        guard let http = response as? HTTPURLResponse else {
+            state.failure = "网盘没有返回有效响应"
             completionHandler(.cancel)
-            signal()
+            signal(state)
+            return
+        }
+        state.response = http
+        guard http.statusCode == 206 else {
+            state.failure = "网盘未按 Range 返回数据（HTTP \(http.statusCode)）"
+            completionHandler(.cancel)
+            signal(state)
             return
         }
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        payload.append(data)
+        guard let state = state(for: dataTask) else { return }
+        state.data.append(data)
+        // 上游忽略终点时及时取消，避免把整部电影拉进内存。
+        if Int64(state.data.count) > state.expectedLength {
+            dataTask.cancel()
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        signal()
+        guard let state = state(for: task) else { return }
+        if let error, state.failure == nil { state.failure = error.localizedDescription }
+        signal(state)
     }
 
-    private func signal() {
-        guard !signalled else { return }
-        signalled = true
-        semaphore.signal()
+    private func state(for task: URLSessionTask) -> TaskState? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tasks[task.taskIdentifier]
+    }
+
+    private func signal(_ state: TaskState) {
+        lock.lock()
+        let already = state.signalled
+        state.signalled = true
+        lock.unlock()
+        if !already { state.semaphore.signal() }
     }
 }
 

@@ -555,6 +555,10 @@ struct PhotoContextMenu: View {
             Button(flags.allFavorite ? "取消收藏" : "收藏") {
                 store.toggleFavorite(ids: actionIDs)
             }
+            if photo.isVideo {
+                Divider()
+                cinemaMenu
+            }
             Button("添加关键词…") {
                 selectTargets()
                 store.showKeywordManager = true
@@ -624,6 +628,10 @@ struct PhotoContextMenu: View {
             }
             Button(flags.allFavorite ? "取消收藏" : "收藏") {
                 store.toggleFavorite(ids: actionIDs)
+            }
+            if photo.isVideo {
+                Divider()
+                cinemaMenu
             }
             Menu("添加到相簿") {
                 // 与侧边栏一致：文件夹 → 子文件夹 → 相簿，名称按本地排序。
@@ -734,6 +742,50 @@ struct PhotoContextMenu: View {
             Divider()
             Button("删除", role: .destructive) {
                 store.confirmDelete(actionIDs)
+            }
+        }
+    }
+
+    /// 相簿 / 网格里的影院操作：手动匹配、刮削、收藏与加入清单。
+    @ViewBuilder
+    private var cinemaMenu: some View {
+        let targets = actionIDs.compactMap { store.anyPhoto(id: $0) }.filter { $0.isVideo }
+        if !targets.isEmpty {
+            let entries = targets.compactMap { store.cinemaEntry(for: $0) }
+            let allFavorite = targets.allSatisfy { store.cinemaUserState(for: $0.id).favorite }
+            Menu("影院") {
+                Button(targets.count == 1 ? "手动匹配…" : "手动匹配所选…（\(targets.count)）") {
+                    store.cinemaQuickMatch = CinemaQuickMatchRequest(photos: targets)
+                }
+                Button(entries.isEmpty ? "刮削所选（\(targets.count)）"
+                                       : "重新刮削所选（\(targets.count)）") {
+                    Task { await store.scrapeCinemaPhotos(targets) }
+                }
+                Divider()
+                Button(allFavorite ? "取消影院收藏" : "加入影院收藏") {
+                    store.setCinemaFavorite(!allFavorite, ids: Set(targets.map(\.id)))
+                }
+                if store.cinemaLists.isEmpty {
+                    Text("还没有影院清单")
+                } else {
+                    Menu("加入影院清单") {
+                        ForEach(store.cinemaLists) { list in
+                            Button(list.name) {
+                                for photo in targets {
+                                    store.addToCinemaList(list.id, entryID: photo.id)
+                                }
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button("在影院中查看") {
+                    if let mountID = photo.cloudMountID {
+                        store.navigate(to: .cloudCinema(mountID))
+                    } else {
+                        store.navigate(to: .cinema)
+                    }
+                }
             }
         }
     }

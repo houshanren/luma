@@ -17,6 +17,22 @@ extension LibraryStore {
         case "list_albums": return listAlbumsTool()
         case "list_folders": return listFoldersTool()
         case "list_videos": return listVideosTool(args)
+        case "list_catalog_sources": return listCatalogSourcesTool()
+        case "search_catalog": return await searchCatalogTool(args)
+        case "list_catalog_following": return listCatalogFollowingTool()
+        case "list_catalog_watchlist": return listCatalogWatchlistTool(args)
+        case "catalog_new_today": return catalogNewTodayTool(args)
+        case "browse_catalog": return browseCatalogTool(args)
+        case "play_catalog_item": return playCatalogItemTool(args)
+        case "set_catalog_watchlist": return setCatalogWatchlistTool(args)
+        case "follow_catalog_person": return followCatalogPersonTool(args)
+        case "list_cinema_items": return listCinemaItemsTool(args)
+        case "list_cinema_scopes": return listCinemaScopesTool()
+        case "cinema_tree": return cinemaTreeTool(args)
+        case "search_cinema_candidates": return await searchCinemaCandidatesTool(args)
+        case "apply_cinema_match": return applyCinemaMatchTool(args)
+        case "scrape_cinema": return scrapeCinemaTool(args)
+        case "match_cinema": return await matchCinemaTool(args)
         case "navigate": return navigateTool(args)
         case "select_photos": return selectPhotosTool(args)
         case "open_photo": return openPhotoTool(args)
@@ -45,10 +61,15 @@ extension LibraryStore {
     }
 
     /// 写操作执行前统一确认；一次模型回复里的多个写操作只弹一次。
+    /// 「一键智能整理」期间，只含影院写工具的一轮直接放行（入口即授权），其它写操作照常确认。
     func confirmAIToolActions(_ calls: [AIToolCall]) -> Bool {
         guard !calls.isEmpty else { return true }
+        if aiAutoMatchCinema {
+            let cinemaWrites: Set<String> = ["scrape_cinema", "match_cinema", "apply_cinema_match"]
+            if calls.allSatisfy({ cinemaWrites.contains($0.name) }) { return true }
+        }
         let alert = NSAlert()
-        alert.messageText = "智能助手准备修改当前图库"
+        alert.messageText = "智能助手准备修改本地数据"
         alert.informativeText = calls
             .prefix(8)
             .map { "• " + AILibraryTools.describe($0) }
@@ -162,6 +183,890 @@ extension LibraryStore {
             if items.count >= limit { break }
         }
         return success(["count": items.count, "videos": items], summary: nil, photoIDs: ids)
+    }
+
+    // MARK: - 网络资源
+
+    private func listCatalogSourcesTool() -> AIToolExecution {
+        var items: [[String: Any]] = []
+        for source in catalogModel.sources {
+            let health = catalogModel.health[source.id] ?? .unknown
+            var item: [String: Any] = [
+                "source_id": source.id.uuidString,
+                "name": source.name,
+                "kind": source.kind.rawValue,
+                "enabled": source.isEnabled,
+                "health": health.title
+            ]
+            let categories = source.categories.prefix(12).map(\.title)
+            if !categories.isEmpty { item["categories"] = Array(categories) }
+            items.append(item)
+        }
+        return success(["count": items.count, "sources": items], summary: nil, photoIDs: [])
+    }
+
+    /// 跨源搜索：按侧边栏顺序逐源请求，结果放进 `aiCatalogCandidates`，供后续 ref 引用。
+    private func searchCatalogTool(_ args: [String: Any]) async -> AIToolExecution {
+        guard let query = AILibraryTools.string(args["query"]) else {
+            return failure("请提供要搜索的番号、标题或女优名")
+        }
+        let perSource = min(30, max(1, AILibraryTools.integer(args["limit"], fallback: 12)))
+        var targets = catalogModel.enabledSources
+        if let raw = AILibraryTools.string(args["source"]) {
+            guard let source = aiResolveCatalogSource(raw) else {
+                return failure("没有找到源「\(raw)」，可先调用 list_catalog_sources")
+            }
+            guard source.isEnabled else {
+                return failure("源「\(source.name)」未启用，请先在资源页打开它")
+            }
+            targets = [source]
+        }
+        guard !targets.isEmpty else {
+            return failure("还没有启用任何网络资源源，请先在资源页启用一个源")
+        }
+
+        aiCatalogCandidates.removeAll()
+        var groups: [[String: Any]] = []
+        var total = 0
+        var failed = 0
+        for source in targets {
+            if Task.isCancelled { break }
+            guard let provider = CatalogProviders.provider(for: source.kind) else {
+                failed += 1
+                continue
+            }
+            do {
+                let page = try await provider.search(source: source, keyword: query, page: 1)
+                let picked = Array(page.items.prefix(min(perSource, max(0, 60 - total))))
+                guard !picked.isEmpty else { continue }
+                var items: [[String: Any]] = []
+                for item in picked {
+                    total += 1
+                    let ref = "#\(total)"
+                    aiCatalogCandidates[ref] = (source.id, item)
+                    aiCatalogCandidates["\(source.id.uuidString)|\(item.id)"] = (source.id, item)
+                    items.append(["ref": ref,
+                                  "source_id": source.id.uuidString,
+                                  "item_id": item.id,
+                                  "title": item.title,
+                                  "remark": item.remark])
+                }
+                groups.append(["source_id": source.id.uuidString,
+                               "source": source.name,
+                               "items": items])
+                if total >= 60 { break }
+            } catch {
+                failed += 1
+            }
+        }
+        guard !groups.isEmpty else {
+            if failed == targets.count {
+                return failure("搜索「\(query)」失败：\(failed) 个源都没有返回结果，可能是站点不可达")
+            }
+            return failure("没有找到匹配「\(query)」的网络资源")
+        }
+        return success(["query": query, "count": total, "failed_sources": failed, "groups": groups],
+                       summary: "网络资源搜索「\(query)」：\(total) 条",
+                       photoIDs: [])
+    }
+
+    private func listCatalogFollowingTool() -> AIToolExecution {
+        let names = Dictionary(uniqueKeysWithValues: catalogModel.sources.map { ($0.id, $0.name) })
+        let people = catalogModel.followedPeople.map { person -> [String: Any] in
+            [
+                "name": person.name,
+                "role": person.role,
+                "source": names[person.sourceID] ?? "",
+                "new_count": person.newCount
+            ]
+        }
+        let categories = catalogModel.followedCategories.map { category -> [String: Any] in
+            [
+                "title": category.title,
+                "source": category.sourceName,
+                "source_id": category.sourceID.uuidString,
+                "category_id": category.categoryID
+            ]
+        }
+        return success(["people": people, "categories": categories], summary: nil, photoIDs: [])
+    }
+
+    private func listCatalogWatchlistTool(_ args: [String: Any]) -> AIToolExecution {
+        let limit = min(100, max(1, AILibraryTools.integer(args["limit"], fallback: 40)))
+        let favorites = Array(catalogModel.allFavorites.prefix(limit))
+        guard !favorites.isEmpty else {
+            return success(["count": 0, "items": []], summary: "稍后看是空的", photoIDs: [])
+        }
+        let names = Dictionary(uniqueKeysWithValues: catalogModel.sources.map { ($0.id, $0.name) })
+        aiCatalogCandidates.removeAll()
+        var items: [[String: Any]] = []
+        for favorite in favorites {
+            let item = CatalogItem(id: favorite.itemID, title: favorite.title,
+                                   coverURL: favorite.coverURL, remark: favorite.remark,
+                                   categoryID: nil)
+            let ref = "#\(items.count + 1)"
+            aiCatalogCandidates[ref] = (favorite.sourceID, item)
+            aiCatalogCandidates["\(favorite.sourceID.uuidString)|\(favorite.itemID)"] = (favorite.sourceID, item)
+            items.append(["ref": ref,
+                          "source_id": favorite.sourceID.uuidString,
+                          "source": names[favorite.sourceID] ?? "",
+                          "item_id": favorite.itemID,
+                          "title": favorite.title,
+                          "remark": favorite.remark,
+                          "added_at": Self.aiDateFormatter.string(from: favorite.addedAt)])
+        }
+        return success(["count": items.count, "items": items],
+                       summary: "稍后看共 \(items.count) 条",
+                       photoIDs: [])
+    }
+
+    private func catalogNewTodayTool(_ args: [String: Any]) -> AIToolExecution {
+        let limit = min(100, max(1, AILibraryTools.integer(args["limit"], fallback: 40)))
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        let today = catalogModel.calendarItems
+            .filter { $0.firstSeen >= start && $0.firstSeen < end }
+            .sorted { $0.firstSeen > $1.firstSeen }
+        guard !today.isEmpty else {
+            return success(["count": 0, "items": []], summary: "今天还没有记录到新条目", photoIDs: [])
+        }
+        let names = Dictionary(uniqueKeysWithValues: catalogModel.sources.map { ($0.id, $0.name) })
+        aiCatalogCandidates.removeAll()
+        var items: [[String: Any]] = []
+        for entry in today.prefix(limit) {
+            let ref = "#\(items.count + 1)"
+            aiCatalogCandidates[ref] = (entry.sourceID, entry.item)
+            aiCatalogCandidates["\(entry.sourceID.uuidString)|\(entry.itemID)"] = (entry.sourceID, entry.item)
+            items.append(["ref": ref,
+                          "source_id": entry.sourceID.uuidString,
+                          "source": names[entry.sourceID] ?? "",
+                          "item_id": entry.itemID,
+                          "title": entry.title,
+                          "remark": entry.remark,
+                          "first_seen": Self.aiDateFormatter.string(from: entry.firstSeen)])
+        }
+        return success(["count": items.count, "items": items],
+                       summary: "今天新增 \(items.count) 条网络资源",
+                       photoIDs: [])
+    }
+
+    private func browseCatalogTool(_ args: [String: Any]) -> AIToolExecution {
+        let source: CatalogSource
+        if let raw = AILibraryTools.string(args["source"]) {
+            guard let resolved = aiResolveCatalogSource(raw) else {
+                return failure("没有找到源「\(raw)」，可先调用 list_catalog_sources")
+            }
+            source = resolved
+        } else if let current = catalogModel.selectedSource ?? catalogModel.enabledSources.first {
+            source = current
+        } else {
+            return failure("还没有启用任何网络资源源")
+        }
+
+        catalogModel.hubTab = .browse
+        openCatalogSource(source.id)
+
+        let section = AILibraryTools.string(args["section"]) ?? "home"
+        var title = "首页"
+        switch section {
+        case "rank":
+            catalogModel.openRank()
+            title = "排行"
+        case "favorites":
+            catalogModel.openFavorites()
+            title = "稍后看"
+        case "category":
+            guard let raw = AILibraryTools.string(args["category"]) else {
+                return failure("请提供分类名称或分类 id")
+            }
+            guard let category = aiResolveCatalogCategory(raw) else {
+                let available = catalogModel.categories.prefix(10).map(\.title).joined(separator: "、")
+                return failure("在「\(source.name)」里没有找到分类「\(raw)」，可用分类：\(available)")
+            }
+            catalogModel.openCategory(category)
+            title = category.title
+        default:
+            catalogModel.openHome()
+        }
+        return success(["source_id": source.id.uuidString, "source": source.name, "section": section],
+                       summary: "已打开「\(source.name)」的\(title)",
+                       photoIDs: [])
+    }
+
+    private func playCatalogItemTool(_ args: [String: Any]) -> AIToolExecution {
+        guard let target = aiResolveCatalogCandidate(args) else {
+            return failure("找不到要播放的条目，请先调用 search_catalog 或 catalog_new_today 获取 ref")
+        }
+        guard let source = catalogModel.sources.first(where: { $0.id == target.sourceID }) else {
+            return failure("这个源已经不存在了")
+        }
+        guard source.isEnabled else {
+            return failure("源「\(source.name)」未启用")
+        }
+        catalogModel.playRemote(sourceID: source.id, item: target.item)
+        return success(["source_id": source.id.uuidString, "item_id": target.item.id],
+                       summary: "开始播放《\(target.item.title)》",
+                       photoIDs: [])
+    }
+
+    private func setCatalogWatchlistTool(_ args: [String: Any]) -> AIToolExecution {
+        let favorite = AILibraryTools.bool(args["favorite"], fallback: true)
+        var resolved: [(UUID, CatalogItem)] = []
+        for raw in AILibraryTools.stringArray(args["refs"]) {
+            if let hit = aiResolveCatalogCandidate(["ref": raw]) {
+                resolved.append((hit.sourceID, hit.item))
+            }
+        }
+        if let rawSource = AILibraryTools.string(args["source_id"]),
+           let sourceID = UUID(uuidString: rawSource) {
+            for itemID in AILibraryTools.stringArray(args["item_ids"]) {
+                if let item = aiCatalogItem(sourceID: sourceID, itemID: itemID) {
+                    resolved.append((sourceID, item))
+                }
+            }
+        }
+        guard !resolved.isEmpty else {
+            return failure("没有可操作的条目，请先调用 search_catalog 获取 ref")
+        }
+
+        var grouped: [UUID: [CatalogItem]] = [:]
+        for (sourceID, item) in resolved {
+            grouped[sourceID, default: []].append(item)
+        }
+        var changed = 0
+        for (sourceID, items) in grouped {
+            guard let source = catalogModel.sources.first(where: { $0.id == sourceID }) else { continue }
+            changed += items.filter {
+                catalogModel.isFavorite(sourceID: sourceID, itemID: $0.id) != favorite
+            }.count
+            catalogModel.setFavorite(favorite, source: source, items: items)
+        }
+        return success(["count": changed, "favorite": favorite],
+                       summary: "\(favorite ? "加入" : "移出")稍后看 \(changed) 条",
+                       photoIDs: [])
+    }
+
+    private func followCatalogPersonTool(_ args: [String: Any]) -> AIToolExecution {
+        guard let name = AILibraryTools.string(args["name"]) else {
+            return failure("请提供要关注的人物或片商名称")
+        }
+        let rawRole = AILibraryTools.string(args["role"]) ?? "女优"
+        let roleMap = ["actress": "女优", "studio": "片商", "model": "模特"]
+        let role = roleMap[rawRole.lowercased()] ?? rawRole
+
+        let source: CatalogSource?
+        if let raw = AILibraryTools.string(args["source"]) {
+            source = aiResolveCatalogSource(raw)
+        } else {
+            source = catalogModel.selectedSource ?? catalogModel.enabledSources.first
+        }
+        guard let source else {
+            return failure("还没有可用的网络资源源")
+        }
+        if catalogModel.isFollowingPerson(name: name, role: role) {
+            return success(["followed": true, "name": name, "role": role],
+                           summary: "已经关注过\(role)「\(name)」",
+                           photoIDs: [])
+        }
+        catalogModel.toggleFollowPerson(name: name, role: role, sourceID: source.id)
+        return success(["followed": true, "name": name, "role": role,
+                        "source_id": source.id.uuidString],
+                       summary: "已关注\(role)「\(name)」",
+                       photoIDs: [])
+    }
+
+    private func aiResolveCatalogSource(_ raw: String) -> CatalogSource? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if let id = UUID(uuidString: text),
+           let source = catalogModel.sources.first(where: { $0.id == id }) {
+            return source
+        }
+        if let exact = catalogModel.sources.first(where: {
+            $0.name.caseInsensitiveCompare(text) == .orderedSame
+        }) {
+            return exact
+        }
+        let lower = text.lowercased()
+        if let kind = catalogModel.sources.first(where: { $0.kind.rawValue.lowercased() == lower }) {
+            return kind
+        }
+        return catalogModel.sources.first { $0.name.localizedCaseInsensitiveContains(text) }
+    }
+
+    private func aiResolveCatalogCategory(_ raw: String) -> CatalogCategory? {
+        func visit(_ list: [CatalogCategory], exact: Bool) -> CatalogCategory? {
+            for category in list {
+                let matched = exact
+                    ? (category.id.caseInsensitiveCompare(raw) == .orderedSame
+                        || category.title.caseInsensitiveCompare(raw) == .orderedSame)
+                    : category.title.localizedCaseInsensitiveContains(raw)
+                if matched { return category }
+                if let children = category.children,
+                   let hit = visit(children, exact: exact) {
+                    return hit
+                }
+            }
+            return nil
+        }
+        return visit(catalogModel.categories, exact: true)
+            ?? visit(catalogModel.categories, exact: false)
+    }
+
+    /// 解析播放 / 稍后看的参数：优先用 ref，其次用 source_id + item_id。
+    private func aiResolveCatalogCandidate(_ args: [String: Any]) -> (sourceID: UUID, item: CatalogItem)? {
+        if let raw = AILibraryTools.string(args["ref"]) {
+            let key = raw.hasPrefix("#") ? raw : "#\(raw)"
+            if let hit = aiCatalogCandidates[key] { return hit }
+        }
+        guard let rawSource = AILibraryTools.string(args["source_id"]),
+              let sourceID = UUID(uuidString: rawSource),
+              let itemID = AILibraryTools.string(args["item_id"]) else { return nil }
+        if let hit = aiCatalogCandidates["\(sourceID.uuidString)|\(itemID)"] { return hit }
+        guard let item = aiCatalogItem(sourceID: sourceID, itemID: itemID) else { return nil }
+        return (sourceID, item)
+    }
+
+    /// 没经过搜索时，从稍后看 / 日历 / 总榜 / 当前列表里找回条目的标题与封面。
+    private func aiCatalogItem(sourceID: UUID, itemID: String) -> CatalogItem? {
+        if let hit = aiCatalogCandidates["\(sourceID.uuidString)|\(itemID)"] { return hit.item }
+        if let favorite = catalogModel.favorites["\(sourceID.uuidString)|\(itemID)"] {
+            return CatalogItem(id: favorite.itemID, title: favorite.title,
+                               coverURL: favorite.coverURL, remark: favorite.remark,
+                               categoryID: nil)
+        }
+        if let entry = catalogModel.calendarItems.first(where: {
+            $0.sourceID == sourceID && $0.itemID == itemID
+        }) {
+            return entry.item
+        }
+        if let spot = catalogModel.todaySpotlight.first(where: {
+            $0.sourceID == sourceID && $0.item.id == itemID
+        }) {
+            return spot.item
+        }
+        if catalogModel.selectedSourceID == sourceID,
+           let live = catalogModel.items.first(where: { $0.id == itemID }) {
+            return live
+        }
+        for playlist in catalogModel.playlists {
+            if let entry = playlist.entries.first(where: {
+                $0.sourceID == sourceID && $0.itemID == itemID
+            }) {
+                return entry.item
+            }
+        }
+        // 详情页会补上真实标题与封面，这里只保证 id 可用。
+        return CatalogItem(id: itemID, title: itemID, coverURL: "", remark: "", categoryID: nil)
+    }
+
+    // MARK: - 影院
+
+    /// 影院工具都作用于当前影院（本地图库或某个网盘），与影院页保持一致。
+    private var aiCinemaScope: CinemaScope { cinemaActiveScope }
+
+    /// 把文件夹树拍平，便于按名称 / 路径匹配与统计。
+    private func aiAllCinemaFolders(in scope: CinemaScope) -> [CinemaFolder] {
+        var result: [CinemaFolder] = []
+        var stack = cinemaFolders(for: scope)
+        while let folder = stack.popLast() {
+            result.append(folder)
+            stack.append(contentsOf: folder.children)
+        }
+        return result
+    }
+
+    private func aiCinemaFolderMatches(_ folder: CinemaFolder, query: String) -> Bool {
+        let text = query.lowercased()
+        return folder.name.lowercased().contains(text)
+            || folder.path.lowercased().contains(text)
+            || (folder.hint?.lowercased().contains(text) ?? false)
+    }
+
+    private func aiCinemaEntryMatches(_ entry: CinemaEntry, query: String) -> Bool {
+        let text = query.lowercased()
+        return entry.file.filename.lowercased().contains(text)
+            || entry.title.lowercased().contains(text)
+            || (entry.folderHint?.lowercased().contains(text) ?? false)
+    }
+
+    // MARK: - 影院 · 一键智能整理
+
+    /// 解析工具传入的 scope：local / 网盘 id / 网盘名称；省略时用当前影院。
+    private func aiResolvedCinemaScope(_ raw: String?) -> CinemaScope? {
+        guard let raw else { return cinemaActiveScope }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty || text == "active" || text == "当前影院" { return cinemaActiveScope }
+        if text.lowercased() == "local" || text == "本地图库" { return .local }
+        if let id = UUID(uuidString: text), cloudMounts.contains(where: { $0.id == id }) {
+            return .mount(id)
+        }
+        if let mount = cloudMounts.first(where: { $0.name == text }) {
+            return .mount(mount.id)
+        }
+        return nil
+    }
+
+    private func aiResolveCinemaFolder(_ query: String, in scope: CinemaScope) -> CinemaFolder? {
+        let folders = aiAllCinemaFolders(in: scope)
+        if let exact = folders.first(where: { $0.path == query }) { return exact }
+        return folders.first(where: { aiCinemaFolderMatches($0, query: query) })
+    }
+
+    private func listCinemaScopesTool() -> AIToolExecution {
+        var items: [[String: Any]] = []
+        func append(_ scope: CinemaScope, name: String) {
+            let total = cinemaCandidates(for: scope).count
+            let matched = cinemaEntries(for: scope).values.filter(\.matched).count
+            items.append([
+                "id": Self.cinemaScopeKey(scope),
+                "name": name,
+                "active": scope == cinemaActiveScope,
+                "videos": total,
+                "matched": matched,
+                "unmatched": max(0, total - matched)
+            ])
+        }
+        append(.local, name: "本地图库")
+        for mount in cloudMounts {
+            append(.mount(mount.id), name: mount.name)
+        }
+        return success(["active": Self.cinemaScopeKey(cinemaActiveScope), "scopes": items],
+                       summary: nil,
+                       photoIDs: [])
+    }
+
+    private func cinemaTreeTool(_ args: [String: Any]) -> AIToolExecution {
+        guard let scope = aiResolvedCinemaScope(AILibraryTools.string(args["scope"])) else {
+            return failure("没有找到这个影院，请先调用 list_cinema_scopes 确认 scope")
+        }
+        let folderQuery = AILibraryTools.string(args["folder"])
+        let onlyUnmatched = AILibraryTools.bool(args["only_unmatched"], fallback: false)
+        let limit = min(200, max(1, AILibraryTools.integer(args["limit"], fallback: 80)))
+        let entries = cinemaEntries(for: scope)
+        let candidates = cinemaCandidates(for: scope)
+        var candidateByID: [UUID: CinemaCandidate] = [:]
+        for candidate in candidates { candidateByID[candidate.photo.id] = candidate }
+
+        var current: CinemaFolder?
+        if let folderQuery {
+            guard let folder = aiResolveCinemaFolder(folderQuery, in: scope) else {
+                return failure("没有找到「\(folderQuery)」文件夹；可先不传 folder 查看顶层目录")
+            }
+            current = folder
+        }
+
+        let children = current?.children ?? cinemaFolders(for: scope)
+        let folderItems: [[String: Any]] = children
+            .sorted { lhs, rhs in
+                if lhs.subtreePhotos.count != rhs.subtreePhotos.count {
+                    return lhs.subtreePhotos.count > rhs.subtreePhotos.count
+                }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            .prefix(60)
+            .map { folder in
+                var item: [String: Any] = [
+                    "name": folder.name,
+                    "path": folder.path,
+                    "videos": folder.photos.count,
+                    "subtree_videos": folder.subtreePhotos.count,
+                    "matched": folder.matchedCount,
+                    "unmatched": folder.unmatchedCount,
+                    "children": folder.children.count
+                ]
+                if let hint = folder.hint, !hint.isEmpty { item["hint"] = hint }
+                if let title = folder.title, !title.isEmpty { item["title"] = title }
+                return item
+            }
+
+        let photos: [PhotoItem]
+        if let current {
+            photos = current.photos
+        } else {
+            // 顶层调用时把没有目录归属的散片也列出来，避免根目录视频被漏掉。
+            photos = candidates.filter { $0.folderPath == nil }.map(\.photo)
+        }
+        let sortedPhotos = photos.sorted {
+            $0.displayFilename.localizedStandardCompare($1.displayFilename) == .orderedAscending
+        }
+
+        var videoItems: [[String: Any]] = []
+        var truncated = false
+        for photo in sortedPhotos {
+            let entry = entries[photo.id]
+            if onlyUnmatched, entry?.matched == true { continue }
+            guard videoItems.count < limit else {
+                truncated = true
+                break
+            }
+            videoItems.append(aiCinemaVideoInfo(photo: photo,
+                                                entry: entry,
+                                                candidate: candidateByID[photo.id]))
+        }
+
+        let matched = entries.values.filter(\.matched).count
+        var payload: [String: Any] = [
+            "scope": ["id": Self.cinemaScopeKey(scope), "name": cinemaScopeName(scope)],
+            "total": candidates.count,
+            "matched": matched,
+            "unmatched": max(0, candidates.count - matched),
+            "folders": folderItems,
+            "videos": videoItems
+        ]
+        if let current {
+            payload["folder"] = ["path": current.path,
+                                 "name": current.name,
+                                 "hint": current.hint ?? current.name]
+        }
+        if truncated { payload["truncated"] = true }
+        return success(payload,
+                       summary: current.map { "查看「\($0.name)」：\($0.photos.count) 个视频" }
+                           ?? "查看影院目录：\(children.count) 个文件夹",
+                       photoIDs: [])
+    }
+
+    private func aiCinemaVideoInfo(photo: PhotoItem,
+                                   entry: CinemaEntry?,
+                                   candidate: CinemaCandidate?) -> [String: Any] {
+        let hint = candidate?.folderHint ?? entry?.folderHint
+        let parsed = CinemaScraper.parse(filename: photo.displayFilename, folderHint: hint)
+        var item: [String: Any] = [
+            "id": photo.id.uuidString,
+            "filename": photo.displayFilename,
+            "parsed_title": parsed.title,
+            "kind": parsed.isTV ? "tv" : "movie",
+            "matched": entry?.matched ?? false
+        ]
+        if let alt = parsed.altTitle, !alt.isEmpty { item["parsed_alt_title"] = alt }
+        if let year = parsed.year { item["parsed_year"] = year }
+        if let season = parsed.season { item["season"] = season }
+        if let episode = parsed.episode { item["episode"] = episode }
+        if let end = parsed.episodeEnd { item["episode_end"] = end }
+        if let hint, !hint.isEmpty { item["folder"] = hint }
+        if let resolution = parsed.resolution { item["parsed_resolution"] = resolution }
+        if let entry, entry.matched {
+            item["match_title"] = entry.title
+            if let year = entry.year { item["match_year"] = year }
+            if let season = entry.season { item["match_season"] = season }
+            if let episode = entry.episode { item["match_episode"] = episode }
+            if let tmdb = entry.tmdbID { item["tmdb_id"] = tmdb }
+        }
+        if photo.pixelWidth > 0 {
+            item["resolution"] = "\(photo.pixelWidth)x\(photo.pixelHeight)"
+        }
+        return item
+    }
+
+    private func searchCinemaCandidatesTool(_ args: [String: Any]) async -> AIToolExecution {
+        guard let query = AILibraryTools.string(args["query"]) else {
+            return failure("缺少 query")
+        }
+        let isTV = AILibraryTools.bool(args["is_tv"], fallback: false)
+        let rawYear = AILibraryTools.integer(args["year"], fallback: 0)
+        let year: Int? = rawYear > 0 ? rawYear : nil
+        let limit = min(10, max(1, AILibraryTools.integer(args["limit"], fallback: 5)))
+
+        let result = await cinemaSearchCandidates(query: query, isTV: isTV, year: year)
+        guard !result.matches.isEmpty else {
+            return failure(result.error ?? "没有找到「\(query)」的候选；可只保留核心片名、去掉年份再试")
+        }
+
+        var items: [[String: Any]] = []
+        for match in result.matches.prefix(limit) {
+            aiCinemaCandidateCache[match.id] = match
+            var item: [String: Any] = [
+                "candidate_id": match.id,
+                "provider": match.provider?.rawValue ?? "unknown",
+                "title": match.title,
+                "is_tv": match.isTV
+            ]
+            if let original = match.originalTitle, !original.isEmpty {
+                item["original_title"] = original
+            }
+            if let year = match.year { item["year"] = year }
+            if let rating = match.rating, rating > 0 { item["rating"] = rating }
+            if let votes = match.voteCount, votes > 0 { item["votes"] = votes }
+            if let overview = match.overview, !overview.isEmpty {
+                item["overview"] = String(overview.prefix(220))
+            }
+            // 只给前三个 TMDB 剧集补季数 / 集数，控制请求数量。
+            if match.isTV, match.provider == .tmdb, items.count < 3, let id = Int(match.id),
+               let details = await cinemaDetails(id: id, isTV: true) {
+                if let seasons = details.seasonCount, seasons > 0 { item["season_count"] = seasons }
+                if let episodes = details.episodeCount, episodes > 0 { item["episode_count"] = episodes }
+            }
+            items.append(item)
+        }
+        if aiCinemaCandidateCache.count > 300 { aiCinemaCandidateCache.removeAll() }
+        let names = items.prefix(3).compactMap { $0["title"] as? String }.joined(separator: "、")
+        return success(["query": query, "is_tv": isTV, "candidates": items],
+                       summary: "找到 \(items.count) 个候选：\(names)",
+                       photoIDs: [])
+    }
+
+    private func applyCinemaMatchTool(_ args: [String: Any]) -> AIToolExecution {
+        guard let candidateID = AILibraryTools.string(args["candidate_id"]) else {
+            return failure("缺少 candidate_id；请先调用 search_cinema_candidates 拿到候选")
+        }
+        guard let match = aiCinemaCandidateCache[candidateID] else {
+            return failure("候选 \(candidateID) 已失效；请重新调用 search_cinema_candidates")
+        }
+        guard let scope = aiResolvedCinemaScope(AILibraryTools.string(args["scope"])) else {
+            return failure("没有找到这个影院，请先调用 list_cinema_scopes 确认 scope")
+        }
+
+        var photoByID: [UUID: PhotoItem] = [:]
+        var folderHints: [UUID: String] = [:]
+        for candidate in cinemaCandidates(for: scope) {
+            photoByID[candidate.photo.id] = candidate.photo
+            if let hint = candidate.folderHint, !hint.isEmpty {
+                folderHints[candidate.photo.id] = hint
+            }
+        }
+
+        var photos: [PhotoItem] = []
+        var folderName: String?
+        let rawIDs = AILibraryTools.stringArray(args["photo_ids"])
+        if !rawIDs.isEmpty {
+            var missing: [String] = []
+            for raw in rawIDs {
+                let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let id = UUID(uuidString: text), let photo = photoByID[id] {
+                    photos.append(photo)
+                } else if let photo = photoByID.values.first(where: { $0.displayFilename == text }) {
+                    photos.append(photo)
+                } else {
+                    missing.append(text)
+                }
+            }
+            guard photos.count == rawIDs.count else {
+                return failure("这些视频不在当前影院：\(missing.prefix(3).joined(separator: "、"))")
+            }
+        } else if let query = AILibraryTools.string(args["folder"]) {
+            guard let folder = aiResolveCinemaFolder(query, in: scope) else {
+                return failure("没有找到「\(query)」文件夹；可先调用 cinema_tree 查看路径")
+            }
+            folderName = folder.name
+            photos = folder.photos
+            guard !photos.isEmpty else {
+                if !folder.children.isEmpty {
+                    let names = folder.children.prefix(6).map(\.name).joined(separator: "、")
+                    return failure("「\(folder.name)」没有直属视频，下面还有：\(names)。请用 cinema_tree 展开到季目录再应用")
+                }
+                return failure("「\(folder.name)」里没有视频")
+            }
+        } else {
+            return failure("请用 folder 指定文件夹，或用 photo_ids 指定视频")
+        }
+
+        var episodes: [UUID: Int] = [:]
+        for item in AILibraryTools.objectArray(args["episodes"]) {
+            guard let raw = AILibraryTools.string(item["photo_id"]),
+                  let id = UUID(uuidString: raw) else { continue }
+            let value = AILibraryTools.integer(item["episode"], fallback: 0)
+            if value > 0 { episodes[id] = value }
+        }
+        let rawSeason = AILibraryTools.integer(args["season"], fallback: 0)
+        let season: Int? = rawSeason > 0 ? rawSeason : nil
+
+        let applied = applyCinemaMatch(match, to: photos, season: season,
+                                       episodes: episodes, folderHints: folderHints)
+        guard applied > 0 else { return failure("写回失败，请稍后再试") }
+
+        let updated = cinemaEntries(for: scope)
+        var results: [[String: Any]] = []
+        for photo in photos.prefix(200) {
+            guard let entry = updated[photo.id] else { continue }
+            var item: [String: Any] = [
+                "id": photo.id.uuidString,
+                "filename": entry.file.filename,
+                "matched": entry.matched
+            ]
+            if let season = entry.season { item["season"] = season }
+            if let episode = entry.episode { item["episode"] = episode }
+            results.append(item)
+        }
+
+        var summary = "已匹配「\(match.title)」· \(applied) 个视频"
+        if match.isTV, let season = results.compactMap({ $0["season"] as? Int }).first {
+            summary = "已匹配「\(match.title)」· 第 \(season) 季 · \(applied) 集"
+        }
+        return success(["scope": cinemaScopeName(scope),
+                        "candidate_id": candidateID,
+                        "title": match.title,
+                        "folder": folderName ?? "",
+                        "applied": applied,
+                        "videos": results],
+                       summary: summary,
+                       photoIDs: photos.map(\.id))
+    }
+
+    private func listCinemaItemsTool(_ args: [String: Any]) -> AIToolExecution {
+        let scope = aiCinemaScope
+        let allEntries = Array(cinemaEntries(for: scope).values)
+        let folderQuery = AILibraryTools.string(args["folder"])
+        let onlyUnmatched = AILibraryTools.bool(args["only_unmatched"], fallback: false)
+        let limit = min(100, max(1, AILibraryTools.integer(args["limit"], fallback: 30)))
+
+        var folderItems: [[String: Any]] = []
+        for folder in aiAllCinemaFolders(in: scope)
+            .sorted(by: { $0.subtreePhotos.count > $1.subtreePhotos.count }) {
+            if let folderQuery, !aiCinemaFolderMatches(folder, query: folderQuery) { continue }
+            folderItems.append([
+                "name": folder.name,
+                "path": folder.path,
+                "videos": folder.subtreePhotos.count,
+                "matched": folder.matchedCount
+            ])
+            if folderItems.count >= 40 { break }
+        }
+
+        var items: [[String: Any]] = []
+        for entry in allEntries.sorted(by: { $0.file.capturedAt > $1.file.capturedAt }) {
+            if let folderQuery, !aiCinemaEntryMatches(entry, query: folderQuery) { continue }
+            if onlyUnmatched, entry.matched { continue }
+            var item: [String: Any] = [
+                "filename": entry.file.filename,
+                "title": entry.title,
+                "matched": entry.matched,
+                "kind": entry.kind == .tv ? "tv" : "movie",
+                "resolution": entry.file.pixelWidth > 0
+                    ? "\(entry.file.pixelWidth)x\(entry.file.pixelHeight)" : ""
+            ]
+            if let year = entry.year { item["year"] = year }
+            if let season = entry.season { item["season"] = season }
+            if let episode = entry.episode { item["episode"] = episode }
+            if let hint = entry.folderHint { item["folder"] = hint }
+            items.append(item)
+            if items.count >= limit { break }
+        }
+
+        let matched = allEntries.filter(\.matched).count
+        return success(["scope": cinemaScopeName(scope),
+                        "total": allEntries.count,
+                        "matched": matched,
+                        "unmatched": allEntries.count - matched,
+                        "folders": folderItems,
+                        "videos": items],
+                       summary: nil,
+                       photoIDs: [])
+    }
+
+    private func scrapeCinemaTool(_ args: [String: Any]) -> AIToolExecution {
+        guard !cinemaScrapeRunning else {
+            return failure("已有刮削任务在进行中，等它结束再试")
+        }
+        let scope = aiCinemaScope
+        let name = cinemaScopeName(scope)
+        let force = AILibraryTools.bool(args["force"], fallback: false)
+
+        if let query = AILibraryTools.string(args["folder"]) {
+            guard let folder = aiAllCinemaFolders(in: scope)
+                .first(where: { aiCinemaFolderMatches($0, query: query) }) else {
+                return failure("当前影院没有找到匹配「\(query)」的文件夹，可先调用 list_cinema_items")
+            }
+            guard !folder.subtreePhotos.isEmpty else {
+                return failure("「\(folder.name)」里没有可刮削的视频")
+            }
+            Task { await self.scrapeCinemaFolder(folder, scope: scope) }
+            return success(["started": true,
+                            "scope": name,
+                            "folder": folder.path,
+                            "videos": folder.subtreePhotos.count],
+                           summary: "开始刮削「\(folder.name)」（\(folder.subtreePhotos.count) 个视频，含子文件夹）",
+                           photoIDs: [])
+        }
+
+        let total = cinemaEntries(for: scope).count
+        guard total > 0 else {
+            return failure("这个影院还没有视频清单，先在「相簿」里扫描网盘")
+        }
+        Task { await self.scrapeCinema(for: scope, force: force) }
+        return success(["started": true, "scope": name, "videos": total],
+                       summary: "开始刮削「\(name)」（\(total) 个视频）",
+                       photoIDs: [])
+    }
+
+    private func matchCinemaTool(_ args: [String: Any]) async -> AIToolExecution {
+        let scope = aiCinemaScope
+        let allEntries = Array(cinemaEntries(for: scope).values)
+        let unmatched = allEntries.filter { !$0.matched }
+        guard !unmatched.isEmpty else {
+            return failure("当前影院没有未识别的视频")
+        }
+
+        let target = AILibraryTools.string(args["target"])
+        let queryOverride = AILibraryTools.string(args["query"])
+        let isTVOverride = args["is_tv"] as? Bool
+        let rawYear = AILibraryTools.integer(args["year"], fallback: 0)
+        let yearOverride: Int? = rawYear > 0 ? rawYear : nil
+        let limit = min(20, max(1, AILibraryTools.integer(args["limit"], fallback: 10)))
+
+        var targets: [CinemaEntry] = []
+        if let target {
+            if let folder = aiAllCinemaFolders(in: scope)
+                .first(where: { aiCinemaFolderMatches($0, query: target) }) {
+                let ids = Set(folder.subtreePhotos.map(\.id))
+                targets = unmatched.filter { ids.contains($0.id) }
+            }
+            if targets.isEmpty {
+                targets = unmatched.filter { aiCinemaEntryMatches($0, query: target) }
+            }
+            guard !targets.isEmpty else {
+                return failure("没有找到匹配「\(target)」的未识别视频，可先调用 list_cinema_items")
+            }
+        } else {
+            targets = unmatched
+        }
+        targets.sort { $0.file.filename.localizedStandardCompare($1.file.filename) == .orderedAscending }
+
+        var cache: [String: [CinemaMatch]] = [:]
+        var applied: [String] = []
+        var skipped: [String] = []
+
+        for entry in targets.prefix(limit) {
+            let query = queryOverride ?? entry.title
+            let isTV = isTVOverride ?? (entry.kind == .tv)
+            let year = yearOverride ?? entry.year
+            let key = "\(query)|\(isTV)|\(year ?? 0)"
+            let matches: [CinemaMatch]
+            if let cached = cache[key] {
+                matches = cached
+            } else {
+                let result = await cinemaSearchCandidates(query: query, isTV: isTV, year: year)
+                matches = result.matches
+                if matches.isEmpty, let error = result.error {
+                    skipped.append("\(entry.file.filename)（\(error)）")
+                    continue
+                }
+                if !matches.isEmpty { cache[key] = matches }
+            }
+            guard let best = matches.first else {
+                skipped.append(entry.file.filename)
+                continue
+            }
+            if applyCinemaMatch(best, to: entry) != nil {
+                applied.append("\(entry.title) → \(best.title)")
+            } else {
+                skipped.append(entry.file.filename)
+            }
+        }
+
+        let summary: String
+        if applied.isEmpty {
+            summary = "没有匹配成功：\(skipped.prefix(3).joined(separator: "、"))"
+        } else {
+            summary = "已匹配 \(applied.count) 条：\(applied.prefix(3).joined(separator: "、"))"
+        }
+        return success(["scope": cinemaScopeName(scope),
+                        "attempted": min(limit, targets.count),
+                        "matched": applied.count,
+                        "results": applied,
+                        "skipped": skipped],
+                       summary: summary,
+                       photoIDs: [])
     }
 
     // MARK: - 浏览

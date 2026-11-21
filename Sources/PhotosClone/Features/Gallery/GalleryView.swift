@@ -34,6 +34,7 @@ private struct TimelineScrollObserver: ViewModifier {
 struct GalleryView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
+    @EnvironmentObject private var catalog: CatalogBrowserModel
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var selectionModel: SelectionModel
     @Environment(\.colorScheme) private var scheme
@@ -92,10 +93,11 @@ struct GalleryView: View {
              .allAlbums, .folder, .systemFolder, .people, .duplicates, .health, .systemHealth,
              .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
+             .catalogSources,
              .systemDuplicates, .systemImports, .revisit, .systemRevisit,
              .keywords, .systemKeywords,
              .ratings, .flags, .colorLabels, .systemRatings, .systemFlags, .systemColorLabels,
-             .cinema, .cloudCinema:
+             .cinema, .cloudCinema, .catalogSource, .videos, .systemVideos:
             return false
         default:
             // 网络存储也使用照片网格：排序、筛选、搜索、缩放与键盘导航一致可用。
@@ -138,6 +140,45 @@ struct GalleryView: View {
         return store.sidebarItem == .map || store.sidebarItem == .systemMap
     }
 
+    /// 视频页：顶栏承担标题之外的分组 / 筛选 / 布局，内容区不再重复页头。
+    private var isVideoHubScope: Bool {
+        store.sidebarItem == .videos || store.sidebarItem == .systemVideos
+    }
+
+    /// 网络资源频道页：分类信息、刷新与源内搜索整体进窗口工具栏，内容区不再另起控制条。
+    private var isCatalogScope: Bool {
+        if case .catalogSource = store.sidebarItem { return true }
+        return false
+    }
+
+    /// 网络资源总览：浏览 / 片单 / 更新日历的分页切换放在工具栏中区。
+    private var isCatalogHubScope: Bool {
+        store.sidebarItem == .catalogSources
+    }
+
+    /// 网络资源区里最上层的二级页：工具栏最左的返回按钮据此显示。
+    /// 层级顺序：频道详情 > 关注档案 > 片单详情。
+    private var catalogBackAction: (title: String, action: () -> Void)? {
+        if isCatalogScope {
+            // 详情里叠开的人物档案：先退回详情，再退回频道列表。
+            if catalog.detailPersonTarget != nil {
+                return ("返回详情 (Esc)", { catalog.detailPersonTarget = nil })
+            }
+            if catalog.inlineDetailItem != nil {
+                return ("返回频道列表 (Esc)", { catalog.inlineDetailItem = nil })
+            }
+        }
+        if isCatalogHubScope {
+            if catalog.followedProfile != nil {
+                return ("返回关注 (Esc)", { catalog.followedProfile = nil })
+            }
+            if catalog.openPlaylistPage != nil {
+                return ("返回片单 (Esc)", { catalog.openPlaylistPage = nil })
+            }
+        }
+        return nil
+    }
+
     /// 整理工作室：评分 / 旗标 / 色标 / 关键词四种维度共用同一个页面与顶栏控件。
     private var isOrganizeScope: Bool {
         if store.isCloudScope { return store.cloudScope == .ratings }
@@ -151,8 +192,10 @@ struct GalleryView: View {
     }
 
     /// 窗口内浏览时工具栏交给查看器（返回 / 缩放 / 拍摄时间 / 操作），网格工具栏整体让位。
+    /// 只看 viewerPhoto：播放失败可能留下 viewerID 有值但照片已不存在的幽灵查看器，
+    /// 那种状态下查看器不会渲染，工具栏却会被清空。
     private var isWindowedViewing: Bool {
-        settings.viewerLayout == .window && store.viewerID != nil
+        settings.viewerLayout == .window && store.viewerPhoto != nil
     }
 
     /// 收藏的汇总维度页：不是照片网格，缩放、搜索与键盘选择暂时让位。
@@ -172,13 +215,18 @@ struct GalleryView: View {
             default: return false
             }
         }
+        // 网络资源详情：卡片尺寸滑杆对详情页没有意义，让位给工具栏里的返回 / 播放。
+        if case .catalogSource = store.sidebarItem {
+            return catalog.inlineDetailItem == nil
+        }
         switch store.sidebarItem {
         case .allAlbums, .folder, .systemFolder, .people, .systemPeople, .places, .systemPlaces,
              .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages, .systemImports,
-             .keywords, .systemKeywords:
+             .keywords, .systemKeywords, .videos, .systemVideos:
             return true
-        default: return false
+        default:
+            return false
         }
     }
 
@@ -212,7 +260,9 @@ struct GalleryView: View {
         }
         // 影院页的标题由顶栏控制台自己承担，避免「系统标题 + 控制台」两套标题并排。
         .navigationTitle(isWindowedViewing || showsCinemaConsole ? "" : displayTitle)
-        .navigationSubtitle(isWindowedViewing ? Text("") : Text(store.visibleDateSpanText))
+        .navigationSubtitle(isWindowedViewing || isVideoHubScope || isCatalogScope
+                            ? Text("")
+                            : Text(store.visibleDateSpanText))
         .onChange(of: store.grouping) { _, grouping in
             if grouping != .all {
                 store.visibleDateSpanText = ""
@@ -242,14 +292,21 @@ struct GalleryView: View {
         .toolbar {
             if !isWindowedViewing {
                 if showsCinemaConsole {
-                    // 影院：控制台整体落在窗口工具栏一行里，内容区不再另起一条。
+                    // 影院控制台常驻：详情在页面内打开时也不隐藏整条顶栏，
+                    // 只是由控制台自己把铭牌换成「返回」。
                     ToolbarItem(placement: .navigation) {
                         CinemaToolbarConsole()
                     }
-                    ToolbarItem(placement: .primaryAction) {
-                        cinemaSearchField
-                    }
                 } else {
+                    // 网络资源二级页（频道详情 / 关注档案 / 片单详情）：返回放在最左侧，
+                    // 与视频播放器的返回位置保持一致。
+                    ToolbarItem(placement: .navigation) {
+                        if let back = catalogBackAction {
+                            CatalogToolbarBackButton(help: back.title) {
+                                withAnimation(.easeOut(duration: 0.18)) { back.action() }
+                            }
+                        }
+                    }
                     ToolbarItem(placement: .navigation) {
                         navigationToolbarContent
                     }
@@ -259,16 +316,36 @@ struct GalleryView: View {
                         }
                     }
                     ToolbarItem(placement: .principal) {
-                        principalToolbarContent
+                        if isCatalogHubScope {
+                            // 网络资源总览：浏览 / 片单 / 更新日历并入工具栏同一行。
+                            CatalogHubTabs()
+                        } else if isCatalogScope {
+                            // 网络资源：中区是「分类 + 站点 + 刷新」舱体，分类菜单与左侧菜单同源。
+                            CatalogToolbarConsole()
+                        } else {
+                            principalToolbarContent
+                        }
                     }
                     ToolbarItemGroup(placement: .primaryAction) {
-                        primaryActionToolbarContent
+                        if isCatalogScope {
+                            // 源内搜索已并入中区舱体；详情模式下右侧动作也让位给返回 / 播放。
+                            if catalog.inlineDetailItem == nil {
+                                galleryActionPill
+                            }
+                        } else {
+                            primaryActionToolbarContent
+                        }
                     }
                 }
             }
         }
         .onChange(of: store.searchFocusRequest) { _, _ in
-            isSearchFieldFocused = true
+            // 网络资源没有照片索引：⌘F 应该落到源内搜索，而不是隐藏的图库搜索框。
+            if isCatalogScope {
+                catalog.focusSearch()
+            } else {
+                isSearchFieldFocused = true
+            }
         }
         .onChange(of: store.searchText) { _, newValue in
             // 收藏汇总维度页没有可过滤的列表：一开始搜索就回到「全部」，让结果落在照片网格上。
@@ -712,6 +789,9 @@ struct GalleryView: View {
             } else {
                 FavoritesViewModeSwitch()
             }
+        } else if isVideoHubScope, !hasSearchText {
+            // 与「位置」一致：统计胶囊 + 分段视图 + 筛选靠右，标题留在左侧。
+            videoHubPrincipalControls
         } else if showsContextChip {
             contextChip
         } else if isOrganizeScope {
@@ -749,7 +829,11 @@ struct GalleryView: View {
             // 收藏汇总维度页也要保留这一组：切维度时右侧工具栏不能突然少两块。
             galleryLayoutPill
         }
-        galleryActionPill
+        // 网络资源总览（资源 / 资料库 / 榜单 …）没有单张照片动作：助手、⋯、信息、分享、
+        // 收藏在这里都无意义，只保留搜索。
+        if !isCatalogHubScope {
+            galleryActionPill
+        }
         if !isPlacesScope && !isRevisitScope && !isMapScope {
             gallerySearchField
         }
@@ -1267,6 +1351,8 @@ struct GalleryView: View {
             switch store.sidebarItem {
             case .cinema:
                 CinemaLibraryView()
+            case .videos, .systemVideos:
+                VideoHubView()
             case .cloudCinema(let mountID):
                 CinemaLibraryView(mountID: mountID)
             case .collections:
@@ -1312,10 +1398,14 @@ struct GalleryView: View {
                 SystemLibrariesOverviewView()
             case .cloudStorages:
                 CloudStoragesOverviewView()
+            case .catalogSources:
+                CatalogHubView()
             case .people, .systemPeople:
                 PeopleView()
             case .revisit, .systemRevisit:
                 RevisitView()
+            case .catalogSource(let id):
+                CatalogChannelView(sourceID: id)
             case .cloudMount:
                 if isCloudGridScope {
                     // 与拾光 / 系统图库同一套网格：分组、排序、筛选、缩放、列表形式与计数胶囊都复用。
@@ -2299,11 +2389,16 @@ struct GalleryView: View {
 
     /// 缩放控件提示里用张数说明，避免出现看不懂的 pt 值。
     private var zoomDensityText: String {
-        store.isCardWallScope ? "每行 \(store.cardColumns) 张" : "每行 \(store.gridColumnCount) 张"
+        if isVideoHubScope || isCatalogScope {
+            return "卡片 \(Int(store.thumbSize)) pt"
+        }
+        return store.isCardWallScope ? "每行 \(store.cardColumns) 张" : "每行 \(store.gridColumnCount) 张"
     }
 
     private var zoomControlTitle: String {
         switch store.sidebarItem {
+        case .videos, .systemVideos: return "视频卡片大小"
+        case .catalogSource: return "海报大小"
         case .allAlbums, .folder, .systemFolder: return "相簿卡片大小"
         case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes,
              .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages, .systemImports:
@@ -2361,6 +2456,123 @@ struct GalleryView: View {
             shareButton
             favoriteButton
         }
+    }
+
+    // MARK: - 视频页顶栏
+
+    /// 与「位置」页一致的顶栏组合：统计胶囊 + 分段视图 + 筛选。
+    private var videoHubPrincipalControls: some View {
+        HStack(spacing: 8) {
+            chipPill(icon: "video.fill", text: store.videoHubStatsText)
+            videoLayoutSwitch
+            GalleryToolbarPill {
+                videoFilterMenu
+            }
+        }
+    }
+
+    private var videoLayoutSwitch: some View {
+        VideoHubLayoutSwitch()
+    }
+
+    /// 年份与时长收进同一个菜单：工具栏宽度有限，拆成两个菜单会互相挤掉。
+    private var videoFilterMenu: some View {
+        Menu {
+            Section("年份") {
+                Button {
+                    store.videoHubFilter.year = nil
+                } label: {
+                    if store.videoHubFilter.year == nil {
+                        Label("全部年份", systemImage: "checkmark")
+                    } else {
+                        Text("全部年份")
+                    }
+                }
+                ForEach(store.videoHubData.availableYears, id: \.self) { year in
+                    Button {
+                        store.videoHubFilter.year = year
+                    } label: {
+                        let title = String(year) + " 年"
+                        if store.videoHubFilter.year == year {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                }
+            }
+
+            Section("时长") {
+                Button {
+                    store.videoHubFilter.duration = nil
+                } label: {
+                    if store.videoHubFilter.duration == nil {
+                        Label("全部时长", systemImage: "checkmark")
+                    } else {
+                        Text("全部时长")
+                    }
+                }
+                ForEach(VideoDurationBand.allCases) { band in
+                    Button {
+                        store.videoHubFilter.duration = band
+                    } label: {
+                        let title = "\(band.title) · \(band.detail)"
+                        if store.videoHubFilter.duration == band {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                }
+            }
+
+            if store.videoHubFilter.isActive {
+                Divider()
+                Button("清除筛选") {
+                    store.videoHubFilter = VideoHubFilter()
+                }
+            }
+        } label: {
+            videoFilterLabel(icon: store.videoHubFilter.isActive
+                                 ? "line.3.horizontal.decrease.circle.fill"
+                                 : "line.3.horizontal.decrease.circle",
+                             text: videoFilterSummary ?? "筛选",
+                             active: store.videoHubFilter.isActive)
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("按年份或时长筛选视频")
+        .accessibilityLabel("筛选视频")
+    }
+
+    private var videoFilterSummary: String? {
+        var parts: [String] = []
+        if let year = store.videoHubFilter.year {
+            parts.append(String(year) + " 年")
+        }
+        if let duration = store.videoHubFilter.duration {
+            parts.append(duration.title)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func videoFilterLabel(icon: String, text: String, active: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+            Text(text)
+                .font(.system(size: 10.5, weight: .medium))
+                .monospacedDigit()
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 7.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .foregroundStyle(active ? Color.accentColor : Color.primary)
+        .frame(height: 26)
+        .padding(.horizontal, 7)
+        .contentShape(Rectangle())
     }
 
     private var isFiltering: Bool {
@@ -2650,7 +2862,7 @@ struct GalleryView: View {
             GalleryToolbarIconLabel(systemName: "sparkles", active: true)
         }
         .buttonStyle(.plain)
-        .help("智能助手：用自然语言查找照片（只读，不会修改图库）")
+        .help("智能助手：用自然语言查找、整理图库（写操作会先确认）")
         .accessibilityLabel("智能助手")
     }
 
@@ -3038,6 +3250,69 @@ struct OrganizeDimensionSwitch: View {
         }
         .animation(.easeOut(duration: 0.15), value: store.organizeDimension)
         .fixedSize()
+    }
+}
+
+/// 视频页的「海报墙 / 时间轴」切换：图标 + 文字的分段胶囊，
+/// 选中项用强调色渐变托底，切换时滑片过渡，与顶栏其它圆角控件同一套材质与描边。
+struct VideoHubLayoutSwitch: View {
+    @EnvironmentObject private var store: LibraryStore
+    @Namespace private var selection
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(VideoHubLayout.allCases) { layout in
+                segment(layout)
+            }
+        }
+        .padding(3)
+        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+        }
+        .fixedSize()
+    }
+
+    private func segment(_ layout: VideoHubLayout) -> some View {
+        let selected = store.videoHubLayout == layout
+        return Button {
+            guard !selected else { return }
+            withAnimation(.snappy(duration: 0.22)) {
+                store.videoHubLayout = layout
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: layout.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(layout.title)
+                    .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background {
+                if selected {
+                    Capsule(style: .continuous)
+                        .fill(LinearGradient(colors: [Color.accentColor.opacity(0.32),
+                                                      Color.accentColor.opacity(0.13)],
+                                             startPoint: .top,
+                                             endPoint: .bottom))
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .strokeBorder(Color.accentColor.opacity(0.38), lineWidth: 0.6)
+                        }
+                        .shadow(color: Color.accentColor.opacity(0.20), radius: 3, y: 1)
+                        .matchedGeometryEffect(id: "videoHubLayoutSelection", in: selection)
+                }
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(layout.help)
+        .accessibilityLabel(layout.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

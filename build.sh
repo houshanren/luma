@@ -25,6 +25,11 @@ if [ -d Resources/CloudIcons ]; then
     mkdir -p "$APP/Contents/Resources/CloudIcons"
     cp Resources/CloudIcons/*.png "$APP/Contents/Resources/CloudIcons/"
 fi
+# 内置女优 / 片商资料库（SQLite）：详情页与标题识别直接读它，不再联网搜索。
+if [ -d Resources/Catalog ]; then
+    mkdir -p "$APP/Contents/Resources/Catalog"
+    cp Resources/Catalog/*.sqlite "$APP/Contents/Resources/Catalog/"
+fi
 # 只内置轻量小模型（YOLO、地点库）。SigLIP2 由用户在设置里按需下载，
 # 避免安装包无谓增加 370MB；开发期 `swift run` 仍会回退读取仓库里的完整模型。
 if [ -d Resources/Models ]; then

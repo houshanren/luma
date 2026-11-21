@@ -21,6 +21,9 @@ extension LibraryStore {
         if case .cloudMount(let id) = item {
             openCloudMount(id)
         }
+        if case .catalogSource(let id) = item {
+            catalogModel.focus(id)
+        }
         prewarmOpenedCollection(item)
         loadPhotoKitMediaTypesIfNeeded()
     }

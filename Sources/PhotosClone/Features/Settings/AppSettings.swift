@@ -88,6 +88,11 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(loopVideoByDefault, forKey: SettingsKeys.videoLoop) }
     }
 
+    /// 按片源帧率切换显示器刷新率：24p 片源优先 24Hz，减少 3:2 pulldown 抖动。
+    @Published var matchDisplayFrameRate: Bool {
+        didSet { UserDefaults.standard.set(matchDisplayFrameRate, forKey: SettingsKeys.videoMatchDisplayRate) }
+    }
+
     /// 视频查看器里 ↑ / ↓ 快进快退的步长（秒）。
     @Published var videoSeekStep: Double {
         didSet { UserDefaults.standard.set(videoSeekStep, forKey: SettingsKeys.videoSeekStep) }
@@ -106,6 +111,11 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(videoCacheLimitGB, forKey: SettingsKeys.videoCacheLimitGB) }
     }
 
+    /// 网络资源海报缓存上限（GB）：超限按最久未使用删到 90%。
+    @Published var posterCacheLimitGB: Int {
+        didSet { UserDefaults.standard.set(posterCacheLimitGB, forKey: SettingsKeys.posterCacheLimitGB) }
+    }
+
     /// 外挂字幕字号。
     @Published var subtitleFontSize: Double {
         didSet { UserDefaults.standard.set(subtitleFontSize, forKey: SettingsKeys.subtitleFontSize) }
@@ -114,6 +124,16 @@ final class AppSettings: ObservableObject {
     /// 外挂字幕是否显示半透明底色。
     @Published var subtitleBackground: Bool {
         didSet { UserDefaults.standard.set(subtitleBackground, forKey: SettingsKeys.subtitleBackground) }
+    }
+
+    /// 外挂字幕颜色（white / yellow / cyan / green）。
+    @Published var subtitleColor: String {
+        didSet { UserDefaults.standard.set(subtitleColor, forKey: SettingsKeys.subtitleColor) }
+    }
+
+    /// 外挂字幕位置（bottom / lower / middle）。
+    @Published var subtitlePosition: String {
+        didSet { UserDefaults.standard.set(subtitlePosition, forKey: SettingsKeys.subtitlePosition) }
     }
 
     /// 「最近删除」自动清理的保留天数；0 表示不自动清理。（随图库保存）
@@ -148,9 +168,21 @@ final class AppSettings: ObservableObject {
 
     // MARK: 影院刮削
 
-    /// 刮削数据源：TMDB（官方 API）或豆瓣（非官方公开接口）。
+    /// 刮削数据源的优先级：TMDB（官方 API）优先，豆瓣作为备用同时参与。
     @Published var cinemaProvider: CinemaProvider {
         didSet { UserDefaults.standard.set(cinemaProvider.rawValue, forKey: SettingsKeys.cinemaProvider) }
+    }
+
+    /// 刮削源的尝试顺序：第一项就是首选源，设置页拖动后立即生效。
+    @Published var cinemaSourceOrder: [CinemaProvider] {
+        didSet {
+            UserDefaults.standard.set(cinemaSourceOrder.map(\.rawValue),
+                                      forKey: SettingsKeys.cinemaSourceOrder)
+            // 首选源与顺序保持一致：影院页的「XX 优先」等旧读取方不用改。
+            if let first = cinemaSourceOrder.first, first != cinemaProvider {
+                cinemaProvider = first
+            }
+        }
     }
 
     /// TMDB API Key（v3）或 Read Access Token（v4，以 eyJ 开头）。
@@ -188,6 +220,58 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(cinemaDoubanCookie, forKey: SettingsKeys.cinemaDoubanCookie) }
     }
 
+    /// TheTVDB API Key（v4）：作为第三顺位刮削源。
+    @Published var cinemaTVDBKey: String {
+        didSet { UserDefaults.standard.set(cinemaTVDBKey, forKey: SettingsKeys.cinemaTVDBKey) }
+    }
+
+    /// TheTVDB 订阅者 PIN，可选；普通 Key 留空即可。
+    @Published var cinemaTVDBPin: String {
+        didSet { UserDefaults.standard.set(cinemaTVDBPin, forKey: SettingsKeys.cinemaTVDBPin) }
+    }
+
+    /// OpenSubtitles API Key：在线字幕搜索与下载。
+    @Published var cinemaSubtitleAPIKey: String {
+        didSet { UserDefaults.standard.set(cinemaSubtitleAPIKey, forKey: SettingsKeys.cinemaSubtitleAPIKey) }
+    }
+
+    /// OpenSubtitles 账号（下载配额用）；账号与密码只写钥匙串。
+    /// 启动阶段不读钥匙串：等用户打开设置里的在线字幕，或真正搜索字幕时再读，
+    /// 避免一启动就弹系统钥匙串授权框。
+    @Published var cinemaSubtitleUsername: String {
+        didSet {
+            guard !isRestoringSubtitleCredentials else { return }
+            CinemaKeychain.set(cinemaSubtitleUsername, for: .subtitleUsername)
+        }
+    }
+
+    @Published var cinemaSubtitlePassword: String {
+        didSet {
+            guard !isRestoringSubtitleCredentials else { return }
+            CinemaKeychain.set(cinemaSubtitlePassword, for: .subtitlePassword)
+        }
+    }
+
+    /// 字幕账号是否已经从钥匙串取过一次（只在需要时）。
+    private var subtitleCredentialsLoaded = false
+    /// 恢复期间屏蔽 didSet 回写，避免「读钥匙串」紧接着又「写钥匙串」。
+    private var isRestoringSubtitleCredentials = false
+
+    /// 按需读取字幕账号：设置页打开、或第一次使用在线字幕时调用。
+    func loadSubtitleCredentialsIfNeeded() {
+        guard !subtitleCredentialsLoaded else { return }
+        subtitleCredentialsLoaded = true
+        isRestoringSubtitleCredentials = true
+        cinemaSubtitleUsername = CinemaKeychain.value(for: .subtitleUsername)
+        cinemaSubtitlePassword = CinemaKeychain.value(for: .subtitlePassword)
+        isRestoringSubtitleCredentials = false
+    }
+
+    /// 家长控制档位：按分级限制影院可见内容。
+    @Published var cinemaParentalLevel: CinemaParentalLevel {
+        didSet { UserDefaults.standard.set(cinemaParentalLevel.rawValue, forKey: SettingsKeys.cinemaParentalLevel) }
+    }
+
     init() {
         let defaults = UserDefaults.standard
         appearance = AppAppearance(rawValue: defaults.string(forKey: SettingsKeys.appearance) ?? "") ?? .system
@@ -207,14 +291,42 @@ final class AppSettings: ObservableObject {
         viewFullHDR = defaults.object(forKey: SettingsKeys.viewFullHDR) as? Bool ?? true
         muteVideoByDefault = defaults.object(forKey: SettingsKeys.videoMuted) as? Bool ?? false
         loopVideoByDefault = defaults.object(forKey: SettingsKeys.videoLoop) as? Bool ?? false
+        matchDisplayFrameRate = defaults.object(forKey: SettingsKeys.videoMatchDisplayRate) as? Bool ?? true
         videoSeekStep = defaults.object(forKey: SettingsKeys.videoSeekStep) as? Double ?? 5
         videoControlPlacement = VideoControlPlacement(
             rawValue: defaults.string(forKey: SettingsKeys.videoControlPlacement) ?? "") ?? .topIntegrated
-        videoCacheLimitGB = defaults.object(forKey: SettingsKeys.videoCacheLimitGB) as? Int ?? 20
+        var videoLimit = defaults.object(forKey: SettingsKeys.videoCacheLimitGB) as? Int ?? 50
+        var posterLimit = defaults.object(forKey: SettingsKeys.posterCacheLimitGB) as? Int ?? 10
+        // 旧的默认值（海报 2 / 5 GB、视频 20 GB）升到新默认 10 / 50 GB；手动选过的其它值保持不动。
+        if defaults.string(forKey: SettingsKeys.cacheLimitDefaultsVersion) != "2" {
+            if [2, 5].contains(posterLimit) { posterLimit = 10 }
+            if videoLimit == 20 { videoLimit = 50 }
+            defaults.set(posterLimit, forKey: SettingsKeys.posterCacheLimitGB)
+            defaults.set(videoLimit, forKey: SettingsKeys.videoCacheLimitGB)
+            defaults.set("2", forKey: SettingsKeys.cacheLimitDefaultsVersion)
+        }
+        videoCacheLimitGB = videoLimit
+        posterCacheLimitGB = posterLimit
         subtitleFontSize = defaults.object(forKey: SettingsKeys.subtitleFontSize) as? Double ?? 15
         subtitleBackground = defaults.object(forKey: SettingsKeys.subtitleBackground) as? Bool ?? true
-        // 默认豆瓣：免 Key，开箱即可刮削。
-        cinemaProvider = CinemaProvider(rawValue: defaults.string(forKey: SettingsKeys.cinemaProvider) ?? "") ?? .douban
+        subtitleColor = defaults.string(forKey: SettingsKeys.subtitleColor) ?? "white"
+        subtitlePosition = defaults.string(forKey: SettingsKeys.subtitlePosition) ?? "bottom"
+        // 默认优先 TMDB：没填 Key 时自动跳过，改用豆瓣匹配。
+        let initialProvider = CinemaProvider(rawValue: defaults.string(forKey: SettingsKeys.cinemaProvider) ?? "") ?? .tmdb
+        cinemaProvider = initialProvider
+        let savedOrder = (defaults.array(forKey: SettingsKeys.cinemaSourceOrder) as? [String] ?? [])
+            .compactMap(CinemaProvider.init(rawValue:))
+        var sourceOrder: [CinemaProvider]
+        if savedOrder.isEmpty {
+            sourceOrder = [initialProvider] + CinemaProvider.allCases.filter { $0 != initialProvider }
+        } else {
+            sourceOrder = savedOrder
+            for provider in CinemaProvider.allCases where !sourceOrder.contains(provider) {
+                sourceOrder.append(provider)
+            }
+        }
+        cinemaSourceOrder = sourceOrder
+        if let first = sourceOrder.first { cinemaProvider = first }
         cinemaAPIKey = defaults.string(forKey: SettingsKeys.cinemaAPIKey) ?? ""
         cinemaLanguage = defaults.string(forKey: SettingsKeys.cinemaLanguage) ?? "zh-CN"
         cinemaAPIBase = defaults.string(forKey: SettingsKeys.cinemaAPIBase) ?? "https://api.themoviedb.org/3"
@@ -222,6 +334,15 @@ final class AppSettings: ObservableObject {
         cinemaAutoScrape = defaults.object(forKey: SettingsKeys.cinemaAutoScrape) as? Bool ?? true
         cinemaDoubanBase = defaults.string(forKey: SettingsKeys.cinemaDoubanBase) ?? "https://movie.douban.com"
         cinemaDoubanCookie = defaults.string(forKey: SettingsKeys.cinemaDoubanCookie) ?? ""
+        cinemaTVDBKey = defaults.string(forKey: SettingsKeys.cinemaTVDBKey) ?? ""
+        cinemaTVDBPin = defaults.string(forKey: SettingsKeys.cinemaTVDBPin) ?? ""
+        cinemaSubtitleAPIKey = defaults.string(forKey: SettingsKeys.cinemaSubtitleAPIKey) ?? ""
+        // 账号密码留在钥匙串里，等设置页或字幕搜索真正需要时再读。
+        cinemaSubtitleUsername = ""
+        cinemaSubtitlePassword = ""
+        cinemaParentalLevel = CinemaParentalLevel(
+            rawValue: defaults.object(forKey: SettingsKeys.cinemaParentalLevel) as? Int ?? 0
+        ) ?? .off
         trashRetentionDays = defaults.object(forKey: SettingsKeys.trashRetentionDays) as? Int ?? 30
         importCreateAlbumsFromFolders = defaults.object(forKey: SettingsKeys.importCreateAlbums) as? Bool ?? true
         importPreserveFolderStructure = defaults.object(forKey: SettingsKeys.importPreserveStructure) as? Bool ?? true

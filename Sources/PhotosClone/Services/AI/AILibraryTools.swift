@@ -9,11 +9,18 @@ enum AILibraryTools {
         "rename_album", "delete_album", "move_album", "set_album_cover",
         "create_folder", "rename_folder", "delete_folder",
         "set_favorite", "set_hidden", "add_keywords", "remove_keywords",
-        "set_title", "compress_photos", "beautify_photos", "trash_photos", "restore_photos"
+        "set_title", "compress_photos", "beautify_photos", "trash_photos", "restore_photos",
+        "scrape_cinema", "match_cinema", "apply_cinema_match",
+        "set_catalog_watchlist", "follow_catalog_person"
     ]
 
     static var definitions: [AIRequestTool] {
         [searchPhotos, listAlbums, listFolders, listVideos,
+         listCatalogSources, searchCatalog, listCatalogFollowing, listCatalogWatchlist,
+         catalogNewToday, browseCatalog, playCatalogItem, setCatalogWatchlist, followCatalogPerson,
+         listCinemaItems, listCinemaScopes, cinemaTree,
+         searchCinemaCandidates, applyCinemaMatch,
+         scrapeCinema, matchCinema,
          navigate, selectPhotos, openPhoto,
          createAlbums, addPhotosToAlbum, removePhotosFromAlbum,
          renameAlbum, deleteAlbum, moveAlbum, setAlbumCover,
@@ -63,6 +70,202 @@ enum AILibraryTools {
             parameters: objectSchema([
                 "limit": integerSchema("最多返回数量，默认 30，最大 100", minimum: 1, maximum: 100)
             ])
+        )
+    }
+
+    // MARK: - 网络资源
+
+    private static var listCatalogSources: AIRequestTool {
+        AIRequestTool(
+            name: "list_catalog_sources",
+            description: "列出「网络资源」里已接入的站点：source_id、名称、类型、是否启用与健康状态。搜索或播放网络资源前可先调用它；未启用的源不会被搜索。",
+            parameters: objectSchema([:])
+        )
+    }
+
+    private static var searchCatalog: AIRequestTool {
+        AIRequestTool(
+            name: "search_catalog",
+            description: "在「网络资源」里跨源搜索（会请求站点）。返回按源分组的结果，每条带 ref（如 #1）、source_id、item_id、标题与备注；ref 只对最近一次 list / search 有效。只查网络资源，不查本地照片。",
+            parameters: objectSchema([
+                "query": stringSchema("搜索词：番号、标题或女优名"),
+                "source": stringSchema("只搜某个源：source_id、源名称或类型；省略则搜全部已启用源"),
+                "limit": integerSchema("每个源最多返回多少条，默认 12，最大 30", minimum: 1, maximum: 30)
+            ], required: ["query"])
+        )
+    }
+
+    private static var listCatalogFollowing: AIRequestTool {
+        AIRequestTool(
+            name: "list_catalog_following",
+            description: "列出网络资源里关注的女优 / 片商与分类，以及各自的新内容数量。回答「我关注了谁」「有什么更新」时使用。",
+            parameters: objectSchema([:])
+        )
+    }
+
+    private static var listCatalogWatchlist: AIRequestTool {
+        AIRequestTool(
+            name: "list_catalog_watchlist",
+            description: "列出跨源「稍后看」里的网络资源条目（按加入时间倒序），返回 ref、source_id、item_id、标题与备注；可直接用于播放或移出稍后看。",
+            parameters: objectSchema([
+                "limit": integerSchema("最多返回多少条，默认 40，最大 100", minimum: 1, maximum: 100)
+            ])
+        )
+    }
+
+    private static var catalogNewToday: AIRequestTool {
+        AIRequestTool(
+            name: "catalog_new_today",
+            description: "列出更新日历里今天第一次出现的网络资源条目（纯本地，不请求站点）。返回 ref、source_id、item_id、标题与发现时间，可直接用于播放或加入稍后看。",
+            parameters: objectSchema([
+                "limit": integerSchema("最多返回多少条，默认 40，最大 100", minimum: 1, maximum: 100)
+            ])
+        )
+    }
+
+    private static var browseCatalog: AIRequestTool {
+        AIRequestTool(
+            name: "browse_catalog",
+            description: "把用户带到网络资源的某个源与页面：首页、排行、稍后看或某个分类。只切换界面，不修改数据。",
+            parameters: objectSchema([
+                "source": stringSchema("源：source_id、源名称或类型；省略则用当前源"),
+                "section": enumSchema(["home", "rank", "favorites", "category"],
+                                      "要打开的页面，默认 home"),
+                "category": stringSchema("分类名称或分类 id；section = category 时使用")
+            ])
+        )
+    }
+
+    private static var playCatalogItem: AIRequestTool {
+        AIRequestTool(
+            name: "play_catalog_item",
+            description: "直接播放网络资源里的某个条目。用 ref 引用最近一次 search_catalog 或 catalog_new_today 的结果，也可以直接给 source_id + item_id。只打开播放器，不修改数据。",
+            parameters: objectSchema([
+                "ref": stringSchema("结果编号，例如 #1；来自最近一次 search_catalog / catalog_new_today"),
+                "source_id": stringSchema("源 UUID；与 item_id 一起使用"),
+                "item_id": stringSchema("条目 id；与 source_id 一起使用")
+            ])
+        )
+    }
+
+    private static var setCatalogWatchlist: AIRequestTool {
+        AIRequestTool(
+            name: "set_catalog_watchlist",
+            description: "把网络资源条目加入或移出跨源「稍后看」。用 refs（最近一次 search_catalog / catalog_new_today 的编号）或 source_id + item_ids 指定条目。",
+            parameters: objectSchema([
+                "refs": arraySchema(["type": "string"],
+                                    description: "结果编号列表，例如 [\"#1\", \"#3\"]"),
+                "source_id": stringSchema("源 UUID；与 item_ids 一起使用"),
+                "item_ids": arraySchema(["type": "string"], description: "条目 id 列表"),
+                "favorite": booleanSchema("true 加入稍后看（默认），false 移出")
+            ])
+        )
+    }
+
+    private static var followCatalogPerson: AIRequestTool {
+        AIRequestTool(
+            name: "follow_catalog_person",
+            description: "关注网络资源里的女优 / 片商 / 模特，之后关注页会显示新作数量。已关注时不会重复添加。",
+            parameters: objectSchema([
+                "name": stringSchema("人物或片商名称"),
+                "role": enumSchema(["女优", "片商", "模特"], "角色，默认女优"),
+                "source": stringSchema("从哪个源关注：source_id、源名称或类型；省略则用当前源")
+            ], required: ["name"])
+        )
+    }
+
+    // MARK: - 影院
+
+    private static var listCinemaItems: AIRequestTool {
+        AIRequestTool(
+            name: "list_cinema_items",
+            description: "查看当前影院的文件夹与视频：目录名、视频数、已识别 / 未识别、文件名与解析出的片名和季集。匹配或刮削前先调用它确认目标。",
+            parameters: objectSchema([
+                "folder": stringSchema("只看某个文件夹：名称或路径片段，可省略"),
+                "only_unmatched": booleanSchema("只看未识别的视频，默认 false"),
+                "limit": integerSchema("最多返回视频数，默认 30，最大 100", minimum: 1, maximum: 100)
+            ])
+        )
+    }
+
+    private static var scrapeCinema: AIRequestTool {
+        AIRequestTool(
+            name: "scrape_cinema",
+            description: "刮削当前影院里的视频：自动搜索 TMDB / 豆瓣并写入海报、标题、简介等元数据。可只刮一个文件夹（含子文件夹），也可整库重新刮削。只写元数据，不移动或删除视频。",
+            parameters: objectSchema([
+                "folder": stringSchema("只刮这个文件夹：名称或路径片段；省略则整库刮削"),
+                "force": booleanSchema("是否忽略已有结果强制重刮，默认 false")
+            ])
+        )
+    }
+
+    private static var matchCinema: AIRequestTool {
+        AIRequestTool(
+            name: "match_cinema",
+            description: "手动匹配当前影院里的未识别视频：按片名搜索 TMDB / 豆瓣，取最匹配的一条写回。可指定单个文件名，也可指定整个文件夹（含子文件夹）批量匹配。",
+            parameters: objectSchema([
+                "target": stringSchema("要匹配的范围：文件名片段、文件夹名称或路径片段；省略则处理所有未识别视频"),
+                "query": stringSchema("要搜索的片名或剧名；省略则使用文件名解析出的标题"),
+                "is_tv": booleanSchema("按剧集匹配；省略时沿用文件本身的类型推断"),
+                "year": integerSchema("年份，可省略", minimum: 1900, maximum: 2100),
+                "limit": integerSchema("最多处理多少条，默认 10，最大 20", minimum: 1, maximum: 20)
+            ])
+        )
+    }
+
+    private static var listCinemaScopes: AIRequestTool {
+        AIRequestTool(
+            name: "list_cinema_scopes",
+            description: "列出所有影院作用域：本地图库与每个网络存储，含 scope id、名称、视频数与已识别 / 未识别数。整理某个网盘前先调用它，把 scope id 传给其他影院工具。",
+            parameters: objectSchema([:])
+        )
+    }
+
+    private static var cinemaTree: AIRequestTool {
+        AIRequestTool(
+            name: "cinema_tree",
+            description: "获取影院的真实目录树与视频清单：不传 folder 时返回顶层文件夹概览；传 folder（路径或名称片段）时返回该文件夹的直属视频文件名、解析出的片名 / 年份 / 季 / 集，以及下一层子文件夹。整理影院时靠它逐层看清楚「哪个文件夹里有哪些视频」。",
+            parameters: objectSchema([
+                "scope": stringSchema("影院 id（local 或网盘 id）；省略则当前影院"),
+                "folder": stringSchema("要展开的文件夹路径或名称片段；省略则看顶层目录"),
+                "only_unmatched": booleanSchema("只列未识别的视频，默认 false"),
+                "limit": integerSchema("最多返回多少个视频，默认 80，最大 200", minimum: 1, maximum: 200)
+            ])
+        )
+    }
+
+    private static var searchCinemaCandidates: AIRequestTool {
+        AIRequestTool(
+            name: "search_cinema_candidates",
+            description: "按片名搜索电影 / 剧集候选（TMDB、豆瓣），返回 candidate_id、年份、类型、评分与简介；剧集还会给出季数 / 集数。拿到候选后再用 apply_cinema_match 写回，这样能自己判断匹配哪一部、哪一季。",
+            parameters: objectSchema([
+                "query": stringSchema("搜索词：干净的片名 / 剧名，去掉年份、分辨率、编码、字幕组"),
+                "is_tv": booleanSchema("按剧集搜索；电影传 false"),
+                "year": integerSchema("年份，可省略", minimum: 1900, maximum: 2100),
+                "limit": integerSchema("返回候选数，默认 5，最大 10", minimum: 1, maximum: 10)
+            ], required: ["query"])
+        )
+    }
+
+    private static var applyCinemaMatch: AIRequestTool {
+        AIRequestTool(
+            name: "apply_cinema_match",
+            description: "把 search_cinema_candidates 的某个候选写回影院：可对整个文件夹（直属视频）或指定视频应用；剧集可同时指定季号与逐集映射，保证季、集准确。只写元数据与海报，不移动、不改名、不删除视频。",
+            parameters: objectSchema([
+                "candidate_id": stringSchema("search_cinema_candidates 返回的 candidate_id"),
+                "scope": stringSchema("影院 id（local 或网盘 id）；省略则当前影院"),
+                "folder": stringSchema("把该文件夹的直属视频整体应用为这个候选；与 photo_ids 二选一"),
+                "photo_ids": arraySchema(["type": "string"],
+                                         description: "只应用这些视频 id（cinema_tree 返回的 id）"),
+                "season": integerSchema("剧集的季号；省略则沿用文件名 / 目录里解析出的季",
+                                        minimum: 1, maximum: 100),
+                "episodes": arraySchema(["type": "object",
+                                         "properties": [
+                                            "photo_id": stringSchema("视频 id"),
+                                            "episode": integerSchema("集号", minimum: 1, maximum: 10000)
+                                         ]],
+                                        description: "逐集映射：视频 id → 集号；省略则沿用文件名里解析出的集号")
+            ], required: ["candidate_id"])
         )
     }
 
@@ -427,6 +630,39 @@ enum AILibraryTools {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    // MARK: - 一键整理指令
+
+    /// 影院顶栏「一键智能整理」的预设指令：怎么分组、怎么判断电影 / 剧集、季集怎么对齐，
+    /// 全交给模型；工具只负责提供目录树、候选与写回。
+    static func cinemaAutoMatchPrompt(scopeName: String) -> String {
+        """
+        请帮我把当前影院「\(scopeName)」整理匹配好。全程只写元数据与海报，不移动、不改名、不删除任何视频文件。
+
+        步骤：
+        1. 先调用 cinema_tree（省略 folder）看顶层文件夹概览，再对每个有视频的文件夹调用 cinema_tree 展开，读取真实文件名。
+        2. 判断电影还是剧集以文件名为准，不要只看目录结构：
+           - 文件名里有 SxxExx / 1x02 / EPxx / Exx / 第 N 集，或同组连续纯数字（目录或文件名带 Season N / 第 N 季 / Sxx）→ 剧集。
+           - 文件名带年份、分辨率（2160p / 4K）、片源（BluRay / WEB-DL / REMUX）而没有集号 → 电影。
+           - 同一文件夹里可能有多部电影：第一部 / 第二部、Part 1 / Part 2、不同年份的续集，它们是不同作品，不要当成一部剧的不同集。
+        3. 先分组再匹配，同一作品的多版本只算一个作品：
+           - 多版本包括 4K / 1080p、HDR / DV 杜比视界、REMUX / 蓝光原盘 / WEB-DL、国语 / 中字 / 导演剪辑版 / 加长版 / 未删减、上下部等。
+           - parsed_title 相同且 parsed_year 相同的文件通常是同一部作品的不同版本；写回时这一批要放在同一次 apply_cinema_match 里，不要只写其中一份。
+           - 剧集同一集的多版本（4K 与 1080p 各一份）要映射到同一个集号。
+        4. 用 search_cinema_candidates 搜候选：剧集传 is_tv=true，电影传 is_tv=false；query 用干净的片名（去掉年份、分辨率、编码、字幕组、季集号与版本标签），year 用文件名或目录里的年份。优先选片名完全一致、年份一致、类型一致；同名动画 / 短片 / 不同版本不要选。
+        5. 写回：
+           - 剧集：apply_cinema_match 传 folder（或 photo_ids）、candidate_id、season，并用 episodes 逐文件给出集号（SxxExx / EPxx / 第 N 集 / 纯数字）。同一部剧不同季分开应用，季与集都要对得上。
+           - 电影：apply_cinema_match 传 candidate_id；文件夹里只有这一部作品时可用 folder。
+           - 文件夹里有续集、合集等多部作品时，必须用 photo_ids 按作品分批应用，同一作品的多版本放同一批。
+        6. 每一批处理完再调用 cinema_tree(only_unmatched=true) 复查；还有未识别的就继续下一轮。整次整理最多 20 轮工具调用。
+        7. 最后用一段话汇总：匹配成功多少部 / 多少集（说明合并了哪些多版本），还剩多少未识别，哪些没有候选或不确定需要人工确认。
+
+        约束：
+        - 一个文件夹里的视频不一定属于同一部作品：先按文件名分组，再决定用 folder 还是 photo_ids。
+        - 候选不确定时宁可跳过并在最后列出，不要乱匹配。
+        - 不要调用 match_cinema 的「取第一条」快捷方式，必须自己看候选后再 apply_cinema_match。
+        """
+    }
+
     // MARK: - 确认弹窗文案
 
     /// 用于确认弹窗的可读描述。
@@ -493,6 +729,32 @@ enum AILibraryTools {
             return "从最近删除恢复 \(photoCount) 项"
         case "select_photos":
             return "选中 \(photoCount) 项"
+        case "scrape_cinema":
+            let target = string(args["folder"]) ?? "当前影院"
+            let force = bool(args["force"], fallback: false)
+            return "刮削「\(target)」的视频（\(force ? "强制重刮" : "只补未识别")，仅写元数据与海报）"
+        case "apply_cinema_match":
+            let target = string(args["folder"]).map { "文件夹「\($0)」" } ?? "\(photoCount) 个视频"
+            let season = integer(args["season"], fallback: 0)
+            let episodes = objectArray(args["episodes"]).count
+            var detail = "匹配 \(target) → 候选 \(string(args["candidate_id"]) ?? "")"
+            if season > 0 { detail += " · 第 \(season) 季" }
+            if episodes > 0 { detail += " · \(episodes) 集逐集映射" }
+            return detail + "（仅写元数据与海报）"
+        case "match_cinema":
+            let target = string(args["target"]) ?? "所有未识别视频"
+            let query = string(args["query"]) ?? "按文件名解析的片名"
+            let limit = integer(args["limit"], fallback: 10)
+            return "匹配「\(target)」：按「\(query)」搜索，最多 \(limit) 条，仅写元数据"
+        case "set_catalog_watchlist":
+            let favorite = bool(args["favorite"], fallback: true)
+            let refs = stringArray(args["refs"])
+            let count = refs.isEmpty ? stringArray(args["item_ids"]).count : refs.count
+            return "\(favorite ? "加入" : "移出")网络资源稍后看：\(count) 条"
+        case "follow_catalog_person":
+            let name = string(args["name"]) ?? ""
+            let role = string(args["role"]) ?? "女优"
+            return "关注\(role)「\(name)」"
         default:
             return call.name
         }

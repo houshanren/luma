@@ -29,12 +29,7 @@ struct TMDBClient: CinemaMetadataSource {
     private var usesBearer: Bool { trimmedKey.hasPrefix("eyJ") }
 
     func search(query: String, isTV: Bool, year: Int?) async throws -> [CinemaMatch] {
-        guard !trimmedKey.isEmpty else { throw TMDBError.missingKey }
         let path = isTV ? "/search/tv" : "/search/movie"
-        guard var components = URLComponents(string: apiBase.trimmingCharacters(in: .whitespaces)
-                                                .trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
-            throw TMDBError.invalidBase
-        }
         var items = [
             URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "language", value: language),
@@ -44,10 +39,251 @@ struct TMDBClient: CinemaMetadataSource {
         if let year {
             items.append(URLQueryItem(name: isTV ? "first_air_date_year" : "year", value: String(year)))
         }
-        if !usesBearer {
-            items.append(URLQueryItem(name: "api_key", value: trimmedKey))
+        let object = try await request(path: path, items: items)
+        guard let results = object["results"] as? [[String: Any]] else {
+            throw TMDBError.decoding
         }
-        components.queryItems = items
+        return results.compactMap { parse($0, isTV: isTV) }
+    }
+
+    /// 详情：合集、演职员、预告片与分级一次取回。
+    func details(id: Int, isTV: Bool) async throws -> CinemaDetails? {
+        let path = isTV ? "/tv/\(id)" : "/movie/\(id)"
+        let append = isTV
+            ? "credits,videos,content_ratings"
+            : "credits,videos,release_dates"
+        let object = try await request(path: path, items: [
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "append_to_response", value: append)
+        ])
+        guard !object.isEmpty else { return nil }
+
+        var details = CinemaDetails()
+
+        if let collection = object["belongs_to_collection"] as? [String: Any] {
+            details.collectionID = (collection["id"] as? NSNumber)?.intValue
+            details.collectionName = collection["name"] as? String
+        }
+
+        if let credits = object["credits"] as? [String: Any] {
+            if let cast = credits["cast"] as? [[String: Any]] {
+                details.cast = cast.prefix(16).compactMap { item in
+                    guard let name = item["name"] as? String, !name.isEmpty else { return nil }
+                    return CinemaCastMember(name: name,
+                                            character: item["character"] as? String,
+                                            profileURL: imageURL(path: item["profile_path"] as? String,
+                                                                 size: "w185"),
+                                            tmdbID: (item["id"] as? NSNumber)?.intValue)
+                }
+            }
+            if let crew = credits["crew"] as? [[String: Any]] {
+                details.directors = crew.compactMap { item in
+                    guard (item["job"] as? String) == "Director",
+                          let name = item["name"] as? String else { return nil }
+                    return name
+                }
+            }
+        }
+        // 剧集没有导演字段，用主创补位。
+        if details.directors.isEmpty, let creators = object["created_by"] as? [[String: Any]] {
+            details.directors = creators.compactMap { $0["name"] as? String }
+        }
+
+        if let videos = object["videos"] as? [String: Any],
+           let results = videos["results"] as? [[String: Any]] {
+            let trailers = results.filter {
+                ($0["site"] as? String)?.lowercased() == "youtube"
+            }
+            let trailer = trailers.first { ($0["type"] as? String) == "Trailer" }
+                ?? trailers.first { ($0["type"] as? String) == "Teaser" }
+                ?? trailers.first
+            details.trailerKey = trailer?["key"] as? String
+        }
+
+        details.certification = parseCertification(object, isTV: isTV)
+
+        let tagline = (object["tagline"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        details.tagline = (tagline?.isEmpty ?? true) ? nil : tagline
+        details.status = object["status"] as? String
+        details.originalLanguage = object["original_language"] as? String
+        details.voteCount = (object["vote_count"] as? NSNumber)?.intValue
+        if let countries = object["production_countries"] as? [[String: Any]] {
+            details.countries = countries.compactMap { $0["name"] as? String }
+        }
+        if let companies = object["production_companies"] as? [[String: Any]] {
+            details.companies = Array(companies.compactMap { $0["name"] as? String }.prefix(6))
+        }
+        if isTV {
+            if let runtimes = object["episode_run_time"] as? [NSNumber] {
+                details.runtime = runtimes.first?.intValue
+            }
+            details.seasonCount = (object["number_of_seasons"] as? NSNumber)?.intValue
+            details.episodeCount = (object["number_of_episodes"] as? NSNumber)?.intValue
+            details.releaseDate = object["first_air_date"] as? String
+            if let networks = object["networks"] as? [[String: Any]] {
+                details.networks = networks.compactMap { $0["name"] as? String }
+            }
+        } else {
+            details.runtime = (object["runtime"] as? NSNumber)?.intValue
+            details.releaseDate = object["release_date"] as? String
+            details.budget = (object["budget"] as? NSNumber)?.int64Value
+            details.revenue = (object["revenue"] as? NSNumber)?.int64Value
+        }
+        return details
+    }
+
+    /// 电影看 release_dates，剧集看 content_ratings；优先美国，没有就取第一条非空。
+    private func parseCertification(_ object: [String: Any], isTV: Bool) -> String? {
+        if isTV,
+           let ratings = (object["content_ratings"] as? [String: Any])?["results"] as? [[String: Any]] {
+            let pick = ratings.first { ($0["iso_3166_1"] as? String) == "US" }
+                ?? ratings.first { !(($0["rating"] as? String) ?? "").isEmpty }
+            return (pick?["rating"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        guard let groups = (object["release_dates"] as? [String: Any])?["results"] as? [[String: Any]] else {
+            return nil
+        }
+        func certification(in group: [String: Any]) -> String? {
+            let dates = group["release_dates"] as? [[String: Any]] ?? []
+            for date in dates {
+                if let value = date["certification"] as? String, !value.isEmpty { return value }
+            }
+            return nil
+        }
+        if let us = groups.first(where: { ($0["iso_3166_1"] as? String) == "US" }),
+           let value = certification(in: us) {
+            return value
+        }
+        for group in groups {
+            if let value = certification(in: group) { return value }
+        }
+        return nil
+    }
+
+    /// IMDb ID：TheIntroDB 的片头片尾分段只按 IMDb 索引，用本片 TMDB ID 换一次。
+    func externalImdbID(id: Int, isTV: Bool) async throws -> String? {
+        let path = isTV ? "/tv/\(id)/external_ids" : "/movie/\(id)/external_ids"
+        let object = try await request(path: path, items: [])
+        let value = (object["imdb_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty ?? true) ? nil : value
+    }
+
+    /// 某一季的分集信息：标题、简介与剧照，用于剧集详情展示每集概要。
+    func seasonDetails(tvID: Int, season: Int) async throws -> [Int: CinemaEpisodeInfo] {
+        let object = try await request(path: "/tv/\(tvID)/season/\(season)",
+                                       items: [URLQueryItem(name: "language", value: language)])
+        guard let episodes = object["episodes"] as? [[String: Any]] else {
+            throw TMDBError.decoding
+        }
+        var result: [Int: CinemaEpisodeInfo] = [:]
+        for item in episodes {
+            guard let number = (item["episode_number"] as? NSNumber)?.intValue else { continue }
+            let title = (item["name"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let overview = (item["overview"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            result[number] = CinemaEpisodeInfo(
+                title: title,
+                overview: (overview?.isEmpty ?? true) ? nil : overview,
+                stillURL: imageURL(path: item["still_path"] as? String, size: "w780")
+            )
+        }
+        return result
+    }
+
+    /// 人物页：简介、出生信息与全部作品（combined_credits）。
+    func person(id: Int) async throws -> CinemaPersonProfile? {
+        let object = try await request(path: "/person/\(id)", items: [
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "append_to_response", value: "combined_credits")
+        ])
+        guard let name = object["name"] as? String, !name.isEmpty else { return nil }
+        var profile = CinemaPersonProfile(
+            name: name,
+            biography: {
+                let raw = (object["biography"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (raw?.isEmpty ?? true) ? nil : raw
+            }(),
+            birthday: object["birthday"] as? String,
+            placeOfBirth: object["place_of_birth"] as? String,
+            profileURL: imageURL(path: object["profile_path"] as? String, size: "w300"),
+            department: object["known_for_department"] as? String
+        )
+
+        var credits: [CinemaPersonCredit] = []
+        func append(_ item: [String: Any], isTV: Bool, job: String? = nil) {
+            guard let id = (item["id"] as? NSNumber)?.intValue else { return }
+            let title = (isTV ? item["name"] as? String : item["title"] as? String) ?? ""
+            guard !title.isEmpty else { return }
+            let date = (isTV ? item["first_air_date"] as? String : item["release_date"] as? String) ?? ""
+            credits.append(CinemaPersonCredit(
+                tmdbID: id,
+                isTV: isTV,
+                title: title,
+                year: Int(date.prefix(4)),
+                posterURL: imageURL(path: item["poster_path"] as? String, size: "w342"),
+                character: item["character"] as? String,
+                job: job
+            ))
+        }
+
+        if let combined = object["combined_credits"] as? [String: Any] {
+            for item in (combined["cast"] as? [[String: Any]] ?? []) {
+                append(item, isTV: (item["media_type"] as? String) == "tv")
+            }
+            for item in (combined["crew"] as? [[String: Any]] ?? [])
+            where (item["job"] as? String) == "Director" {
+                append(item, isTV: (item["media_type"] as? String) == "tv", job: "导演")
+            }
+        }
+
+        // 同一作品既演又导时只保留一条；按年份从新到旧。
+        var seen = Set<String>()
+        profile.credits = credits
+            .filter { seen.insert($0.id).inserted }
+            .sorted {
+                if ($0.year ?? 0) != ($1.year ?? 0) { return ($0.year ?? 0) > ($1.year ?? 0) }
+                return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+        return profile
+    }
+
+    /// 合集详情：简介 + 全部影片（未入库的只用于提示，不生成条目）。
+    func collection(id: Int) async throws -> CinemaCollectionInfo? {
+        let object = try await request(path: "/collection/\(id)",
+                                       items: [URLQueryItem(name: "language", value: language)])
+        guard let name = object["name"] as? String, !name.isEmpty else { return nil }
+        let overview = (object["overview"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = (object["parts"] as? [[String: Any]] ?? []).compactMap { item -> CinemaCollectionPart? in
+            guard let id = (item["id"] as? NSNumber)?.intValue else { return nil }
+            let title = (item["title"] as? String) ?? ""
+            guard !title.isEmpty else { return nil }
+            let date = (item["release_date"] as? String) ?? ""
+            return CinemaCollectionPart(tmdbID: id, title: title, year: Int(date.prefix(4)))
+        }
+        return CinemaCollectionInfo(id: id,
+                                    name: name,
+                                    overview: (overview?.isEmpty ?? true) ? nil : overview,
+                                    parts: parts)
+    }
+
+    /// 统一构造请求并返回 JSON 对象。
+    private func request(path: String, items: [URLQueryItem]) async throws -> [String: Any] {
+        guard !trimmedKey.isEmpty else { throw TMDBError.missingKey }
+        let base = apiBase.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard var components = URLComponents(string: base + path) else {
+            throw TMDBError.invalidBase
+        }
+        var queryItems = items
+        if !usesBearer {
+            queryItems.append(URLQueryItem(name: "api_key", value: trimmedKey))
+        }
+        components.queryItems = queryItems
         guard let url = components.url else { throw TMDBError.invalidBase }
 
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
@@ -62,10 +298,7 @@ struct TMDBClient: CinemaMetadataSource {
             let message = (object["status_message"] as? String) ?? "HTTP \(status)"
             throw TMDBError.http(status, message)
         }
-        guard let results = object["results"] as? [[String: Any]] else {
-            throw TMDBError.decoding
-        }
-        return results.compactMap { parse($0, isTV: isTV) }
+        return object
     }
 
     func imageURL(path: String?, size: String) -> String? {
@@ -96,7 +329,8 @@ struct TMDBClient: CinemaMetadataSource {
                            overview: item["overview"] as? String,
                            rating: (item["vote_average"] as? NSNumber)?.doubleValue,
                            voteCount: (item["vote_count"] as? NSNumber)?.intValue,
-                           genres: genres)
+                           genres: genres,
+                           provider: .tmdb)
     }
 
     /// 搜索结果只给 genre_ids，这里换成中文类型名，和豆瓣的 types 对齐。

@@ -181,6 +181,25 @@ enum QuarkDrive {
         return nil
     }
 
+    // MARK: 删除
+
+    /// 删除文件：网页端 / PC 客户端的 `file/delete`，fid_list 传文件 ID。
+    static func delete(fids: [String], cookie: String, mountID: UUID? = nil) async throws {
+        guard !fids.isEmpty else { return }
+        guard let url = URL(string: apiBase + "/1/clouddrive/file/delete?pr=ucpro&fr=pc") else {
+            throw CloudOAuthError.api("地址无效")
+        }
+        let object = try await post(url,
+                                    body: ["fid_list": fids, "action_type": 2],
+                                    cookie: cookie,
+                                    mountID: mountID)
+        let status = (object["status"] as? NSNumber)?.intValue ?? 0
+        let code = (object["code"] as? NSNumber)?.intValue ?? 0
+        guard status == 200, code == 0 else {
+            throw CloudOAuthError.api(message(in: object) ?? "夸克拒绝删除（\(status)）")
+        }
+    }
+
     // MARK: 内部
 
     private static func parseEntry(_ item: [String: Any]) -> CloudEntry? {

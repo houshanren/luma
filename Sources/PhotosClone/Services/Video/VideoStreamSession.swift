@@ -25,12 +25,16 @@ final class VideoStreamSession {
     private let mode: Mode
     /// 从第几秒开始读取：用户拖到未生成区间时，用 -ss 重新起一个会话。
     private let startOffset: Double
+    /// 实际起流位置（对齐到关键帧）：播放器时间轴从它开始，再由 startAt 前跳到目标位置。
+    private(set) var playbackStartOffset: Double = 0
     private let isHEVC: Bool
     private let isHDR: Bool
     /// 只映射这一条音轨；切换音轨时调用方会重新建会话。
     private let audioIndex: Int
     /// 音轨声道数：>2 时给 AAC 更高码率，避免把 5.1 压得太狠。
     private let audioChannels: Int
+    /// 需要烧录的外挂字幕；有值时强制走重编码，并把字幕叠进画面。
+    private let burnSubtitle: URL?
     /// 云盘直链过期时重新解析（由播放页提供）。
     private let refreshSource: (() -> (URL, [String: String])?)?
 
@@ -44,6 +48,10 @@ final class VideoStreamSession {
     private var stopping = false
     /// ffmpeg 是否被暂停生成（播放器暂停时挂起进程，避免后台把整片转完）。
     private var generationPaused = false
+    /// 提前生成太多时临时挂起 ffmpeg：长片不会在几分钟内写满磁盘 / 跑满网盘。
+    private var leadPaused = false
+    /// 进程当前是否真的处于 SIGSTOP（上面两个意图合并后的实际状态）。
+    private var processStopped = false
     /// 当前保留的最小分片序号（播放中滚动清理）。
     private var minSegmentIndex = 0
     /// 最小保留分片对应的时间偏移（相对会话起点）。
@@ -55,21 +63,29 @@ final class VideoStreamSession {
     init(photoID: UUID, source: URL, headers: [String: String], trustSelfSigned: Bool = false,
          mode: Mode = .remux, startOffset: Double = 0, isHEVC: Bool = false,
          isHDR: Bool = false, audioIndex: Int = 0, audioChannels: Int = 2,
+         burnSubtitle: URL? = nil,
          refreshSource: (() -> (URL, [String: String])?)? = nil) {
         let base = LibraryPaths.transcodes
-        self.cacheDirectory = base.appendingPathComponent(photoID.uuidString + ".hls", isDirectory: true)
-        self.workDirectory = base.appendingPathComponent(photoID.uuidString + "-" + UUID().uuidString + ".hls",
-                                                         isDirectory: true)
+        // 烧录字幕会改变画面，必须和普通缓存分开，否则会命中没有字幕的旧结果。
+        let burnSuffix = burnSubtitle.map { "-burn-\(abs($0.path.hashValue))" } ?? ""
+        self.cacheDirectory = base.appendingPathComponent(photoID.uuidString + burnSuffix + ".hls",
+                                                          isDirectory: true)
+        // 工作目录带 `-session-`：启动时据此清理异常退出留下的中间产物。
+        self.workDirectory = base.appendingPathComponent(
+            photoID.uuidString + burnSuffix + "-session-" + UUID().uuidString + ".hls",
+            isDirectory: true)
         self.servingDirectory = workDirectory
         self.source = source
         self.headers = headers
         self.trustSelfSigned = trustSelfSigned
         self.mode = mode
         self.startOffset = max(0, startOffset)
+        self.playbackStartOffset = max(0, startOffset)
         self.isHEVC = isHEVC
         self.isHDR = isHDR
         self.audioIndex = max(0, audioIndex)
         self.audioChannels = max(1, audioChannels)
+        self.burnSubtitle = burnSubtitle
         self.refreshSource = refreshSource
     }
 
@@ -83,22 +99,23 @@ final class VideoStreamSession {
 
     /// 只有「云端、完整、从 0 开始、默认音轨、无损转封装」的结果才值得长期缓存。
     private var canReuseCache: Bool {
-        persistCache && mode == .remux && startOffset < 0.5 && audioIndex == 0
+        burnSubtitle == nil && persistCache && mode == .remux && startOffset < 0.5 && audioIndex == 0
     }
 
     /// 已删除分片之前的起点（秒）：跳转到这之前需要重新起流。
     var retainedStartSeconds: Double {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return startOffset + retainedOffset
+        return playbackStartOffset + retainedOffset
     }
 
-    /// 播放推进后删除窗口外的旧分片，避免长片把磁盘写满。
+    /// 播放中删除窗口外的旧分片，避免长片把磁盘写满。
     /// 只保留当前播放位置之前约 2 分钟的片段，回看更早的位置由调用方重建流。
     func trim(before seconds: Double) {
         guard !usesCache else { return }
+        updateGenerationPacing(playback: seconds)
         let keepBehind: Double = 120
-        let cutoff = Int(((seconds - startOffset - keepBehind) / 2).rounded(.down))
+        let cutoff = Int(((seconds - playbackStartOffset - keepBehind) / 2).rounded(.down))
         guard cutoff > 0 else { return }
         stateLock.lock()
         guard cutoff > minSegmentIndex else {
@@ -146,15 +163,67 @@ final class VideoStreamSession {
     /// 播放器暂停时挂起 ffmpeg，继续播放时恢复：避免暂停期间把整部片转成缓存。
     func setGenerationActive(_ active: Bool) {
         guard !usesCache, let process, process.isRunning else { return }
-        let shouldPause = !active
         stateLock.lock()
-        guard generationPaused != shouldPause else {
+        generationPaused = !active
+        stateLock.unlock()
+        applyGenerationState()
+    }
+
+    /// 提前生成窗口：领先播放超过 4 分钟就挂起，回落到 90 秒内再恢复。
+    /// 60 GB 的长片即使按 12× 生成，也不会在几分钟内写满磁盘；云端也少跑无用的下载。
+    private func updateGenerationPacing(playback seconds: Double) {
+        guard let process, process.isRunning else { return }
+        let directory = workDirectory
+        let offset = playbackStartOffset
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            guard let produced = Self.playlistDuration(
+                directory.appendingPathComponent("live.m3u8", isDirectory: false)) else { return }
+            let ahead = produced + offset - seconds
+
+            self.stateLock.lock()
+            var changed: Bool?
+            if ahead > 240, !self.leadPaused {
+                self.leadPaused = true
+                changed = true
+            } else if ahead < 90, self.leadPaused {
+                self.leadPaused = false
+                changed = false
+            }
+            self.stateLock.unlock()
+            guard changed != nil else { return }
+            self.applyGenerationState()
+        }
+    }
+
+    /// 把「用户暂停」与「提前量过大」两个意图合并成一次 SIGSTOP / SIGCONT。
+    private func applyGenerationState() {
+        guard !usesCache, let process, process.isRunning else { return }
+        stateLock.lock()
+        let shouldStop = generationPaused || leadPaused
+        guard processStopped != shouldStop else {
             stateLock.unlock()
             return
         }
-        generationPaused = shouldPause
+        processStopped = shouldStop
         stateLock.unlock()
-        kill(process.processIdentifier, active ? SIGCONT : SIGSTOP)
+        kill(process.processIdentifier, shouldStop ? SIGSTOP : SIGCONT)
+    }
+
+    /// 读播放列表里所有分片的时长总和：比按分片数估算准确，关键帧切分也不会偏。
+    private static func playlistDuration(_ url: URL) -> Double? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var total = 0.0
+        var found = false
+        for line in text.split(separator: "\n") where line.hasPrefix("#EXTINF:") {
+            let value = line.dropFirst("#EXTINF:".count)
+                .split(separator: ",", maxSplits: 1).first ?? ""
+            if let seconds = Double(value.trimmingCharacters(in: .whitespaces)) {
+                total += seconds
+                found = true
+            }
+        }
+        return found ? total : nil
     }
 
     /// 失败是否来自网盘（鉴权 / 网络 / 非视频数据）：这类失败重编码也没用。
@@ -169,6 +238,8 @@ final class VideoStreamSession {
         if canReuseCache, Self.isComplete(cacheDirectory) {
             usesCache = true
             servingDirectory = cacheDirectory
+            // 按「最后一次播放」做 LRU，常用片不会被新片挤掉。
+            VideoCacheManager.touch(cacheDirectory)
         } else {
             // 只有完整回放才复用/清理长期缓存；跳转或换音轨的临时会话不能动它。
             // 旧版本还给本地文件存过整部 HLS，这里一并清掉。
@@ -213,7 +284,7 @@ final class VideoStreamSession {
         rangeSource = nil
         if let process {
             stateLock.lock()
-            let paused = generationPaused
+            let paused = processStopped
             stateLock.unlock()
             // 被 SIGSTOP 挂起的进程要先恢复，否则 SIGTERM 不会立即生效。
             if paused { kill(process.processIdentifier, SIGCONT) }
@@ -258,7 +329,7 @@ final class VideoStreamSession {
         try? FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
 
         let isRemote = !source.isFileURL
-        var inputArguments: [String] = []
+        var inputTarget: String
         if isRemote {
             let proxy = RemoteRangeSource(upstream: source,
                                           headers: headers,
@@ -271,46 +342,77 @@ final class VideoStreamSession {
             proxy.onAuthFailure = refreshSource
             let inputURL = try proxy.start()
             rangeSource = proxy
-            inputArguments += ["-i", inputURL.absoluteString]
+            inputTarget = inputURL.absoluteString
         } else {
-            inputArguments += ["-i", source.path]
+            inputTarget = source.path
+        }
+
+        // 转封装只能从关键帧起流。先对齐到目标位置之前的关键帧，让音视频从同一点开始，
+        // 再由播放器前跳到目标秒数；否则音频被精确裁到目标点、视频还在关键帧，嘴型必然对不上。
+        let alignedStart = startOffset > 0.5
+            ? Self.alignedKeyframe(before: startOffset, input: inputTarget)
+            : 0
+        playbackStartOffset = alignedStart
+        if startOffset > 0.5, abs(alignedStart - startOffset) > 0.2 {
+            Diagnostics.record("起流对齐关键帧 \(Int(startOffset))s → \(Int(alignedStart))s")
         }
 
         var arguments = ["-y", "-v", "error"]
-        // 只看开头几个 MB 就足够判断流信息，缩短首段等待。
-        arguments += ["-probesize", "4M", "-analyzeduration", "4M"]
-        // 把生成速度限制在 4 倍速：配合播放中的分片滚动清理，
-        // 避免一部 4K 长片在几秒内被完整转成几十 GB 的分片。
-        arguments += ["-readrate", "4"]
-        if startOffset > 0 {
-            // 放在 -i 之前：输入侧快速定位，转封装时跳到目标位置最近的关键帧。
-            arguments += ["-ss", String(format: "%.3f", startOffset)]
+        // 只看开头 2 MB 就足够判断流信息，缩短首段等待（原来 4 MB 在网盘上要多读几秒）。
+        arguments += ["-probesize", "2M", "-analyzeduration", "2M"]
+        // 本地文件读盘快：给 12× 生成，起播与拖动后的首段更早就绪；
+        // 云端保守一些，避免短时间把大文件整段拉下来。提前量由 updateGenerationPacing 控制。
+        arguments += ["-readrate", isRemote ? "6" : "12"]
+        if alignedStart > 0 {
+            // 放在 -i 之前：输入侧快速定位；已对齐到关键帧，音视频从同一时间点开始。
+            arguments += ["-ss", String(format: "%.3f", alignedStart)]
         }
-        arguments += inputArguments
+        arguments += ["-i", inputTarget]
+        if alignedStart > 0 {
+            // 两路都从 0 起步，避免关键帧前的负时间戳把后续音轨整体推迟。
+            arguments += ["-copyts", "-start_at_zero", "-avoid_negative_ts", "make_zero"]
+        }
         arguments += ["-map", "0:v:0"]
-        switch mode {
+        // 烧录字幕必须重编码，不能走 -c:v copy。
+        switch burnSubtitle == nil ? mode : .transcode {
         case .remux:
             arguments += ["-c:v", "copy"]
             // AVFoundation 只认 hvc1 标签，ffmpeg 默认写 hev1。
             if isHEVC { arguments += ["-tag:v", "hvc1"] }
             // 不强制 -ac 2：保留源的多声道（AAC 5.1 由 AVPlayer 正常输出）。
-            arguments += ["-c:a", "aac", "-b:a", audioChannels > 2 ? "384k" : "256k"]
+            // async 1 让音频按时间戳补齐 / 裁掉，跳转后不会与画面越走越偏。
+            arguments += ["-async", "1", "-c:a", "aac", "-b:a", audioChannels > 2 ? "384k" : "256k"]
         case .transcode:
-            arguments += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
-            let toneMap = VideoSupport.hdrToneMapArguments(toneMapHDR: isHDR)
-            if toneMap.isEmpty {
+            // veryfast：转码档本来就是兼容兜底，先把首段等出来，画质差一点可接受。
+            arguments += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+            var filters: [String] = []
+            if let burnSubtitle {
+                filters.append(VideoSupport.subtitleBurnFilter(burnSubtitle))
+            }
+            let toneMap = isHDR && VideoSupport.supportsToneMapping
+            if toneMap {
+                filters.append(VideoSupport.hdrToneMapChain)
+            }
+            if filters.isEmpty {
                 arguments += ["-pix_fmt", "yuv420p"]
             } else {
-                arguments += toneMap
+                arguments += ["-vf", filters.joined(separator: ",")]
             }
-            arguments += ["-c:a", "aac", "-b:a", audioChannels > 2 ? "384k" : "256k"]
+            if toneMap {
+                arguments += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+            }
+            arguments += ["-async", "1", "-c:a", "aac", "-b:a", audioChannels > 2 ? "384k" : "256k"]
         }
         arguments += ["-map", "0:a:\(audioIndex)?"]
+        // 4K 高码率重新封装时包队列容易溢出（Too many packets buffered），放宽到 2048。
+        arguments += ["-max_muxing_queue_size", "2048"]
         arguments += ["-f", "hls",
                       "-hls_time", "2",
-                      "-hls_init_time", "1",
+                      "-hls_init_time", "0.5",
                       "-hls_list_size", "0",
                       "-hls_playlist_type", "event",
+                      // 分片先写临时文件再改名：AVPlayer 不会读到写了一半的片段。
+                      "-hls_flags", "temp_file",
                       "-hls_segment_type", "fmp4",
                       "-hls_fmp4_init_filename", "init.mp4",
                       "-hls_segment_filename", workDirectory.appendingPathComponent("seg%05d.m4s", isDirectory: false).path,
@@ -343,6 +445,50 @@ final class VideoStreamSession {
         }
         try process.run()
         self.process = process
+    }
+
+    /// 找目标位置之前最近的关键帧。最多往回看 15 秒，常规 GOP 足够覆盖；
+    /// 探测失败或超时都退回目标位置，保持原来的行为。
+    private static func alignedKeyframe(before target: Double, input: String) -> Double {
+        guard let ffprobe = FFmpeg.probe else { return target }
+        let windowStart = max(0, target - 15)
+        let process = Process()
+        process.executableURL = ffprobe
+        process.arguments = [
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_packets",
+            "-show_entries", "packet=pts_time,flags",
+            "-read_intervals", String(format: "%.3f%%%.3f", windowStart, target),
+            "-of", "csv=p=0",
+            input
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do { try process.run() } catch { return target }
+
+        // 网盘读区间偶尔很慢：最多等 4 秒，超时直接按目标位置起流。
+        let deadline = Date().addingTimeInterval(4)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+            return target
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let text = String(decoding: data, as: UTF8.self)
+        var keyframes: [Double] = []
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: ",")
+            guard parts.count >= 2, parts[1].contains("K"),
+                  let value = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+                  value >= 0, value <= target + 0.05 else { continue }
+            keyframes.append(value)
+        }
+        guard let keyframe = keyframes.max(), target - keyframe < 15.05 else { return target }
+        return keyframe
     }
 
     private func recordSourceFailure(_ message: String) {

@@ -23,6 +23,9 @@ enum LibraryPaths {
     static var backups: URL { root.appendingPathComponent("resources/backups", isDirectory: true) }
     static var cloud: URL { root.appendingPathComponent("cloud", isDirectory: true) }
     static var cloudThumbs: URL { cloud.appendingPathComponent("thumbs", isDirectory: true) }
+    /// 网络资源的图库级配置：源、续看、收藏、片单、更新日历都写在当前图库里。
+    /// 换图库时不加载上一个库的配置。
+    static var catalogDir: URL { root.appendingPathComponent("resources/catalog", isDirectory: true) }
     /// 系统图库缩略图缓存：同样放本机，避免为每个格子往图库所在（可能很慢的）磁盘写文件。
     /// 官方 derivative 仍然直接复用，这里只存按格子尺寸生成的小图。
     static var systemThumbs: URL {
@@ -100,6 +103,7 @@ enum LibraryPaths {
             resources.appendingPathComponent("system-thumbs", isDirectory: true),
             resources.appendingPathComponent("transcodes", isDirectory: true),
             resources.appendingPathComponent("backups", isDirectory: true),
+            resources.appendingPathComponent("catalog", isDirectory: true),
             library.appendingPathComponent("cloud", isDirectory: true),
             legacySidecarPath(for: library)
         ]
@@ -296,7 +300,7 @@ enum LibraryPaths {
 
     static func prepare() {
         for dir in [root, databaseDir, originals, derivatives, edited, transcodes, backups,
-                    cloudThumbs, systemThumbs, systemLibraryCacheDir] {
+                    cloudThumbs, systemThumbs, systemLibraryCacheDir, catalogDir] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

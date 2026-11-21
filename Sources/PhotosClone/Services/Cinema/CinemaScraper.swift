@@ -59,12 +59,17 @@ enum CinemaScraper {
         // 文件名没写季时，用目录里的 `Season 02` / `第二季` 补上。
         if season == nil { season = folder.season }
 
-        // 纯数字文件名：`03.mkv`，只有确认在剧集目录里才当作集号。
+        // 纯数字文件名：`03.mkv`、`13 4K.mkv`；只有确认在剧集目录里才当作集号。
         if episode == nil {
-            let trimmed = text.trimmingCharacters(in: .whitespaces)
-            if trimmed.range(of: #"^\d{1,4}$"#, options: .regularExpression) != nil,
+            let stripped = text
+                .replacingOccurrences(of: #"(?i)\b(4k|8k|2160p|1080p|720p|480p|hdr10\+?|hdr|dv|remux|web[- .]?dl|webrip|bluray|x265|x264|h[ .]?265|h[ .]?264|hevc|avc|aac|atmos|高码版?)\b"#,
+                                      with: " ",
+                                      options: .regularExpression)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            if stripped.range(of: #"^\d{1,4}$"#, options: .regularExpression) != nil,
                season != nil || folder.isSeriesFolder {
-                episode = Int(trimmed)
+                episode = Int(stripped)
                 cutIndex = text.startIndex
             }
         }
@@ -125,16 +130,53 @@ enum CinemaScraper {
 
     // MARK: - 匹配
 
+    /// 按优先级依次尝试多个数据源：前一个源没命中（或请求失败）时自动换下一个。
     static func scrape(photo: PhotoItem,
                        folderHint: String? = nil,
-                       source: any CinemaMetadataSource,
-                       cache: CinemaSearchCache? = nil) async -> CinemaScrapeOutcome {
+                       sources: [any CinemaMetadataSource],
+                       cache: CinemaSearchCache? = nil,
+                       detailsCache: CinemaDetailsCache? = nil) async -> CinemaScrapeOutcome {
         let parsed = parse(filename: photo.displayFilename, folderHint: folderHint)
-        var lastError: Error?
+        var firstError: Error?
         var sawResults = false
 
-        // 每个检索词最多尝试「原类型 + 年份 / 原类型无年份 / 反向类型」，最多 3 个检索词，
-        // 同一部剧的多集共用缓存，避免 60 集重复打同一批请求。
+        for source in sources {
+            if Task.isCancelled { break }
+            let attempt = await attemptMatch(photo: photo,
+                                             parsed: parsed,
+                                             folderHint: folderHint,
+                                             source: source,
+                                             cache: cache,
+                                             detailsCache: detailsCache)
+            sawResults = sawResults || attempt.sawResults
+            if let entry = attempt.entry {
+                return CinemaScrapeOutcome(entry: entry, error: nil)
+            }
+            if firstError == nil, let error = attempt.error { firstError = error }
+        }
+
+        // 所有源都没有返回任何候选，才把错误抛给上层（批量刮削据此判断断网 / 凭据失效）。
+        if !sawResults, let firstError {
+            return CinemaScrapeOutcome(entry: nil, error: firstError.localizedDescription)
+        }
+        return CinemaScrapeOutcome(entry: unmatchedEntry(photo: photo,
+                                                         parsed: parsed,
+                                                         folderHint: folderHint),
+                                   error: nil)
+    }
+
+    /// 在单个数据源上匹配。每个检索词最多尝试「原类型 + 年份 / 原类型无年份 / 反向类型」，
+    /// 最多 3 个检索词，同一部剧的多集共用缓存，避免 60 集重复打同一批请求。
+    private static func attemptMatch(photo: PhotoItem,
+                                     parsed: CinemaParsedName,
+                                     folderHint: String?,
+                                     source: any CinemaMetadataSource,
+                                     cache: CinemaSearchCache?,
+                                     detailsCache: CinemaDetailsCache? = nil) async -> (entry: CinemaEntry?,
+                                                                         error: Error?,
+                                                                         sawResults: Bool) {
+        var sawResults = false
+
         for query in queryVariants(for: parsed).prefix(3) {
             if Task.isCancelled { break }
             var attempts: [(isTV: Bool, year: Int?)] = [(parsed.isTV, parsed.year)]
@@ -151,27 +193,23 @@ enum CinemaScraper {
                     if results.isEmpty { continue }
                     sawResults = true
                     if let best = choose(from: results, parsed: parsed) {
-                        return matchedOutcome(photo: photo,
-                                              parsed: parsed,
-                                              folderHint: folderHint,
-                                              best: best)
+                        var entry = manualEntry(photo: photo,
+                                                parsed: parsed,
+                                                folderHint: folderHint,
+                                                match: best)
+                        if let detailsCache,
+                           let details = await detailsCache.details(for: best, source: source) {
+                            entry = applying(details, to: entry)
+                        }
+                        return (entry, nil, true)
                     }
                 } catch {
-                    // 网络 / 凭据 / 限流属于硬错误：换搜索词也救不回来。
-                    lastError = error
-                    return CinemaScrapeOutcome(entry: nil,
-                                               error: error.localizedDescription)
+                    // 网络 / 凭据 / 限流属于硬错误：换搜索词也救不回来，直接交给上层换源。
+                    return (nil, error, sawResults)
                 }
             }
         }
-
-        if !sawResults, let lastError {
-            return CinemaScrapeOutcome(entry: nil, error: lastError.localizedDescription)
-        }
-        return CinemaScrapeOutcome(entry: unmatchedEntry(photo: photo,
-                                                         parsed: parsed,
-                                                         folderHint: folderHint),
-                                   error: nil)
+        return (nil, nil, sawResults)
     }
 
     private static func search(query: String,
@@ -185,28 +223,72 @@ enum CinemaScraper {
         return try await source.search(query: query, isTV: isTV, year: year)
     }
 
-    private static func matchedOutcome(photo: PhotoItem,
-                                       parsed: CinemaParsedName,
-                                       folderHint: String?,
-                                       best: CinemaMatch) -> CinemaScrapeOutcome {
-        CinemaScrapeOutcome(entry: CinemaEntry(file: CinemaFile(photo: photo),
-                                               kind: best.isTV ? .tv : .movie,
-                                               matched: true,
-                                               title: best.title,
-                                               originalTitle: best.originalTitle,
-                                               year: best.year ?? parsed.year,
-                                               season: parsed.season,
-                                               episode: parsed.episode,
-                                               episodeEnd: parsed.episodeEnd,
-                                               tmdbID: Int(best.id),
-                                               posterURL: best.posterURL,
-                                               backdropURL: best.backdropURL,
-                                               overview: best.overview,
-                                               rating: best.rating,
-                                               scrapedAt: Date(),
-                                               folderHint: folderHint,
-                                               genres: best.genres.isEmpty ? nil : best.genres),
-                                   error: nil)
+    /// 把 TMDB 详情并进已匹配条目：合集、演职员、预告与分级。
+    static func applying(_ details: CinemaDetails, to entry: CinemaEntry) -> CinemaEntry {
+        var copy = entry
+        copy.collectionID = details.collectionID
+        copy.collectionName = details.collectionName
+        if !details.cast.isEmpty { copy.cast = details.cast }
+        if !details.directors.isEmpty { copy.directors = details.directors }
+        if let value = details.certification { copy.certification = value }
+        if let key = details.trailerKey { copy.trailerKey = key }
+        return copy
+    }
+
+    /// 手动匹配：用用户选中的候选项直接生成一条已匹配条目。
+    static func manualEntry(photo: PhotoItem,
+                            parsed: CinemaParsedName,
+                            folderHint: String?,
+                            match: CinemaMatch) -> CinemaEntry {
+        CinemaEntry(file: CinemaFile(photo: photo),
+                    kind: match.isTV ? .tv : .movie,
+                    matched: true,
+                    title: match.title,
+                    originalTitle: match.originalTitle,
+                    year: match.year ?? parsed.year,
+                    season: parsed.season,
+                    episode: parsed.episode,
+                    episodeEnd: parsed.episodeEnd,
+                    tmdbID: Int(match.id),
+                    posterURL: match.posterURL,
+                    backdropURL: match.backdropURL,
+                    overview: match.overview,
+                    rating: match.rating,
+                    scrapedAt: Date(),
+                    folderHint: folderHint,
+                    genres: match.genres.isEmpty ? nil : match.genres,
+                    provider: match.provider)
+    }
+
+    /// 手动匹配的候选搜索：按数据源顺序查询，合并去重；全部为空时返回第一个错误。
+    static func searchCandidates(query: String,
+                                 isTV: Bool,
+                                 year: Int?,
+                                 sources: [any CinemaMetadataSource],
+                                 combineAllSources: Bool = false) async -> (matches: [CinemaMatch], error: String?) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return ([], "请输入至少两个字") }
+        var firstError: String?
+        var merged: [CinemaMatch] = []
+        var seen = Set<String>()
+
+        for source in sources {
+            do {
+                let found = try await source.search(query: trimmed, isTV: isTV, year: year)
+                for match in found {
+                    // 各数据源的 ID 体系不同，去重键带上来源，避免撞号吞掉候选。
+                    guard seen.insert(match.sourceKey).inserted else { continue }
+                    merged.append(match)
+                }
+                // 刮削是「按顺序补」：第一个有结果就够。手动匹配选「全部」时继续查其余源。
+                if !combineAllSources, !merged.isEmpty { break }
+            } catch {
+                if firstError == nil {
+                    firstError = error.localizedDescription
+                }
+            }
+        }
+        return (merged, merged.isEmpty ? firstError : nil)
     }
 
     private static func unmatchedEntry(photo: PhotoItem,
@@ -539,10 +621,25 @@ final class CinemaSearchCache {
                 isTV: Bool,
                 year: Int?,
                 source: any CinemaMetadataSource) async throws -> [CinemaMatch] {
-        let key = "\(query.lowercased())|\(isTV)|\(year ?? 0)"
+        // 不同数据源的结果不能互相复用：缓存键带上数据源。
+        let key = "\(source.provider.rawValue)|\(query.lowercased())|\(isTV)|\(year ?? 0)"
         if let cached = results[key] { return cached }
         let found = try await source.search(query: query, isTV: isTV, year: year)
         results[key] = found
         return found
+    }
+}
+
+/// 同一次刮削里的详情缓存：同一部剧的几十集只拉一次 credits / videos / 分级。
+final class CinemaDetailsCache {
+    private var values: [String: CinemaDetails?] = [:]
+
+    func details(for match: CinemaMatch, source: any CinemaMetadataSource) async -> CinemaDetails? {
+        guard source.provider == .tmdb, let id = Int(match.id) else { return nil }
+        let key = "\(id)|\(match.isTV)"
+        if let cached = values[key] { return cached }
+        let details = try? await source.details(id: id, isTV: match.isTV)
+        values[key] = details
+        return details
     }
 }

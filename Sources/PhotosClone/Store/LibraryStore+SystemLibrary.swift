@@ -370,6 +370,9 @@ extension LibraryStore {
         selection.removeAll()
         viewerID = nil
         editorID = nil
+        // 新图库从零开始：网络资源也读这个新库自己的配置（通常是空的）。
+        finishCatalogPlayback()
+        catalogModel.loadForCurrentLibrary()
         // 新图库是全新的：上一个图库的连接、网盘与库级设置都不能带进来。
         resetCloudStateForLibrarySwitch()
         resetSystemLibraryState()
@@ -491,6 +494,9 @@ extension LibraryStore {
             selection.removeAll()
             viewerID = nil
             editorID = nil
+            // 网络资源跟着图库走：换库后重新读取新图库自己的源、片单与日历。
+            finishCatalogPlayback()
+            catalogModel.loadForCurrentLibrary()
             let name = url.deletingPathExtension().lastPathComponent
             showToast("已打开 \(name)")
         }

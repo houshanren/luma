@@ -35,6 +35,16 @@ struct PhotosCloneApp: App {
         !store.commandTargetIDs.isEmpty && store.canEditMetadataWorkflow
     }
 
+    /// 「导出视频…」只在当前目标里含视频时可用。
+    private var canExportVideoCommand: Bool {
+        !store.commandTargetIDs.isEmpty
+            && store.commandTargetIDs.contains { store.anyPhoto(id: $0)?.isVideo == true }
+    }
+
+    private static func videoSpeedLabel(_ value: Double) -> String {
+        String(format: "%g×", value)
+    }
+
     var body: some Scene {
         // 单窗口：不再允许新建第二个主窗口；关掉主窗口即退出（见 LumaAppDelegate）。
         Window("拾光", id: "main") {
@@ -44,9 +54,11 @@ struct PhotosCloneApp: App {
                 .environmentObject(store.selectionModel)
                 .environmentObject(store.viewerModel)
                 .environmentObject(store.cloudModel)
+                .environmentObject(store.catalogModel)
                 .frame(minWidth: 1080, minHeight: 660)
         }
-        .defaultSize(width: 1360, height: 860)
+        .defaultSize(width: LumaAppDelegate.preferredWindowSize.width,
+                     height: LumaAppDelegate.preferredWindowSize.height)
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .undoRedo) {
@@ -96,6 +108,10 @@ struct PhotosCloneApp: App {
 
                 Button("接入网络存储…") {
                     store.presentCloudWizard()
+                }
+
+                Button("接入网络资源…") {
+                    store.presentCatalogWizard()
                 }
 
                 Button("选取图库…") {
@@ -341,6 +357,192 @@ struct PhotosCloneApp: App {
                     }
                 }
             }
+            // 视频相关的操作统一收在这里：播放控制、画面调整与文件操作都只针对当前查看器里的视频。
+            CommandMenu("视频") {
+                Button("播放 / 暂停") {
+                    store.toggleVideoPlaybackCommand()
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Button("上一个视频") {
+                    store.viewerStepVideo(-1)
+                }
+                .keyboardShortcut(.upArrow, modifiers: [.command])
+                .disabled(!store.videoCanStepBackward)
+
+                Button("下一个视频") {
+                    store.viewerStepVideo(1)
+                }
+                .keyboardShortcut(.downArrow, modifiers: [.command])
+                .disabled(!store.videoCanStepForward)
+
+                Divider()
+
+                Button("快退 10 秒") {
+                    store.seekVideoCommand(by: -10)
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Button("快进 10 秒") {
+                    store.seekVideoCommand(by: 10)
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Button("上一帧") {
+                    store.stepVideoFrameCommand(by: -1)
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Button("下一帧") {
+                    store.stepVideoFrameCommand(by: 1)
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Divider()
+
+                Menu("播放速度") {
+                    ForEach([0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0], id: \.self) { value in
+                        Button {
+                            store.setVideoSpeedCommand(value)
+                        } label: {
+                            if store.videoSpeed == value {
+                                Label(Self.videoSpeedLabel(value), systemImage: "checkmark")
+                            } else {
+                                Text(Self.videoSpeedLabel(value))
+                            }
+                        }
+                    }
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Toggle("循环播放", isOn: Binding(
+                    get: { store.videoIsLooping },
+                    set: { _ in store.toggleVideoLoopCommand() }
+                ))
+                .disabled(!store.canControlVideoPlayback)
+
+                Toggle("填充画面", isOn: Binding(
+                    get: { store.videoUsesFill },
+                    set: { _ in store.toggleVideoGravityCommand() }
+                ))
+                .disabled(!store.canControlVideoPlayback)
+
+                Button("旋转 90°") {
+                    store.rotateVideoDisplayCommand()
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Toggle("画中画", isOn: Binding(
+                    get: { store.videoPipActive },
+                    set: { _ in store.toggleVideoPipCommand() }
+                ))
+                .disabled(!store.canControlVideoPlayback || !store.videoPipAvailable)
+
+                Divider()
+
+                Toggle("静音", isOn: Binding(
+                    get: { store.videoIsMuted },
+                    set: { _ in store.toggleVideoMuteCommand() }
+                ))
+                .disabled(!store.canControlVideoPlayback)
+
+                Menu("音量") {
+                    Button("25%") { store.setVideoVolumeCommand(0.25) }
+                    Button("50%") { store.setVideoVolumeCommand(0.5) }
+                    Button("100%") { store.setVideoVolumeCommand(1) }
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Menu("音轨") {
+                    if store.videoAudioChoices.isEmpty {
+                        Button("暂无可切换音轨") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(store.videoAudioChoices) { choice in
+                            Button {
+                                store.selectVideoAudioCommand(choice.index)
+                            } label: {
+                                let title = choice.title.isEmpty ? "音轨 \(choice.index + 1)" : choice.title
+                                if choice.index == store.videoSelectedAudioIndex {
+                                    Label(title, systemImage: "checkmark")
+                                } else {
+                                    Text(title)
+                                }
+                            }
+                        }
+                    }
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Menu("字幕") {
+                    Button("载入字幕文件…") {
+                        store.pickVideoSubtitleCommand()
+                    }
+
+                    if store.videoHasSubtitle {
+                        Button("关闭字幕") {
+                            store.clearVideoSubtitleCommand()
+                        }
+                        Divider()
+                        Button("字幕延后 0.5 秒") {
+                            store.adjustVideoSubtitleOffsetCommand(by: 0.5)
+                        }
+                        Button("字幕提前 0.5 秒") {
+                            store.adjustVideoSubtitleOffsetCommand(by: -0.5)
+                        }
+                        Button("重置偏移") {
+                            store.resetVideoSubtitleOffsetCommand()
+                        }
+                    }
+
+                    if !store.videoLegibleOptions.isEmpty {
+                        Divider()
+                        ForEach(store.videoLegibleOptions.indices, id: \.self) { index in
+                            let option = store.videoLegibleOptions[index]
+                            Button {
+                                store.selectVideoLegibleCommand(option)
+                            } label: {
+                                if store.isVideoLegibleSelected(option) {
+                                    Label(option.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(option.displayName)
+                                }
+                            }
+                        }
+                        if store.videoHasEmbeddedSubtitle {
+                            Button("关闭内嵌字幕") {
+                                store.selectVideoLegibleCommand(nil)
+                            }
+                        }
+                    }
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Divider()
+
+                Button("保存当前帧…") {
+                    store.saveVideoFrameCommand()
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Button("全屏播放") {
+                    store.toggleVideoFullScreenCommand()
+                }
+                .disabled(!store.canControlVideoPlayback)
+
+                Divider()
+
+                Button("导出视频…") {
+                    store.presentBatchExport()
+                }
+                .disabled(!canExportVideoCommand)
+
+                Button("在访达中显示") {
+                    store.revealCommandTargetsInFinder()
+                }
+                .disabled(store.commandTargetIDs.isEmpty
+                          || (store.isCloudScope && !store.isCurrentCloudSMB))
+            }
             CommandGroup(after: .toolbar) {
                 Button("搜索") {
                     store.focusSearchField()
@@ -494,6 +696,35 @@ struct PhotosCloneApp: App {
 
 /// 拾光只保留一个实例、一个主窗口：关掉窗口就是退出应用。
 final class LumaAppDelegate: NSObject, NSApplicationDelegate {
+    /// 主窗口的默认尺寸：贴着当前屏幕留一点边，首屏能放下更多内容。
+    static var preferredWindowSize: CGSize {
+        guard let visible = NSScreen.main?.visibleFrame.size else {
+            return CGSize(width: 1440, height: 900)
+        }
+        return CGSize(width: min(1800, max(1360, visible.width - 48)),
+                      height: min(1160, max(880, visible.height - 48)))
+    }
+
+    /// 已经手动调整过的小窗口会被状态恢复带回来，这里只在明显偏小时放大。
+    static func enlargeMainWindowIfNeeded() {
+        guard let window = NSApp.windows.first(where: {
+            $0.isVisible && $0.styleMask.contains(.titled)
+                && !($0 is NSPanel) && $0.sheetParent == nil
+        }) else { return }
+        let target = preferredWindowSize
+        let current = window.contentLayoutRect.size
+        guard current.width < target.width - 80 || current.height < target.height - 80 else {
+            return
+        }
+        guard let screen = window.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        window.setContentSize(NSSize(width: min(target.width, visible.width - 32),
+                                     height: min(target.height, visible.height - 56)))
+        let frame = window.frame
+        window.setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2,
+                                      y: visible.midY - frame.height / 2))
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
@@ -511,6 +742,10 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Diagnostics.install()
+        // 上次退出时窗口可能被拖小了；启动时统一拉回「默认大尺寸」。
+        // 窗口由 SwiftUI 创建与还原，稍后再校正一次，避免被状态恢复覆盖。
+        DispatchQueue.main.async { Self.enlargeMainWindowIfNeeded() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { Self.enlargeMainWindowIfNeeded() }
         // 文本框里兼容 Windows 的 Ctrl+C / Ctrl+V 粘贴习惯。
         ControlKeyTextShortcuts.install()
         guard let path = ProcessInfo.processInfo.environment["LUMA_SNAPSHOT"] else { return }

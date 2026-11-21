@@ -1,6 +1,7 @@
 import Foundation
 
 /// 查看器 / 编辑器状态：与图库内容状态分离，翻页和打开编辑不会触发图库整体刷新。
+@MainActor
 final class ViewerModel: ObservableObject {
     @Published var viewerID: UUID?
     @Published var editorID: UUID?
@@ -9,6 +10,10 @@ final class ViewerModel: ObservableObject {
     @Published var videoImmersiveFullScreen = false
     /// 视频播放状态：与查看器同生命周期，窗口工具栏与画面共用同一份播放状态。
     let videoPlayer = VideoPlayerModel()
+    /// 视频手动旋转角度：画面、顶栏按钮与「视频」菜单共用。
+    @Published var videoQuarterTurns = 0
+    /// 音轨 / 字幕状态：顶栏、画面内控制条与「视频」菜单共用同一份。
+    let videoPlaybackUI = VideoPlaybackUI()
 
     // MARK: - 连拍快照
     //

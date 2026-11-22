@@ -329,6 +329,9 @@ enum LibraryPaths {
     }
 
     static func sourceURL(for photo: PhotoItem) -> URL {
+        if let externalPath = photo.externalPath, !externalPath.isEmpty {
+            return URL(fileURLWithPath: externalPath)
+        }
         if photo.isSystem, let path = photo.systemOriginalPath {
             return URL(fileURLWithPath: path)
         }

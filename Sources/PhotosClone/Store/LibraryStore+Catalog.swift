@@ -120,11 +120,8 @@ extension LibraryStore {
             catalogReturnItem = nil
         }
         catalogPendingSeek = request.startSeconds > 3 ? request.startSeconds : nil
-        catalogSeekAttempts = 0
-        catalogSeekRetryAt = .distantPast
 
         let start = min(request.startIndex, photos.count - 1)
-        beginCatalogProgressTracking()
         // 详情是页内视图，不再需要等弹层收起；立刻铺开查看器，点播放不再有半秒空窗。
         openViewer(photos[start].id, context: photos)
     }
@@ -161,10 +158,7 @@ extension LibraryStore {
         catalogPlaybackPhotos = photos
         catalogPlaybackContexts = contexts
         catalogPendingSeek = nil
-        catalogSeekAttempts = 0
-        catalogSeekRetryAt = .distantPast
 
-        beginCatalogProgressTracking()
         openViewer(first.id, context: photos)
     }
 
@@ -188,13 +182,9 @@ extension LibraryStore {
                                             seconds: current, duration: duration)
             }
         }
-        catalogProgressCancellable?.cancel()
-        catalogProgressCancellable = nil
         catalogPlaybackPhotos = []
         catalogPlaybackContexts = [:]
         catalogPendingSeek = nil
-        catalogSeekAttempts = 0
-        catalogSeekRetryAt = .distantPast
     }
 
     /// 关闭播放器后回到刚才的详情页：把条目交给频道页恢复内联详情。
@@ -205,42 +195,5 @@ extension LibraryStore {
         catalogModel.pendingInlineItem = item
         catalogModel.focus(sourceID)
         navigate(to: .catalogSource(sourceID))
-    }
-
-    private func beginCatalogProgressTracking() {
-        catalogProgressCancellable?.cancel()
-        catalogProgressSavedAt = .distantPast
-        catalogProgressCancellable = viewerModel.videoPlayer.$duration
-            .combineLatest(viewerModel.videoPlayer.$currentTime)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] duration, current in
-                self?.handleCatalogProgressTick(current: current, duration: duration)
-            }
-    }
-
-    private func handleCatalogProgressTick(current: Double, duration: Double) {
-        guard let viewerID, let context = catalogPlaybackContexts[viewerID] else { return }
-
-        // 续播：等时长大致对上后再跳转，最多重试 5 次。
-        if let pending = catalogPendingSeek, duration > 0 {
-            if abs(current - pending) < 4 {
-                catalogPendingSeek = nil
-                catalogSeekAttempts = 0
-            } else if current < 30, pending > 3, pending < duration - 3,
-                      catalogSeekAttempts < 5,
-                      Date().timeIntervalSince(catalogSeekRetryAt) > 1 {
-                catalogSeekAttempts += 1
-                catalogSeekRetryAt = Date()
-                viewerModel.videoPlayer.requestSeek(to: pending)
-            }
-        }
-
-        guard duration > 0, current > 3 else { return }
-        let now = Date()
-        guard now.timeIntervalSince(catalogProgressSavedAt) > 10 else { return }
-        catalogProgressSavedAt = now
-        catalogModel.updateProgress(source: context.source, item: context.item,
-                                    episode: context.episode.index,
-                                    seconds: current, duration: duration)
     }
 }

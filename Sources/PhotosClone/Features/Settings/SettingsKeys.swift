@@ -49,14 +49,42 @@ enum SettingsKeys {
     static let viewFullHDR = "settings.viewFullHDR"
     static let videoMuted = "settings.video.mutedByDefault"
     static let videoLoop = "settings.video.loopByDefault"
-    /// 视频查看器里 ↑ / ↓ 快进快退的步长（秒）。
+    /// 视频快进 / 快退的步长（秒）：图库视频用 ↑ / ↓，网络资源用 ← / →。
     static let videoSeekStep = "settings.video.seekStep"
     /// 视频控制条的位置：底部悬浮 / 顶栏融合。
     static let videoControlPlacement = "settings.video.controlPlacement"
+    /// HDR / 杜比视界片源的播放策略：自动 / 映射到 SDR / 保持原样。
+    static let videoHDRMode = "settings.video.hdrMode"
+    /// 网络缓冲档位：省流 / 均衡 / 流畅。
+    static let videoBufferProfile = "settings.video.bufferProfile"
+    /// 远端弱网自适应：网络变慢时临时降档，恢复后回到所选档位。
+    static let videoAdaptiveBuffering = "settings.video.adaptiveBuffering"
     /// 视频转码 / 边下边播缓存的总容量上限（GB）。
     static let videoCacheLimitGB = "settings.video.cacheLimitGB"
     /// 按片源帧率切换显示器刷新率（24p → 24Hz）。
     static let videoMatchDisplayRate = "settings.video.matchDisplayRate"
+    /// 高倍速播放时保持音调不变。
+    static let videoPreservePitch = "settings.video.preservePitch"
+    /// 音轨在一次 HLS 会话里全部装好，切换时不重启转码。
+    static let videoInstantAudioSwitch = "settings.video.instantAudioSwitch"
+    /// 多声道输出：自动保留源声道 / 强制立体声。
+    static let audioDownmix = "settings.video.audioDownmix"
+    /// 重编码目标编码：兼容 H.264 / 高效 HEVC / 低功耗 HEVC。
+    static let videoTranscodeMode = "settings.video.transcodeMode"
+    /// 每部影片记住的手动字幕选择。
+    static func rememberedSubtitle(_ photoID: String) -> String {
+        "settings.video.subtitleMemory.\(photoID)"
+    }
+    /// 本地 / SMB 视频自动挂载内嵌字幕轨。
+    static let videoAutoEmbeddedSubtitles = "settings.video.autoEmbeddedSubtitles"
+    /// 自动挂载视频同目录下的同名外挂字幕。
+    static let videoAutoSiblingSubtitles = "settings.video.autoSiblingSubtitles"
+    /// 播放后自动在线搜索并匹配一条字幕。
+    static let videoAutoOnlineSubtitles = "settings.video.autoOnlineSubtitles"
+    /// 把播放状态交给系统「正在播放」，支持控制中心与键盘媒体键。
+    static let videoSystemMediaIntegration = "settings.video.systemMediaIntegration"
+    /// 进度条悬停 / 拖动时显示该时间点的画面预览。
+    static let videoScrubPreview = "settings.video.scrubPreview"
     /// 网络资源海报缓存上限（GB）。
     static let posterCacheLimitGB = "settings.catalog.posterCacheLimitGB"
     /// 缓存上限默认值迁移标记（海报 10 GB / 视频 50 GB）。
@@ -93,6 +121,9 @@ enum SettingsKeys {
     static let cinemaTVDBKey = "settings.cinema.tvdbKey"
     static let cinemaTVDBPin = "settings.cinema.tvdbPin"
     static let cinemaSubtitleAPIKey = "settings.cinema.subtitleAPIKey"
+    /// 在线字幕来源开关：OpenSubtitles / Assrt（伪射手）。
+    static let subtitleProviderOpenSubtitles = "settings.subtitle.provider.openSubtitles"
+    static let subtitleProviderAssrt = "settings.subtitle.provider.assrt"
     static let cinemaParentalLevel = "settings.cinema.parentalLevel"
 
     /// 单个本地能力是否启用。模型文件存放在本机 Application Support，开关只表示用不用。

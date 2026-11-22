@@ -78,7 +78,13 @@ extension CloudSetupWizardView {
                     infoRow("接入方式", "SMB 共享")
                     infoRow("地址", smbAddress)
                     infoRow("账号", smbUsername)
+                    infoRow("浏览范围", accessScopeSummary)
                 }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+
+                accessScopeSection
+
                 Text("密码保存在 macOS 钥匙串。SMB 挂载为只读：可以浏览与播放，不支持上传、重命名、新建文件夹与删除。")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
@@ -679,12 +685,17 @@ extension CloudSetupWizardView {
 
     func addSMB() {
         isBusy = true
-        let error = store.saveCloudMount(existing: nil,
+        let existing = editingMountID.flatMap { id in
+            store.cloudMounts.first { $0.id == id }
+        }
+        let error = store.saveCloudMount(existing: existing,
                                          name: mountName,
                                          address: smbAddress,
                                          username: smbUsername,
                                          password: smbPassword,
-                                         kind: .smb)
+                                         kind: .smb,
+                                         scopes: resolvedScopes,
+                                         excludes: resolvedExcludes)
         isBusy = false
         if let error {
             status = error

@@ -102,6 +102,14 @@ struct TMDBClient: CinemaMetadataSource {
 
         details.certification = parseCertification(object, isTV: isTV)
 
+        let overview = (object["overview"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        details.overview = (overview?.isEmpty ?? true) ? nil : overview
+        details.rating = (object["vote_average"] as? NSNumber)?.doubleValue
+        if let genres = object["genres"] as? [[String: Any]] {
+            details.genres = genres.compactMap { $0["name"] as? String }
+        }
+
         let tagline = (object["tagline"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         details.tagline = (tagline?.isEmpty ?? true) ? nil : tagline

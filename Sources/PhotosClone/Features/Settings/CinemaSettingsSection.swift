@@ -56,6 +56,7 @@ struct CinemaSettingsSection: View {
 
     @State private var revealKey = false
     @State private var revealCookie = false
+    @State private var revealAssrt = false
     @State private var tab: CinemaSettingsTab = .scrape
     @State private var pendingClear: CinemaClearAction?
     @State private var pinInput = ""
@@ -599,9 +600,26 @@ struct CinemaSettingsSection: View {
 
     private var subtitleContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-            settingsGroup("在线字幕",
+            settingsGroup("自动挂载", icon: "captions.bubble", note: "三项均默认关闭") {
+                settingToggle("同目录外挂字幕",
+                              detail: "视频所在文件夹里有同名 .srt / .ass 时自动载入",
+                              isOn: $settings.autoSiblingSubtitles)
+                settingToggle("内嵌字幕轨",
+                              detail: "本地 / SMB 视频自动提取中文字幕轨；云端仍在播放器里手动选",
+                              isOn: $settings.autoEmbeddedSubtitles)
+                settingToggle("在线字幕匹配",
+                              detail: "播放后按片名在已启用的来源里搜一条中文字幕；失败时静默",
+                              isOn: $settings.autoOnlineSubtitles,
+                              divider: false)
+                settingNote("优先级：同目录外挂 › 内嵌字幕轨 › 在线匹配。已有字幕时不会重复下载；手动选字幕不受影响。")
+            }
+
+            settingsGroup("字幕来源 · OpenSubtitles",
                           icon: "captions.bubble.fill",
                           status: settings.cinemaSubtitleAPIKey.isEmpty ? ("未配置", false) : ("已配置", true)) {
+                settingToggle("启用",
+                              detail: "国际字幕库；未填 API Key 时不参与搜索",
+                              isOn: $settings.subtitleProviderOpenSubtitlesEnabled)
                 settingField("API Key",
                              detail: "用于搜索字幕",
                              placeholder: "OpenSubtitles API Key",
@@ -627,7 +645,32 @@ struct CinemaSettingsSection: View {
                     }
                 }
                 .controlSize(.small)
-                settingNote("同名外挂字幕仍然优先；在线结果会缓存到本机，下载需要填账号与密码。")
+                settingNote("下载需要填账号与密码；搜索与下载结果都会缓存到本机。")
+            }
+
+            settingsGroup("字幕来源 · 伪射手（Assrt）",
+                          icon: "character.book.closed.fill",
+                          status: settings.assrtSubtitleToken.isEmpty ? ("未配置", false) : ("已配置", true)) {
+                settingToggle("启用",
+                              detail: "国内中文字幕为主；搜索免费，下载需要访问令牌",
+                              isOn: $settings.subtitleProviderAssrtEnabled)
+                settingField("访问令牌",
+                             detail: "assrt.net 用户中心获取",
+                             placeholder: "32 位 Token",
+                             text: $settings.assrtSubtitleToken,
+                             secure: true,
+                             reveal: $revealAssrt,
+                             divider: false)
+                settingActions {
+                    Button("获取 Token") {
+                        open("https://assrt.net/user/api")
+                    }
+                    Button("打开伪射手") {
+                        open("https://assrt.net")
+                    }
+                }
+                .controlSize(.small)
+                settingNote("多个来源会并发搜索，结果按「中文优先、下载量」排序；压缩包只自动解压 zip。")
             }
 
             settingsGroup("字幕样式", icon: "textformat.size", note: "所有视频默认值") {
@@ -695,7 +738,19 @@ struct CinemaSettingsSection: View {
                 settingToggle("按片源帧率切刷新率",
                               detail: "24p 片源切到 24Hz，减少 3:2 抖动；退出播放自动恢复",
                               isOn: $settings.matchDisplayFrameRate)
-                settingRow("快进 / 快退步长", detail: "视频里 ↑ / ↓ 的跳转距离") {
+                settingRow("HDR 视频",
+                           detail: settings.videoHDRMode.detail + " · 杜比视界 P5 "
+                               + (VideoSupport.supportsLibplacebo ? "已就绪" : "未安装 libplacebo")) {
+                    Picker("", selection: $settings.videoHDRMode) {
+                        ForEach(VideoHDRMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+                settingRow("快进 / 快退步长", detail: "网络资源里 ← / → 与 J / L 的跳转距离，连按或按住会加速") {
                     Picker("", selection: $settings.videoSeekStep) {
                         ForEach([1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { value in
                             Text("\(Int(value)) 秒").tag(value)
@@ -714,6 +769,56 @@ struct CinemaSettingsSection: View {
                     .labelsHidden()
                     .frame(width: 220)
                 }
+                settingToggle("进度条悬停预览",
+                              detail: "鼠标移到进度条上显示该时间点画面；关掉后只看时间",
+                              isOn: $settings.scrubPreviewEnabled,
+                              divider: false)
+            }
+
+            settingsGroup("播放增强", icon: "slider.horizontal.3", note: "对播放器内所有视频生效") {
+                settingToggle("高倍速保持音调",
+                              detail: "变速播放时用频谱算法保持人声；关闭后 2 倍速以上会明显快放",
+                              isOn: $settings.preservePitchAtSpeed)
+                settingToggle("音轨切换优化",
+                              detail: "多条音轨装进同一会话，普通片源切换不重启转码；"
+                                  + "HDR / 杜比视界为兼容播放会重建一次（约 1 秒）",
+                              isOn: $settings.instantAudioSwitch)
+                settingRow("音质与声道", detail: settings.audioDownmix.detail) {
+                    Picker("", selection: $settings.audioDownmix) {
+                        ForEach(AudioDownmixMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 180)
+                }
+                settingRow("转码编码", detail: settings.videoTranscodeMode.detail) {
+                    Picker("", selection: $settings.videoTranscodeMode) {
+                        ForEach(VideoTranscodeMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+                settingRow("网络缓冲", detail: settings.videoBufferMode.detail) {
+                    Picker("", selection: $settings.videoBufferMode) {
+                        ForEach(VideoBufferMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 260)
+                }
+                settingToggle("系统媒体集成",
+                              detail: "控制中心与键盘 / 耳机媒体键控制当前视频",
+                              isOn: $settings.systemMediaIntegration,
+                              divider: false)
+                settingNote("音频延迟、内嵌字幕切换仍在播放器的「速度 / 字幕」菜单里临时调整。")
+                settingNote("网络缓冲只作用于云端 / WebDAV 等远端片源；本地盘与 SMB 不受影响。")
             }
 
             settingsGroup("转码缓存", icon: "internaldrive", note: "本机临时分片") {
@@ -941,7 +1046,7 @@ struct CinemaSettingsSection: View {
             settingsGroup("维护", icon: "wrench.and.screwdriver") {
                 settingRow("重新刮削全部", detail: "覆盖当前影院已识别的结果") {
                     Button {
-                        Task { await store.scrapeCinema(for: store.cinemaActiveScope, force: true) }
+                        store.startCinemaScrape(for: store.cinemaActiveScope, force: true)
                     } label: {
                         Label("重新刮削", systemImage: "arrow.triangle.2.circlepath")
                     }

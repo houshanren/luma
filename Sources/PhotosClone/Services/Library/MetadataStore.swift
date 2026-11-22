@@ -612,6 +612,8 @@ final class MetadataStore {
         // 查重 2.0：原文件内容哈希与感知哈希。
         try addColumnIfNeeded("assets", "content_hash", "TEXT")
         try addColumnIfNeeded("assets", "perceptual_hash", "INTEGER")
+        // 库外媒体（蓝光目录 / ISO）的引用路径：不复制原文件，播放时直接读。
+        try addColumnIfNeeded("assets", "external_path", "TEXT")
         try db.execute("""
             CREATE INDEX IF NOT EXISTS idx_assets_content_hash
             ON assets(content_hash) WHERE content_hash IS NOT NULL;
@@ -624,6 +626,8 @@ final class MetadataStore {
         try addColumnIfNeeded("asset_overlays", "rating", "INTEGER")
         try addColumnIfNeeded("asset_overlays", "flag", "TEXT")
         try addColumnIfNeeded("asset_overlays", "color_label", "TEXT")
+        // 网盘索引表：目录聚合 + 媒体索引 + 扫描状态（替代整份 JSON 快照）。
+        try migrateCloudIndexSchema()
     }
 
     private func addColumnIfNeeded(_ table: String, _ column: String, _ type: String) throws {
@@ -761,6 +765,7 @@ final class MetadataStore {
         item.colorLabel = row["color_label"]?.string.flatMap(PhotoColorLabel.init(rawValue:))
         item.contentHash = row["content_hash"]?.string
         item.perceptualHash = row["perceptual_hash"]?.int64
+        item.externalPath = row["external_path"]?.string
         return item
     }
 
@@ -823,8 +828,9 @@ final class MetadataStore {
                 aperture, shutter_speed, iso, latitude, longitude, keywords,
                 place_country, place_province, place_city, place_district, place_poi,
                 edit_recipe, is_live_photo, live_photo_filename, live_photo_video_path,
-                import_batch_id, rating, flag, color_label, content_hash, perceptual_hash, viewed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                import_batch_id, rating, flag, color_label, content_hash, perceptual_hash,
+                viewed_at, external_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 photo.id.uuidString,
                 photo.filename,
@@ -867,7 +873,8 @@ final class MetadataStore {
                 photo.colorLabel?.rawValue,
                 photo.contentHash,
                 photo.perceptualHash,
-                photo.viewedAt?.timeIntervalSince1970
+                photo.viewedAt?.timeIntervalSince1970,
+                photo.externalPath
             ])
     }
 

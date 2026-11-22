@@ -12,7 +12,11 @@ extension LibraryStore {
         guard !photo.isSystem else { return }
         let fm = FileManager.default
 
-        try? fm.removeItem(at: LibraryPaths.originalURL(for: photo))
+        // 库外媒体（蓝光原盘）没有 originals 副本：filename 为空，
+        // 直接删 originals/<分片> 会误伤同分片的其他文件，必须显式跳过。
+        if photo.externalPath == nil {
+            try? fm.removeItem(at: LibraryPaths.originalURL(for: photo))
+        }
         if let liveURL = LibraryPaths.livePhotoURL(for: photo) {
             try? fm.removeItem(at: liveURL)
         }

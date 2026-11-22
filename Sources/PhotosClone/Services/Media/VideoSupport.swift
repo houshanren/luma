@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import AVFoundation
+import PlaybackCore
 import UniformTypeIdentifiers
 
 // MARK: - 视频格式
@@ -29,6 +30,8 @@ enum VideoFormats {
     /// 打开面板允许的文件类型：系统 image/movie 加上每种视频扩展名的 UTI。
     static var importContentTypes: [UTType] {
         var types: [UTType] = [.image, .movie]
+        // 蓝光光盘镜像。
+        if let iso = UTType(filenameExtension: "iso") { types.append(iso) }
         for ext in extensions {
             guard let type = UTType(filenameExtension: ext), !types.contains(type) else { continue }
             types.append(type)
@@ -46,26 +49,64 @@ enum FFmpeg {
     static let probe: URL? = locate("ffprobe")
     /// 支持 zscale + tonemap 的 ffmpeg：优先用内置静态包（已带 libzimg），
     /// 内置包缺失或过旧时退回系统 / Homebrew ffmpeg。
-    static let toneMapExecutable: URL? = locate("ffmpeg", requiredFilters: ["zscale", "tonemap"])
+    static let toneMapExecutable: URL? = locate("ffmpeg", requiredFilters: ["zscale", "tonemap"],
+                                                purpose: "HDR 色调映射")
+    /// 带 libplacebo 的 ffmpeg：杜比视界的 DOVI RPU 只能由它应用。
+    /// 发布包内置 ffmpeg-full + MoltenVK；开发期未打包时回退 Homebrew。
+    static let libplaceboExecutable: URL? = locate("ffmpeg", requiredFilters: ["libplacebo"],
+                                                   purpose: "杜比视界映射（libplacebo）")
 
     static var isAvailable: Bool { executable != nil }
 
+    /// 是否有能正确处理杜比视界的 ffmpeg。
+    static var supportsLibplacebo: Bool { libplaceboExecutable != nil }
+
+    /// Vulkan loader 靠 ICD 清单找到 libMoltenVK：优先用 App 内置的（随 ffmpeg 一起打包），
+    /// 找不到再退回 Homebrew 的 molten-vk。
+    static var vulkanICDPath: String? {
+        let fm = FileManager.default
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("lib/MoltenVK_icd.json").path,
+           fm.fileExists(atPath: bundled) {
+            return bundled
+        }
+        let candidates = [
+            "/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json",
+            "/usr/local/etc/vulkan/icd.d/MoltenVK_icd.json"
+        ]
+        for path in candidates where fm.fileExists(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
+    /// 子进程需要额外注入的环境变量：libplacebo 初始化 Vulkan 时要用到 MoltenVK。
+    static var processEnvironment: [String: String] {
+        guard let icd = vulkanICDPath else { return [:] }
+        return ["VK_ICD_FILENAMES": icd]
+    }
+
     /// 转码时按需选择可做色调映射的二进制。
-    static func executable(preferToneMap: Bool) -> URL? {
+    static func executable(preferToneMap: Bool, preferLibplacebo: Bool = false) -> URL? {
+        if preferToneMap, preferLibplacebo, let libplaceboExecutable { return libplaceboExecutable }
         if preferToneMap, let toneMapExecutable { return toneMapExecutable }
         return executable
     }
 
     private static func locate(_ name: String,
-                               requiredFilters: [String] = []) -> URL? {
+                               requiredFilters: [String] = [],
+                               purpose: String? = nil) -> URL? {
         let fm = FileManager.default
         var candidates: [String] = []
-        // 优先使用 App 内置的静态 ffmpeg（由 build.sh 打进 Contents/Resources/bin）。
+        // 优先使用 App 内置的 ffmpeg（build.sh 把 ffmpeg-full + 依赖打进 Contents/Resources/bin、lib）。
         if let bundled = Bundle.main.resourceURL?
             .appendingPathComponent("bin/\(name)").path {
             candidates.append(bundled)
         }
         candidates += [
+            // Homebrew 的 ffmpeg-full 是 keg-only：带 libplacebo，杜比视界 P5 只能靠它正确映射。
+            "/opt/homebrew/opt/ffmpeg-full/bin/\(name)",
+            "/usr/local/opt/ffmpeg-full/bin/\(name)",
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
             "/usr/bin/\(name)",
@@ -76,7 +117,7 @@ enum FFmpeg {
         for path in searchPaths where fm.isExecutableFile(atPath: path) {
             if !requiredFilters.isEmpty {
                 guard supportsFilters(URL(fileURLWithPath: path), requiredFilters) else { continue }
-                Diagnostics.record("视频组件：HDR 色调映射使用 \(path)")
+                Diagnostics.record("视频组件：\(purpose ?? "HDR 色调映射") 使用 \(path)")
             } else {
                 Diagnostics.record("视频组件：使用 \(path)")
             }
@@ -121,89 +162,18 @@ enum FFmpeg {
 
 // MARK: - 视频探测与转换
 
-/// 音轨信息：用于播放器的音轨菜单展示语言 / 声道 / 编码。
-struct AudioTrackInfo: Identifiable, Equatable {
-    /// 在音频流中的序号（0 起），与 ffmpeg 的 `-map 0:a:N` 对应。
-    let ordinal: Int
-    let codec: String
-    let channels: Int
-    let language: String?
-    let title: String?
-
-    var id: Int { ordinal }
-
-    var displayName: String {
-        var parts: [String] = []
-        if let title, !title.isEmpty { parts.append(title) }
-        if let language, !language.isEmpty, language.lowercased() != "und" {
-            parts.append(language)
-        }
-        if channels > 0 {
-            parts.append(channels == 6 ? "5.1" : channels == 8 ? "7.1" : channels == 2 ? "立体声" : "\(channels) 声道")
-        }
-        if !codec.isEmpty { parts.append(codec) }
-        return parts.joined(separator: " · ")
-    }
-}
-
-/// 一个视频章节：来自 ffprobe 的 `chapters`，用于播放器章节菜单与快捷键。
-struct VideoChapter: Identifiable, Equatable {
-    let start: Double
-    let end: Double
-    let title: String
-    var id: Double { start }
-}
-
-struct VideoProbe {
-    var isPlayable = false
-    var hasVideoTrack = false
-    var duration: Double = 0
-    var size: CGSize = .zero
-    var codec: String?
-    /// HEVC 转封装时需要显式写 hvc1 标签，AVFoundation 不认 ffmpeg 默认的 hev1。
-    var isHEVC = false
-    /// HDR（PQ / HLG）：转码时按需做色调映射，避免 SDR 屏幕发灰。
-    var isHDR = false
-    /// 杜比视界：ffprobe 的 codec_tag_string（dvh1 / dvhe）或 DOVI side data。
-    var isDolbyVision = false
-    /// 展示用 HDR 标记：Dolby Vision / HDR10+ / HDR10 / HLG。
-    var hdrLabel: String?
-    /// 整体码率（bps），来自 format.bit_rate。
-    var bitrate: Int = 0
-    /// 帧率（fps），来自 avg_frame_rate / r_frame_rate 或 AVAssetTrack。
-    var frameRate: Double = 0
-    /// 容器名（format_name，例如 matroska,webm）。
-    var containerName: String?
-    /// 章节列表；没有章节时为空。
-    var chapters: [VideoChapter] = []
-    /// 音轨数量：HLS 转封装一次只映射一条，用来决定是否显示音轨切换。
-    var audioTrackCount = 0
-    /// 音轨明细（ffprobe 能拿到语言 / 声道 / 编码）。
-    var audioTracks: [AudioTrackInfo] = []
-}
-
-enum VideoError: LocalizedError {
-    case transcodeUnavailable
-    case transcodeFailed
-    /// 带 ffmpeg 输出的失败原因（401、编码不支持等）。
-    case transcodeFailedMessage(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .transcodeUnavailable:
-            return "未检测到 ffmpeg，无法转换该视频格式"
-        case .transcodeFailed:
-            return "视频转换失败"
-        case .transcodeFailedMessage(let message):
-            return "视频转换失败：\(message)"
-        }
-    }
-}
-
 enum VideoSupport {
     /// 用于播放前的快速探测。
     static func probe(url: URL, options: [String: Any] = [:]) async -> VideoProbe {
-        var probe = await probe(asset: AVURLAsset(url: url, options: options))
+        await probe(asset: AVURLAsset(url: url, options: options), fallbackURL: url, options: options)
+    }
+
+    /// 复用调用方已经建好的 AVAsset：SMB / 外置盘上少开一次文件，
+    /// 轨道信息也是同一份缓存，交给 AVPlayerItem 后首帧更快。
+    static func probe(asset: AVAsset, fallbackURL: URL?,
+                      options: [String: Any] = [:]) async -> VideoProbe {
+        var probe = await probe(asset: asset)
+        guard let fallbackURL else { return probe }
         if !probe.isPlayable || probe.duration <= 0 || probe.size.width <= 0 {
             // 云端 MKV 的 ffprobe 也必须带鉴权头，否则拿不到时长 / 音轨数 / HDR 信息。
             let headers = options[CloudPlayback.headerFieldsKey] as? [String: String] ?? [:]
@@ -211,8 +181,8 @@ enum VideoSupport {
             // 一定不能跑在调用方线程（打开视频时就是主线程）上，否则整个 App 像卡死。
             let fallback = await Task.detached(priority: .userInitiated) {
                 headers.isEmpty
-                    ? ffprobeMetadata(url: url, timeout: 30)
-                    : ffprobeMetadata(url: url, headers: headers, timeout: 30)
+                    ? ffprobeMetadata(url: fallbackURL, timeout: 30)
+                    : ffprobeMetadata(url: fallbackURL, headers: headers, timeout: 30)
             }.value
             if probe.duration <= 0 { probe.duration = fallback.duration }
             if probe.size.width <= 0 { probe.size = fallback.size }
@@ -220,13 +190,16 @@ enum VideoSupport {
             if !probe.isHEVC { probe.isHEVC = fallback.isHEVC }
             if !probe.isHDR { probe.isHDR = fallback.isHDR }
             if !probe.isDolbyVision { probe.isDolbyVision = fallback.isDolbyVision }
+            probe.color = merged(probe.color, with: fallback.color)
             if probe.hdrLabel == nil { probe.hdrLabel = fallback.hdrLabel }
             if probe.bitrate == 0 { probe.bitrate = fallback.bitrate }
             if probe.frameRate <= 0 { probe.frameRate = fallback.frameRate }
+            if !probe.isInterlaced { probe.isInterlaced = fallback.isInterlaced }
             if probe.containerName == nil { probe.containerName = fallback.containerName }
             if probe.chapters.isEmpty { probe.chapters = fallback.chapters }
             if probe.audioTrackCount == 0 { probe.audioTrackCount = fallback.audioTrackCount }
             if probe.audioTracks.isEmpty { probe.audioTracks = fallback.audioTracks }
+            if probe.subtitleTracks.isEmpty { probe.subtitleTracks = fallback.subtitleTracks }
         }
         return probe
     }
@@ -246,6 +219,98 @@ enum VideoSupport {
         return await probe(asset: AVURLAsset(url: url, options: options))
     }
 
+    /// CMFormatDescription → 与 ffmpeg 同名的色彩参数。
+    private static func colorInfo(from description: CMFormatDescription) -> VideoColorInfo {
+        var info = VideoColorInfo()
+        let subType = CMFormatDescriptionGetMediaSubType(description)
+        let bytes = [UInt8((subType >> 24) & 0xFF), UInt8((subType >> 16) & 0xFF),
+                     UInt8((subType >> 8) & 0xFF), UInt8(subType & 0xFF)]
+        if let tag = String(bytes: bytes, encoding: .ascii) {
+            info.codecTag = tag.lowercased()
+        }
+        let extensions = CMFormatDescriptionGetExtensions(description) as? [String: Any] ?? [:]
+        // AVFoundation 对 MP4/MOV 常把色彩放在 CVImageBuffer* 扩展里，而不是
+        // kCMFormatDescriptionExtension_*；两条都读，否则原生 HDR 会被当成 SDR。
+        func value(_ cmKey: CFString, _ cvKey: String) -> Any? {
+            extensions[cmKey as String] ?? extensions[cvKey]
+        }
+        info.primaries = primariesName(value(kCMFormatDescriptionExtension_ColorPrimaries,
+                                             "CVImageBufferColorPrimaries") as? String)
+        info.transfer = transferName(value(kCMFormatDescriptionExtension_TransferFunction,
+                                           "CVImageBufferTransferFunction") as? String)
+        info.matrix = matrixName(value(kCMFormatDescriptionExtension_YCbCrMatrix,
+                                       "CVImageBufferYCbCrMatrix") as? String)
+        if let full = value(kCMFormatDescriptionExtension_FullRangeVideo,
+                            "FullRangeVideo") as? Bool {
+            info.range = full ? "pc" : "tv"
+        }
+        info.isHDR = info.primaries == "bt2020"
+            || info.transfer == "smpte2084"
+            || info.transfer == "arib-std-b67"
+        // 杜比视界在 MOV / MP4 里用 dvh1 / dvhe 标记；hvc1 也可能是 DV，交给 ffprobe 兜底补 profile。
+        info.isDolbyVision = info.codecTag?.hasPrefix("dvh") ?? false
+        return info
+    }
+
+    /// CMFormatDescription 的扩展值是 CoreMedia 常量字符串，这里映射成 ffmpeg 的参数名。
+    private static func primariesName(_ raw: String?) -> String? {
+        switch raw {
+        case "ITU_R_709_2": return "bt709"
+        case "ITU_R_2020": return "bt2020"
+        case "SMPTE_C": return "smpte170m"
+        case "EBU_3213_E": return "bt470bg"
+        case "SMPTE_240M_1995": return "smpte240m"
+        case "P3_D65": return "smpte432"
+        case "P3_DCI": return "smpte431"
+        case "GENERIC_FILM": return "film"
+        default: return nil
+        }
+    }
+
+    private static func transferName(_ raw: String?) -> String? {
+        switch raw {
+        case "ITU_R_709_2": return "bt709"
+        case "ITU_R_2020": return "bt2020-10"
+        case "SMPTE_ST_2084", "SMPTE_ST_2084_PQ": return "smpte2084"
+        case "ITU_R_2100_HLG": return "arib-std-b67"
+        case "SMPTE_ST_428_1": return "smpte428"
+        case "SMPTE_240M_1995": return "smpte240m"
+        default: return nil
+        }
+    }
+
+    private static func matrixName(_ raw: String?) -> String? {
+        switch raw {
+        case "ITU_R_709_2": return "bt709"
+        case "ITU_R_2020": return "bt2020nc"
+        case "SMPTE_C", "ITU_R_601_4": return "smpte170m"
+        case "EBU_3213_E": return "bt470bg"
+        case "SMPTE_240M_1995": return "smpte240m"
+        case "FCC": return "fcc"
+        default: return nil
+        }
+    }
+
+    /// 合并两次探测的色彩信息：AVFoundation 缺的字段由 ffprobe 补齐。
+    private static func merged(_ base: VideoColorInfo, with other: VideoColorInfo) -> VideoColorInfo {
+        var info = base
+        if info.primaries == nil { info.primaries = other.primaries }
+        if info.transfer == nil { info.transfer = other.transfer }
+        if info.matrix == nil { info.matrix = other.matrix }
+        if info.range == nil { info.range = other.range }
+        if info.codecTag == nil { info.codecTag = other.codecTag }
+        if info.dvProfile == nil { info.dvProfile = other.dvProfile }
+        info.isHDR = info.isHDR || other.isHDR
+        info.isDolbyVision = info.isDolbyVision || other.isDolbyVision
+        return info
+    }
+
+    private static func normalizedColorValue(_ raw: String?) -> String? {
+        guard let value = raw?.lowercased(), !value.isEmpty,
+              value != "unknown", value != "reserved" else { return nil }
+        return value
+    }
+
     /// 任意 AVAsset（例如 PhotoKit 返回的云端素材，没有本地 URL）的轨道探测。
     static func probe(asset: AVAsset) async -> VideoProbe {
         var probe = VideoProbe()
@@ -253,7 +318,6 @@ enum VideoSupport {
         let playable = (try? await asset.load(.isPlayable)) ?? false
         let tracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
         probe.hasVideoTrack = !tracks.isEmpty
-        probe.isPlayable = playable && !tracks.isEmpty
 
         if let duration = try? await asset.load(.duration), duration.isNumeric {
             probe.duration = max(0, duration.seconds)
@@ -267,18 +331,72 @@ enum VideoSupport {
             if let formats = try? await track.load(.formatDescriptions), let first = formats.first {
                 probe.codec = codecDisplayName(CMFormatDescriptionGetMediaSubType(first))
                 probe.isHEVC = probe.codec == "HEVC"
-                if let extensions = CMFormatDescriptionGetExtensions(first) as? [String: Any] {
-                    let primaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
-                    let transfer = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
-                    // 常量在不同 SDK 上的 Swift 导入名不一致，直接比对字符串值。
-                    probe.isHDR = primaries == "ITU_R_2020"
-                        || transfer == "SMPTE_ST_2084"
-                        || transfer == "ITU_R_2100_HLG"
-                }
+                // 完整色彩管线从格式描述里拿：直连播放也要知道是 HDR10 / HLG 还是杜比视界。
+                probe.color = colorInfo(from: first)
+                probe.isHDR = probe.color.isHDR
+                probe.isDolbyVision = probe.color.isDolbyVision
             }
         }
-        probe.audioTrackCount = ((try? await asset.loadTracks(withMediaType: .audio)) ?? []).count
+        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        probe.audioTrackCount = audioTracks.count
+        probe.audioTracks = await audioTrackInfos(audioTracks)
+        // 音轨解不了时不能盲目放宽：否则会得到「有画面没声音」。
+        var audioDecodable = true
+        for track in audioTracks {
+            if let decodable = try? await track.load(.isDecodable), !decodable {
+                audioDecodable = false
+                break
+            }
+        }
+        // `isPlayable` 对 hev1 的 HEVC 会误报 false：按容器 + 编码放宽，避免白走 remux。
+        probe.isPlayable = VideoProbe.allowsNativePlayback(
+            assetIsPlayable: playable,
+            hasVideoTrack: probe.hasVideoTrack,
+            codec: probe.codec,
+            containerExtension: (asset as? AVURLAsset)?.url.pathExtension,
+            audioDecodable: audioDecodable)
         return probe
+    }
+
+    /// AVFoundation 路径的音轨明细：原生直读没有走 ffprobe，也要有语言 / 声道 / 编码，
+    /// 否则多音轨 MP4 的菜单与「DTS→AC-3」判断都会缺输入。
+    private static func audioTrackInfos(_ tracks: [AVAssetTrack]) async -> [AudioTrackInfo] {
+        var infos: [AudioTrackInfo] = []
+        for (index, track) in tracks.enumerated() {
+            var codec = ""
+            var channels = 0
+            if let formats = try? await track.load(.formatDescriptions), let first = formats.first {
+                codec = audioCodecName(CMFormatDescriptionGetMediaSubType(first))
+                if let stream = CMAudioFormatDescriptionGetStreamBasicDescription(first)?.pointee {
+                    channels = Int(stream.mChannelsPerFrame)
+                }
+            }
+            let language = try? await track.load(.languageCode)
+            infos.append(AudioTrackInfo(ordinal: index, codec: codec, channels: channels,
+                                        language: language, title: nil))
+        }
+        return infos
+    }
+
+    /// AVFoundation 的音频 fourCC 与 ffmpeg 的 codec_name 不是同一套写法（`ac-3` vs `ac3`），
+    /// 统一成 StreamPlanner 能识别的 token，避免把可直通的 AC-3 误判成陌生编码。
+    private static func audioCodecName(_ code: FourCharCode) -> String {
+        let bytes = [UInt8((code >> 24) & 0xFF), UInt8((code >> 16) & 0xFF),
+                     UInt8((code >> 8) & 0xFF), UInt8(code & 0xFF)]
+        let raw = (String(bytes: bytes, encoding: .ascii) ?? "")
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        switch raw {
+        case "aac", "mp4a": return "AAC"
+        case "alac": return "ALAC"
+        case "ac-3": return "AC3"
+        case "ec-3": return "EAC3"
+        case "lpcm", "sowt", "twos", "in24", "in32", "fl32", "fl64": return "PCM"
+        case "opus": return "OPUS"
+        case ".mp3", "mp3": return "MP3"
+        case "flac": return "FLAC"
+        default: return prettyCodec(raw)
+        }
     }
 
     /// 导入时同步读取尺寸/时长，AVFoundation 读不到时回退 ffprobe。
@@ -320,28 +438,69 @@ enum VideoSupport {
     }
 
     static func ffprobeMetadata(url: URL, timeout: TimeInterval? = nil) -> VideoProbe {
-        ffprobeMetadata(inputArguments: ["-i", url.path], timeout: timeout)
+        // 蓝光目录 / ISO 必须走 bluray 协议：直接给目录路径 ffprobe 读不出流信息，
+        // 章节 / HDR / 隔行标记也全都拿不到。
+        let input = BluraySource.ffmpegInput(for: url) ?? url.path
+        var probe = ffprobeMetadata(inputArguments: ["-i", input], timeout: timeout)
+        // libbluray 不把播放列表的章节标记交给 ffmpeg：目录原盘从 MPLS 里补，
+        // 否则章节菜单与 ⌥← / ⌥→ 在电影盘上永远不可用。
+        if probe.chapters.count < 2, BluraySource.discRoot(for: url) != nil {
+            let chapters = BluraySource.chapters(for: url)
+            if chapters.count > 1 { probe.chapters = chapters }
+        }
+        return probe
     }
 
     private static func ffprobeMetadata(inputArguments: [String],
                                         timeout: TimeInterval? = nil) -> VideoProbe {
+        ffprobeRun(inputArguments: inputArguments, timeout: timeout).probe
+    }
+
+    /// 蓝光导入诊断：跑一次 ffprobe 并保留 stderr，
+    /// 用来把 AACS / BD+ / 未检测到蓝光结构等失败翻译成明确提示。
+    static func blurayProbe(root: URL) -> (probe: VideoProbe, error: String) {
+        guard let input = BluraySource.ffmpegInput(for: root) else {
+            return (VideoProbe(), "Blu-ray disc not detected")
+        }
+        // warning 而不是 error：加密盘「The disc is encrypted」这类说明是 warning 级，
+        // 只有它才能区分 AACS / BD+ 与「不是蓝光目录」。
+        return ffprobeRun(inputArguments: ["-i", input], timeout: 45, logLevel: "warning")
+    }
+
+    private static func ffprobeRun(inputArguments: [String],
+                                   timeout: TimeInterval?,
+                                   logLevel: String = "error") -> (probe: VideoProbe, error: String) {
         var probe = VideoProbe()
-        guard let ffprobe = FFmpeg.probe else { return probe }
+        guard let ffprobe = FFmpeg.probe else { return (probe, "未检测到 ffprobe") }
         let process = Process()
         process.executableURL = ffprobe
-        process.arguments = ["-v", "error", "-print_format", "json",
+        process.arguments = ["-v", logLevel, "-print_format", "json",
                              "-show_format", "-show_streams", "-show_chapters"] + inputArguments
         let pipe = Pipe()
         process.standardOutput = pipe
-        // stderr 直接丢弃：用 Pipe 却不读，ffprobe 报错一多就会写满管道而永久阻塞。
-        process.standardError = FileHandle.nullDevice
+        // stderr 落到临时文件：用 Pipe 却不读会写满缓冲区而永久阻塞；
+        // 临时文件可以在进程退出后安全读取，失败原因（AACS / BD+ 等）也靠它带出来。
+        let logURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("luma-ffprobe-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let logHandle = try? FileHandle(forWritingTo: logURL)
+        process.standardError = logHandle ?? FileHandle.nullDevice
+
+        func finish() -> String {
+            try? logHandle?.close()
+            let text = (try? String(contentsOf: logURL, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            try? FileManager.default.removeItem(at: logURL)
+            return text
+        }
 
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
-            return probe
+            _ = finish()
+            return (probe, error.localizedDescription)
         }
         if let timeout {
             if finished.wait(timeout: .now() + timeout) == .timedOut {
@@ -351,17 +510,21 @@ enum VideoSupport {
                 }
                 process.terminationHandler = nil
                 Diagnostics.record("ffprobe 探测超时（\(Int(timeout)) 秒），已终止")
-                return probe
+                let text = finish()
+                return (probe, text.isEmpty ? "读取超时" : text)
             }
         } else {
             finished.wait()
         }
+        let errorText = finish()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return probe }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (probe, errorText)
+        }
 
         let streams = json["streams"] as? [[String: Any]] ?? []
         guard let video = streams.first(where: { ($0["codec_type"] as? String) == "video" }) else {
-            return probe
+            return (probe, errorText)
         }
         probe.hasVideoTrack = true
         probe.isPlayable = true
@@ -416,9 +579,42 @@ enum VideoSupport {
         } else if primaries == "bt2020" {
             probe.hdrLabel = "HDR"
         }
+        // 完整色彩管线：转封装写回容器、色调映射选滤镜都靠它。
+        let dvProfile = sideData.compactMap { $0["dv_profile"] as? Int }.first
+            ?? sideData.compactMap { ($0["dv_profile"] as? String).flatMap(Int.init) }.first
+        probe.color = VideoColorInfo(
+            primaries: normalizedColorValue(primaries),
+            transfer: normalizedColorValue(transfer),
+            matrix: normalizedColorValue(video["color_space"] as? String),
+            range: normalizedColorValue(video["color_range"] as? String),
+            codecTag: codecTag.isEmpty ? nil : codecTag,
+            isHDR: probe.isHDR,
+            isDolbyVision: probe.isDolbyVision,
+            dvProfile: dvProfile)
+
+        // Matroska 把 DOVI 配置放在容器侧数据里，ffprobe 不一定输出；
+        // 用 ffmpeg 读一次文件头（约 0.1 秒）把 profile 补出来，否则 P5 会被当成普通 HEVC 解码。
+        let pixelFormat = (video["pix_fmt"] as? String)?.lowercased() ?? ""
+        if probe.isHEVC, !probe.isDolbyVision,
+           probe.color.primaries == nil, pixelFormat.contains("10"),
+           let profile = dolbyVisionProfile(inputArguments: inputArguments) {
+            probe.isDolbyVision = true
+            probe.isHDR = true
+            probe.color.isDolbyVision = true
+            probe.color.isHDR = true
+            probe.color.dvProfile = profile
+            // P5 的容器标记惯例：BT.2020 + PQ；真正解出正确颜色仍要靠 DOVI RPU。
+            probe.color.transfer = "smpte2084"
+            probe.color.primaries = "bt2020"
+            probe.color.codecTag = probe.color.codecTag ?? "dvh1"
+            probe.hdrLabel = "Dolby Vision"
+        }
 
         let averageRate = parseFrameRate(video["avg_frame_rate"])
         probe.frameRate = averageRate > 0 ? averageRate : parseFrameRate(video["r_frame_rate"])
+        // 隔行标记：tt / bb / tb / bt 都是隔行（1080i、DVD）；progressive / unknown 不算。
+        let fieldOrder = (video["field_order"] as? String)?.lowercased() ?? ""
+        probe.isInterlaced = ["tt", "bb", "tb", "bt"].contains(fieldOrder)
         if probe.bitrate == 0,
            let text = format?["bit_rate"] as? String,
            let value = Int(text) {
@@ -432,7 +628,7 @@ enum VideoSupport {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return VideoChapter(start: start,
                                 end: end,
-                                title: (title?.isEmpty == false ? title! : "章节 \(index + 1)"))
+                                title: (title?.isEmpty == false ? title! : "第 \(index + 1) 章"))
         }
         let audioStreams = streams.filter { ($0["codec_type"] as? String) == "audio" }
         probe.audioTracks = audioStreams.enumerated().map { offset, stream in
@@ -445,7 +641,61 @@ enum VideoSupport {
                 title: tags?["title"] as? String)
         }
         probe.audioTrackCount = probe.audioTracks.count
-        return probe
+        // 内嵌字幕轨：图形字幕（PGS / VobSub）只能烧录，文本字幕可直接提取成 cue。
+        let imageSubtitleCodecs: Set<String> = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"]
+        probe.subtitleTracks = streams
+            .filter { ($0["codec_type"] as? String) == "subtitle" }
+            .enumerated()
+            .map { offset, stream in
+                let tags = stream["tags"] as? [String: Any]
+                let disposition = stream["disposition"] as? [String: Any]
+                let codec = ((stream["codec_name"] as? String) ?? "").lowercased()
+                return SubtitleTrackInfo(ordinal: offset,
+                                         codec: codec.isEmpty ? "" : prettyCodec(codec),
+                                         language: tags?["language"] as? String,
+                                         title: tags?["title"] as? String,
+                                         isImage: imageSubtitleCodecs.contains(codec),
+                                         isForced: (disposition?["forced"] as? Int) == 1,
+                                         isDefault: (disposition?["default"] as? Int) == 1)
+            }
+        return (probe, errorText)
+    }
+
+    /// 用 ffmpeg 读一次文件头，从 DOVI configuration record 里取 profile。
+    /// ffprobe 对 Matroska 的 DOVI 侧数据支持不稳定，这一步只读头部、约 0.1 秒。
+    private static func dolbyVisionProfile(inputArguments: [String],
+                                           timeout: TimeInterval = 10) -> Int? {
+        guard let ffmpeg = FFmpeg.executable else { return nil }
+        let process = Process()
+        process.executableURL = ffmpeg
+        // 不带输出文件：ffmpeg 打印完流信息就会退出，不会真的解码。
+        process.arguments = ["-hide_banner", "-nostdin", "-v", "info"] + inputArguments
+        process.standardOutput = FileHandle.nullDevice
+        let stderr = Pipe()
+        process.standardError = stderr
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            guard finished.wait(timeout: .now() + 2) != .timedOut else {
+                kill(process.processIdentifier, SIGKILL)
+                return nil
+            }
+        }
+        let text = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        for line in text.split(separator: "\n") where line.contains("DOVI configuration record") {
+            guard let range = line.range(of: "profile:") else { continue }
+            let digits = String(line[range.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+                .prefix(while: { $0.isNumber })
+            if let profile = Int(digits) { return profile }
+        }
+        return nil
     }
 
     /// ffprobe 的帧率是 `30000/1001` 这样的分数，也兼容直接的浮点数。
@@ -484,8 +734,13 @@ enum VideoSupport {
             .appendingPathComponent(".\(destination.lastPathComponent)-\(UUID().uuidString).jpg")
         let process = Process()
         process.executableURL = ffmpeg
-        process.arguments = ["-y", "-v", "error", "-ss", "0.3", "-i", url.path,
-                             "-frames:v", "1", "-vf", "scale='min(1200,iw)':-2", temp.path]
+        // 蓝光原盘用 bluray 协议读取；对原盘做输入级 -ss 不稳定，直接取首帧。
+        let blurayInput = BluraySource.ffmpegInput(for: url)
+        var arguments = ["-y", "-v", "error"]
+        if blurayInput == nil { arguments += ["-ss", "0.3"] }
+        arguments += ["-i", blurayInput ?? url.path,
+                      "-frames:v", "1", "-vf", "scale='min(1200,iw)':-2", temp.path]
+        process.arguments = arguments
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {
@@ -565,41 +820,72 @@ enum VideoSupport {
 
     /// 用 ffmpeg 转成 H.264 + AAC 的 MP4，供系统不支持解码的容器播放。
     /// HDR 源按需做色调映射，避免 SDR 屏幕发灰 / 过曝。
-    static func transcode(source: URL, destination: URL, toneMapHDR: Bool = false) async throws {
+    static func transcode(source: URL, destination: URL, toneMapHDR: Bool = false,
+                          isDolbyVision: Bool = false,
+                          sourceSize: CGSize = .zero,
+                          frameRate: Double = 0,
+                          color: VideoColorInfo = VideoColorInfo()) async throws {
         try await transcode(inputArguments: ["-i", source.path],
                             destination: destination,
-                            toneMapHDR: toneMapHDR)
+                            toneMapHDR: toneMapHDR,
+                            isDolbyVision: isDolbyVision,
+                            sourceSize: sourceSize,
+                            frameRate: frameRate,
+                            color: color)
     }
 
-    /// HDR → SDR 色调映射的滤镜链（不含 `-vf`，方便和字幕烧录合并成同一条）。
-    static let hdrToneMapChain = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
-        + "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    /// HDR → SDR 色调映射的滤镜链（定义在内核，播放与导入共用）。
+    static let hdrToneMapChain = PlaybackFilters.hdrToneMapChain
 
     /// HDR → SDR 色调映射参数；内置 ffmpeg 不带 zscale 时返回空，退化为普通转码。
-    static func hdrToneMapArguments(toneMapHDR: Bool) -> [String] {
-        guard toneMapHDR, supportsToneMapping else { return [] }
-        return ["-vf", hdrToneMapChain,
+    /// 杜比视界必须走 libplacebo（应用 DOVI RPU），否则返回空：宁可保持原封装也不要烘错颜色。
+    static func hdrToneMapArguments(toneMapHDR: Bool, isDolbyVision: Bool = false,
+                                    outputSize: CGSize? = nil,
+                                    color: VideoColorInfo = VideoColorInfo()) -> [String] {
+        guard toneMapHDR, supportsToneMapping,
+              let chain = PlaybackFilters.toneMapChain(
+                  dolbyVision: isDolbyVision,
+                  supportsLibplacebo: supportsLibplacebo,
+                  outputWidth: outputSize.map { Int($0.width) },
+                  outputHeight: outputSize.map { Int($0.height) },
+                  inputColor: color)
+        else { return [] }
+        return ["-vf", chain,
                 "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
     }
 
     /// ffmpeg 的 subtitles 烧录滤镜；路径里的反斜杠、冒号与单引号必须转义。
-    /// 文本字幕（srt / ass / vtt / ssa）由 libass 渲染；PGS / SUP 取决于内置 ffmpeg 的解码能力。
     static func subtitleBurnFilter(_ url: URL) -> String {
-        let escaped = url.path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: ":", with: "\\:")
-            .replacingOccurrences(of: "'", with: "\\'")
-        return "subtitles=filename='\(escaped)'"
+        PlaybackFilters.subtitleBurnFilter(url)
     }
 
     /// 是否有可用的 zscale + tonemap（内置静态包已带 libzimg，缺失时回退系统 ffmpeg）。
-    static var supportsToneMapping: Bool { FFmpeg.toneMapExecutable != nil }
+    /// 只要 zscale 或 libplacebo 任一可用，就具备色调映射能力。
+    static var supportsToneMapping: Bool {
+        FFmpeg.toneMapExecutable != nil || FFmpeg.libplaceboExecutable != nil
+    }
+
+    /// 是否有能应用杜比视界 DOVI RPU 的 ffmpeg（libplacebo）。
+    static var supportsLibplacebo: Bool { FFmpeg.libplaceboExecutable != nil }
+
+    /// 设置页展示用：杜比视界 Profile 5 当前能否正确还原。
+    static var dolbyVisionSupportText: String {
+        if supportsLibplacebo { return "已就绪（libplacebo + MoltenVK）" }
+        if supportsToneMapping { return "未安装：杜比视界 P5 会偏绿，HDR10 / HLG 正常" }
+        return "未安装：HDR 片源无法色调映射"
+    }
+
+    /// 缺失时给出可直接执行的安装命令。发布包里已内置 ffmpeg-full + MoltenVK，
+    /// 只有在构建时没能打包（例如开发机没装 ffmpeg-full）才会走到这里。
+    static let dolbyVisionInstallHint =
+        "brew install ffmpeg-full molten-vk（需原生 arm64 Homebrew，keg-only 无需配置）"
 
     /// 云端视频转码：ffmpeg 直接从远端读取（带认证头）。
     /// 先尝试把视频流无损封装进 MP4（仅音频转 AAC），系统仍无法播放时再全量转 H.264。
     static func transcodeRemote(source: URL, headers: [String: String],
                                 trustSelfSigned: Bool = false,
                                 toneMapHDR: Bool = false,
+                                isDolbyVision: Bool = false,
                                 destination: URL) async throws {
         guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
         try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
@@ -632,13 +918,29 @@ enum VideoSupport {
         // HDR 源不能走无损封装时，必须做色调映射后再编码。
         try await transcode(inputArguments: inputArguments,
                             destination: destination,
-                            toneMapHDR: toneMapHDR || metadata.isHDR)
+                            toneMapHDR: toneMapHDR || metadata.isHDR,
+                            isDolbyVision: metadata.isDolbyVision,
+                            sourceSize: metadata.size,
+                            frameRate: metadata.frameRate,
+                            color: metadata.color)
     }
 
     private static func transcode(inputArguments: [String], destination: URL,
-                                  toneMapHDR: Bool) async throws {
-        let toneMap = hdrToneMapArguments(toneMapHDR: toneMapHDR)
-        guard let ffmpeg = FFmpeg.executable(preferToneMap: !toneMap.isEmpty) else {
+                                  toneMapHDR: Bool, isDolbyVision: Bool = false,
+                                  sourceSize: CGSize = .zero,
+                                  frameRate: Double = 0,
+                                  color: VideoColorInfo = VideoColorInfo()) async throws {
+        // 离线整片转换同样按档位走：4K60 这类高像素率片源降到 1440p，避免整片转几十分钟。
+        // frameRate 必须用真实值：按 30fps 估算会让 4K60 不降档。
+        let settings = AppSettings.shared
+        let profile = TranscodeProfile.make(sourceSize: sourceSize,
+                                            frameRate: frameRate,
+                                            transcodeMode: settings.videoTranscodeMode)
+        let toneMap = hdrToneMapArguments(toneMapHDR: toneMapHDR, isDolbyVision: isDolbyVision,
+                                          outputSize: profile.outputSize,
+                                          color: color)
+        guard let ffmpeg = FFmpeg.executable(preferToneMap: !toneMap.isEmpty,
+                                             preferLibplacebo: !toneMap.isEmpty && isDolbyVision) else {
             throw VideoError.transcodeUnavailable
         }
         try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
@@ -646,18 +948,38 @@ enum VideoSupport {
         let partial = destination.deletingLastPathComponent()
             .appendingPathComponent(".transcode-\(UUID().uuidString).mp4")
 
+        let usesHEVC = profile.codec == .hevc
         var arguments = ["-y", "-v", "error"]
         arguments += inputArguments
         arguments += ["-map", "0:v:0",
                       "-map", "0:a:0?",
-                      "-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+                      // 硬件编码比 libx264 medium 快一个数量级，整片转换不必再等几十分钟。
+                      "-c:v", usesHEVC ? "hevc_videotoolbox" : "h264_videotoolbox",
+                      "-b:v", "\(profile.bitrate)", "-maxrate", "\(profile.maxrate)",
+                      "-bufsize", "\(profile.bufsize)", "-allow_sw", "1"]
+        if usesHEVC {
+            // AVFoundation 只认 hvc1；Main10 与 10-bit 输出已在边下边播链路上实测可播放。
+            arguments += ["-tag:v", "hvc1", "-profile:v", "main10"]
+            if settings.videoTranscodeMode == .lowPower {
+                arguments += ["-power_efficient", "1", "-prio_speed", "1"]
+            }
+        }
         if toneMap.isEmpty {
-            arguments += ["-pix_fmt", "yuv420p"]
+            // 不需要映射时也要按档位降分辨率；不降就只锁像素格式。
+            if let outputHeight = profile.outputSize.map({ Int($0.height) }) {
+                arguments += ["-vf", "scale=-2:\(outputHeight)"]
+            }
         } else {
             arguments += toneMap
         }
-        arguments += ["-c:a", "aac", "-b:a", "160k",
-                      "-movflags", "+faststart",
+        arguments += ["-pix_fmt", profile.pixelFormat]
+        // 音频默认保持源声道与较高码率；只有手动选「立体声」才下混到 2.0。
+        if settings.audioDownmix == .stereo {
+            arguments += ["-c:a", "aac", "-b:a", "256k", "-ac", "2"]
+        } else {
+            arguments += ["-c:a", "aac", "-b:a", "512k"]
+        }
+        arguments += ["-movflags", "+faststart",
                       partial.path]
         let status = try await run(ffmpeg, arguments)
 
@@ -678,7 +1000,8 @@ enum VideoSupport {
         if !headers.isEmpty {
             arguments += ["-headers", headerBlock(headers)]
         }
-        arguments += ["-i", url.absoluteString]
+        // 蓝光目录 / ISO 必须用 bluray 协议，file URL 交给 ffmpeg 是打不开的。
+        arguments += ["-i", BluraySource.ffmpegInput(for: url) ?? url.absoluteString]
         return arguments
     }
 
@@ -687,6 +1010,12 @@ enum VideoSupport {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        // 内置 MoltenVK 的 ICD 路径：libplacebo 走 Vulkan 时必须显式告知。
+        let environment = FFmpeg.processEnvironment
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment
+                .merging(environment) { _, new in new }
+        }
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in

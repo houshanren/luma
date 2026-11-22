@@ -237,7 +237,17 @@ extension MetadataStore {
                     metadata_at = excluded.metadata_at,
                     updated_at = excluded.updated_at
                 """, [mountID.uuidString, path, size, modified?.timeIntervalSince1970, json, now, now])
-            self.cloudAssetsRowCache[mountID] = nil
+            // 就地更新内存副本：EXIF 扫描期间每张照片都让缓存整体失效，会让目录切换反复重查全表。
+            if var cached = self.cloudAssetsRowCache[mountID], var row = cached[path] {
+                row.size = size
+                row.remoteModified = modified
+                row.exif = exif
+                row.metadataAt = Date(timeIntervalSince1970: now)
+                cached[path] = row
+                self.cloudAssetsRowCache[mountID] = cached
+            } else {
+                self.cloudAssetsRowCache[mountID] = nil
+            }
         }
     }
 

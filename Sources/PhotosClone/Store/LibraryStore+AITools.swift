@@ -33,6 +33,19 @@ extension LibraryStore {
         case "apply_cinema_match": return applyCinemaMatchTool(args)
         case "scrape_cinema": return scrapeCinemaTool(args)
         case "match_cinema": return await matchCinemaTool(args)
+        case "search_cinema_library": return searchCinemaLibraryTool(args)
+        case "list_cinema_series": return listCinemaSeriesTool(args)
+        case "list_cinema_activity": return listCinemaActivityTool(args)
+        case "list_cinema_lists": return listCinemaListsTool(args)
+        case "navigate_cinema": return navigateCinemaTool(args)
+        case "play_cinema": return playCinemaTool(args)
+        case "update_cinema_state": return updateCinemaStateTool(args)
+        case "manage_cinema_list": return manageCinemaListTool(args)
+        case "ignore_cinema": return ignoreCinemaTool(args)
+        case "restore_cinema_ignored": return restoreCinemaIgnoredTool(args)
+        case "refresh_cinema_metadata": return await refreshCinemaMetadataTool(args)
+        case "set_cinema_intro_skip": return setCinemaIntroSkipTool(args)
+        case "manage_cinema_progress": return manageCinemaProgressTool(args)
         case "navigate": return navigateTool(args)
         case "select_photos": return selectPhotosTool(args)
         case "open_photo": return openPhotoTool(args)
@@ -564,10 +577,10 @@ extension LibraryStore {
     // MARK: - 影院
 
     /// 影院工具都作用于当前影院（本地图库或某个网盘），与影院页保持一致。
-    private var aiCinemaScope: CinemaScope { cinemaActiveScope }
+    var aiCinemaScope: CinemaScope { cinemaActiveScope }
 
     /// 把文件夹树拍平，便于按名称 / 路径匹配与统计。
-    private func aiAllCinemaFolders(in scope: CinemaScope) -> [CinemaFolder] {
+    func aiAllCinemaFolders(in scope: CinemaScope) -> [CinemaFolder] {
         var result: [CinemaFolder] = []
         var stack = cinemaFolders(for: scope)
         while let folder = stack.popLast() {
@@ -577,14 +590,14 @@ extension LibraryStore {
         return result
     }
 
-    private func aiCinemaFolderMatches(_ folder: CinemaFolder, query: String) -> Bool {
+    func aiCinemaFolderMatches(_ folder: CinemaFolder, query: String) -> Bool {
         let text = query.lowercased()
         return folder.name.lowercased().contains(text)
             || folder.path.lowercased().contains(text)
             || (folder.hint?.lowercased().contains(text) ?? false)
     }
 
-    private func aiCinemaEntryMatches(_ entry: CinemaEntry, query: String) -> Bool {
+    func aiCinemaEntryMatches(_ entry: CinemaEntry, query: String) -> Bool {
         let text = query.lowercased()
         return entry.file.filename.lowercased().contains(text)
             || entry.title.lowercased().contains(text)
@@ -594,7 +607,7 @@ extension LibraryStore {
     // MARK: - 影院 · 一键智能整理
 
     /// 解析工具传入的 scope：local / 网盘 id / 网盘名称；省略时用当前影院。
-    private func aiResolvedCinemaScope(_ raw: String?) -> CinemaScope? {
+    func aiResolvedCinemaScope(_ raw: String?) -> CinemaScope? {
         guard let raw else { return cinemaActiveScope }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty || text == "active" || text == "当前影院" { return cinemaActiveScope }
@@ -608,7 +621,7 @@ extension LibraryStore {
         return nil
     }
 
-    private func aiResolveCinemaFolder(_ query: String, in scope: CinemaScope) -> CinemaFolder? {
+    func aiResolveCinemaFolder(_ query: String, in scope: CinemaScope) -> CinemaFolder? {
         let folders = aiAllCinemaFolders(in: scope)
         if let exact = folders.first(where: { $0.path == query }) { return exact }
         return folders.first(where: { aiCinemaFolderMatches($0, query: query) })
@@ -983,7 +996,7 @@ extension LibraryStore {
         guard total > 0 else {
             return failure("这个影院还没有视频清单，先在「相簿」里扫描网盘")
         }
-        Task { await self.scrapeCinema(for: scope, force: force) }
+        startCinemaScrape(for: scope, force: force)
         return success(["started": true, "scope": name, "videos": total],
                        summary: "开始刮削「\(name)」（\(total) 个视频）",
                        photoIDs: [])
@@ -1767,9 +1780,9 @@ extension LibraryStore {
         return result
     }
 
-    private func success(_ payload: [String: Any],
-                         summary: String?,
-                         photoIDs: [UUID]) -> AIToolExecution {
+    func success(_ payload: [String: Any],
+                 summary: String?,
+                 photoIDs: [UUID]) -> AIToolExecution {
         var body = payload
         body["ok"] = true
         return AIToolExecution(json: Self.aiJSONString(body) ?? "{\"ok\":true}",
@@ -1777,7 +1790,7 @@ extension LibraryStore {
                                photoIDs: photoIDs)
     }
 
-    private func failure(_ message: String) -> AIToolExecution {
+    func failure(_ message: String) -> AIToolExecution {
         AIToolExecution(json: Self.aiJSONString(["ok": false, "error": message]) ?? "{\"ok\":false}",
                         summary: nil,
                         photoIDs: [])

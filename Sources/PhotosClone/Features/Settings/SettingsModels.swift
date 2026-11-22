@@ -194,6 +194,89 @@ enum VideoControlPlacement: String, CaseIterable, Identifiable {
     }
 }
 
+/// 网络缓冲选项：自适应是三档之外的一个「按网络自动调节」模式。
+enum VideoBufferMode: String, CaseIterable, Identifiable {
+    /// 以流畅为目标，网络变慢时临时降档，恢复后升回。
+    case adaptive
+    case smooth
+    case balanced
+    case thrifty
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .adaptive: return "自适应"
+        case .smooth: return "流畅"
+        case .balanced: return "均衡"
+        case .thrifty: return "省流"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .adaptive:
+            return "以流畅档为上限，网络变慢时自动降到均衡 / 省流，恢复后升回；只在云端 / WebDAV 等远端片源生效。"
+        case .smooth:
+            return BufferProfile.smooth.detail
+        case .balanced:
+            return BufferProfile.balanced.detail
+        case .thrifty:
+            return BufferProfile.thrifty.detail
+        }
+    }
+
+    var isAdaptive: Bool { self == .adaptive }
+
+    /// 各选项对应的档位；自适应以流畅为目标。
+    var profile: BufferProfile {
+        switch self {
+        case .adaptive, .smooth: return .smooth
+        case .balanced: return .balanced
+        case .thrifty: return .thrifty
+        }
+    }
+
+    init(profile: BufferProfile) {
+        switch profile {
+        case .smooth: self = .smooth
+        case .balanced: self = .balanced
+        case .thrifty: self = .thrifty
+        }
+    }
+}
+
+/// HDR / 杜比视界片源的播放策略。
+enum VideoHDRMode: String, CaseIterable, Identifiable {
+    /// 有 HDR 屏幕就保持 HDR；SDR 屏或杜比视界 Profile 5 自动映射到 SDR。
+    case automatic
+    /// 一律先做 HDR → SDR 色调映射，颜色与片源观感一致，代价是要转码。
+    case toneMapSDR
+    /// 保持片源原样，不做任何色调映射（HDR 屏 + 支持杜比视界的播放器）。
+    case keepHDR
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic: return "自动"
+        case .toneMapSDR: return "映射到 SDR"
+        case .keepHDR: return "保持 HDR"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .automatic:
+            return "HDR 屏保留原样，杜比视界交给系统解码；SDR 屏自动映射到 SDR。若 HDR 屏出现偏色，可改为「映射到 SDR」。"
+        case .toneMapSDR:
+            return "HDR / 杜比视界片源都先做色调映射再播放，颜色最接近原始观感；需要 ffmpeg 带 libplacebo 才能处理杜比视界。"
+        case .keepHDR:
+            return "不做色调映射，把片源原样交给系统解码；SDR 屏上可能发灰，杜比视界可能偏色。"
+        }
+    }
+}
+
 /// 动效预设。影响页面切换、查看器开合、侧边栏展开与卡片悬停。
 enum MotionPreset: String, CaseIterable, Identifiable {
     case silky

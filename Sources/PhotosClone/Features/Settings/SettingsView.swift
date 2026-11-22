@@ -60,8 +60,8 @@ struct SettingsView: View {
         .accentColor(settings.accentColor)
         .onAppear(perform: refreshCacheSize)
         .onChange(of: settings.videoCacheLimitGB) { _, _ in
-            VideoCacheManager.trimIfNeeded()
-            videoCacheSize = VideoCacheManager.totalSize()
+            VideoCache.luma.trimIfNeeded()
+            videoCacheSize = VideoCache.luma.totalSize()
         }
     }
 
@@ -127,6 +127,58 @@ struct SettingsView: View {
                 Text("自动调整屏幕以显示照片的完整动态范围（HDR）。关闭后按标准 sRGB 显示。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                Picker("HDR 视频", selection: $settings.videoHDRMode) {
+                    ForEach(VideoHDRMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.videoHDRMode.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Image(systemName: VideoSupport.supportsLibplacebo
+                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(VideoSupport.supportsLibplacebo ? Color.green : Color.orange)
+                    Text("杜比视界 P5：\(VideoSupport.dolbyVisionSupportText)")
+                }
+                .font(.system(size: 11))
+                if !VideoSupport.supportsLibplacebo {
+                    Text(VideoSupport.dolbyVisionInstallHint)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Picker("多声道音频", selection: $settings.audioDownmix) {
+                    ForEach(AudioDownmixMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.audioDownmix.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Picker("转码编码", selection: $settings.videoTranscodeMode) {
+                    ForEach(VideoTranscodeMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.videoTranscodeMode.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Picker("网络缓冲", selection: $settings.videoBufferMode) {
+                    ForEach(VideoBufferMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.videoBufferMode.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("只作用于云端 / WebDAV 等远端片源；本地盘与 SMB 不受影响。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                 Toggle("默认静音播放", isOn: $settings.muteVideoByDefault)
                 Text("打开视频时先静音开始，播放后仍可用 M 键或音量按钮取消静音。")
                     .font(.system(size: 11))
@@ -144,7 +196,7 @@ struct SettingsView: View {
                         Text("\(Int(value)) 秒").tag(value)
                     }
                 }
-                Text("视频里 ↑ / ↓ 每次快进 / 快退的距离；J / L 仍固定为 10 秒。")
+                Text("图库视频按 ↑ / ↓、网络资源按 ← / → 快进 / 快退，与 J / L 共用这个步长；连按或按住会逐级加速。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Picker("视频控制条", selection: $settings.videoControlPlacement) {
@@ -178,7 +230,7 @@ struct SettingsView: View {
                     Text("中间").tag("middle")
                 }
                 .pickerStyle(.segmented)
-                Text("外挂字幕的字号、颜色、位置与半透明底色；时间轴偏移可在播放器的字幕菜单里临时调整。")
+                Text("外挂字幕的字号、颜色、位置与半透明底色；时间轴偏移可在播放器的字幕菜单里临时调整。ASS / SSA 自带样式（颜色、字号、对齐）会覆盖这里的设置。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -195,7 +247,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("清理") {
-                        VideoCacheManager.clear()
+                        VideoCache.luma.clear()
                         videoCacheSize = 0
                     }
                     .controlSize(.small)
@@ -1351,7 +1403,7 @@ struct SettingsView: View {
         cacheSize = store.cloudThumbnailCacheSize()
         systemCacheSize = store.systemThumbnailCacheSize()
         sidecarSize = store.systemLibrarySidecarSize()
-        videoCacheSize = VideoCacheManager.totalSize()
+        videoCacheSize = VideoCache.luma.totalSize()
     }
 }
 

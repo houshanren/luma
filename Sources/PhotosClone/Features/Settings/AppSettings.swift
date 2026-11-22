@@ -93,7 +93,55 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(matchDisplayFrameRate, forKey: SettingsKeys.videoMatchDisplayRate) }
     }
 
-    /// 视频查看器里 ↑ / ↓ 快进快退的步长（秒）。
+    /// 高倍速播放时保持音调不变（频谱算法），关闭后在 2× 以上会出现「快放」失真。
+    @Published var preservePitchAtSpeed: Bool {
+        didSet { UserDefaults.standard.set(preservePitchAtSpeed, forKey: SettingsKeys.videoPreservePitch) }
+    }
+
+    /// 音轨即时切换：多音轨在一次 HLS 会话里装好，切换只让播放器换轨。
+    @Published var instantAudioSwitch: Bool {
+        didSet { UserDefaults.standard.set(instantAudioSwitch, forKey: SettingsKeys.videoInstantAudioSwitch) }
+    }
+
+    /// 多声道输出方式：自动保留源声道，或强制降混成立体声。
+    @Published var audioDownmix: AudioDownmixMode {
+        didSet { UserDefaults.standard.set(audioDownmix.rawValue, forKey: SettingsKeys.audioDownmix) }
+    }
+
+    /// 需要重编码时的目标编码：兼容 H.264 / 高效 HEVC / 低功耗 HEVC。
+    @Published var videoTranscodeMode: VideoTranscodeMode {
+        didSet {
+            UserDefaults.standard.set(videoTranscodeMode.rawValue,
+                                      forKey: SettingsKeys.videoTranscodeMode)
+        }
+    }
+
+    /// 本地 / SMB 视频打开时自动挂载中文字幕轨。
+    @Published var autoEmbeddedSubtitles: Bool {
+        didSet { UserDefaults.standard.set(autoEmbeddedSubtitles, forKey: SettingsKeys.videoAutoEmbeddedSubtitles) }
+    }
+
+    /// 打开视频时自动载入同目录下的同名外挂字幕。
+    @Published var autoSiblingSubtitles: Bool {
+        didSet { UserDefaults.standard.set(autoSiblingSubtitles, forKey: SettingsKeys.videoAutoSiblingSubtitles) }
+    }
+
+    /// 打开视频后按片名自动在线搜索并载入一条字幕。
+    @Published var autoOnlineSubtitles: Bool {
+        didSet { UserDefaults.standard.set(autoOnlineSubtitles, forKey: SettingsKeys.videoAutoOnlineSubtitles) }
+    }
+
+    /// 把播放状态交给系统「正在播放」，支持控制中心与键盘媒体键。
+    @Published var systemMediaIntegration: Bool {
+        didSet { UserDefaults.standard.set(systemMediaIntegration, forKey: SettingsKeys.videoSystemMediaIntegration) }
+    }
+
+    /// 进度条悬停 / 拖动时显示该时间点的画面预览。
+    @Published var scrubPreviewEnabled: Bool {
+        didSet { UserDefaults.standard.set(scrubPreviewEnabled, forKey: SettingsKeys.videoScrubPreview) }
+    }
+
+    /// 视频快进 / 快退的步长（秒）：图库视频用 ↑ / ↓，网络资源用 ← / →。
     @Published var videoSeekStep: Double {
         didSet { UserDefaults.standard.set(videoSeekStep, forKey: SettingsKeys.videoSeekStep) }
     }
@@ -103,6 +151,39 @@ final class AppSettings: ObservableObject {
         didSet {
             UserDefaults.standard.set(videoControlPlacement.rawValue,
                                       forKey: SettingsKeys.videoControlPlacement)
+        }
+    }
+
+    /// HDR / 杜比视界片源的播放策略：自动 / 映射到 SDR / 保持 HDR。
+    @Published var videoHDRMode: VideoHDRMode {
+        didSet {
+            UserDefaults.standard.set(videoHDRMode.rawValue, forKey: SettingsKeys.videoHDRMode)
+        }
+    }
+
+    /// 网络缓冲档位：省流 / 均衡 / 流畅。默认流畅，优先保证连续播放。
+    @Published var videoBufferProfile: BufferProfile {
+        didSet {
+            UserDefaults.standard.set(videoBufferProfile.rawValue, forKey: SettingsKeys.videoBufferProfile)
+        }
+    }
+
+    /// 远端弱网自适应：默认关闭；开启后网络变慢时在所选档位内临时降档。
+    @Published var videoAdaptiveBuffering: Bool {
+        didSet {
+            UserDefaults.standard.set(videoAdaptiveBuffering, forKey: SettingsKeys.videoAdaptiveBuffering)
+        }
+    }
+
+    /// 设置页的四选一：自适应 / 流畅 / 均衡 / 省流。
+    /// 自适应 = 以流畅为上限 + 开启弱网降档；其余三项 = 固定档位且关闭自适应。
+    var videoBufferMode: VideoBufferMode {
+        get {
+            videoAdaptiveBuffering ? .adaptive : VideoBufferMode(profile: videoBufferProfile)
+        }
+        set {
+            videoAdaptiveBuffering = newValue.isAdaptive
+            videoBufferProfile = newValue.profile
         }
     }
 
@@ -252,6 +333,29 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Assrt（伪射手）访问令牌：国内字幕源，只写钥匙串。
+    @Published var assrtSubtitleToken: String {
+        didSet {
+            guard !isRestoringSubtitleCredentials else { return }
+            CinemaKeychain.set(assrtSubtitleToken, for: .subtitleAssrtToken)
+        }
+    }
+
+    /// 在线字幕来源开关：关掉后不再参与搜索与自动匹配。
+    @Published var subtitleProviderOpenSubtitlesEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(subtitleProviderOpenSubtitlesEnabled,
+                                      forKey: SettingsKeys.subtitleProviderOpenSubtitles)
+        }
+    }
+
+    @Published var subtitleProviderAssrtEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(subtitleProviderAssrtEnabled,
+                                      forKey: SettingsKeys.subtitleProviderAssrt)
+        }
+    }
+
     /// 字幕账号是否已经从钥匙串取过一次（只在需要时）。
     private var subtitleCredentialsLoaded = false
     /// 恢复期间屏蔽 didSet 回写，避免「读钥匙串」紧接着又「写钥匙串」。
@@ -264,6 +368,7 @@ final class AppSettings: ObservableObject {
         isRestoringSubtitleCredentials = true
         cinemaSubtitleUsername = CinemaKeychain.value(for: .subtitleUsername)
         cinemaSubtitlePassword = CinemaKeychain.value(for: .subtitlePassword)
+        assrtSubtitleToken = CinemaKeychain.value(for: .subtitleAssrtToken)
         isRestoringSubtitleCredentials = false
     }
 
@@ -292,9 +397,27 @@ final class AppSettings: ObservableObject {
         muteVideoByDefault = defaults.object(forKey: SettingsKeys.videoMuted) as? Bool ?? false
         loopVideoByDefault = defaults.object(forKey: SettingsKeys.videoLoop) as? Bool ?? false
         matchDisplayFrameRate = defaults.object(forKey: SettingsKeys.videoMatchDisplayRate) as? Bool ?? true
+        preservePitchAtSpeed = defaults.object(forKey: SettingsKeys.videoPreservePitch) as? Bool ?? true
+        instantAudioSwitch = defaults.object(forKey: SettingsKeys.videoInstantAudioSwitch) as? Bool ?? true
+        audioDownmix = AudioDownmixMode(rawValue: defaults.string(forKey: SettingsKeys.audioDownmix) ?? "")
+            ?? .source
+        videoTranscodeMode = VideoTranscodeMode(
+            rawValue: defaults.string(forKey: SettingsKeys.videoTranscodeMode) ?? "") ?? .compatibility
+        autoEmbeddedSubtitles = defaults.object(forKey: SettingsKeys.videoAutoEmbeddedSubtitles) as? Bool ?? false
+        // 自动挂载一律默认关闭：用户主动到「字幕」里打开才生效。
+        autoSiblingSubtitles = defaults.object(forKey: SettingsKeys.videoAutoSiblingSubtitles) as? Bool ?? false
+        autoOnlineSubtitles = defaults.object(forKey: SettingsKeys.videoAutoOnlineSubtitles) as? Bool ?? false
+        systemMediaIntegration = defaults.object(forKey: SettingsKeys.videoSystemMediaIntegration) as? Bool ?? true
+        // 悬停关键帧默认关闭：不主动解码预览帧，想要的人再到设置里打开。
+        scrubPreviewEnabled = defaults.object(forKey: SettingsKeys.videoScrubPreview) as? Bool ?? false
         videoSeekStep = defaults.object(forKey: SettingsKeys.videoSeekStep) as? Double ?? 5
         videoControlPlacement = VideoControlPlacement(
             rawValue: defaults.string(forKey: SettingsKeys.videoControlPlacement) ?? "") ?? .topIntegrated
+        videoHDRMode = VideoHDRMode(
+            rawValue: defaults.string(forKey: SettingsKeys.videoHDRMode) ?? "") ?? .automatic
+        videoBufferProfile = BufferProfile(
+            rawValue: defaults.string(forKey: SettingsKeys.videoBufferProfile) ?? "") ?? .defaultProfile
+        videoAdaptiveBuffering = defaults.object(forKey: SettingsKeys.videoAdaptiveBuffering) as? Bool ?? false
         var videoLimit = defaults.object(forKey: SettingsKeys.videoCacheLimitGB) as? Int ?? 50
         var posterLimit = defaults.object(forKey: SettingsKeys.posterCacheLimitGB) as? Int ?? 10
         // 旧的默认值（海报 2 / 5 GB、视频 20 GB）升到新默认 10 / 50 GB；手动选过的其它值保持不动。
@@ -337,9 +460,14 @@ final class AppSettings: ObservableObject {
         cinemaTVDBKey = defaults.string(forKey: SettingsKeys.cinemaTVDBKey) ?? ""
         cinemaTVDBPin = defaults.string(forKey: SettingsKeys.cinemaTVDBPin) ?? ""
         cinemaSubtitleAPIKey = defaults.string(forKey: SettingsKeys.cinemaSubtitleAPIKey) ?? ""
-        // 账号密码留在钥匙串里，等设置页或字幕搜索真正需要时再读。
+        // 账号密码 / Assrt 令牌留在钥匙串里，等设置页或字幕搜索真正需要时再读。
         cinemaSubtitleUsername = ""
         cinemaSubtitlePassword = ""
+        assrtSubtitleToken = ""
+        subtitleProviderOpenSubtitlesEnabled =
+            defaults.object(forKey: SettingsKeys.subtitleProviderOpenSubtitles) as? Bool ?? true
+        subtitleProviderAssrtEnabled =
+            defaults.object(forKey: SettingsKeys.subtitleProviderAssrt) as? Bool ?? true
         cinemaParentalLevel = CinemaParentalLevel(
             rawValue: defaults.object(forKey: SettingsKeys.cinemaParentalLevel) as? Int ?? 0
         ) ?? .off
@@ -427,4 +555,35 @@ final class AppSettings: ObservableObject {
 
     /// 侧边栏的小封面按比例缩小圆角，避免 18pt 图标过于圆。
     var smallCoverRadius: CGFloat { min(8, max(2, CGFloat(cardCornerRadius) * 0.45)) }
+}
+
+/// 每部影片记住的手动字幕选择：内嵌轨按序号，外挂字幕按文件名。
+struct RememberedSubtitle: Codable, Equatable {
+    enum Kind: String, Codable {
+        case embedded
+        case external
+    }
+
+    var kind: Kind
+    /// 内嵌字幕轨序号（ffprobe 的字幕流序号）。
+    var ordinal: Int?
+    /// 同目录外挂字幕的文件名。
+    var fileName: String?
+}
+
+extension AppSettings {
+    func rememberedSubtitle(for photoID: UUID) -> RememberedSubtitle? {
+        guard let data = UserDefaults.standard.data(
+            forKey: SettingsKeys.rememberedSubtitle(photoID.uuidString)) else { return nil }
+        return try? JSONDecoder().decode(RememberedSubtitle.self, from: data)
+    }
+
+    func rememberSubtitle(_ value: RememberedSubtitle, for photoID: UUID) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: SettingsKeys.rememberedSubtitle(photoID.uuidString))
+    }
+
+    func forgetSubtitle(for photoID: UUID) {
+        UserDefaults.standard.removeObject(forKey: SettingsKeys.rememberedSubtitle(photoID.uuidString))
+    }
 }

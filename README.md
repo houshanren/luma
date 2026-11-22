@@ -1,6 +1,6 @@
 # 拾光 Luma
 
-拾光（Luma）是一个 macOS 原生照片管理应用，使用 SwiftUI + SQLite 构建，界面与交互对齐系统「照片」，并额外提供网络存储（SMB / WebDAV / 阿里云盘 / 百度网盘）与官方「照片」图库接入。
+拾光（Luma）是一个 macOS 原生照片管理应用，使用 SwiftUI + SQLite 构建，界面与交互对齐系统「照片」，并额外提供网络存储（SMB / WebDAV / 阿里云盘 / 百度网盘 / 夸克网盘 / 115 网盘）与官方「照片」图库接入。
 
 - 包标识：`com.baymax.luma`
 - 最低系统：macOS 14.0
@@ -96,10 +96,11 @@
   - **文件夹**：新建（支持多级）、重命名、删除（不删除照片）。
   - **图片与视频**：搜索与按类型筛选、收藏 / 取消收藏、隐藏 / 取消隐藏、添加 / 移除关键词、设置标题、原地压缩（有损可调质量与长边；无损保持像素，JPEG 只去元数据、其它格式转 PNG）、自动美化（生成可还原的美化副本，保留原图）、移入最近删除、从最近删除恢复、选中、在查看器中打开（视频即播放）。
   - **浏览**：切换到图库 / 收藏 / 视频 / 截屏 / 已隐藏 / 最近删除 / 指定相簿 / 指定文件夹 / 场景，并可同时设置筛选、搜索词与排序。
+  - **影院**：列出影院作用域、目录树与视频清单；在本库检索影片 / 剧集 / 演员 / 导演，查看聚合剧集、自定义清单与继续观看 / 观看记录 / 刮削任务 / 通知；切换影院分段、视图、排序与筛选，打开搜索 / 历史 / 任务 / 通知 / 新建清单面板；播放影片或剧集下一集；修改收藏 / 想看 / 个人评分；新建 / 删除 / 加入 / 移出 / 清空自定义清单；忽略或恢复视频、补全详情或重新刮削、设置跳过片头 / 片尾、移除或清空观看记录。
   - 不支持永久删除、导入、编辑原图或修改文件；系统图库连接与网盘只读，官方「照片」图库作为当前库时只写收藏 / 隐藏 / 关键词等补充元数据。
-- 智能助手面板首屏提供两张主推案例（压缩这组照片、按时间地点建相簿）与五张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频 / 网络资源），点击示例即填入输入框；对话开始后保留一条轻量示例条。
-- 常用案例：`把这 3 张照片压到长边 2048、质量 80`、`把这组照片做无损压缩`、`把去年在上海拍的照片整理成相簿`、`把这 8 张照片自动美化一下`、`按主题建 4 个相簿`、`把视频放进「旅行」`、`从最近删除恢复刚才那批`、`搜一下 XX 并播放第一条`、`把今天新片加入稍后看`。
-- 工具共 **42 个**：照片检索与浏览 4（`search_photos` / `list_albums` / `list_folders` / `list_videos`）、导航与选择 3（`navigate` / `select_photos` / `open_photo`）、相簿与文件夹 10（`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover` / `create_folder` / `rename_folder` / `delete_folder`）、图片与视频 7（`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title` / `compress_photos` / `beautify_photos`）、最近删除 2（`trash_photos` / `restore_photos`）、影院 7（`list_cinema_items` / `list_cinema_scopes` / `cinema_tree` / `search_cinema_candidates` / `apply_cinema_match` / `scrape_cinema` / `match_cinema`）、网络资源 9（`list_catalog_sources` / `search_catalog` / `catalog_new_today` / `list_catalog_following` / `list_catalog_watchlist` / `browse_catalog` / `play_catalog_item` / `set_catalog_watchlist` / `follow_catalog_person`）。其中 24 个写操作必须先经用户确认；系统图库、网盘与官方「照片」库按现有权限矩阵限制。
+- 智能助手面板首屏提供两张主推案例（压缩这组照片、按时间地点建相簿）与六张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频 / 影院 / 网络资源），点击示例即填入输入框；对话开始后保留一条轻量示例条。
+- 常用案例：`把这 3 张照片压到长边 2048、质量 80`、`把这组照片做无损压缩`、`把去年在上海拍的照片整理成相簿`、`把这 8 张照片自动美化一下`、`按主题建 4 个相簿`、`把视频放进「旅行」`、`从最近删除恢复刚才那批`、`搜一下 XX 并播放第一条`、`把今天新片加入稍后看`、`我收藏了哪些电影`、`继续播放上次没看完的`、`把这部剧设为跳过片头 90 秒`。
+- 工具共 **55 个**：照片检索与浏览 4（`search_photos` / `list_albums` / `list_folders` / `list_videos`）、导航与选择 3（`navigate` / `select_photos` / `open_photo`）、相簿与文件夹 10（`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover` / `create_folder` / `rename_folder` / `delete_folder`）、图片与视频 7（`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title` / `compress_photos` / `beautify_photos`）、最近删除 2（`trash_photos` / `restore_photos`）、影院 20（`list_cinema_items` / `list_cinema_scopes` / `cinema_tree` / `search_cinema_library` / `list_cinema_series` / `list_cinema_lists` / `list_cinema_activity` / `navigate_cinema` / `play_cinema` / `search_cinema_candidates` / `apply_cinema_match` / `scrape_cinema` / `match_cinema` / `update_cinema_state` / `manage_cinema_list` / `ignore_cinema` / `restore_cinema_ignored` / `refresh_cinema_metadata` / `set_cinema_intro_skip` / `manage_cinema_progress`）、网络资源 9（`list_catalog_sources` / `search_catalog` / `catalog_new_today` / `list_catalog_following` / `list_catalog_watchlist` / `browse_catalog` / `play_catalog_item` / `set_catalog_watchlist` / `follow_catalog_person`）。其中 31 个写操作必须先经用户确认；系统图库、网盘与官方「照片」库按现有权限矩阵限制。
 - 每次请求最多带 40 张候选照片的元数据，避免把整个图库塞进提示词；更大范围的检索通过「应用筛选」回到现有搜索与分页管线完成。
 - API Key 只保存在 macOS 钥匙串（service `com.baymax.luma.ai`），不写入图库数据库、`UserDefaults` 或日志；模型配置与对话记录随当前图库保存，切换图库会切换到各自的对话。
 
@@ -161,6 +162,8 @@
 - **SMB 共享**（群晖、TrueNAS、Windows 共享等）：通过系统 NetFS 挂载后浏览与播放，只读；地址填 `smb://主机/共享名`（可在 NAS 的共享设置中查看共享名）。打开应用时会自动重连已保存的 SMB；向导通过 Bonjour 自动发现局域网设备，填入账号密码后可列出共享文件夹——单击选中整个共享，双击进入共享后逐层浏览子目录（面包屑与「上一级 / 共享列表」返回），单击子目录即把地址定位到该目录，双击继续下钻，地址形如 `smb://主机/共享名/子目录`；再次接入同一台 NAS 时会自动复用已保存的账号与钥匙串密码并直接列出共享（界面提示「已复用…」），不用重输；新添加的 SMB 默认点开即递归扫描选中的目录，也可在浏览页切换为「按文件夹」。
 - **WebDAV**（群晖 NAS 等）：可浏览、播放，并支持新建文件夹、重命名、上传、删除。
 - **阿里云盘 / 百度网盘**：OAuth 2.0 桌面端授权（本地回环 `127.0.0.1:53682/callback` 接收 code），官方接口直读，只读。
+- **夸克网盘 / 115 网盘**：浏览器 Cookie 直读，官方接口直链播放，只读。确认页可读取网盘目录，选择整个网盘或勾选多个子目录（支持下钻），也可以排除指定目录。
+- **SMB 共享**：确认页同样支持读取共享目录、多选接入范围与排除目录；侧边栏右键「编辑接入范围…」可随时调整，无需重新填写账号。
 - **AList / OpenList 向导**：填写地址后自动推导 WebDAV 入口，无需自建应用。
 - 缩略图策略：优先服务端缩略图；WebDAV 使用 `Range` 只取文件头部 256KB 解析 EXIF 内嵌缩略图，避免整目录原图下行流量；SMB 直接从挂载目录读取文件生成本地缩略图。
 - **网盘 EXIF**：进入目录后自动从文件头部读取前 200 张的拍摄时间、相机 / 镜头、光圈 / 快门 / ISO 与 GPS（WebDAV 与官方网盘用 `Range`，SMB 直接读挂载文件；不下载整张原图），侧边栏「媒体类型」下显示读取进度与「继续读取（剩余 N 张）」。读取结果写回当前列表并落当前图库的 `cloud_assets`（按挂载 + 路径，远端文件大小变化即失效），信息面板的拍摄时间 / 相机 / 位置分区随之生效，并驱动「更多项目」里的地图、位置、人物与值得重看；重开网盘会直接回填，不必重新请求。
@@ -288,6 +291,7 @@ photos/
     │   ├── LibraryStore+Beauty.swift        # 智能美化：扫描推荐分组、批量生成副本
     │   ├── LibraryStore+AIAgent.swift       # 智能助手：上下文、请求编排、对话持久化
     │   ├── LibraryStore+AITools.swift       # 智能助手工具执行：相簿、文件夹、图片与视频操作
+    │   ├── LibraryStore+AICinemaTools.swift # 智能助手影院工具执行：检索、播放、状态、清单与维护
     │   ├── SelectionModel.swift             # 选择状态（独立订阅）
     │   ├── ViewerModel.swift                # 查看器/编辑器状态（独立订阅）
     │   └── CloudBrowserModel.swift          # 网盘浏览状态
@@ -297,7 +301,7 @@ photos/
     │   ├── Media/                 # ImageLoader、ImageTransform、RawSupport、VideoSupport、LivePhotoSupport、PhotoIntelligence、PhotoBeauty、PhotoHasher（SHA-256/dHash）、PersonPalette、PhotoKitBridge
     │   ├── Import/                # ImportService
     │   ├── Cloud/                 # CloudSupport、WebDAVClient、SMBClient、JPEGMetadata、CloudProviders
-    │   ├── AI/                    # AIKeychain、AIProviderClient、AILibraryContext、AIImageEncoder、AILibraryTools
+    │   ├── AI/                    # AIKeychain、AIProviderClient、AILibraryContext、AIImageEncoder、AILibraryTools、AILibraryCinemaTools
     │   ├── Compression/           # PhotoCompressor
     │   ├── Video/                 # VideoPlayerModel
     │   ├── Places/                # PlaceSupport

@@ -8,6 +8,12 @@ import NetFS
 
 // MARK: - SMB 错误
 
+/// SMB 递归扫描结果：媒体文件 + 目录（目录带 mtime，供下一轮增量扫描复用）。
+struct SMBTreeScanResult {
+    var media: [CloudEntry]
+    var folders: [CloudEntry]
+}
+
 enum SMBError: LocalizedError {
     case invalidAddress
     case unreachable(String)
@@ -356,6 +362,11 @@ struct SMBClient {
 
     /// 递归扫描共享（或子路径）下的全部媒体文件，用于「全部照片」时间轴。
     func scanTree(path: String = "") async throws -> [CloudEntry] {
+        try await scanTreeWithFolders(path: path).media
+    }
+
+    /// 递归扫描并同时返回目录（带 mtime）：全量扫描一次后，后续增量扫描就能按目录 mtime 跳过未变化的子树。
+    func scanTreeWithFolders(path: String = "") async throws -> SMBTreeScanResult {
         let root = try await ensureMounted()
         let target = Self.appending(path, to: Self.appending(subPath, to: root))
         let relative = path
@@ -472,7 +483,7 @@ struct SMBClient {
         return entries
     }
 
-    private static func enumerateTree(at target: URL, relativePath: String) throws -> [CloudEntry] {
+    private static func enumerateTree(at target: URL, relativePath: String) throws -> SMBTreeScanResult {
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey,
                                       .fileSizeKey, .contentModificationDateKey]
         guard let enumerator = FileManager.default.enumerator(
@@ -480,10 +491,11 @@ struct SMBClient {
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants],
             errorHandler: { _, _ in true }
-        ) else { return [] }
+        ) else { return SMBTreeScanResult(media: [], folders: []) }
 
         let basePath = target.path.hasSuffix("/") ? target.path : target.path + "/"
-        var entries: [CloudEntry] = []
+        var media: [CloudEntry] = []
+        var folders: [CloudEntry] = []
         for case let url as URL in enumerator {
             let name = url.lastPathComponent
             if ignoredNames.contains(name) || name.hasPrefix("._") {
@@ -491,19 +503,28 @@ struct SMBClient {
                 continue
             }
             let values = try? url.resourceValues(forKeys: Set(keys))
-            if values?.isDirectory == true { continue }
             let encoded = url.path
             var relative = encoded.hasPrefix(basePath) ? String(encoded.dropFirst(basePath.count)) : name
             if !relativePath.isEmpty { relative = relativePath + "/" + relative }
+            if values?.isDirectory == true {
+                // 目录本身也要进索引：下一轮增量扫描据此判断整棵子树是否可以跳过。
+                folders.append(CloudEntry(path: relative,
+                                          name: name,
+                                          isDirectory: true,
+                                          size: 0,
+                                          modifiedAt: values?.contentModificationDate,
+                                          contentType: nil))
+                continue
+            }
             let entry = CloudEntry(path: relative,
                                    name: name,
                                    isDirectory: false,
                                    size: Int64(values?.fileSize ?? 0),
                                    modifiedAt: values?.contentModificationDate,
                                    contentType: nil)
-            if entry.isMedia { entries.append(entry) }
+            if entry.isMedia { media.append(entry) }
         }
-        return entries
+        return SMBTreeScanResult(media: media, folders: folders)
     }
 
     /// NAS 的系统目录与 macOS 资源叉文件不参与浏览与扫描。

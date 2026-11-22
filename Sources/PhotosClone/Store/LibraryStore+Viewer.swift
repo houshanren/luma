@@ -222,6 +222,13 @@ extension LibraryStore {
         }
     }
 
+    /// 分集式片源：网络资源剧集，或网络存储（SMB / 网盘）影院里的视频。
+    /// 这类片源把方向键让给播放控制：← / → 快进快退，↑ / ↓ 上一条 / 下一条。
+    func usesEpisodeTransport(for photo: PhotoItem) -> Bool {
+        if catalogPlaybackContexts[photo.id] != nil { return true }
+        return photo.isCloud && cinemaPlaybackPhoto != nil
+    }
+
     /// 从指定项目出发，前 / 后是否还有可跳转的视频。
     func hasAdjacentVideo(from id: UUID, delta: Int) -> Bool {
         let items = viewerNavigationPhotos

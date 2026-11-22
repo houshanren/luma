@@ -41,11 +41,11 @@ enum CatalogMaintenance {
     // MARK: - 视频缓存
 
     static func videoCacheBytes() -> Int64 {
-        VideoCacheManager.totalSize()
+        VideoCache.luma.totalSize()
     }
 
     static func clearVideoCache() {
-        VideoCacheManager.clear()
+        VideoCache.luma.clear()
     }
 
     // MARK: - 镜像

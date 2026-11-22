@@ -290,53 +290,54 @@ struct GalleryView: View {
             lastTimelineJumpOffset = -1
         }
         .toolbar {
-            if !isWindowedViewing {
-                if showsCinemaConsole {
-                    // 影院控制台常驻：详情在页面内打开时也不隐藏整条顶栏，
-                    // 只是由控制台自己把铭牌换成「返回」。
-                    ToolbarItem(placement: .navigation) {
-                        CinemaToolbarConsole()
-                    }
-                } else {
-                    // 网络资源二级页（频道详情 / 关注档案 / 片单详情）：返回放在最左侧，
-                    // 与视频播放器的返回位置保持一致。
-                    ToolbarItem(placement: .navigation) {
-                        if let back = catalogBackAction {
-                            CatalogToolbarBackButton(help: back.title) {
-                                withAnimation(.easeOut(duration: 0.18)) { back.action() }
-                            }
-                        }
-                    }
-                    ToolbarItem(placement: .navigation) {
-                        navigationToolbarContent
-                    }
-                    ToolbarItem(placement: .navigation) {
-                        if supportsZoomControl {
-                            zoomControl
-                        }
-                    }
-                    ToolbarItem(placement: .principal) {
-                        if isCatalogHubScope {
-                            // 网络资源总览：浏览 / 片单 / 更新日历并入工具栏同一行。
-                            CatalogHubTabs()
-                        } else if isCatalogScope {
-                            // 网络资源：中区是「分类 + 站点 + 刷新」舱体，分类菜单与左侧菜单同源。
-                            CatalogToolbarConsole()
-                        } else {
-                            principalToolbarContent
-                        }
-                    }
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        if isCatalogScope {
-                            // 源内搜索已并入中区舱体；详情模式下右侧动作也让位给返回 / 播放。
-                            if catalog.inlineDetailItem == nil {
-                                galleryActionPill
-                            }
-                        } else {
-                            primaryActionToolbarContent
+            // 影院控制台由 CinemaTitlebarConsoleHost 直接铺在标题栏上，
+            // 不走 NSToolbar 项，窗口变窄时不会被系统整条收进溢出菜单。
+            if !isWindowedViewing, !showsCinemaConsole {
+                // 网络资源二级页（频道详情 / 关注档案 / 片单详情）：返回放在最左侧，
+                // 与视频播放器的返回位置保持一致。
+                ToolbarItem(placement: .navigation) {
+                    if let back = catalogBackAction {
+                        CatalogToolbarBackButton(help: back.title) {
+                            withAnimation(.easeOut(duration: 0.18)) { back.action() }
                         }
                     }
                 }
+                ToolbarItem(placement: .navigation) {
+                    navigationToolbarContent
+                }
+                ToolbarItem(placement: .navigation) {
+                    if supportsZoomControl {
+                        zoomControl
+                    }
+                }
+                ToolbarItem(placement: .principal) {
+                    if isCatalogHubScope {
+                        // 网络资源总览：浏览 / 片单 / 更新日历并入工具栏同一行。
+                        CatalogHubTabs()
+                    } else if isCatalogScope {
+                        // 网络资源：中区是「分类 + 站点 + 刷新」舱体，分类菜单与左侧菜单同源。
+                        CatalogToolbarConsole()
+                    } else {
+                        principalToolbarContent
+                    }
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if isCatalogScope {
+                        // 源内搜索已并入中区舱体；详情模式下右侧动作也让位给返回 / 播放。
+                        if catalog.inlineDetailItem == nil {
+                            galleryActionPill
+                        }
+                    } else {
+                        primaryActionToolbarContent
+                    }
+                }
+            }
+        }
+        // 播放器关闭后系统工具栏偶尔整条不回来（返回键一起消失）：主动让窗口重新校验可见项。
+        .onChange(of: isWindowedViewing) { _, windowed in
+            guard !windowed else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                NSApp.keyWindow?.toolbar?.validateVisibleItems()
             }
         }
         .onChange(of: store.searchFocusRequest) { _, _ in
@@ -653,7 +654,7 @@ struct GalleryView: View {
     @ViewBuilder
     private var navigationToolbarContent: some View {
         if showsCinemaConsole {
-            // 影院控制台放在内容顶部（贴着工具栏），这里不再重复显示。
+            // 影院控制台由工具栏里的左右两段承担，这里不再重复显示。
             EmptyView()
         } else if isCloudMountScope,
                   store.cloudBreadcrumbChain.count > 1 || store.cloudOverviewSection != nil {

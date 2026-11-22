@@ -28,7 +28,10 @@ extension LibraryStore {
     }
 
     /// 添加或更新阿里云盘的 Cookie 连接。
-    func registerAliyunCookieMount(input: String, name: String = "阿里云盘") async -> String? {
+    func registerAliyunCookieMount(input: String,
+                                   name: String = "阿里云盘",
+                                   scopes: [CloudScopeRoot]? = nil,
+                                   excludes: [CloudScopeRoot]? = nil) async -> String? {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return "请先粘贴 Cookie 或 refresh_token" }
 
@@ -45,6 +48,7 @@ extension LibraryStore {
         let finalName = trimmedName.isEmpty ? "阿里云盘" : trimmedName
 
         if let existing = cloudMounts.first(where: { $0.kind == .aliyun && $0.authMode == .cookie }) {
+            updateCloudMountAccess(existing.id, scopes: scopes, excludes: excludes)
             if let index = cloudMounts.firstIndex(where: { $0.id == existing.id }) {
                 cloudMounts[index].remoteDriveID = info.driveID
                 if !trimmedName.isEmpty { cloudMounts[index].name = finalName }
@@ -66,7 +70,9 @@ extension LibraryStore {
         let mount = CloudMount(kind: .aliyun,
                                name: finalName,
                                remoteDriveID: info.driveID,
-                               authMode: .cookie)
+                               authMode: .cookie,
+                               scopeRoots: scopes ?? [],
+                               excludedRoots: excludes ?? [])
         CloudCredentials.setPassword(text, for: mount.id)
         CloudOAuthStore.saveToken(token, mountID: mount.id)
         cloudMounts.append(mount)

@@ -554,11 +554,12 @@ open Luma.app        # 运行</code></pre></div>
         <li>找照片与视频：用 <code>search_photos</code> / <code>list_videos</code> 搜索当前图库，或按模型给出的关键词与筛选条件应用检索。</li>
         <li>整理图库：相簿、文件夹、收藏、隐藏、关键词、标题、原地压缩、自动美化、最近删除与恢复，都可以让助手实际执行。</li>
         <li>切换视图：让助手切到收藏 / 视频 / 最近删除 / 某个相簿或文件夹，并同时设置筛选与排序。</li>
+        <li>操作影院：检索本库影片 / 剧集 / 演员，查看继续观看、观看记录、自定义清单、刮削任务与通知；切换影院分段与筛选，播放影片或剧集下一集；修改收藏 / 想看 / 评分、管理清单、忽略或恢复视频、补全详情或重新刮削、设置跳过片头 / 片尾、移除观看记录。</li>
         <li>安全边界：每次修改前弹出确认；不支持永久删除、编辑原图与导入，也不会写入官方「照片」库的 <code>Photos.sqlite</code>。</li>
       </ul>
 
       <h3>工具一览</h3>
-      <p>模型通过 OpenAI function calling 调用下列本地工具，共 <b>26 个</b>，其中 <b>19 个写操作</b>。写操作统一先确认，再经 <code>LibraryStore</code> 落盘；失败或取消会如实回传。</p>
+      <p>模型通过 OpenAI function calling 调用下列本地工具，共 <b>55 个</b>，其中 <b>31 个写操作</b>。写操作统一先确认，再经 <code>LibraryStore</code> 落盘；失败或取消会如实回传。</p>
       <table class="doc-table">
         <thead><tr><th>类别</th><th>工具</th><th>说明</th></tr></thead>
         <tbody>
@@ -597,17 +598,27 @@ open Luma.app        # 运行</code></pre></div>
             <td><code>trash_photos</code> · <code>restore_photos</code></td>
             <td>移入最近删除与恢复；不提供永久删除。</td>
           </tr>
+          <tr>
+            <td>影院 · 20</td>
+            <td><code>list_cinema_items</code> · <code>list_cinema_scopes</code> · <code>cinema_tree</code> · <code>search_cinema_library</code> · <code>list_cinema_series</code> · <code>list_cinema_lists</code> · <code>list_cinema_activity</code> · <code>navigate_cinema</code> · <code>play_cinema</code> · <code>search_cinema_candidates</code> · <code>apply_cinema_match</code> · <code>scrape_cinema</code> · <code>match_cinema</code> · <code>update_cinema_state</code> · <code>manage_cinema_list</code> · <code>ignore_cinema</code> · <code>restore_cinema_ignored</code> · <code>refresh_cinema_metadata</code> · <code>set_cinema_intro_skip</code> · <code>manage_cinema_progress</code></td>
+            <td>检索本库影片 / 剧集 / 演员与目录树；查看继续观看、观看记录、清单、刮削任务与通知；切换影院分段、视图、排序与筛选；播放影片或剧集下一集；收藏 / 想看 / 个人评分；清单新建、删除、加入、移出与清空；忽略 / 恢复视频；补详情或重新刮削；跳过片头 / 片尾；移除或清空观看记录。只写元数据与本地状态，不永久删除视频。</td>
+          </tr>
+          <tr>
+            <td>网络资源 · 9</td>
+            <td><code>list_catalog_sources</code> · <code>search_catalog</code> · <code>catalog_new_today</code> · <code>list_catalog_following</code> · <code>list_catalog_watchlist</code> · <code>browse_catalog</code> · <code>play_catalog_item</code> · <code>set_catalog_watchlist</code> · <code>follow_catalog_person</code></td>
+            <td>查看已接入站点、跨源搜索、今日更新、关注与稍后看；打开源的首页 / 排行 / 分类；播放条目；加入或移出稍后看；关注人物 / 片商 / 模特。</td>
+          </tr>
         </tbody>
       </table>
       <ul class="doc-list">
-        <li><b>只读</b>：检索与浏览 7 个工具只改变视图或返回信息，不写图库。</li>
+        <li><b>只读</b>：检索与浏览 7 个；影院的 <code>list_cinema_scopes</code> / <code>list_cinema_items</code> / <code>cinema_tree</code> / <code>search_cinema_library</code> / <code>list_cinema_series</code> / <code>list_cinema_lists</code> / <code>list_cinema_activity</code> / <code>navigate_cinema</code> / <code>play_cinema</code> / <code>search_cinema_candidates</code>；网络资源的查看、搜索、浏览与播放工具。它们只改变视图或返回信息，不写图库。</li>
         <li><b>写 · 仅本地图库</b>：相簿 7、文件夹 3、压缩 1、美化 1、最近删除 2；确认后执行。</li>
-        <li><b>写 · 当前库</b>：收藏 / 隐藏 / 关键词 / 标题 5 个；官方「照片」库作为当前库时，只写 <code>asset_overlays</code> 的补充元数据。</li>
-        <li><b>不支持</b>：永久删除、导入、编辑原图、写入 <code>Photos.sqlite</code>，以及在只读系统图库 / 网盘上执行写操作。</li>
+        <li><b>写 · 当前库</b>：收藏 / 隐藏 / 关键词 / 标题 5 个；影院刮削与个人状态 10 个（<code>scrape_cinema</code> / <code>match_cinema</code> / <code>apply_cinema_match</code> / <code>update_cinema_state</code> / <code>manage_cinema_list</code> / <code>ignore_cinema</code> / <code>restore_cinema_ignored</code> / <code>refresh_cinema_metadata</code> / <code>set_cinema_intro_skip</code> / <code>manage_cinema_progress</code>）；网络资源稍后看 / 关注 2 个。官方「照片」库作为当前库时，只写 <code>asset_overlays</code> 的补充元数据。</li>
+        <li><b>不支持</b>：永久删除、导入、编辑原图、写入 <code>Photos.sqlite</code>，以及在只读系统图库 / 网盘上执行写操作；影院的忽略与观看记录清理也不会删除原视频。</li>
       </ul>
 
       <h3>界面提示</h3>
-      <p>面板首屏用两张主推案例（压缩这组照片、按时间地点建相簿）与四张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频）展示可以做的事，点任意示例即可填入输入框；对话开始后，输入框上方保留一条轻量示例条。工具执行成功后会在对话里插入一条绿色操作回执，失败或被取消则如实返回原因。</p>
+      <p>面板首屏用两张主推案例（压缩这组照片、按时间地点建相簿）与六张能力卡片（检索与浏览 / 相簿与文件夹 / 图片 / 视频 / 影院 / 网络资源）展示可以做的事，点任意示例即可填入输入框；对话开始后，输入框上方保留一条轻量示例条。工具执行成功后会在对话里插入一条绿色操作回执，失败或被取消则如实返回原因。</p>
 
       <h3>常用案例</h3>
       <table class="doc-table">
@@ -1056,7 +1067,7 @@ open Luma.app        # 运行</code></pre></div>
           <tr><th>接口与模型</th><td>可修改 Base URL 与模型名；豆包填写推理接入点 ID（<code>ep-...</code>）</td></tr>
           <tr><th>API Key</th><td>按提供商分别保存在 macOS 钥匙串（service <code>com.baymax.luma.ai</code>），支持保存、清除与测试连接</td></tr>
           <tr><th>图片理解</th><td>默认关闭；开启后把选中/候选照片压成长边约 1024 的 JPEG，单次最多 6 张</td></tr>
-          <tr><th>可执行操作</th><td>共 26 个工具（19 个写操作需确认）：检索与浏览 7、相簿 7、文件夹 3、图片与视频 5、压缩 1、美化 1、最近删除 2；不永久删除或编辑原图</td></tr>
+          <tr><th>可执行操作</th><td>共 55 个工具（31 个写操作需确认）：检索与浏览 7、相簿 7、文件夹 3、图片与视频 5、压缩 1、美化 1、最近删除 2、影院 20、网络资源 9；不永久删除或编辑原图</td></tr>
           <tr><th>保存位置</th><td>模型配置与对话记录随当前图库保存；API Key 不属于图库，切换图库无需重填</td></tr>
         </tbody>
       </table>
@@ -1231,7 +1242,7 @@ open Luma.app        # 运行</code></pre></div>
           <tr><td>官方图库</td><td>本体</td><td>读取 + PhotoKit 写回（编辑 / 删除 / 相簿 / 收藏隐藏），关键词与标题走 sidecar；不改 <code>Photos.sqlite</code></td></tr>
           <tr><td>端侧索引</td><td>系统智能搜索</td><td>场景标签 + OCR + 特征向量落库，可浏览、可组合、可检查</td></tr>
           <tr><td>视频格式</td><td>系统可解码格式</td><td>30 种扩展名直接导入；内置 ffmpeg 转封装 + HDR 色调映射，外挂字幕 / 音轨、0.25–4×、连播、循环、画中画、旋转、存帧</td></tr>
-          <tr><td>智能助手</td><td>—</td><td>可选、自带 API Key；26 个工具 / 19 个写操作需确认；支持整理、原地压缩与自动美化</td></tr>
+          <tr><td>智能助手</td><td>—</td><td>可选、自带 API Key；55 个工具 / 31 个写操作需确认；支持整理、原地压缩、自动美化与影院管理</td></tr>
           <tr><td>图库体检</td><td>—</td><td>模糊 / 相似连拍 / 大视频 / 可腾出空间，一次扫描并缓存报告</td></tr>
           <tr><td>值得重看</td><td>—</td><td>今日重看 + 人物 / 地点 / 场景 / 年份主体 + 年份胶囊 + 时光碎片</td></tr>
           <tr><td>撤销 / 重做</td><td>部分操作</td><td>删除、收藏、关键词、批量更改、相簿 / 文件夹、合并重复均支持 ⌘Z / ⇧⌘Z</td></tr>

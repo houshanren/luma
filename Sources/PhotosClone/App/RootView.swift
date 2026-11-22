@@ -148,6 +148,14 @@ struct RootView: View {
             endVideoImmersiveFullScreen()
             restoreWindowFrameAfterFullScreen()
         }
+        // 工具栏从隐藏切回可见时，SwiftUI 偶尔不会把自定义项重新挂回去
+        // （影院控制台整条不见）：主动让 AppKit 校验一次可见项。
+        .onChange(of: toolbarHidden) { _, hidden in
+            guard !hidden, let window = hostWindow else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                window.toolbar?.validateVisibleItems()
+            }
+        }
         .onChange(of: viewer.viewerID) { _, newValue in
             FullScreenDiagnostics.log("viewerID -> \(String(describing: newValue)) immersive=\(viewer.videoImmersiveFullScreen)")
             // 幽灵查看器兜底：ID 还在但照片已找不到时，覆盖层会留下一块空白。
@@ -197,6 +205,27 @@ struct RootView: View {
         })
         .onAppear {
             installSpaceMonitor()
+            // 临时诊断：自动进入影院并打开第一条视频，用于排查播放时的标题栏布局。
+            if ProcessInfo.processInfo.environment["LUMA_DEBUG_PLAY"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    if case .cinema = store.sidebarItem {
+                    } else if let mount = store.cloudMounts.first(where: {
+                        !store.cinemaEntries(for: .mount($0.id)).isEmpty
+                    }) {
+                        store.sidebarItem = .cloudCinema(mount.id)
+                    } else {
+                        store.sidebarItem = .cinema
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                    let scope: CinemaScope
+                    if case .cloudCinema(let id) = store.sidebarItem { scope = .mount(id) } else { scope = .local }
+                    let entries = Array(store.cinemaEntries(for: scope).values)
+                    if let entry = entries.first(where: { $0.file.photoItem.isVideo }) ?? entries.first {
+                        store.openCinema(entry)
+                    }
+                }
+            }
             // 按住 Option 启动：store 在 init 里已置位，这里直接开选择器窗口。
             if store.showLibraryPicker { syncLibraryPickerWindow(visible: true) }
         }
@@ -338,6 +367,13 @@ struct RootView: View {
         // 不叠加 SwiftUI 动画：系统正在播放全屏动画，两套动画同时改侧边栏
         // 会把分栏停在「侧边栏已收起、详情列还是旧宽度」的中间态。
         columnVisibility = .detailOnly
+        // SwiftUI 的 toolbar(.hidden) 在系统全屏动画期间会被 AppKit 忽略：
+        // 动画结束后再补一次原生隐藏，顶部不再留一条黑带。
+        if let window = hostWindow {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                window.toolbar?.isVisible = false
+            }
+        }
     }
 
     /// 退出全屏：恢复进入前的侧边栏可见性，顶栏随全屏状态自动恢复。
@@ -346,6 +382,7 @@ struct RootView: View {
         viewer.videoImmersiveFullScreen = false
         FullScreenDiagnostics.log("end immersive")
         columnVisibility = columnVisibilityBeforeFullScreen
+        hostWindow?.toolbar?.isVisible = true
     }
 
     /// 退出全屏后把窗口拉回进入前的尺寸，避免多次进出后窗口越来越矮。
@@ -363,8 +400,10 @@ struct RootView: View {
 
     private var toolbarHidden: Bool {
         // 窗口内浏览保留统一工具栏：返回、缩放、拍摄时间与操作都放在工具栏里。
-        // 视频真全屏时工具栏会挡住画面：显式隐藏，并用画面内的悬浮控制条接管操作。
-        // 退出全屏后由 endVideoImmersiveFullScreen 恢复，窗口尺寸由 restoreWindowFrameAfterFullScreen 兜底。
+        // 编辑器 / 「整窗查看器」/ 视频真全屏都会盖满窗口：整条隐藏，
+        // 视频全屏改用画面内控制条（底部已有的那一条），顶部不再占一条黑带。
+        // 退出全屏后由 toolbarHidden 的 onChange 主动 validateVisibleItems，
+        // 避免 SwiftUI 偶尔不把影院控制台重新挂回标题栏。
         viewer.editorID != nil
             || (store.viewerPhoto != nil && settings.viewerLayout == .fullscreen)
             || viewer.videoImmersiveFullScreen

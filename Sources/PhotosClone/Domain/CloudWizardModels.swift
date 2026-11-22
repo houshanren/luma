@@ -130,6 +130,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
     case aliyunCookie
     case baidu
     case quark
+    case pan115
     case smb
     case webdav
     case alist
@@ -141,6 +142,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
         case .aliyunCookie: return "阿里云盘"
         case .baidu: return "百度网盘"
         case .quark: return "夸克网盘"
+        case .pan115: return "115 网盘"
         case .smb: return "SMB 共享"
         case .webdav: return "WebDAV"
         case .alist: return "AList 聚合"
@@ -152,6 +154,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
         case .aliyunCookie: return "浏览器 Cookie · 免开发者应用"
         case .baidu: return "官方 OAuth · 直链播放"
         case .quark: return "浏览器 Cookie · 直连浏览与播放"
+        case .pan115: return "浏览器 Cookie · 直连浏览与播放"
         case .smb: return "群晖 / TrueNAS · 只读浏览"
         case .webdav: return "填地址与账号，直连 NAS"
         case .alist: return "夸克 / 115 / 其他网盘"
@@ -163,6 +166,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
         case .aliyunCookie: return "cloud"
         case .baidu: return "cloud.fill"
         case .quark: return "square.stack.3d.up.fill"
+        case .pan115: return "externaldrive.fill"
         case .smb: return "network"
         case .webdav: return "externaldrive.connected.to.line.below"
         case .alist: return "wand.and.stars"
@@ -175,6 +179,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
         case .aliyunCookie: return .aliyun
         case .baidu: return .baidu
         case .quark: return .quark
+        case .pan115: return .pan115
         case .smb, .webdav, .alist: return nil
         }
     }
@@ -184,6 +189,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
         case .aliyunCookie: return nil
         case .baidu: return .baidu
         case .quark: return .quark
+        case .pan115: return .pan115
         case .smb: return .smb
         case .webdav: return .webdav
         case .alist: return nil
@@ -193,14 +199,14 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
     var steps: [String] {
         switch self {
         case .baidu: return ["应用凭据", "授权登录", "完成"]
-        case .aliyunCookie, .quark: return ["粘贴 Cookie", "确认添加"]
+        case .aliyunCookie, .quark, .pan115: return ["粘贴 Cookie", "确认添加"]
         case .smb, .webdav: return ["填写连接", "确认添加"]
         case .alist: return ["选择网盘", "连接 AList", "在 AList 中添加", "确认"]
         }
     }
 
     /// 走浏览器 Cookie / 令牌的接入方式。
-    var usesCookie: Bool { self == .aliyunCookie || self == .quark }
+    var usesCookie: Bool { self == .aliyunCookie || self == .quark || self == .pan115 }
 
     var requiresDeveloperApp: Bool { self == .baidu }
 }

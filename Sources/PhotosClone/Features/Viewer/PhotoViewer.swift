@@ -133,6 +133,7 @@ struct PhotoViewerView: View {
             removeViewerScrollMonitor()
             stopLivePhoto()
             stopBurstPlayback()
+            VideoScrubPreviewCenter.shared.end()
         }
         .background(
             WindowAccessor { window in
@@ -236,6 +237,14 @@ struct PhotoViewerView: View {
                 burstSelectionPanel(photo)
                     .padding(.bottom, 18)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // 顶栏进度条的悬停关键帧：工具栏装不下气泡，画在画面这一层，
+        // 全屏时浮在工具栏下方，窗口内贴着画面上沿。
+        .overlay {
+            if showsVideoToolbarControls {
+                VideoScrubPreviewOverlay(topInset: viewer.videoImmersiveFullScreen ? 70 : 6)
+                    .zIndex(3)
             }
         }
         .animation(settings.motion.overlay, value: settings.viewerFilmstrip)
@@ -391,7 +400,9 @@ struct PhotoViewerView: View {
             videoToolbarInfoLine(photo)
             HStack(spacing: 6) {
                 VideoToolbarProgress(model: videoModel,
-                                     showsRemaining: $videoShowsRemainingTime)
+                                     session: viewer.playbackSession,
+                                     showsRemaining: $videoShowsRemainingTime,
+                                     chapterFractions: toolbarChapterFractions)
                     .frame(maxWidth: .infinity)
                 // 音量收在进度右端：移入图标向左展开一条可拖动的小轨道，不占常驻宽度。
                 VideoInlineVolume(model: videoModel)
@@ -403,7 +414,6 @@ struct PhotoViewerView: View {
         .padding(.bottom, 0)
         // 固定宽度：尽量容下标题 / 时间 / 地点 / 序号，翻页时不再左右跳动。
         .frame(width: 560)
-        .help(photo.displayTitle)
     }
 
     /// 播放舱第一行：与原先顶栏信息一致，标题 / 实况 / 日期时间 / 地点 / 圆环与序号全部保留。
@@ -472,6 +482,14 @@ struct PhotoViewerView: View {
         .font(.system(size: 11, weight: .medium))
         .lineLimit(1)
         .accessibilityElement(children: .contain)
+    }
+
+    /// 播放舱进度条的章节刻度：与画面内进度条同一份章节数据。
+    private var toolbarChapterFractions: [Double] {
+        guard videoModel.duration > 0 else { return [] }
+        return videoUI.chapters
+            .map { min(1, max(0, $0.start / videoModel.duration)) }
+            .filter { $0 > 0.01 && $0 < 0.99 }
     }
 
     private func rotateVideoPlayer() {
@@ -713,7 +731,8 @@ struct PhotoViewerView: View {
                                               hasNext: store.hasAdjacentVideo(from: photo.id, delta: 1),
                                               onPrev: { store.viewerStepVideo(-1) },
                                               onNext: { store.viewerStepVideo(1) },
-                                              episodeMode: store.catalogPlaybackContext(for: photo.id) != nil)
+                                              seekStep: settings.videoSeekStep,
+                                              episodeMode: store.usesEpisodeTransport(for: photo))
                     }
                 }
                 .padding(.horizontal, showsVideoToolbarControls ? 3 : 0)

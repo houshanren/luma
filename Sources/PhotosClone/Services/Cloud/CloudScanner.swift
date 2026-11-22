@@ -57,38 +57,113 @@ enum CloudScanner {
                      onBatch: @MainActor @escaping (_ batch: Batch,
                                                     _ folderCount: Int,
                                                     _ mediaCount: Int) -> Void) async -> Result {
-        if mount.kind == .smb {
-            // SMB 已有一次性递归接口：按父目录分组回调，同样能得到「文件夹 = 相簿」。
-            let entries = (try? await CloudService.scanTree(mount: mount, path: "")) ?? []
-            let media = entries.filter { $0.isMedia }
-            var groups: [String: [CloudEntry]] = [:]
-            for entry in media {
-                groups[Self.parentPath(of: entry.path), default: []].append(entry)
+        if mount.kind == .smb, incremental == nil {
+            // 全量 SMB 扫描用一次递归枚举（比逐目录往返快），同时收集目录与 mtime，
+            // 写进索引后，下一轮就能走下面的通用 BFS 做目录级增量。
+            let excluded = mount.excludedRoots.map(\.path).filter { !$0.isEmpty }
+            func isExcluded(_ path: String) -> Bool {
+                excluded.contains { path == $0 || path.hasPrefix($0 + "/") }
             }
+            var scopeSeen: Set<String> = []
+            let scopes = mount.scopeRoots
+                .map(\.path)
+                .filter { !$0.isEmpty && !isExcluded($0) }
+                .filter { scopeSeen.insert($0).inserted }
+            let scopeFolders = scopes.map { path in
+                CloudEntry(path: path,
+                           name: (path as NSString).lastPathComponent,
+                           isDirectory: true,
+                           size: 0,
+                           modifiedAt: nil,
+                           contentType: nil)
+            }
+
+            var media: [CloudEntry] = []
+            var folders: [CloudEntry] = scopeFolders
+            var mediaSeen: Set<String> = []
+            var folderSeen: Set<String> = Set(scopeFolders.map(\.path))
+            var failedFolders = 0
+            var firstErrorDescription: String?
+            for root in (scopes.isEmpty ? [""] : scopes) {
+                if Task.isCancelled { break }
+                let tree: SMBTreeScanResult
+                do {
+                    tree = try await CloudService.scanTree(mount: mount, path: root)
+                } catch {
+                    failedFolders += 1
+                    if firstErrorDescription == nil {
+                        firstErrorDescription = error.localizedDescription
+                    }
+                    continue
+                }
+                for entry in tree.media where entry.isMedia
+                    && !isExcluded(entry.path)
+                    && mediaSeen.insert(entry.path).inserted {
+                    media.append(entry)
+                }
+                for entry in tree.folders where !entry.path.isEmpty
+                    && !isExcluded(entry.path)
+                    && !shouldSkipFolder(entry.name)
+                    && folderSeen.insert(entry.path).inserted {
+                    folders.append(entry)
+                }
+            }
+
+            var childrenByParent: [String: [CloudEntry]] = [:]
+            for folder in folders {
+                childrenByParent[Self.parentPath(of: folder.path), default: []].append(folder)
+            }
+            var mediaByParent: [String: [CloudEntry]] = [:]
+            for entry in media {
+                mediaByParent[Self.parentPath(of: entry.path), default: []].append(entry)
+            }
+            let containers = Set(childrenByParent.keys)
+                .union(mediaByParent.keys)
+                .sorted()
             var folderCount = 0
             var mediaCount = 0
-            for (container, items) in groups.sorted(by: { $0.key < $1.key }) {
+            for container in containers {
                 if Task.isCancelled { break }
-                folderCount += 1
+                let childFolders = childrenByParent[container] ?? []
+                folderCount += childFolders.count
+                let items = mediaByParent[container] ?? []
                 mediaCount += items.count
-                await onBatch(Batch(media: items, folders: [], container: container),
+                await onBatch(Batch(media: items, folders: childFolders, container: container),
                               folderCount,
                               mediaCount)
             }
-            return Result(folderCount: folderCount,
+            return Result(folderCount: max(folderCount, folders.count),
                           mediaCount: media.count,
                           truncated: false,
                           mediaPaths: Set(media.map(\.path)),
-                          failedFolders: 0,
+                          failedFolders: failedFolders,
                           sawAuthError: false,
-                          firstErrorDescription: nil)
+                          firstErrorDescription: firstErrorDescription)
         }
 
         let root = mount.kind == .baidu ? "/" : ""
-        var queue: [String] = [root]
+        let excludedPaths = Set(mount.excludedRoots.map(\.path).filter { !$0.isEmpty })
+        // 向导里选过接入范围：只扫描这些目录，并把它们直接挂成侧边栏的顶层相簿。
+        let scopeCandidates = mount.scopeRoots.filter {
+            !$0.path.isEmpty && $0.path != root && !excludedPaths.contains($0.path)
+        }
+        var scopeSeen: Set<String> = []
+        let scopes = scopeCandidates.filter { scopeSeen.insert($0.path).inserted }
+        var queue: [String] = scopes.isEmpty ? [root] : scopes.map(\.path)
+        if !scopes.isEmpty {
+            let scopeFolders = scopes.map {
+                CloudEntry(path: $0.path,
+                           name: $0.name,
+                           isDirectory: true,
+                           size: 0,
+                           modifiedAt: nil,
+                           contentType: nil)
+            }
+            await onBatch(Batch(media: [], folders: scopeFolders, container: root), 0, 0)
+        }
         // 阿里云盘的媒体经常放在「资源库」而不是默认盘，只扫默认盘会几乎为空；
         // 这里把账号下的每个盘都挂成一个虚拟根目录，扫描器按普通目录遍历即可。
-        if mount.kind == .aliyun,
+        if scopes.isEmpty, mount.kind == .aliyun,
            let token = try? await CloudService.accessToken(for: mount),
            let drives = try? await AliyunOAuth.drives(accessToken: token),
            !drives.isEmpty {
@@ -142,6 +217,7 @@ enum CloudScanner {
             for entry in entries {
                 if entry.isDirectory {
                     guard !entry.path.isEmpty,
+                          !excludedPaths.contains(entry.path),
                           !shouldSkipFolder(entry.name) else { continue }
                     actualChildren.insert(entry.path)
                     // 增量：父目录列表里的修改时间未变，直接复用上一轮这棵子树的目录与媒体。

@@ -21,13 +21,17 @@ extension LibraryStore {
 
     /// 添加或更新夸克网盘连接。个人网盘通常只用一个账号，因此已存在时直接替换 Cookie。
     @discardableResult
-    func registerQuarkMount(cookie: String, name: String = "夸克网盘") -> String? {
+    func registerQuarkMount(cookie: String,
+                            name: String = "夸克网盘",
+                            scopes: [CloudScopeRoot]? = nil,
+                            excludes: [CloudScopeRoot]? = nil) -> String? {
         let normalized = QuarkDrive.normalizedCookie(cookie)
         guard !normalized.isEmpty else { return "请先粘贴浏览器 Cookie" }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmedName.isEmpty ? "夸克网盘" : trimmedName
 
         if let existing = cloudMounts.first(where: { $0.kind == .quark }) {
+            updateCloudMountAccess(existing.id, scopes: scopes, excludes: excludes)
             CloudCredentials.setPassword(normalized, for: existing.id)
             cloudDirectoryCache = cloudDirectoryCache.filter { !$0.key.hasPrefix(existing.id.uuidString) }
             cloudVisibleCacheKey = nil
@@ -40,7 +44,8 @@ extension LibraryStore {
             return nil
         }
 
-        let mount = CloudMount(kind: .quark, name: finalName, authMode: .cookie)
+        let mount = CloudMount(kind: .quark, name: finalName, authMode: .cookie,
+                               scopeRoots: scopes ?? [], excludedRoots: excludes ?? [])
         CloudCredentials.setPassword(normalized, for: mount.id)
         cloudMounts.append(mount)
         saveCloudMounts()

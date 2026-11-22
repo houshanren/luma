@@ -458,16 +458,16 @@ struct PhotosCloneApp: App {
                         Button("暂无可切换音轨") {}
                             .disabled(true)
                     } else {
+                        // 菜单式 Toggle：系统自己画勾，自绘 Image 在 NSMenu 里会被丢掉。
                         ForEach(store.videoAudioChoices) { choice in
-                            Button {
-                                store.selectVideoAudioCommand(choice.index)
-                            } label: {
-                                let title = choice.title.isEmpty ? "音轨 \(choice.index + 1)" : choice.title
-                                if choice.index == store.videoSelectedAudioIndex {
-                                    Label(title, systemImage: "checkmark")
-                                } else {
-                                    Text(title)
+                            let title = choice.title.isEmpty ? "音轨 \(choice.index + 1)" : choice.title
+                            Toggle(isOn: Binding(
+                                get: { choice.index == store.videoSelectedAudioIndex },
+                                set: { isOn in
+                                    if isOn { store.selectVideoAudioCommand(choice.index) }
                                 }
+                            )) {
+                                Text(title)
                             }
                         }
                     }
@@ -748,6 +748,8 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { Self.enlargeMainWindowIfNeeded() }
         // 文本框里兼容 Windows 的 Ctrl+C / Ctrl+V 粘贴习惯。
         ControlKeyTextShortcuts.install()
+        // 空闲时预热 ffmpeg 的杜比视界运行时，把 Vulkan 初始化挪出「点开视频」的等待。
+        FFmpegPrewarm.schedule()
         guard let path = ProcessInfo.processInfo.environment["LUMA_SNAPSHOT"] else { return }
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) {

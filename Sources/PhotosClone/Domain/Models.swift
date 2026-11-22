@@ -213,12 +213,20 @@ struct PhotoItem: Identifiable, Codable, Hashable {
     var cloudPath: String?
     var cloudRemoteID: String?
     var cloudThumbnailURL: String?
+    /// 库外媒体（蓝光目录 / 光盘镜像）：原文件不复制进 originals，直接引用这个路径。
+    /// 有值时 `filename` 为空，播放与缩略图都从这里取源。
+    var externalPath: String?
     /// 网盘端已把该文件标记为受限内容（夸克 risk_type ≠ 0），无法取得播放地址。
     var cloudRestricted: Bool?
     /// 网盘返回的视频编码（如 hevc），用于转封装时写正确的 hvc1 标签。
     var videoCodec: String?
 
-    var displayFilename: String { editedFilename ?? filename }
+    /// 展示 / 刮削用的文件名。蓝光原盘与 ISO 不复制进 originals，filename 为空，
+    /// 这里回退到 originalName（目录名或镜像名），影院才能按名字识别成电影。
+    var displayFilename: String {
+        if let editedFilename, !editedFilename.isEmpty { return editedFilename }
+        return filename.isEmpty ? originalName : filename
+    }
     /// 展示用标题：优先用户标题，否则用原始文件名。
     var displayTitle: String {
         if let title, !title.isEmpty { return title }

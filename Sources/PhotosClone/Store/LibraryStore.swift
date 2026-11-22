@@ -582,7 +582,9 @@ final class LibraryStore: ObservableObject {
 
     // MARK: 影院刮削
     /// 各作用域（本地图库 / 每个网盘）的刮削结果，按视频 photoID 索引。
-    @Published var cinemaIndexes: [CinemaScope: [UUID: CinemaEntry]] = [:]
+    @Published var cinemaIndexes: [CinemaScope: [UUID: CinemaEntry]] = [:] {
+        didSet { cinemaDataRevision &+= 1 }
+    }
     /// 当前正在查看的影院作用域。
     @Published var cinemaActiveScope: CinemaScope = .local
     /// 影院顶栏的分段（全部 / 电影 / 电视剧），与内容页共用。
@@ -634,6 +636,8 @@ final class LibraryStore: ObservableObject {
     /// 正在刮削的作用域，用于对应网盘的侧边栏显示进度。
     @Published var cinemaScrapeScope: CinemaScope?
     @Published var cinemaScrapeRunning = false
+    /// 当前刮削任务：取消按钮直接 cancel，循环与网络请求都会尽快退出。
+    var cinemaScrapeTask: Task<Void, Never>?
     @Published var cinemaScrapeDone = 0
     @Published var cinemaScrapeTotal = 0
     @Published var cinemaScrapeMessage: String?
@@ -643,15 +647,23 @@ final class LibraryStore: ObservableObject {
     /// 从影院打开的视频快照：即使该网盘目录没有加载，也能直接进查看器播放。
     var cinemaPlaybackPhoto: PhotoItem?
     /// 影院续播记录，按视频 photoID 索引；只存快照，不依赖刮削索引仍然存在。
-    @Published var cinemaProgress: [UUID: CinemaProgressRecord] = [:]
+    @Published var cinemaProgress: [UUID: CinemaProgressRecord] = [:] {
+        didSet { cinemaDataRevision &+= 1 }
+    }
     /// 影院本地用户状态：收藏 / 想看 / 个人评分。
-    @Published var cinemaUserStates: [UUID: CinemaUserState] = [:]
+    @Published var cinemaUserStates: [UUID: CinemaUserState] = [:] {
+        didSet { cinemaDataRevision &+= 1 }
+    }
     /// 已忽略的视频：不再参与刮削，也不出现在影院列表里。
-    @Published var cinemaIgnoredIDs: [CinemaScope: Set<UUID>] = [:]
+    @Published var cinemaIgnoredIDs: [CinemaScope: Set<UUID>] = [:] {
+        didSet { cinemaDataRevision &+= 1 }
+    }
     /// 正在删除原文件的条目：右键菜单据此禁用重复点击。
     @Published var cinemaDeletingIDs: Set<UUID> = []
     /// 自定义清单（手动选片）。
-    @Published var cinemaLists: [CinemaListRecord] = []
+    @Published var cinemaLists: [CinemaListRecord] = [] {
+        didSet { cinemaDataRevision &+= 1 }
+    }
     /// 当前正在按清单筛选；nil 表示未筛选。
     @Published var cinemaActiveListID: UUID?
     /// 是否只看收藏。
@@ -663,9 +675,10 @@ final class LibraryStore: ObservableObject {
     @Published var cinemaDetailOpen = false
     /// 顶栏「返回」的自增信号；影院页收到后收起详情。
     @Published var cinemaDetailCloseTick = 0
-    /// 影院页工具栏的可用宽度（窗口宽 − 侧边栏 − 右侧标题位）：控制台据此折叠。
-    /// 读数由页面内容里的探针写入，控制台被系统暂时隐藏时仍会继续更新。
-    @Published var cinemaAvailableWidth: CGFloat = 780
+    /// 文件夹视图当前钻到第几层（0 = 顶层）：顶栏据此也切到「返回」形态。
+    @Published var cinemaFolderDepth = 0
+    /// 顶栏「返回」在文件夹视图里的自增信号；影院页收到后回上一级目录。
+    @Published var cinemaFolderCloseTick = 0
     /// 顶栏「新建清单…」请求。
     @Published var cinemaNewListVisible = false
     /// 任务中心（刮削与维护记录）。
@@ -699,21 +712,8 @@ final class LibraryStore: ObservableObject {
     var cinemaPrewarmTask: Task<Void, Never>?
     /// 预热目标：避免进度回调每秒都取消重开同一个预热。
     var cinemaPrewarmTarget: UUID?
-    /// 本次起播是否用了续播位置：用了就不再拿在线片头去改跳转。
-    var cinemaResumeApplied = false
     /// 当前从影院打开的视频条目：查看器内的播放进度会写回这条记录。
     var cinemaPlaybackEntry: CinemaEntry?
-    /// 本集是否已经执行过片尾跳过，避免反复 seek。
-    var cinemaOutroSkippedEntry: UUID?
-    /// 续播起播秒数：等播放器载入新条目后消费一次。
-    var cinemaPendingSeek: Double?
-    /// 续播跳转的重试次数与节流时间：云盘起流前 seek 可能暂时无效。
-    var cinemaSeekAttempts = 0
-    var cinemaSeekRetryAt: Date = .distantPast
-    /// 上次进度落盘时间，限制每 10 秒写一次。
-    var cinemaProgressSavedAt: Date = .distantPast
-    /// 查看器播放进度订阅：只在影院播放期间存在。
-    var cinemaProgressCancellable: AnyCancellable?
 
     /// 网盘状态独立成模型；这里保留同名转发，Store 扩展方法无需改动。
     let cloudModel = CloudBrowserModel()
@@ -724,10 +724,6 @@ final class LibraryStore: ObservableObject {
     var catalogPlaybackContexts: [UUID: CatalogPlaybackContext] = [:]
     /// 续播起播秒数：等播放器载入新分集后消费一次。
     var catalogPendingSeek: Double?
-    var catalogSeekAttempts = 0
-    var catalogSeekRetryAt: Date = .distantPast
-    var catalogProgressSavedAt: Date = .distantPast
-    var catalogProgressCancellable: AnyCancellable?
     /// 从网络资源详情页起播时记下的返回目标：关闭播放器后回到该详情，而不是频道列表。
     var catalogReturnSourceID: UUID?
     var catalogReturnItem: CatalogItem?
@@ -774,6 +770,10 @@ final class LibraryStore: ObservableObject {
     var cloudWizardInitialFlow: CloudWizardFlow? {
         get { cloudModel.wizardInitialFlow }
         set { cloudModel.wizardInitialFlow = newValue }
+    }
+    var cloudWizardEditingMountID: UUID? {
+        get { cloudModel.wizardEditingMountID }
+        set { cloudModel.wizardEditingMountID = newValue }
     }
     var cloudNameRequest: CloudNameRequest? {
         get { cloudModel.nameRequest }
@@ -856,6 +856,8 @@ final class LibraryStore: ObservableObject {
     /// 系统图库载入令牌：每次载入递增，旧扫描的结果不再写回状态与缓存。
     var systemLoadToken = 0
     var terminateObserver: NSObjectProtocol?
+    /// 回到前台时校验当前网盘索引的新鲜度（影院 / 网盘浏览页）。
+    var activationObserver: NSObjectProtocol?
 
     var cloudDirectoryCache: [String: (folders: [CloudEntry], photos: [PhotoItem])] = [:]
     var cloudLoadToken = 0
@@ -893,6 +895,12 @@ final class LibraryStore: ObservableObject {
     /// 图库级撤销 / 重做栈（仅内存，不落盘）：只保存元数据变更的逆操作。
     var undoStack: [LibraryUndoStep] = []
     var redoStack: [LibraryUndoStep] = []
+    /// 影院数据版本号：刮削索引 / 观看进度 / 收藏 / 忽略 / 清单任一变化时自增，
+    /// 影院页据此复用上一次聚合结果，而不是每次 body 都全量重算。
+    var cinemaDataRevision = 0
+    /// 影院派生数据快照（条目 / 电影 / 剧集 / 统计 / 字母索引）。
+    var cinemaAggregateCacheKey: String?
+    var cinemaAggregateCacheValue: CinemaAggregate?
     /// 菜单标题用的最近一步操作名（随撤销 / 重做更新）。
     @Published var undoActionName: String?
     @Published var redoActionName: String?
@@ -1121,7 +1129,7 @@ final class LibraryStore: ObservableObject {
         startLocalCinemaWatcher()
         // 上次异常退出可能留下播放会话目录：启动时在后台清掉并做一次容量回收。
         DispatchQueue.global(qos: .utility).async {
-            VideoCacheManager.cleanupOrphans()
+            VideoCache.luma.cleanupOrphans()
         }
         loadSmartAlbums()
         loadPinnedItems()
@@ -1173,6 +1181,18 @@ final class LibraryStore: ObservableObject {
                 self?.flushMetadata()
             }
         }
+
+        // 从其它 App 回到前台：如果正在看某个网盘 / 它的影院，顺手做一次轻量增量同步，
+        // 新加入的视频与照片不需要用户手动刷新。
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshCurrentCloudIndexIfNeeded()
+            }
+        }
     }
 
     deinit {
@@ -1181,6 +1201,9 @@ final class LibraryStore: ObservableObject {
         cinemaPrewarmedStream?.session.stop()
         if let terminateObserver {
             NotificationCenter.default.removeObserver(terminateObserver)
+        }
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
         }
     }
 

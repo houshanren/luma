@@ -4,7 +4,7 @@ import Foundation
 /// 所有写操作都先经过用户确认，再走 LibraryStore 现有方法落盘。
 enum AILibraryTools {
     /// 需要用户确认的写操作。
-    static let writeToolNames: Set<String> = [
+    static let writeToolNames: Set<String> = Set([
         "create_albums", "add_photos_to_album", "remove_photos_from_album",
         "rename_album", "delete_album", "move_album", "set_album_cover",
         "create_folder", "rename_folder", "delete_folder",
@@ -12,7 +12,7 @@ enum AILibraryTools {
         "set_title", "compress_photos", "beautify_photos", "trash_photos", "restore_photos",
         "scrape_cinema", "match_cinema", "apply_cinema_match",
         "set_catalog_watchlist", "follow_catalog_person"
-    ]
+    ]).union(cinemaWriteToolNames)
 
     static var definitions: [AIRequestTool] {
         [searchPhotos, listAlbums, listFolders, listVideos,
@@ -27,6 +27,7 @@ enum AILibraryTools {
          createFolder, renameFolder, deleteFolder,
          setFavorite, setHidden, addKeywords, removeKeywords,
          setTitle, compressPhotos, beautifyPhotos, trashPhotos, restorePhotos]
+        + cinemaToolDefinitions
     }
 
     /// 工具总数（界面展示用，避免每次重算 schema）。
@@ -550,33 +551,33 @@ enum AILibraryTools {
                     description: "照片或视频的 id（UUID，也支持候选编号 #3 或唯一文件名）")
     }
 
-    private static func objectSchema(_ properties: [String: Any],
-                                     required: [String] = []) -> [String: Any] {
+    static func objectSchema(_ properties: [String: Any],
+                             required: [String] = []) -> [String: Any] {
         var schema: [String: Any] = ["type": "object", "properties": properties]
         if !required.isEmpty { schema["required"] = required }
         return schema
     }
 
-    private static func arraySchema(_ items: [String: Any], description: String) -> [String: Any] {
+    static func arraySchema(_ items: [String: Any], description: String) -> [String: Any] {
         ["type": "array", "items": items, "description": description]
     }
 
-    private static func stringSchema(_ description: String) -> [String: Any] {
+    static func stringSchema(_ description: String) -> [String: Any] {
         ["type": "string", "description": description]
     }
 
-    private static func booleanSchema(_ description: String) -> [String: Any] {
+    static func booleanSchema(_ description: String) -> [String: Any] {
         ["type": "boolean", "description": description]
     }
 
-    private static func integerSchema(_ description: String,
-                                      minimum: Int,
-                                      maximum: Int) -> [String: Any] {
+    static func integerSchema(_ description: String,
+                              minimum: Int,
+                              maximum: Int) -> [String: Any] {
         ["type": "integer", "description": description,
          "minimum": minimum, "maximum": maximum]
     }
 
-    private static func enumSchema(_ values: [String], _ description: String) -> [String: Any] {
+    static func enumSchema(_ values: [String], _ description: String) -> [String: Any] {
         ["type": "string", "description": description, "enum": values]
     }
 
@@ -667,6 +668,7 @@ enum AILibraryTools {
 
     /// 用于确认弹窗的可读描述。
     static func describe(_ call: AIToolCall) -> String {
+        if let cinema = describeCinema(call) { return cinema }
         let args = arguments(call.arguments)
         let photoCount = stringArray(args["photo_ids"]).count
         let albumName = string(args["album_name"])

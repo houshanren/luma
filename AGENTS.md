@@ -92,9 +92,11 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Services/AI/AILibraryContext.swift` | 当前范围快照 → 提示词、检索建议解析 | 直接读数据库、发送请求 |
 | `Services/AI/AIImageEncoder.swift` | 发送前把照片压成长边 1024 的 JPEG data URL | 保存图片、修改图库 |
 | `Services/AI/AILibraryTools.swift` | 工具定义（搜索/相簿/收藏/关键词/选中）与参数解析 | 直接改图库、弹窗确认 |
+| `Services/AI/AILibraryCinemaTools.swift` | 影院工具定义（浏览/播放/个人状态/清单/维护）与确认文案 | 直接改图库、弹窗确认 |
 | `Services/AI/AIKeychain.swift` | 智能助手 API Key 的钥匙串读写 | 把 Key 写入数据库或日志 |
 | `Store/LibraryStore+AIAgent.swift` | 智能助手状态、请求编排、对话持久化、检索建议应用 | 直接拼接 HTTP 请求（放 `AIProviderClient`） |
 | `Store/LibraryStore+AITools.swift` | 工具执行与写操作确认；只调用现有 Store 方法 | 绕过 `save()`、直接写 SQLite |
+| `Store/LibraryStore+AICinemaTools.swift` | 影院工具执行：检索、播放、收藏 / 想看 / 评分、清单、忽略、元数据刷新、跳过片头、观看记录 | 绕过 `LibraryStore` 直接写文件或数据库 |
 | `Features/AI/AIAssistantView.swift` | 智能助手面板（对话、照片引用、检索建议） | 网络与持久化细节 |
 | `Features/Organize/LibraryHealthView.swift` | 图库体检页（指标、卡片、相似组预览、清理入口） | 扫描算法、路径拼接 |
 | `Features/Maps/FootprintPlaybackView.swift` | 足迹回放覆盖层：统一时钟、连续跟随镜头、同步光点、胶片质感 HUD 与控制台 | 站点聚类、视觉匀速与巡航帧计算（放 `LumaCore/FootprintPlayback`） |
@@ -165,7 +167,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 请求只能经 `AIProviderClient`（OpenAI 兼容 `chat/completions`）发出，不引入第三方 SDK；新增提供商只增加 `AIProvider` 的默认 Base URL / 模型与设置项。
 - 提示词只能由 `AIContextBuilder` 组装：当前范围摘要 + 最多 40 张候选照片的元数据/本地 Vision 标签/OCR；禁止把整个 `photos` 数组或文件路径序列化给模型。
 - 图片默认不发送。开启「图片理解」后，只能经 `AIImageEncoder` 压成长边约 1024 的 JPEG（单次最多 6 张），跳过 RAW、视频与云端照片；不得上传原图。
-- 智能助手可通过工具修改图库，工具分为七类：
+- 智能助手可通过工具修改图库，工具分为九类：
   - 检索：`search_photos` / `list_albums` / `list_folders` / `list_videos`
   - 浏览：`navigate` / `select_photos` / `open_photo`
   - 相簿：`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover`
@@ -174,7 +176,9 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
   - 压缩：`compress_photos`
   - 美化：`beautify_photos`
   - 最近删除：`trash_photos` / `restore_photos`
-- 工具定义与参数解析集中在 `AILibraryTools`（`writeToolNames` / `describe`），执行在 `LibraryStore+AITools`；新增工具必须同时补齐定义、写操作白名单、确认文案、执行分支与 README/官网说明。
+  - 影院：`list_cinema_items` / `list_cinema_scopes` / `cinema_tree` / `search_cinema_library` / `list_cinema_series` / `list_cinema_lists` / `list_cinema_activity` / `navigate_cinema` / `play_cinema` / `search_cinema_candidates` / `apply_cinema_match` / `scrape_cinema` / `match_cinema` / `update_cinema_state` / `manage_cinema_list` / `ignore_cinema` / `restore_cinema_ignored` / `refresh_cinema_metadata` / `set_cinema_intro_skip` / `manage_cinema_progress`
+  - 网络资源：`list_catalog_sources` / `search_catalog` / `catalog_new_today` / `list_catalog_following` / `list_catalog_watchlist` / `browse_catalog` / `play_catalog_item` / `set_catalog_watchlist` / `follow_catalog_person`
+- 工具定义与参数解析集中在 `AILibraryTools`（含 `AILibraryCinemaTools` 的影院扩展；`writeToolNames` / `describe`），执行在 `LibraryStore+AITools` / `LibraryStore+AICinemaTools`；新增工具必须同时补齐定义、写操作白名单、确认文案、执行分支与 README/官网说明。
 - 所有写操作必须先经用户确认，再调用 `LibraryStore` 现有方法并 `save()`；禁止直接写 SQLite、删除或编辑原图、导入，禁止写官方 `Photos.sqlite`（官方库只允许 `asset_overlays` 的收藏 / 隐藏 / 关键词等补充元数据）。
 - 工具参数里的照片 ID 必须验证为当前图库中真实存在且未删除的项目；工具失败或用户取消时，必须把失败结果回传给模型，不能伪造成功。模型回答不得声称未通过工具完成的操作已执行。
 - 智能助手不提供永久删除（`trash_photos` 只移入最近删除，可用 `restore_photos` 恢复）、导入、编辑原图与改文件能力，也不支持在只读来源写入。
@@ -227,7 +231,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | 官方「照片」图库作为**额外连接**（只读浏览，`isSystemScope && !isNativeContainer`） | ✅ | ❌ | ❌ |
 | WebDAV 网盘 | ✅ | ❌ | ✅ |
 | SMB 共享 | ✅ | ❌ | ❌ |
-| 阿里云盘 / 百度网盘 | ✅ | ❌ | ❌ |
+| 阿里云盘 / 百度网盘 / 夸克网盘 / 115 网盘 | ✅ | ❌ | ❌ |
 
 - 判断统一使用 `store.isSystemScope`、`store.isCloudScope`、`store.isReadOnlyScope`、`store.isNativeContainer`、`store.canEditNativeOverlay`、`store.isCurrentCloudWritable`。
 - 智能美化在三种范围都可用（`store.canScanBeauty` = 已建库）：本地图库生成可还原的渲染副本；系统图库与网盘是只读来源，默认从原图（官方 derivative / 云端大图）渲染并把结果作为新照片导入当前图库；官方库作为当前图库时，系统图库还可选择经 PhotoKit 写回原图（可撤销）。菜单项、体检页入口与推荐面板都用同一个 `canScanBeauty` 判断。
@@ -319,6 +323,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 ## 10. 网盘接入规范
 
 - 新增网盘类型：`CloudKind` 增加 case → 更新 `title`/`supportsWrite` → 在 `CloudService.list/stream` 分派 → 在 `CloudWizard` 增加向导 flow 与凭据步骤 → `CloudMountInfoView` 补充说明。
+- Cookie 模式与 SMB 的接入范围存在 `CloudMount.scopeRoots` / `excludedRoots`：为空扫描全部（整个网盘 / 整个共享），非空只扫描选中目录并始终跳过排除目录（SMB 按路径前缀覆盖子树）。向导确认页读取目录并支持多选、下钻与「接入 / 排除」切换；侧边栏与存储卡片可「编辑接入范围…」直接回到该页。扫描器把选中的目录挂成顶层相簿；范围变化时清空目录树，并用 `CloudScanSnapshot.scopeSignature`（包含目录 + 排除目录）让旧快照失效。
 - WebDAV 请求统一走 `WebDAVClient`（已处理百分号编码、Basic Auth、PROPFIND/MKCOL/PUT/MOVE/DELETE、Range）。
 - OAuth：`CloudOAuthStore` 负责钥匙串（service `com.baymax.photosclone.oauth`，旧版 `com.lijialong.photosclone.oauth` 会自动迁移），回调固定 `127.0.0.1:53682`，必须校验 `state`；token 过期由 `CloudService.accessToken(for:)` 自动刷新并回写。
 - 网盘凭据禁止写入 `UserDefaults`、日志或 `CloudMount`。
@@ -401,7 +406,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - **ATS**：`Info.plist` 已允许任意加载与本地网络；新增域名/端口无需再改，但不要把该配置用于生产收紧以外的场景。
 - **HDR 开关**：关闭时查看器把图像转 8 位 sRGB（`ImageLoader.sdrImage`），不要把这个转换加到网格缩略图上（性能）。
 - **视频自动播放**：受 `settings.autoPlayVideo` 控制，转码后播放同样遵循该设置。
-- **查看器方向键语义**：照片用 ← / → / ↑ / ↓ 翻页；视频只用 ← / → 翻页，↑ / ↓ 按 `settings.videoSeekStep`（设置里可改，默认 5 秒）快进 / 快退，J / L 固定快退 / 快进 10 秒，⌘ 方向键只在上一个 / 下一个视频之间跳转。不要把 ← / → 改回视频快进，否则照片与视频混播时的左右翻页会失效。
+- **查看器方向键语义**：照片用 ← / → / ↑ / ↓ 翻页；图库视频与照片一致，只用 ← / → 翻页，↑ / ↓ 按 `settings.videoSeekStep`（设置里可改，默认 5 秒）快进 / 快退；网络资源（剧集）反过来：← / → 快进 / 快退，↑ / ↓ 切上一集 / 下一集。任何场景下 ⌘ + 方向键都只在上一个 / 下一个视频之间跳转，J / L 固定快退 / 快进 10 秒。不要把图库视频的 ← / → 改回快进，否则照片与视频混播时的左右翻页会失效。
 - **视频旋转**：`VideoPlayerStage.quarterTurns` 只影响播放层与截图朝向，不改原文件；旋转后播放层尺寸由 `playerFrame(in:)` 按画面比例与填充模式重算，不要用 `rotationEffect` 直接转整块画面（会出现黑边或裁剪错误）。
 - **`systemPhotos` 只读**：系统图库的 `PhotoItem.source == .system`，`sourceURL` 指向官方包内文件，禁止直接写回；真实编辑 / 删除只允许经 `PhotoKitBridge`（且仅限官方库作为当前图库）。
 - **导入窗口**：`ImportSheetView` 在独立 `Window(id: "import")` 中，新增状态需经 `LibraryStore` 传递，不要用 `@State` 跨窗口共享。

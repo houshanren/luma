@@ -26,7 +26,10 @@ extension LibraryStore {
 
     /// 目录载入后自动读取前 200 张的 EXIF；剩余的手动「继续读取」。
     func scanCloudMetadataIfNeeded() {
-        guard isCloudScope, !cloudModel.isScanningMetadata, cloudMetadataPendingCount > 0 else { return }
+        guard isCloudScope,
+              !cloudModel.isScanningMetadata,
+              !cloudModel.scanPhase.isScanning,
+              cloudMetadataPendingCount > 0 else { return }
         scanCloudMetadata()
     }
 
@@ -48,9 +51,12 @@ extension LibraryStore {
                 let exif = await self.loadCloudEXIF(for: photo)
                 self.applyCloudEXIF(exif, photoID: photo.id)
                 done += 1
-                self.cloudModel.metadataProgress = Double(done) / total
+                // 界面合并刷新：每 40 张才重排一次网格 / 重算一次计数，进度条每 10 张更新一次。
+                if done % 40 == 0 { self.flushCloudMetadata() }
+                if done % 10 == 0 { self.cloudModel.metadataProgress = Double(done) / total }
                 await Task.yield()
             }
+            self.flushCloudMetadata()
             self.cloudModel.isScanningMetadata = false
             self.cloudModel.metadataProgress = 0
             self.cloudModel.metadataTask = nil
@@ -116,18 +122,15 @@ extension LibraryStore {
     }
 
     /// 把 EXIF 写回当前列表与目录缓存；即使没有 EXIF 也记为已扫描，避免反复请求。
-    /// 同时把结果写进当前图库数据库（`cloud_assets`），重开网盘不必重新请求。
+    /// 同时把结果写进当前图库数据库（`cloud_assets`）与网盘索引（`cloud_index_assets`）。
     func applyCloudEXIF(_ exif: CloudPhotoEXIF?, photoID: UUID) {
-        defer {
-            cloudModel.metadataScanned.insert(photoID)
-            // 合并界面失效：否则每读一张 EXIF 都全量重排网格与计数。
-            markCloudMetadataChanged()
-        }
+        defer { cloudModel.metadataScanned.insert(photoID) }
         guard let index = cloudPhotos.firstIndex(where: { $0.id == photoID }) else { return }
         var photo = cloudPhotos[index]
         if let exif {
             Self.applyCloudEXIFFields(exif, to: &photo)
         }
+        // 合并刷新由批量扫描循环控制；单张触发时 `enqueue` 自己会安排一次。
         enqueueCloudPhotoUpdate(photo)
         if let mountID = photo.cloudMountID, let path = photo.cloudPath {
             metadataStore?.saveCloudEXIF(mountID: mountID,
@@ -135,6 +138,11 @@ extension LibraryStore {
                                          size: photo.fileSize,
                                          modified: nil,
                                          exif: exif)
+            metadataStore?.updateCloudIndexAsset(mountID: mountID,
+                                                 path: path,
+                                                 capturedAt: exif?.capturedAt,
+                                                 width: exif?.pixelWidth.flatMap { $0 > 0 ? $0 : nil },
+                                                 height: exif?.pixelHeight.flatMap { $0 > 0 ? $0 : nil })
         }
     }
 

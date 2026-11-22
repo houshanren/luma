@@ -1,19 +1,42 @@
 import Foundation
+import PlaybackCore
+
+/// 在线字幕来源。
+enum SubtitleProviderKind: String, CaseIterable, Identifiable, Hashable {
+    case openSubtitles
+    case assrt
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .openSubtitles: return "OpenSubtitles"
+        case .assrt: return "伪射手"
+        }
+    }
+}
 
 /// 在线字幕的一条搜索结果。
 struct CinemaSubtitleMatch: Identifiable, Hashable {
+    var provider: SubtitleProviderKind = .openSubtitles
     var fileID: Int
     var title: String
     var language: String
     var release: String?
     var downloads: Int?
 
-    var id: Int { fileID }
+    var id: String { "\(provider.rawValue)-\(fileID)" }
+
+    /// 是否中文结果：自动匹配优先用它。
+    var isChinese: Bool {
+        let value = language.lowercased()
+        return value.hasPrefix("zh") || value.contains("chi") || value.contains("简") || value.contains("繁")
+    }
 
     var languageTitle: String {
         switch language.lowercased() {
-        case "zh-cn", "zh": return "简体中文"
-        case "zh-tw", "zh-hk": return "繁體中文"
+        case "zh-cn", "zh", "chs", "chi": return "简体中文"
+        case "zh-tw", "zh-hk", "cht": return "繁體中文"
         case "en": return "English"
         default: return language
         }
@@ -42,8 +65,8 @@ enum OpenSubtitlesClient {
 
         var errorDescription: String? {
             switch self {
-            case .missingKey: return "请先在设置 › 影院 › 播放里填写 OpenSubtitles API Key"
-            case .missingAccount: return "下载字幕需要 OpenSubtitles 账号，请在设置 › 影院 › 播放里填写"
+            case .missingKey: return "请先在设置 › 影院 › 字幕里填写 OpenSubtitles API Key"
+            case .missingAccount: return "下载字幕需要 OpenSubtitles 账号，请在设置 › 影院 › 字幕里填写"
             case .http(let status, let message): return "OpenSubtitles 请求失败（\(status)）：\(message)"
             case .decoding: return "OpenSubtitles 返回内容无法解析"
             }
@@ -66,7 +89,7 @@ enum OpenSubtitlesClient {
         }
         var items = [
             URLQueryItem(name: "query", value: trimmed),
-            URLQueryItem(name: "languages", value: "zh-cn,zh-tw"),
+            URLQueryItem(name: "languages", value: SubtitlePreference.searchLanguageList),
             URLQueryItem(name: "order_by", value: "download_count"),
             URLQueryItem(name: "order_direction", value: "desc")
         ]
@@ -99,7 +122,8 @@ enum OpenSubtitlesClient {
             let title = (feature?["title"] as? String)
                 ?? (attributes["release"] as? String)
                 ?? trimmed
-            return CinemaSubtitleMatch(fileID: fileID,
+            return CinemaSubtitleMatch(provider: .openSubtitles,
+                                       fileID: fileID,
                                        title: title,
                                        language: (attributes["language"] as? String) ?? "zh-cn",
                                        release: attributes["release"] as? String,

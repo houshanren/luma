@@ -20,6 +20,8 @@ final class CloudBrowserModel: ObservableObject {
     @Published var sheetMount: CloudMount?
     @Published var showWizard = false
     @Published var wizardInitialFlow: CloudWizardFlow?
+    /// 从「编辑接入范围」进入时携带的挂载 ID：向导直接跳到确认页并带入已有凭据。
+    @Published var wizardEditingMountID: UUID?
     @Published var nameRequest: CloudNameRequest?
     @Published var busyText: String?
 
@@ -38,7 +40,9 @@ final class CloudBrowserModel: ObservableObject {
     @Published var scanTruncated = false
     /// 全盘扫描得到的媒体清单与目录清单（与当前列表分开，切换相簿时直接复用）。
     var scanPhotos: [PhotoItem] = []
-    @Published var scanFolders: [CloudScanFolder] = []
+    /// 目录清单不参与逐条发布：扫描时目录可能上千个，逐批 publish 会让整棵侧边栏反复重建。
+    /// 界面只订阅节流后的 `scanFolderCount` / `scanMediaCount`。
+    var scanFolders: [CloudScanFolder] = []
     /// 媒体路径 → 所在目录；按文件夹相簿筛选时用。
     var scanMediaFolder: [String: String] = [:]
     /// 扫描增量去重集合：避免每批都重建整份路径集合（两万项时是 O(n²)）。
@@ -46,6 +50,28 @@ final class CloudBrowserModel: ObservableObject {
     var scanFolderPaths: Set<String> = []
     var scanMountID: UUID?
     var scanTask: Task<Void, Never>?
+    /// 节流发布：扫描期间每 0.6 秒最多合并一次网格 / 计数更新。
+    var scanPublishTask: Task<Void, Never>?
+    /// 扫描结束后延迟读取 EXIF：先让网格与侧边栏稳定下来。
+    var metadataScanDelayTask: Task<Void, Never>?
+    var pendingScanFolderCount = 0
+    var lastPublishedScanMediaCount = -1
+    /// 已写入 SQLite 索引的目录数量：每批只补写新增目录。
+    var scanIndexPersistedFolderCount = 0
+    /// 本轮扫描代次：完整扫描结束后据此清理索引里的旧行。
+    var scanGeneration: Int64 = 0
+    /// 本轮是否是全量 / 深度扫描（没有复用任何子树）。
+    var scanIsDeep = false
+    /// 网盘索引批次完成计数：聚合表重算后自增，让文件夹树重新读取。
+    @Published var cloudIndexRevision = 0
+    /// 正在从 SQLite 索引恢复上次扫描结果。
+    @Published var isRestoringScan = false
+    /// 恢复令牌：切换网盘 / 换库后旧结果不再写回。
+    var scanLoadToken = 0
+    /// 恢复索引后需要检查的新鲜度阈值（秒）：影院 / 网盘入口用它决定是否立刻做一次增量扫描。
+    var pendingRefreshMaxAge: TimeInterval?
+    /// 停留在网盘 / 影院时每 3 分钟做一次轻量增量同步，保证新文件不需要手动刷新。
+    var refreshLoopTask: Task<Void, Never>?
     /// 本次打开时载入的扫描快照：下一轮自动重扫尝试增量复用。
     var scanSnapshot: CloudScanSnapshot?
     /// 云缩略图预取任务：切换目录 / 换盘时取消。
@@ -69,7 +95,8 @@ final class CloudBrowserModel: ObservableObject {
     // MARK: 网盘 EXIF 元数据
 
     /// 已读取过 EXIF（或确认没有 EXIF）的照片 ID：只保存在内存，切网盘 / 换库时清空。
-    @Published var metadataScanned: Set<UUID> = []
+    /// 不参与逐条发布：扫描 200 张时每次 insert 都 publish 会让整个侧边栏重算。
+    var metadataScanned: Set<UUID> = []
     @Published var isScanningMetadata = false
     @Published var metadataProgress = 0.0
     /// 元数据版本号：坐标 / 拍摄时间更新后让地图、位置、值得重看等派生缓存失效。

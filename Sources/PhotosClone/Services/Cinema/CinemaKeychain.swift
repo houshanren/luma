@@ -14,6 +14,7 @@ enum CinemaKeychain {
         case parentalPIN = "parental_pin"
         case subtitleUsername = "subtitle_username"
         case subtitlePassword = "subtitle_password"
+        case subtitleAssrtToken = "subtitle_assrt_token"
     }
 
     private static let service = "com.baymax.luma.cinema"

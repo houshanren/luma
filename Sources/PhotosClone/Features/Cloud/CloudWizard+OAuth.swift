@@ -180,7 +180,7 @@ extension CloudSetupWizardView {
                                           appID: credentials.appID,
                                           redirectURI: redirect,
                                           state: state)
-        case .webdav, .smb, .quark, .aliyun:
+        case .webdav, .smb, .quark, .pan115, .aliyun:
             url = nil
         }
         guard let url else {
@@ -250,7 +250,7 @@ extension CloudSetupWizardView {
                                                   code: code,
                                                   redirectURI: redirectURI)
             name = trimmedName.isEmpty ? "百度网盘" : trimmedName
-        case .webdav, .smb, .quark, .aliyun:
+        case .webdav, .smb, .quark, .pan115, .aliyun:
             throw CloudOAuthError.unsupportedProvider
         }
 

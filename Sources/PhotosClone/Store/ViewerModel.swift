@@ -1,4 +1,5 @@
 import Foundation
+import PlaybackCore
 
 /// 查看器 / 编辑器状态：与图库内容状态分离，翻页和打开编辑不会触发图库整体刷新。
 @MainActor
@@ -9,11 +10,19 @@ final class ViewerModel: ObservableObject {
     /// 视频全屏沉浸：进入系统全屏时隐藏侧边栏与窗口工具栏，退出后恢复原状。
     @Published var videoImmersiveFullScreen = false
     /// 视频播放状态：与查看器同生命周期，窗口工具栏与画面共用同一份播放状态。
-    let videoPlayer = VideoPlayerModel()
+    let videoPlayer: VideoPlayerModel
+    /// 播放编排：起流 / 降级 / seek 重建 / 分片回收都收在内核里。
+    let playbackSession: PlaybackSession
     /// 视频手动旋转角度：画面、顶栏按钮与「视频」菜单共用。
     @Published var videoQuarterTurns = 0
     /// 音轨 / 字幕状态：顶栏、画面内控制条与「视频」菜单共用同一份。
     let videoPlaybackUI = VideoPlaybackUI()
+
+    init() {
+        let player = VideoPlayerModel()
+        videoPlayer = player
+        playbackSession = PlaybackSession(engine: player, environment: .luma)
+    }
 
     // MARK: - 连拍快照
     //

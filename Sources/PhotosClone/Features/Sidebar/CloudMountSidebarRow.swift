@@ -121,12 +121,17 @@ struct CloudMountSidebarRow: View {
                 store.navigate(to: .cloudCinema(mount.id))
             }
             Button("刮削这个网盘的视频") {
-                Task { await store.scrapeCinema(for: .mount(mount.id)) }
+                store.startCinemaScrape(for: .mount(mount.id))
             }
             Divider()
             Button("重命名…") {
                 renameText = mount.name
                 showRename = true
+            }
+            if mount.kind.supportsAccessScope {
+                Button("编辑接入范围…") {
+                    store.presentCloudWizard(editing: mount)
+                }
             }
             if mount.kind == .webdav || mount.kind == .smb {
                 Button("编辑连接…") {
@@ -134,6 +139,7 @@ struct CloudMountSidebarRow: View {
                 }
             } else {
                 let alwaysCookie = mount.kind == .quark || mount.kind == .aliyun
+                    || mount.kind == .pan115
                 Button(alwaysCookie ? "更新 Cookie…" : "重新授权…") {
                     store.presentCloudWizard(flow: mount.kind.wizardFlow)
                 }
@@ -186,6 +192,8 @@ struct CloudMountSidebarRow: View {
             return [Color(red: 0.36, green: 0.68, blue: 1.00), Color(red: 0.14, green: 0.42, blue: 0.92)]
         case .quark:
             return [Color(red: 0.42, green: 0.36, blue: 1.00), Color(red: 0.20, green: 0.22, blue: 0.86)]
+        case .pan115:
+            return [Color(red: 0.24, green: 0.62, blue: 0.98), Color(red: 0.08, green: 0.36, blue: 0.80)]
         case .webdav:
             return [LumaBrand.cyan.opacity(0.95), LumaBrand.violet.opacity(0.90)]
         case .smb:

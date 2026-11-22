@@ -6,6 +6,21 @@ import AppKit
 // 根视图只负责流程选择、步骤切换与底部动作；各接入方式的步骤视图与动作
 // 按类型拆到 CloudWizard+OAuth / +SMB / +WebDAV / +AList 中。
 
+/// 向导里的目录勾选模式：接入这些目录 / 排除这些目录。
+enum CloudScopeMode: String, CaseIterable, Identifiable {
+    case include
+    case exclude
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .include: return "接入目录"
+        case .exclude: return "排除目录"
+        }
+    }
+}
+
 struct CloudSetupWizardView: View {
     @EnvironmentObject var store: LibraryStore
     @EnvironmentObject var cloud: CloudBrowserModel
@@ -59,9 +74,24 @@ struct CloudSetupWizardView: View {
     @State var webdavBrowseToken = 0
     @State var webdavFiltersFolders = false
 
-    // 浏览器 Cookie（阿里云盘 / 夸克网盘）
+    // 浏览器 Cookie（阿里云盘 / 夸克网盘 / 115 网盘）
     @State var cookieText = ""
     @State var cookieVerified = false
+
+    // Cookie / SMB 的接入范围：读取目录后可勾选一个或多个子目录
+    @State var scopePicks: [CloudScopePick] = []
+    @State var scopeExcludePicks: [CloudScopePick] = []
+    @State var scopeMode: CloudScopeMode = .include
+    @State var scopeBrowseTrail: [CloudScopeRoot] = []
+    @State var scopeBrowseFolders: [CloudEntry] = []
+    @State var scopeBrowseError: String?
+    @State var isLoadingScopeFolders = false
+    @State var scopeBrowseToken = 0
+    @State var scopeTouched = false
+    @State var excludeTouched = false
+
+    /// 从「编辑接入范围」进入时携带的挂载 ID：确认页直接保存回该挂载。
+    @State var editingMountID: UUID?
 
     /// 添加到侧边栏时显示的名称；留空则用各接入方式的默认名。
     @State var mountName = ""
@@ -99,7 +129,7 @@ struct CloudSetupWizardView: View {
             return step == 0 ? smbVerified : true
         case .webdav:
             return step == 0 ? networkVerified : true
-        case .aliyunCookie, .quark:
+        case .aliyunCookie, .quark, .pan115:
             return step == 0 ? cookieVerified : true
         case .alist:
             switch step {
@@ -131,6 +161,14 @@ struct CloudSetupWizardView: View {
         }
         .frame(width: 600, height: 680)
         .onAppear {
+            if let editingID = cloud.wizardEditingMountID,
+               let mount = store.cloudMounts.first(where: { $0.id == editingID }) {
+                cloud.wizardEditingMountID = nil
+                cloud.wizardInitialFlow = nil
+                openForEditing(mount)
+                return
+            }
+            cloud.wizardEditingMountID = nil
             if let initial = cloud.wizardInitialFlow {
                 cloud.wizardInitialFlow = nil
                 select(initial)
@@ -188,6 +226,8 @@ struct CloudSetupWizardView: View {
             return "用浏览器登录凭据换取令牌，不需要开发者资质"
         case .quark:
             return "粘贴浏览器 Cookie，不需要开发者资质"
+        case .pan115:
+            return "粘贴浏览器 Cookie，不需要开发者资质"
         case .alist:
             return "不需要开发者资质，由 AList 完成各网盘授权"
         }
@@ -205,7 +245,7 @@ struct CloudSetupWizardView: View {
                 smbContent
             case .webdav:
                 webdavContent
-            case .aliyunCookie, .quark:
+            case .aliyunCookie, .quark, .pan115:
                 cookieContent
             case .alist:
                 alistContent
@@ -219,7 +259,7 @@ struct CloudSetupWizardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("选择接入方式")
                 .font(.system(size: 13, weight: .semibold))
-            Text("百度网盘走官方 OAuth，需要一次性创建应用；阿里云盘与夸克直接用浏览器 Cookie 接入，SMB、WebDAV 与 AList 同样不需要开发者资质。")
+            Text("百度网盘走官方 OAuth，需要一次性创建应用；阿里云盘、夸克与 115 直接用浏览器 Cookie 接入，SMB、WebDAV 与 AList 同样不需要开发者资质。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -297,6 +337,9 @@ struct CloudSetupWizardView: View {
                     Button("下一步") {
                         step += 1
                         status = nil
+                        if flow.usesCookie || flow == .smb {
+                            prepareAccessScopeStep()
+                        }
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canContinue)
@@ -308,9 +351,10 @@ struct CloudSetupWizardView: View {
     }
 
     private func primaryTitle(_ flow: CloudWizardFlow) -> String {
+        if editingMountID != nil { return "保存" }
         switch flow {
         case .baidu: return "完成"
-        case .smb, .webdav, .quark, .aliyunCookie: return "添加"
+        case .smb, .webdav, .quark, .pan115, .aliyunCookie: return "添加"
         case .alist: return "测试并添加"
         }
     }
@@ -325,6 +369,8 @@ struct CloudSetupWizardView: View {
             addWebDAV()
         case .quark:
             addQuark()
+        case .pan115:
+            addPan115()
         case .aliyunCookie:
             addAliyunCookie()
         case .alist:
@@ -334,8 +380,9 @@ struct CloudSetupWizardView: View {
 
     // MARK: 流程切换
 
-    private func select(_ flow: CloudWizardFlow) {
+    func select(_ flow: CloudWizardFlow) {
         self.flow = flow
+        editingMountID = nil
         step = 0
         status = nil
         statusIsError = false
@@ -344,6 +391,7 @@ struct CloudSetupWizardView: View {
         cookieVerified = false
         mountName = ""
         if !flow.usesCookie { cookieText = "" }
+        if flow.usesCookie || flow == .smb { resetAccessScope(for: flow) }
         if flow == .smb {
             // 已有 SMB 连接时复用账号与钥匙串密码，不必再输一次。
             prefillSMBAccount()

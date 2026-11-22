@@ -654,6 +654,15 @@ struct CloudGridEmptyState: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if cloud.isRestoringScan {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("正在读取上次扫描结果…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if isFiltering, !cloud.photos.isEmpty {
                 filteredEmptyView
             } else {
@@ -698,7 +707,7 @@ struct CloudGridEmptyState: View {
                         .controlSize(.small)
                         .help("重新走一遍官方授权，写入一份当前 App 可读取的令牌")
                     } else if cloud.needsCloudReauth, let kind = mountKind,
-                              kind == .quark || kind == .aliyun {
+                              kind == .quark || kind == .aliyun || kind == .pan115 {
                         Button("更新 Cookie…") {
                             store.presentCloudWizard(flow: kind.wizardFlow)
                         }
@@ -849,6 +858,16 @@ struct CloudMountInfoView: View {
                 Text(mount.name)
                     .font(.system(size: 13, weight: .semibold))
                 row("类型", mount.kind.title)
+                if mount.scopeRoots.isEmpty {
+                    row("浏览范围", "整个网盘")
+                } else {
+                    row("浏览范围", "\(mount.scopeRoots.count) 个目录："
+                        + mount.scopeRoots.prefix(3).map(\.name).joined(separator: "、"))
+                }
+                if !mount.excludedRoots.isEmpty {
+                    row("排除目录", "\(mount.excludedRoots.count) 个："
+                        + mount.excludedRoots.prefix(3).map(\.name).joined(separator: "、"))
+                }
                 if mount.kind == .webdav || mount.kind == .smb {
                     row("服务器", mount.baseURL)
                     if !mount.username.isEmpty {
@@ -856,7 +875,7 @@ struct CloudMountInfoView: View {
                     }
                 } else if mount.kind == .aliyun {
                     row("授权", "refresh_token（自动续期）")
-                } else if mount.kind == .quark {
+                } else if mount.kind == .quark || mount.kind == .pan115 {
                     row("授权", "浏览器 Cookie（已登录）")
                 } else {
                     row("授权", "已通过官方 OAuth 登录")

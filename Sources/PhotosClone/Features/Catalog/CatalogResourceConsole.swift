@@ -166,7 +166,7 @@ struct CatalogResourceConsole: View {
     }
 
     private var videoRatio: Double {
-        let limit = VideoCacheManager.limitBytes
+        let limit = VideoCache.luma.limitBytes
         guard limit > 0 else { return 0 }
         return Double(videoBytes) / Double(limit)
     }
@@ -194,7 +194,7 @@ struct CatalogResourceConsole: View {
 
     private func setVideoLimit(_ gb: Int) {
         AppSettings.shared.videoCacheLimitGB = gb
-        VideoCacheManager.trimIfNeeded()
+        VideoCache.luma.trimIfNeeded()
         refreshToken += 1
     }
 

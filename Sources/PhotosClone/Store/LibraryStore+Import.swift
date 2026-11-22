@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
+import PlaybackCore
 
 extension LibraryStore {
     // MARK: - Import
@@ -100,6 +101,7 @@ extension LibraryStore {
             var imported = 0
             var skipped = 0
             var failed = 0
+            var firstFailureMessage: String?
             var verified = 0
             var albumCache: [String: UUID] = [:]
             var buffer: [PhotoItem] = []
@@ -115,7 +117,11 @@ extension LibraryStore {
                                                   returning: [ImportFileResult].self) { group in
                     for (offset, entry) in chunk.enumerated() {
                         group.addTask(priority: .userInitiated) {
-                            let hashes = PhotoHasher.hashes(for: entry.url, includePerceptual: true)
+                            // 蓝光原盘只做引用：既不能整盘哈希（几十 GB），也不能参与查重。
+                            let isDisc = ImportService.isBlurayDisc(entry.url)
+                            let hashes = isDisc
+                                ? PhotoHasher.Result(sha256: nil, perceptualHash: nil)
+                                : PhotoHasher.hashes(for: entry.url, includePerceptual: true)
                             if options.skipExactDuplicates, let hash = hashes.sha256,
                                !hashGate.claim(hash) {
                                 return ImportFileResult(index: base + offset, item: nil,
@@ -136,8 +142,11 @@ extension LibraryStore {
                                 return ImportFileResult(index: base + offset, item: item,
                                                         outcome: .imported, verified: didVerify)
                             } catch {
+                                let message = (error as? LocalizedError)?.errorDescription
+                                    ?? error.localizedDescription
                                 return ImportFileResult(index: base + offset, item: nil,
-                                                        outcome: .failed, verified: false)
+                                                        outcome: .failed, verified: false,
+                                                        message: message)
                             }
                         }
                     }
@@ -155,6 +164,8 @@ extension LibraryStore {
                         continue
                     case .failed:
                         failed += 1
+                        // 只留第一条：批量导入里同一种失败（例如同一张加密盘）重复提示没有意义。
+                        if firstFailureMessage == nil { firstFailureMessage = result.message }
                         continue
                     case .imported:
                         break
@@ -227,11 +238,22 @@ extension LibraryStore {
             if cancelled {
                 self.showToast("已取消导入，\(summary)")
             } else if imported == 0 {
-                self.showToast(skipped > 0 ? "没有新照片：\(skipped) 个文件已存在" : "导入失败")
+                // 具体失败原因（蓝光加密 / 结构无效等）比「导入失败」有用得多。
+                if let firstFailureMessage {
+                    self.showToast(firstFailureMessage)
+                } else {
+                    self.showToast(skipped > 0 ? "没有新照片：\(skipped) 个文件已存在" : "导入失败")
+                }
             } else if createdAlbums > 0 {
                 self.showToast("\(summary)，创建 \(createdAlbums) 个相簿")
             } else {
                 self.showToast(summary)
+            }
+
+            // 蓝光原盘 / ISO 只写外部引用、不进 originals，目录监听收不到变化；
+            // 导入完成后主动补一次自动刮削，影院才能直接按片名把整张盘认成电影。
+            if imported > 0, AppSettings.shared.cinemaAutoScrape {
+                self.startCinemaScrape(for: .local)
             }
         }
     }
@@ -339,8 +361,15 @@ extension LibraryStore {
             return []
         }
         var files: [URL] = []
-        for case let file as URL in enumerator where ImportService.isSupported(file) {
-            files.append(file)
+        // 蓝光原盘：目录里会有成百上千个 m2ts / mpls，折叠成一张盘一个条目，
+        // 否则会把菜单、花絮片段当成一堆独立视频导入。
+        var discs: Set<String> = []
+        for case let file as URL in enumerator {
+            if let disc = BluraySource.discRoot(containing: file) {
+                if discs.insert(disc.path).inserted { files.append(disc) }
+                continue
+            }
+            if ImportService.isSupported(file) { files.append(file) }
         }
         // 实况照片的 MOV 与同名图片一起导入（作为配对视频），不再单独生成视频项目。
         var imageStems: Set<String> = []
@@ -374,6 +403,8 @@ private struct ImportFileResult {
     let item: PhotoItem?
     let outcome: ImportOutcome
     let verified: Bool
+    /// 失败原因（已翻译成用户可读文案）：蓝光加密盘等需要明确告诉用户怎么办。
+    var message: String? = nil
 }
 
 /// 导入批次内的哈希闸门：已有图库哈希 + 本批次已认领哈希，避免重复复制同一文件。

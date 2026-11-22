@@ -4,21 +4,44 @@ import ImageIO
 import UniformTypeIdentifiers
 import AVFoundation
 import CoreImage
+import PlaybackCore
 
-enum ImportError: Error {
+enum ImportError: Error, LocalizedError {
     case unsupported
+    /// 蓝光原盘导入失败：message 已经翻译成用户能照着处理的说明。
+    case bluray(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupported:
+            return "不支持的文件格式"
+        case .bluray(let message):
+            return message
+        }
+    }
 }
 
 enum ImportService {
     static func isSupported(_ url: URL) -> Bool {
         if VideoFormats.isVideo(url) { return true }
+        // 蓝光光盘镜像：真正的蓝光校验放到导入时（探测一次），这里只按扩展名收下。
+        if BluraySource.isDiscImage(url) { return true }
         if RawFormats.isRaw(url) { return true }
         guard let type = UTType(filenameExtension: url.pathExtension.lowercased()) else { return false }
         return type.conforms(to: .image)
     }
 
+    /// 蓝光目录 / 光盘镜像：不复制原文件，只在图库里留一个引用。
+    static func isBlurayDisc(_ url: URL) -> Bool {
+        BluraySource.discRoot(for: url) != nil
+    }
+
     static func importFile(_ url: URL) throws -> PhotoItem {
         LibraryPaths.prepare()
+        // 原盘动辄几十 GB：不能拷进图库，直接引用外部路径，播放时交给 ffmpeg 的 bluray 协议。
+        if let discRoot = BluraySource.discRoot(for: url) {
+            return try blurayItem(root: discRoot)
+        }
         let isVideo = VideoFormats.isVideo(url)
         guard isVideo || isSupported(url) else {
             throw ImportError.unsupported
@@ -166,6 +189,78 @@ enum ImportService {
         item.kind = detectKind(name: url.lastPathComponent,
                                width: item.pixelWidth, height: item.pixelHeight)
         return item
+    }
+
+    /// 蓝光原盘条目：`filename` 为空（originals 里没有副本），源路径写在 `externalPath`。
+    /// 时长 / 分辨率通过 ffprobe 的 bluray 协议读取；读不到时把 ffprobe 的报错
+    /// （AACS / BD+ / 非蓝光目录）翻译成可执行提示，而不是笼统的「导入失败」。
+    private static func blurayItem(root: URL) throws -> PhotoItem {
+        let result = VideoSupport.blurayProbe(root: root)
+        guard result.probe.hasVideoTrack || result.probe.duration > 0 else {
+            throw ImportError.bluray(blurayEncryptionNote(root: root)
+                                     ?? blurayFailureMessage(result.error))
+        }
+        let probe = result.probe
+        let id = UUID()
+        let values = try? root.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+        var item = PhotoItem(filename: "",
+                             originalName: root.lastPathComponent.isEmpty ? "蓝光原盘" : root.lastPathComponent,
+                             capturedAt: values?.creationDate ?? Date(),
+                             pixelWidth: 0, pixelHeight: 0,
+                             fileSize: Int64(values?.fileSize ?? 0),
+                             kind: .video)
+        item.id = id
+        item.externalPath = root.path
+        item.pixelWidth = Int(probe.size.width)
+        item.pixelHeight = Int(probe.size.height)
+        if probe.duration > 0 { item.duration = probe.duration }
+        return item
+    }
+
+    /// 加密标记优先于日志文案：AACS 目录 / BD+ 虚拟机会话即使 ffprobe 只报通用错误，
+    /// 也能确定是加密盘，直接给出「先解密」的处理方式。
+    private static func blurayEncryptionNote(root: URL) -> String? {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: root.appendingPathComponent("AACS").path) {
+            return "这张蓝光光盘受 AACS 加密保护，无法直接播放。"
+                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
+        }
+        if fm.fileExists(atPath: root.appendingPathComponent("BDSVM").path) {
+            return "这张蓝光光盘受 BD+ 加密保护，无法直接播放。"
+                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
+        }
+        return nil
+    }
+
+    /// 把 ffprobe 的英文报错翻译成明确文案：加密盘要说清「为什么打不开、怎么办」，
+    /// 不能只回一句「导入失败」。
+    private static func blurayFailureMessage(_ raw: String) -> String {
+        let text = raw.lowercased()
+        if text.contains("aacs") {
+            return "这张蓝光光盘受 AACS 加密保护，无法直接播放。"
+                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
+        }
+        if text.contains("bd+") || text.contains("bdplus") {
+            return "这张蓝光光盘受 BD+ 加密保护，无法直接播放。"
+                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
+        }
+        if text.contains("blu-ray disc not detected")
+            || text.contains("not a blu-ray")
+            || text.contains("bluray: no") {
+            return "没有找到有效的蓝光结构：需要包含 BDMV 目录的原盘文件，或未加密的 ISO 镜像。"
+        }
+        if text.contains("no playlist") || text.contains("playlist") && text.contains("empty") {
+            return "这张光盘里没有可播放的正片播放列表（可能是花絮盘或结构损坏）。"
+        }
+        if text.contains("permission denied") || text.contains("operation not permitted") {
+            return "没有权限读取这张光盘：请在系统设置 › 隐私与安全性 › 文件与文件夹中允许访问，"
+                + "或把原盘复制到可读位置后再导入。"
+        }
+        let firstLine = raw.split(separator: "\n").first.map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return firstLine.isEmpty
+            ? "无法读取蓝光原盘：光盘结构不完整或已损坏。"
+            : "无法读取蓝光原盘：\(firstLine)"
     }
 
     private static func videoItem(url: URL, destination: URL, id: UUID, filename: String,

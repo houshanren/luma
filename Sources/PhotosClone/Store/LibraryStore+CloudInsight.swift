@@ -103,6 +103,9 @@ extension LibraryStore {
 
     /// 当前网盘列表的分类计数（一次遍历，按目录版本 + 识别 / 元数据进度缓存）。
     var cloudScopeCounts: CloudScopeCounts {
+        // 扫描期间不做整库统计：每次发布都全量遍历两万张照片会直接把主线程拖慢，
+        // 计数在扫描结束后自然补齐。
+        if cloudModel.scanPhase.isScanning { return cloudScopeCountsCache }
         let key = [
             String(cloudModel.revision),
             String(cloudModel.analysis.count),

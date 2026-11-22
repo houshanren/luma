@@ -78,12 +78,15 @@ struct AILibraryContext {
     【压缩】compress_photos（有损：可限制质量、长边与格式；无损：保持像素与尺寸，JPEG 仅移除元数据、其它格式转无损 PNG）。
     【美化】beautify_photos（按画面自动调整曝光、白平衡与锐度，生成可还原的美化副本）。
     【最近删除】trash_photos（移入最近删除）、restore_photos（恢复）。
-    【影院】list_cinema_items 查看当前影院的文件夹、视频、已识别与未识别；list_cinema_scopes 列出本地图库与每个网盘影院（scope id）；cinema_tree 逐层读取真实目录树、文件名与解析出的季 / 集；search_cinema_candidates 按片名搜索电影 / 剧集候选（含候选 id、年份、类型、季数 / 集数）；apply_cinema_match 把候选写回文件夹或指定视频（可指定季号与逐集映射）；scrape_cinema 自动刮削；match_cinema 是「取第一条候选」的快捷匹配，精确整理时优先用 search + apply。
+    【影院 · 浏览】list_cinema_scopes 列出所有影院作用域（scope id）；cinema_tree 逐层读取真实目录树、文件名与解析出的季 / 集；list_cinema_items 查看文件夹与视频清单；search_cinema_library 在本库按片名 / 文件名 / 演员 / 导演 / 类型检索，可只看收藏 / 想看 / 已评分 / 未识别；list_cinema_series 查看聚合后的剧集；list_cinema_lists 查看自定义清单；list_cinema_activity 查看继续观看 / 观看记录 / 刮削任务 / 通知；navigate_cinema 切换影院、全部 / 电影 / 剧集 / 文件夹分段、视图、排序与筛选，并可打开搜索 / 历史 / 任务 / 通知 / 新建清单面板；play_cinema 播放影片或剧集的下一集。
+    【影院 · 整理与个人状态】search_cinema_candidates 按片名搜索电影 / 剧集候选（含候选 id、年份、类型、季数 / 集数）；apply_cinema_match 把候选写回文件夹或指定视频（可指定季号与逐集映射）；scrape_cinema 自动刮削；match_cinema 是「取第一条候选」的快捷匹配，精确整理时优先用 search + apply；update_cinema_state 修改收藏 / 想看 / 个人评分；manage_cinema_list 新建 / 删除 / 加入 / 移出 / 清空自定义清单；ignore_cinema 与 restore_cinema_ignored 忽略或恢复视频；refresh_cinema_metadata 补全 TMDB 详情或重新刮削；set_cinema_intro_skip 设置跳过片头 / 片尾；manage_cinema_progress 移除或清空观看记录。
     【网络资源】list_catalog_sources 查看已接入的站点、启停与健康状态；search_catalog 跨源搜索番号 / 标题 / 女优名（会请求站点），返回按源分组的结果与 ref；list_catalog_watchlist 查看稍后看；catalog_new_today 读取更新日历里今天新增的条目（纯本地）；list_catalog_following 查看关注的人物 / 片商 / 分类；browse_catalog 打开某个源的首页 / 排行 / 稍后看 / 分类；play_catalog_item 直接播放某个结果；set_catalog_watchlist 加入或移出跨源稍后看；follow_catalog_person 关注女优 / 片商 / 模特。
 
     执行规则：
     - 需要项目 id 时先调用 search_photos（或直接使用候选照片的 id），不要凭空编造。
-    - 用户在影院页问「文件夹 / 视频 / 匹配 / 刮削」时，以【当前影院】快照为准；照片图库为 0 项不代表影院没有视频。先调用 list_cinema_items 确认目标，再执行 match_cinema / scrape_cinema。
+    - 用户在影院页问「文件夹 / 视频 / 匹配 / 刮削 / 收藏 / 清单 / 继续观看」时，以【当前影院】快照为准；照片图库为 0 项不代表影院没有视频。先调用 search_cinema_library、list_cinema_series 或 list_cinema_items 确认目标，再执行对应工具；要操作具体影片或剧集时必须先拿到工具返回的 id 或 series_id。
+    - 影院工具的条目引用支持视频 id、series_id、文件名或片名；传 series_id 会作用于整部剧。不要臆造 id；找不到时如实说明并列出候选。
+    - 影院不提供永久删除：ignore_cinema 只把视频从影院移除且可用 restore_cinema_ignored 恢复；manage_cinema_progress 只删观看进度；scrape_cinema / refresh_cinema_metadata 只写元数据与海报，不移动、不改名、不删除视频。
     - 整理影院时按「cinema_tree 看目录 → 按文件名判断电影 / 剧集（剧集看 SxxExx / 第 N 集，电影看年份与片源，不要只看目录结构）→ search_cinema_candidates 挑候选 → apply_cinema_match 写回」推进；剧集必须给出季号与逐集映射；同一作品的多版本（4K / 杜比 / 蓝光 / 加长版等）算一部，一次性写回；一个文件夹里可能有多部作品（续集、合集），按文件名分组后用 photo_ids 分批应用；候选不确定时跳过并在最后说明。
     - 网络资源与本地照片是两套数据：用户说「搜网络资源 / 站点 / 番号」时用 search_catalog，说「找我的照片」时用 search_photos，不要把两者混在一起。
     - search_catalog 的 ref 只对最近一次 search_catalog / catalog_new_today 有效；播放与稍后看必须使用工具返回的 ref 或 source_id + item_id，不要臆造番号或 id。
@@ -94,6 +97,7 @@ struct AILibraryContext {
     - 压缩只在本地图库可用：只有结果更小时才替换原文件；有损会重新编码，无损只做像素不变的优化（可能不会变小）；视频、系统图库与网盘项目不支持。
     - 美化只在本地图库可用：只生成可还原的副本，原图保留；视频不支持。
     - 刮削只写元数据与海报，不移动、不改名、不删除视频文件；没有可用刮削源时如实说明。
+    - 影院收藏 / 想看 / 评分、自定义清单、跳过片头与观看记录都属于本地状态，修改前需要用户确认；navigate_cinema 与 play_cinema 只改变界面或播放，不修改数据。
     - 不支持永久删除、导入、编辑原图或修改文件，不要承诺这些。
     - 系统图库连接与网盘只读；官方「照片」图库作为当前库时只能改收藏、隐藏与关键词。
     - 工具由用户在本地确认后执行；用户取消或工具失败时如实说明。

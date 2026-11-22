@@ -942,18 +942,21 @@ enum CloudService {
             return try await QuarkDrive.list(cookie: try quarkCookie(for: mount),
                                              folderID: containerID,
                                              mountID: mount.id)
+        case .pan115:
+            return try await Pan115Drive.list(cookie: try pan115Cookie(for: mount),
+                                              folderID: containerID)
         }
     }
 
-    /// 仅 SMB 支持递归扫描整个共享。
-    static func scanTree(mount: CloudMount, path: String) async throws -> [CloudEntry] {
+    /// 仅 SMB 支持递归扫描整个共享；同时返回目录（带 mtime），供下一轮增量扫描复用。
+    static func scanTree(mount: CloudMount, path: String) async throws -> SMBTreeScanResult {
         guard mount.kind == .smb else {
             throw CloudOAuthError.unsupportedProvider
         }
         guard let client = smbClient(mount) else {
             throw CloudOAuthError.api("SMB 配置无效")
         }
-        return try await client.scanTree(path: path)
+        return try await client.scanTreeWithFolders(path: path)
     }
 
     /// 删除单个文件：SMB / WebDAV / 官方网盘各走自己的通道，失败原因原样抛出。
@@ -977,7 +980,25 @@ enum CloudService {
             do {
                 try FileManager.default.removeItem(at: url)
             } catch {
-                throw CloudOAuthError.api("SMB 删除失败：\(error.localizedDescription)")
+                let ns = error as NSError
+                let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+                let posix = underlying?.domain == NSPOSIXErrorDomain ? Int32(underlying?.code ?? 0) : nil
+                // 文件已经不在共享上（下载工具的临时文件被清理、已在别处改名或删除）：
+                // 目标状态已经达成，按成功处理，否则索引里会一直留着一个删不掉的条目。
+                if ns.code == NSFileNoSuchFileError || posix == ENOENT {
+                    Diagnostics.record("SMB 删除跳过（文件已不存在）：\(path)")
+                    return
+                }
+                switch Int(posix ?? 0) {
+                case Int(EACCES), Int(EPERM):
+                    throw CloudOAuthError.api("SMB 删除失败：账号没有删除权限（删除需要上级目录的写权限）")
+                case Int(EBUSY), Int(ETXTBSY):
+                    throw CloudOAuthError.api("SMB 删除失败：文件正被下载或播放占用，请稍后再试")
+                case Int(EROFS):
+                    throw CloudOAuthError.api("SMB 删除失败：共享以只读方式挂载")
+                default:
+                    throw CloudOAuthError.api("SMB 删除失败：\(error.localizedDescription)")
+                }
             }
 
         case .aliyun:
@@ -1004,6 +1025,12 @@ enum CloudService {
             try await QuarkDrive.delete(fids: [fid],
                                         cookie: try quarkCookie(for: mount),
                                         mountID: mount.id)
+
+        case .pan115:
+            guard let fid = photo.cloudPath, !fid.isEmpty else {
+                throw CloudOAuthError.api("缺少 115 文件 ID")
+            }
+            try await Pan115Drive.delete(fids: [fid], cookie: try pan115Cookie(for: mount))
         }
     }
 
@@ -1096,12 +1123,26 @@ enum CloudService {
             }
             let url = try await QuarkDrive.downloadURL(fid: fid, cookie: cookie, mountID: mount.id)
             return CloudStreamResource(url: url, headers: headers)
+        case .pan115:
+            guard let pickCode = photo.cloudRemoteID, !pickCode.isEmpty else {
+                throw CloudOAuthError.api("缺少文件标识（pickcode），请刷新该目录后重试")
+            }
+            let cookie = try pan115Cookie(for: mount)
+            let url = try await Pan115Drive.downloadURL(pickCode: pickCode, cookie: cookie)
+            return CloudStreamResource(url: url, headers: Pan115Drive.headers(cookie: cookie))
         }
     }
 
     /// 夸克网盘用浏览器 Cookie 鉴权：缺失时直接提示重新登录，而不是发一次空请求。
     static func quarkCookie(for mount: CloudMount) throws -> String {
         let cookie = QuarkDrive.normalizedCookie(CloudCredentials.password(for: mount.id))
+        guard !cookie.isEmpty else { throw CloudOAuthError.notAuthorized }
+        return cookie
+    }
+
+    /// 115 同样用浏览器 Cookie 鉴权。
+    static func pan115Cookie(for mount: CloudMount) throws -> String {
+        let cookie = Pan115Drive.normalizedCookie(CloudCredentials.password(for: mount.id))
         guard !cookie.isEmpty else { throw CloudOAuthError.notAuthorized }
         return cookie
     }
@@ -1146,7 +1187,7 @@ enum CloudService {
             updated = try await BaiduOAuth.refresh(clientID: credentials.clientID,
                                                    clientSecret: credentials.clientSecret,
                                                    refreshToken: refresh)
-        case .webdav, .smb, .quark:
+        case .webdav, .smb, .quark, .pan115:
             throw CloudOAuthError.unsupportedProvider
         }
         var merged = updated
@@ -1184,6 +1225,43 @@ enum CloudService {
 
     static func smbClient(_ mount: CloudMount) -> SMBClient? {
         SMBClient(mount: mount, password: CloudCredentials.password(for: mount.id))
+    }
+}
+
+// MARK: - 向导阶段的目录浏览
+
+/// 挂载还没创建时，按当前接入方式直接读网盘目录，供向导里选择接入范围。
+enum CloudSetupBrowser {
+    static func folders(flow: CloudWizardFlow, cookie: String, containerID: String) async throws -> [CloudEntry] {
+        switch flow {
+        case .quark:
+            return try await QuarkDrive.list(cookie: QuarkDrive.normalizedCookie(cookie),
+                                             folderID: containerID)
+        case .pan115:
+            return try await Pan115Drive.list(cookie: Pan115Drive.normalizedCookie(cookie),
+                                              folderID: containerID)
+        case .aliyunCookie:
+            let token = try await AliyunCookieAuth.token(from: cookie)
+            if containerID.isEmpty {
+                // 阿里云盘一个账号最多三个盘：先当作虚拟根目录列出。
+                return try await AliyunOAuth.drives(accessToken: token.accessToken).map {
+                    CloudEntry(path: "\($0.id)|root",
+                               name: $0.label,
+                               isDirectory: true,
+                               size: 0,
+                               modifiedAt: nil,
+                               contentType: nil)
+                }
+            }
+            guard let target = AliyunOAuth.splitPath(containerID, fallbackDrive: nil) else {
+                throw CloudOAuthError.api("阿里云盘目录无效，请返回根目录重新进入")
+            }
+            return try await AliyunOAuth.list(driveID: target.drive,
+                                              parentID: target.fileID,
+                                              accessToken: token.accessToken)
+        case .baidu, .smb, .webdav, .alist:
+            throw CloudOAuthError.unsupportedProvider
+        }
     }
 }
 

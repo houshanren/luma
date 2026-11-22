@@ -907,7 +907,18 @@ extension LibraryStore {
             items = items.filter { matchesSearch($0, query: query, peopleByID: peopleByID) }
         }
         let sorted: [PhotoItem]
-        if case .recentlyViewed = cloudModel.scope {
+        // 扫描结束后全盘清单已按拍摄时间倒序：没有额外筛选时直接复用，省掉每次都排两万项。
+        let alreadySorted = sortKey == .capturedAt
+            && !sortAscending
+            && photoFilter == .all
+            && !hasMetadataFilters
+            && similarScope == nil
+            && query.isEmpty
+            && cloudModel.scope == .all
+            && !cloudModel.scanPhase.isScanning
+        if alreadySorted {
+            sorted = items
+        } else if case .recentlyViewed = cloudModel.scope {
             // 与系统图库一致：按本机查看时间倒序，不再套用网格排序。
             let viewed = cloudModel.viewedAt
             sorted = items.sorted {

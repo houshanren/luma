@@ -175,10 +175,10 @@ struct CloudMountDetailView: View {
             }
             Divider()
             Button("刮削新视频") {
-                Task { await store.scrapeCinema(for: scope) }
+                store.startCinemaScrape(for: scope)
             }
             Button("重新刮削全部") {
-                Task { await store.scrapeCinema(for: scope, force: true) }
+                store.startCinemaScrape(for: scope, force: true)
             }
             Button("清除刮削结果", role: .destructive) {
                 store.clearCinemaIndex(for: scope)

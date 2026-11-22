@@ -420,6 +420,10 @@ struct CinemaDetails: Hashable {
     var voteCount: Int?
     var budget: Int64?
     var revenue: Int64?
+    /// 悬停档案 / 未入库作品展示用：简介、评分与类型。
+    var overview: String?
+    var rating: Double?
+    var genres: [String] = []
 }
 
 /// 家长控制档位：按分级字符串换算，未识别分级的条目默认放行。
@@ -734,6 +738,17 @@ struct CinemaProgressRecord: Codable, Hashable, Identifiable {
     var isFinished: Bool { duration > 0 && fraction >= 0.95 }
 
     var remainingSeconds: Double { max(0, duration - position) }
+
+    /// 记录是否可信：旧版本起流点换算错误会把整条时间轴放大 1000 倍，
+    /// 这类记录的时长远超片源真实时长，既不能拿来续播，也不该出现在「继续观看」里。
+    func isTrustworthy(realDuration: Double?) -> Bool {
+        guard position.isFinite, duration.isFinite, duration > 0, position >= 0 else { return false }
+        if let realDuration, realDuration > 0 {
+            return duration <= realDuration * 1.5 + 60
+        }
+        // 拿不到片源时长时按上限兜底：正常影视不会超过 24 小时。
+        return duration <= 24 * 3600
+    }
 }
 
 /// 影院本地用户状态：收藏 / 想看 / 个人评分。按视频 photoID 存。

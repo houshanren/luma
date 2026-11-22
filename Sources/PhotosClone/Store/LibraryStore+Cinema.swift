@@ -11,8 +11,56 @@ struct CinemaPrewarmedStream {
     let headers: [String: String]
     /// 条目里记录的时长：网盘元数据不一定带 duration，接管时用它撑起进度条。
     let duration: Double
+    /// 预热前探测到的画面尺寸 / 编码：接管时直接复用，不再重新探测。
+    let videoSize: CGSize
+    let isHEVC: Bool
+    /// 探测到的音轨结构：接管后菜单能显示语言 / 声道，也用于对上多音轨缓存。
+    let audioTracks: [AudioTrackInfo]
     let session: VideoStreamSession
     let createdAt: Date
+}
+
+/// 自动归组的合集：同一个 TMDB belongs_to_collection。
+struct CinemaCollectionGroup: Identifiable {
+    let id: Int
+    let name: String
+    let entries: [CinemaEntry]
+}
+
+/// 海报墙的字母索引：每个首字母指向第一条内容，点击滚过去。
+struct CinemaLetterEntry: Identifiable {
+    let letter: String
+    let target: String
+    var id: String { letter }
+}
+
+/// 海报墙统计：规格分布与已看数量。
+struct CinemaAggregateStats {
+    var matched = 0
+    var uhd = 0
+    var hd = 0
+    var sd = 0
+    var watched = 0
+}
+
+/// 影院派生数据快照：一次遍历产出所有列表，页面里反复读取不再重复聚合。
+struct CinemaAggregate {
+    var allEntries: [CinemaEntry] = []
+    var entries: [CinemaEntry] = []
+    var unmatched: [CinemaEntry] = []
+    var movies: [CinemaEntry] = []
+    var series: [CinemaSeries] = []
+    var unmatchedSeries: [CinemaSeries] = []
+    var unmatchedMovies: [CinemaEntry] = []
+    var collections: [CinemaCollectionGroup] = []
+    var letters: [CinemaLetterEntry] = []
+    /// 版本键 → 同版本文件数：卡片上的「N 版本」不再逐张全量扫描索引。
+    var versionCounts: [String: Int] = [:]
+    var stats = CinemaAggregateStats()
+    var favoriteCount = 0
+    var recentCount = 0
+    var highRatedCount = 0
+    var wallItemCount = 0
 }
 
 // MARK: - 影院刮削与播放
@@ -176,7 +224,22 @@ extension LibraryStore {
               let json = metadataStore.setting(Self.cinemaProgressSettingKey),
               let data = json.data(using: .utf8),
               let list = try? JSONDecoder().decode([CinemaProgressRecord].self, from: data) else { return }
-        cinemaProgress = Dictionary(uniqueKeysWithValues: list.map { ($0.photoID, $0) })
+        let loaded = Dictionary(uniqueKeysWithValues: list.map { ($0.photoID, $0) })
+        // 旧版本起流点换算错误会把时间轴放大 1000 倍：丢掉这类脏记录，避免「继续观看」
+        // 显示已看完、点续播直接落到片尾。
+        let cleaned = loaded.filter { _, record in
+            record.isTrustworthy(realDuration: cinemaEntryDuration(for: record.photoID))
+        }
+        cinemaProgress = cleaned
+        if cleaned.count != loaded.count { persistCinemaProgress() }
+    }
+
+    /// 条目元数据里的片源时长，用于校验续播记录是否合理。
+    func cinemaEntryDuration(for photoID: UUID) -> Double? {
+        for entries in cinemaIndexes.values {
+            if let duration = entries[photoID]?.file.duration, duration > 0 { return duration }
+        }
+        return nil
     }
 
     func persistCinemaProgress() {
@@ -344,86 +407,7 @@ extension LibraryStore {
         showToast("已清除自定义清单")
     }
 
-    private func beginCinemaProgressTracking(for entry: CinemaEntry) {
-        cinemaProgressCancellable?.cancel()
-        cinemaProgressSavedAt = .distantPast
-        cinemaProgressCancellable = viewerModel.videoPlayer.$duration
-            .combineLatest(viewerModel.videoPlayer.$currentTime)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] duration, current in
-                self?.handleCinemaProgressTick(current: current,
-                                               duration: duration,
-                                               entry: entry)
-            }
-    }
-
-    private func handleCinemaProgressTick(current: Double,
-                                          duration: Double,
-                                          entry: CinemaEntry) {
-        guard viewerID == entry.file.photoID else {
-            // 查看器里翻到了别的照片 / 视频：停止记录，避免把新内容的时间写到旧条目上。
-            cinemaProgressCancellable?.cancel()
-            cinemaProgressCancellable = nil
-            cinemaPlaybackEntry = nil
-            cinemaPendingSeek = nil
-            return
-        }
-
-        // 续播只在当前条目真正装进播放器后执行：换片瞬间 duration / current 还是上一个视频的，
-        // 这时 seek 会被误判成「已到位」并把待跳转位置清掉，新片反而从头播。
-        let player = viewerModel.videoPlayer
-        if let pending = cinemaPendingSeek,
-           player.isItemReady,
-           duration > 0 {
-            if abs(current - pending) < 4 {
-                // 已经跳到目标位置附近，续播完成。
-                cinemaPendingSeek = nil
-                cinemaSeekAttempts = 0
-            } else if current < pending - 4,
-                      pending > 3,
-                      pending < duration - 3,
-                      cinemaSeekAttempts < 8,
-                      Date().timeIntervalSince(cinemaSeekRetryAt) > 1 {
-                // 云盘在起流前 seek 可能无效：最多重试 8 次，每秒一次。
-                cinemaSeekAttempts += 1
-                cinemaSeekRetryAt = Date()
-                player.requestSeek(to: pending)
-            } else if pending >= duration - 3 {
-                // 记录位置已经贴到结尾：不再跳，按新片从头开始。
-                cinemaPendingSeek = nil
-            }
-        }
-
-        guard duration > 0, current > 3 else { return }
-        skipCinemaOutroIfNeeded(current: current, duration: duration, entry: entry)
-        // 剩余 5 分钟开始预热下一集：首段先生成好，切集时不用再等。
-        if duration - current <= 300 {
-            prewarmCinemaNextEpisode(after: entry)
-        }
-        let now = Date()
-        guard now.timeIntervalSince(cinemaProgressSavedAt) > 10 else { return }
-        cinemaProgressSavedAt = now
-        saveCinemaProgress(position: current, duration: duration, entry: entry)
-    }
-
-    /// 剧集级「跳过片尾」：剩余时间进入设定区间时直接跳到结尾，并记为看完。
-    private func skipCinemaOutroIfNeeded(current: Double,
-                                         duration: Double,
-                                         entry: CinemaEntry) {
-        guard entry.kind == .tv,
-              duration > 0,
-              current > 30,
-              cinemaOutroSkippedEntry != entry.id else { return }
-        let outro = cinemaIntroMark(for: entry).outroSeconds
-        guard outro > 0 else { return }
-        let remaining = duration - current
-        guard remaining > 0.5, remaining <= Double(outro) else { return }
-        cinemaOutroSkippedEntry = entry.id
-        saveCinemaProgress(position: duration, duration: duration, entry: entry)
-        viewerModel.videoPlayer.requestSeek(to: duration - 0.4)
-    }
-
-    private func saveCinemaProgress(position: Double,
+    func saveCinemaProgress(position: Double,
                                     duration: Double,
                                     entry: CinemaEntry) {
         let subtitle = entry.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -440,7 +424,7 @@ extension LibraryStore {
         persistCinemaProgress()
     }
 
-    /// 关闭查看器或切换到其他视频前落盘，并解除订阅。
+    /// 关闭查看器或切换到其他视频前落盘。
     func finishCinemaPlayback() {
         if let entry = cinemaPlaybackEntry, viewerID == entry.file.photoID {
             let current = viewerModel.videoPlayer.currentTime
@@ -449,13 +433,7 @@ extension LibraryStore {
                 saveCinemaProgress(position: current, duration: duration, entry: entry)
             }
         }
-        cinemaProgressCancellable?.cancel()
-        cinemaProgressCancellable = nil
         cinemaPlaybackEntry = nil
-        cinemaPendingSeek = nil
-        cinemaSeekAttempts = 0
-        cinemaOutroSkippedEntry = nil
-        cinemaResumeApplied = false
         viewerModel.videoPlaybackUI.subtitleQuery = nil
     }
 
@@ -492,25 +470,64 @@ extension LibraryStore {
             }
             guard !Task.isCancelled else { return }
 
+            // 预热前探测一次：既要拿到音轨结构去对上多音轨缓存，也要识别
+            // HDR / 杜比视界 / 隔行源——它们的真实播放路径是转码或色调映射，
+            // 预先转出的 SDR remux 会颜色发灰 / 有梳齿，宁可不预热。
+            var options: [String: Any] = [:]
+            if !headers.isEmpty { options[CloudPlayback.headerFieldsKey] = headers }
+            let probe = await VideoSupport.probe(url: source, options: options)
+            guard !Task.isCancelled else { return }
+            guard probe.hasVideoTrack || probe.duration > 0 else {
+                Diagnostics.record("预热跳过 \(trailer)：探测不到流信息")
+                return
+            }
+            if probe.isHDR || probe.isDolbyVision || probe.color.isHDR || probe.isInterlaced {
+                Diagnostics.record("预热跳过 \(trailer)：HDR / 隔行源需要按播放策略转码")
+                return
+            }
+
             let filename = next.file.filename.lowercased()
+            let isHEVC = probe.isHEVC
+                || next.file.videoCodec?.lowercased() == "hevc"
+                || filename.contains("hevc") || filename.contains("x265")
+            let size = probe.size.width > 0 && probe.size.height > 0
+                ? probe.size
+                : CGSize(width: next.file.pixelWidth, height: next.file.pixelHeight)
+            // 带上完整音轨结构：预热会话才能和已有多音轨缓存对上，切集直接命中。
+            let audioTracks = probe.audioTracks
             let session = VideoStreamSession(
+                environment: .luma,
                 photoID: next.id,
                 source: source,
                 headers: headers,
                 trustSelfSigned: self.cloudMount(for: next.file.cloudMountID)?.trustSelfSigned ?? false,
                 mode: .remux,
                 startOffset: 0,
-                isHEVC: next.file.videoCodec?.lowercased() == "hevc"
-                    || filename.contains("hevc") || filename.contains("x265"),
+                isHEVC: isHEVC,
                 isHDR: false,
+                color: probe.color,
+                sourceSize: size,
+                frameRate: probe.frameRate,
                 audioIndex: 0,
-                audioChannels: 2,
+                audioChannels: audioTracks.first?.channels ?? 2,
+                audioCodec: audioTracks.first?.codec,
+                audioTracks: audioTracks,
+                audioDownmix: AppSettings.shared.audioDownmix,
+                cacheSignature: VideoStreamSession.lumaCacheSignature,
+                // 预热会话不写长期缓存；命中现有缓存时只借用播放列表。
+                allowsCachePersistence: false,
                 refreshSource: self.cinemaCloudRefreshClosure(for: photo))
             do {
                 let playlist = try await Task.detached(priority: .utility) {
                     try await session.start()
                 }.value
                 guard !Task.isCancelled else {
+                    session.stop()
+                    return
+                }
+                // 用户已经切到这一集时，正常播放会话已经接手；预热流直接丢掉，
+                // 不能再挂回去，否则同一集会同时跑两个 ffmpeg。
+                if self.cinemaPlaybackEntry?.file.photoID == next.id {
                     session.stop()
                     return
                 }
@@ -521,6 +538,9 @@ extension LibraryStore {
                                                                   sourceURL: source,
                                                                   headers: headers,
                                                                   duration: next.file.duration ?? 0,
+                                                                  videoSize: size,
+                                                                  isHEVC: isHEVC,
+                                                                  audioTracks: audioTracks,
                                                                   session: session,
                                                                   createdAt: Date())
                 Diagnostics.record("预热下一集 \(trailer) 首段就绪")
@@ -654,6 +674,11 @@ extension LibraryStore {
             cinemaActiveListID = nil
         }
         cinemaActiveScope = scope
+        // 进入某个网盘影院时顺手校验索引新鲜度：超过 60 秒就做一次增量扫描，
+        // 新加入的视频会先进入索引，刮削与「未识别」列表读到的就是最新清单。
+        if case .mount(let mountID) = scope {
+            ensureCloudIndexFresh(for: mountID)
+        }
     }
 
     // MARK: 观看状态
@@ -824,6 +849,208 @@ extension LibraryStore {
         }
     }
 
+    // MARK: 聚合缓存
+
+    /// 页面用的一次性聚合结果：签名不变时直接复用上次结果。
+    /// 参考图库 `cachedSystemQuery`：数据版本 + 筛选 + 排序拼成签名，变化才重算。
+    func cinemaAggregate(for scope: CinemaScope) -> CinemaAggregate {
+        let signature = cinemaAggregateSignature(for: scope)
+        if signature == cinemaAggregateCacheKey, let cached = cinemaAggregateCacheValue {
+            return cached
+        }
+        let value = buildCinemaAggregate(for: scope)
+        cinemaAggregateCacheKey = signature
+        cinemaAggregateCacheValue = value
+        return value
+    }
+
+    private func cinemaAggregateSignature(for scope: CinemaScope) -> String {
+        [
+            Self.cinemaScopeKey(scope),
+            String(cinemaDataRevision),
+            cinemaSort.rawValue,
+            cinemaDecades.sorted().map(String.init).joined(separator: ","),
+            cinemaGenres.sorted().joined(separator: ","),
+            cinemaResolutions.map(\.rawValue).sorted().joined(separator: ","),
+            cinemaSpecFilters.map(\.rawValue).sorted().joined(separator: ","),
+            cinemaWatchFilters.map(\.rawValue).sorted().joined(separator: ","),
+            cinemaSmartHighRated ? "1" : "0",
+            cinemaSmartRecent ? "1" : "0",
+            cinemaFavoritesOnly ? "1" : "0",
+            cinemaActiveListID?.uuidString ?? "-",
+            cinemaParentalLocked ? "1" : "0",
+            String(AppSettings.shared.cinemaParentalLevel.rawValue),
+            // 「最近 30 天」按天滚动：跨天后签名变化，缓存自然刷新。
+            String(Int(Date().timeIntervalSince1970 / 86_400))
+        ].joined(separator: "|")
+    }
+
+    private func buildCinemaAggregate(for scope: CinemaScope) -> CinemaAggregate {
+        var result = CinemaAggregate()
+        result.allEntries = cinemaEntries(for: scope).values
+            .sorted { $0.file.capturedAt > $1.file.capturedAt }
+        result.entries = result.allEntries.filter { cinemaPassesFilters($0) }
+        result.unmatched = result.allEntries.filter { !$0.matched }
+
+        // 电影按版本去重：同一部片只留画质最好的一条；版本选择在详情页。
+        var bestMovies: [String: CinemaEntry] = [:]
+        for entry in result.entries where entry.kind == .movie {
+            let key = cinemaVersionKey(for: entry)
+            if let existing = bestMovies[key], !cinemaIsBetterVersion(entry, existing) { continue }
+            bestMovies[key] = entry
+        }
+        result.movies = sortedCinemaEntries(Array(bestMovies.values))
+        result.series = sortedCinemaSeries(cinemaSeries(for: scope).filter { cinemaPassesFilters($0) })
+        result.unmatchedSeries = cinemaSeries(for: scope, matched: false)
+        result.unmatchedMovies = result.unmatched.filter { $0.kind == .movie }
+        result.collections = cinemaCollections(from: result.entries)
+        result.letters = cinemaLetters(movies: result.movies, series: result.series)
+        result.wallItemCount = result.movies.count + result.series.count
+        result.stats = cinemaStats(entries: result.entries)
+
+        // 版本数一次算完：卡片渲染时直接查表。
+        var versionCounts: [String: Int] = [:]
+        for entry in (cinemaIndexes[scope] ?? [:]).values {
+            versionCounts[cinemaVersionKey(for: entry), default: 0] += 1
+        }
+        result.versionCounts = versionCounts
+
+        let cutoff = Date().addingTimeInterval(-30 * 86_400)
+        for entry in result.allEntries {
+            if cinemaUserState(for: entry.id).favorite { result.favoriteCount += 1 }
+            if entry.file.capturedAt >= cutoff { result.recentCount += 1 }
+            if (entry.rating ?? 0) >= 8 { result.highRatedCount += 1 }
+        }
+        return result
+    }
+
+    private func cinemaStats(entries: [CinemaEntry]) -> CinemaAggregateStats {
+        var stats = CinemaAggregateStats()
+        for entry in entries {
+            stats.matched += 1
+            let width = entry.file.pixelWidth
+            if width >= 3000 {
+                stats.uhd += 1
+            } else if width >= 1800 {
+                stats.hd += 1
+            } else if width > 0 {
+                stats.sd += 1
+            }
+            if cinemaProgress[entry.id]?.isFinished == true { stats.watched += 1 }
+        }
+        return stats
+    }
+
+    private func cinemaCollections(from entries: [CinemaEntry]) -> [CinemaCollectionGroup] {
+        var groups: [Int: [CinemaEntry]] = [:]
+        for entry in entries where entry.kind == .movie {
+            guard let id = entry.collectionID else { continue }
+            groups[id, default: []].append(entry)
+        }
+        return groups.compactMap { id, list in
+            var best: [String: CinemaEntry] = [:]
+            for entry in list {
+                let key = cinemaVersionKey(for: entry)
+                if let existing = best[key], !cinemaIsBetterVersion(entry, existing) { continue }
+                best[key] = entry
+            }
+            let unique = Array(best.values)
+            guard unique.count >= 2 else { return nil }
+            return CinemaCollectionGroup(
+                id: id,
+                name: list.first?.collectionName ?? "合集",
+                entries: unique.sorted {
+                    if ($0.year ?? 0) != ($1.year ?? 0) { return ($0.year ?? 0) < ($1.year ?? 0) }
+                    return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+                }
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func cinemaLetters(movies: [CinemaEntry], series: [CinemaSeries]) -> [CinemaLetterEntry] {
+        var seen = Set<String>()
+        var list: [CinemaLetterEntry] = []
+        for entry in movies {
+            let letter = cinemaLetter(entry.title)
+            guard seen.insert(letter).inserted else { continue }
+            list.append(CinemaLetterEntry(letter: letter, target: entry.id.uuidString))
+        }
+        for item in series {
+            let letter = cinemaLetter(item.title)
+            guard seen.insert(letter).inserted else { continue }
+            list.append(CinemaLetterEntry(letter: letter, target: "series-\(item.id)"))
+        }
+        return list.sorted { $0.letter.localizedStandardCompare($1.letter) == .orderedAscending }
+    }
+
+    /// 每部作品取首字符作为索引字母；中文片名直接用首字。
+    private func cinemaLetter(_ title: String) -> String {
+        guard let first = title.trimmingCharacters(in: .whitespaces).first else { return "#" }
+        let upper = String(first).uppercased()
+        if upper.range(of: #"^[A-Z0-9]$"#, options: .regularExpression) != nil { return upper }
+        if first.unicodeScalars.allSatisfy({ $0.properties.isAlphabetic }) { return String(first) }
+        return "#"
+    }
+
+    private func sortedCinemaEntries(_ list: [CinemaEntry]) -> [CinemaEntry] {
+        switch cinemaSort {
+        case .recent:
+            return list.sorted { $0.file.capturedAt > $1.file.capturedAt }
+        case .rating:
+            return list.sorted { lhs, rhs in
+                let left = lhs.rating ?? 0
+                let right = rhs.rating ?? 0
+                if left == right {
+                    return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+                }
+                return left > right
+            }
+        case .year:
+            return list.sorted { lhs, rhs in
+                let left = lhs.year ?? 0
+                let right = rhs.year ?? 0
+                if left == right {
+                    return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+                }
+                return left > right
+            }
+        case .title:
+            return list.sorted {
+                $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+        case .duration:
+            return list.sorted {
+                ($0.file.duration ?? 0) > ($1.file.duration ?? 0)
+            }
+        }
+    }
+
+    private func sortedCinemaSeries(_ list: [CinemaSeries]) -> [CinemaSeries] {
+        switch cinemaSort {
+        case .recent:
+            return list.sorted { latestDate($0) > latestDate($1) }
+        case .rating:
+            return list.sorted { ($0.rating ?? 0) > ($1.rating ?? 0) }
+        case .year:
+            return list.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
+        case .title:
+            return list.sorted {
+                $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+        case .duration:
+            return list.sorted { totalDuration($0) > totalDuration($1) }
+        }
+    }
+
+    private func latestDate(_ series: CinemaSeries) -> Date {
+        series.episodes.map(\.file.capturedAt).max() ?? .distantPast
+    }
+
+    private func totalDuration(_ series: CinemaSeries) -> Double {
+        series.episodes.reduce(0) { $0 + ($1.file.duration ?? 0) }
+    }
+
     private func seriesKey(_ entry: CinemaEntry) -> String {
         if let providerID = entry.tmdbID {
             // TMDB 键保持原样，避免老库的片头设置与观看状态失效；
@@ -976,7 +1203,7 @@ extension LibraryStore {
         }
         contentRevision &+= 1
         guard AppSettings.shared.cinemaAutoScrape else { return }
-        await scrapeCinema(for: .local)
+        startCinemaScrape(for: .local)
     }
 
     /// 片头尾识别结果：`online` 为 true 表示来自 TheIntroDB 社区库。
@@ -1029,15 +1256,13 @@ extension LibraryStore {
         // 期间可能已经翻到别的视频：结果仍然缓存下来，但不要动当前播放位置。
         setCinemaIntroMark(mark, for: entry)
         guard cinemaPlaybackEntry?.id == entry.id,
-              !cinemaResumeApplied,
+              !viewerModel.playbackSession.resumeApplied,
               mark.introSeconds > 0 else { return }
         let current = viewerModel.videoPlayer.currentTime
         guard current > 1,
               current < 60,
               current < Double(mark.introSeconds) - 2 else { return }
-        cinemaPendingSeek = Double(mark.introSeconds)
-        cinemaSeekAttempts = 0
-        cinemaSeekRetryAt = .distantPast
+        viewerModel.playbackSession.requestIntroSkip(seconds: Double(mark.introSeconds))
     }
 
     private func onlineCinemaIntroMark(for entry: CinemaEntry) async -> CinemaIntroMark? {
@@ -1570,6 +1795,13 @@ extension LibraryStore {
         }
     }
 
+    /// 人物页作品悬停：按需补一次 TMDB 详情（简介 / 评分 / 类型 / 片长）。
+    /// 未入库的作品没有本地档案，只能靠这一步把悬停信息补丰富。
+    func cinemaCreditDetails(for credit: CinemaPersonCredit) async -> CinemaDetails? {
+        guard let tmdb = metadataSource(for: .tmdb) as? TMDBClient else { return nil }
+        return try? await tmdb.details(id: credit.tmdbID, isTV: credit.isTV)
+    }
+
     /// 设置页单源连通性测试：只测这一行，不影响其它源的结果。
     func testCinemaProvider(_ provider: CinemaProvider) async -> CinemaConnectionResult {
         guard let source = metadataSource(for: provider) else {
@@ -1630,6 +1862,28 @@ extension LibraryStore {
 
     // MARK: 刮削
 
+    /// 从 UI 启动刮削：任务被保存下来，用户可以在进度条上取消。
+    func startCinemaScrape(for scope: CinemaScope, force: Bool = false) {
+        guard !cinemaScrapeRunning else { return }
+        cinemaScrapeTask?.cancel()
+        cinemaScrapeTask = Task { [weak self] in
+            guard let self else { return }
+            await self.scrapeCinema(for: scope, force: force)
+            self.cinemaScrapeTask = nil
+        }
+    }
+
+    /// 取消正在进行的刮削：中断网络请求，并保留已经完成的结果。
+    func cancelCinemaScrape() {
+        cinemaScrapeTask?.cancel()
+        cinemaScrapeTask = nil
+        guard cinemaScrapeRunning else { return }
+        cinemaScrapeRunning = false
+        cinemaScrapeScope = nil
+        cinemaScrapeMessage = "已取消刮削，已完成的结果会保留"
+        showToast("已取消刮削")
+    }
+
     /// 刮削某一个影院（本地图库或某个网盘）。`force` 为 true 时连已刮削过的也重新匹配。
     func scrapeCinema(for scope: CinemaScope, force: Bool = false) async {
         guard !cinemaScrapeRunning else { return }
@@ -1668,6 +1922,9 @@ extension LibraryStore {
         var failures = 0
         var consecutiveFailures = 0
         var firstError: String?
+        // 每刮到一条就全量编码一次索引，几千条时会明显卡主线程；
+        // 这里按时间批量落盘，中断 / 取消 / 结束时再补一次，不丢结果。
+        var lastPersistAt = Date.distantPast
         for (index, candidate) in pending.enumerated() {
             if Task.isCancelled { break }
             if let nfoEntry = await cinemaNFOEntry(for: candidate, scope: scope) {
@@ -1703,7 +1960,7 @@ extension LibraryStore {
                                         title: "刮削中断 · 刮削源不可达",
                                         detail: Self.cinemaNetworkHint(for: firstError ?? "网络异常"),
                                         actionTitle: "重试") { [weak self] in
-                            Task { await self?.scrapeCinema(for: scope, force: true) }
+                            self?.startCinemaScrape(for: scope, force: true)
                         }
                         return
                     }
@@ -1712,10 +1969,29 @@ extension LibraryStore {
                 }
             }
             cinemaScrapeDone = index + 1
+            // 渲染让出主线程，保持进度条与网格可响应。
             if index % 5 == 0 {
-                persistCinemaIndex(for: scope)
                 await Task.yield()
             }
+            if Date().timeIntervalSince(lastPersistAt) >= 2 {
+                persistCinemaIndex(for: scope)
+                lastPersistAt = Date()
+            }
+        }
+
+        if Task.isCancelled {
+            persistCinemaIndex(for: scope)
+            cinemaScrapeRunning = false
+            cinemaScrapeScope = nil
+            cinemaScrapeMessage = "已取消刮削，已完成的结果会保留"
+            cinemaFolderRefreshToken &+= 1
+            let matched = (cinemaIndexes[scope] ?? [:]).values.filter { $0.matched }.count
+            finishCinemaTask(taskID,
+                             matched: matched,
+                             succeeded: false,
+                             message: "已取消",
+                             notify: false)
+            return
         }
 
         persistCinemaIndex(for: scope)
@@ -1827,14 +2103,6 @@ extension LibraryStore {
 
     // MARK: 播放
 
-    /// 起播位置：播放器装片前读一次，直接从目标位置开播，不再先播片头再跳。
-    func cinemaResumeOffset(for photoID: UUID) -> Double? {
-        guard viewerID == photoID,
-              let pending = cinemaPendingSeek,
-              pending > 3 else { return nil }
-        return pending
-    }
-
     /// 从影院直接进入查看器；不依赖该网盘目录当前是否加载。
     func openCinema(_ entry: CinemaEntry) {
         // 切换影片前先把上一条的进度落盘，避免连续点两部片时丢掉前一部的位置。
@@ -1842,9 +2110,7 @@ extension LibraryStore {
         let photo = anyPhoto(id: entry.file.photoID) ?? entry.file.photoItem
         cinemaPlaybackPhoto = photo
         cinemaPlaybackEntry = entry
-        cinemaOutroSkippedEntry = nil
-        // 换片瞬间播放器里还挂着上一个视频：先停掉，否则续播的进度回调会拿旧片的时间
-        // 直接 seek，待跳转位置被当成已完成清空，等新片装进来时只能从头播。
+        // 换片瞬间播放器里还挂着上一个视频：先停掉，避免旧片的进度回调写进新条目。
         if viewerID != photo.id {
             viewerModel.videoPlayer.stop()
         }
@@ -1852,30 +2118,7 @@ extension LibraryStore {
         if cinemaPrewarmedStream?.photoID != entry.id {
             discardPrewarmedCinemaStream()
         }
-        let shouldResume = UserDefaults.standard.object(forKey: "cinema_resume_playback") as? Bool ?? true
-        // 单集设置优先，没有单独设置时沿用整部剧的默认值。
-        let introSeconds = entry.kind == .tv ? cinemaIntroMark(for: entry).introSeconds : 0
-        if shouldResume,
-           let record = cinemaProgress[entry.id],
-           !record.isFinished,
-           record.position > 3,
-           record.duration > record.position {
-            cinemaResumeApplied = true
-            cinemaPendingSeek = min(record.position, max(0, record.duration - 3))
-            cinemaSeekAttempts = 0
-            cinemaSeekRetryAt = .distantPast
-            Diagnostics.record("续播 \(entry.subtitle) → \(Int(cinemaPendingSeek ?? 0))s")
-        } else if introSeconds > 0 {
-            cinemaResumeApplied = false
-            cinemaPendingSeek = Double(introSeconds)
-            cinemaSeekAttempts = 0
-            cinemaSeekRetryAt = .distantPast
-        } else {
-            cinemaResumeApplied = false
-            cinemaPendingSeek = nil
-        }
         openViewer(photo.id)
-        beginCinemaProgressTracking(for: entry)
         viewerModel.videoPlaybackUI.subtitleQuery = CinemaSubtitleQuery(title: entry.title,
                                                                         season: entry.season,
                                                                         episode: entry.episode)
@@ -2455,13 +2698,15 @@ extension LibraryStore {
     func finishCinemaTask(_ id: UUID,
                           matched: Int,
                           succeeded: Bool,
-                          message: String) {
+                          message: String,
+                          notify: Bool = true) {
         guard let index = cinemaTasks.firstIndex(where: { $0.id == id }) else { return }
         cinemaTasks[index].finishedAt = Date()
         cinemaTasks[index].matched = matched
         cinemaTasks[index].succeeded = succeeded
         cinemaTasks[index].message = message
         persistCinemaTasks()
+        guard notify else { return }
         // 任务结果同时归档到通知中心：同一任务 1 分钟内合并，不刷屏。
         let record = cinemaTasks[index]
         recordCinemaNotification(succeeded ? .success : .failure,
@@ -2477,7 +2722,7 @@ extension LibraryStore {
             showToast("来源已移除，无法重试")
             return
         }
-        await scrapeCinema(for: scope, force: true)
+        startCinemaScrape(for: scope, force: true)
     }
 
     /// 通知中心里的「重试」只带作用域键，从这里还原成影院并重跑。
@@ -2486,7 +2731,7 @@ extension LibraryStore {
             postCinemaToast(.failure, title: "来源已移除，无法重试")
             return
         }
-        await scrapeCinema(for: scope, force: true)
+        startCinemaScrape(for: scope, force: true)
     }
 
     func clearCinemaTasks() {

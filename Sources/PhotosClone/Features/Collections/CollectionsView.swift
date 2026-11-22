@@ -1848,6 +1848,11 @@ struct CloudStoragesOverviewView: View {
                     store.navigate(to: .cloudMount(mount.id))
                 }
             }
+            if mount.kind.supportsAccessScope {
+                Button("编辑接入范围…") {
+                    store.presentCloudWizard(editing: mount)
+                }
+            }
             Button(connectionActionTitle(for: mount)) {
                 if mount.kind == .webdav || mount.kind == .smb {
                     store.presentCloudSheet(mount)
@@ -1947,6 +1952,7 @@ struct CloudStoragesOverviewView: View {
         case .aliyun: return Color(red: 1.00, green: 0.60, blue: 0.30)
         case .baidu: return Color(red: 0.26, green: 0.54, blue: 0.98)
         case .quark: return Color(red: 0.44, green: 0.50, blue: 1.00)
+        case .pan115: return Color(red: 0.18, green: 0.56, blue: 0.96)
         }
     }
 
@@ -1959,7 +1965,7 @@ struct CloudStoragesOverviewView: View {
     private func connectionActionTitle(for mount: CloudMount) -> String {
         switch mount.kind {
         case .webdav, .smb: return "编辑连接…"
-        case .quark, .aliyun: return "更新 Cookie…"
+        case .quark, .aliyun, .pan115: return "更新 Cookie…"
         case .baidu: return "重新授权…"
         }
     }

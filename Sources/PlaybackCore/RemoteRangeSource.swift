@@ -19,16 +19,16 @@ final class RemoteRangeSource {
     private var headers: [String: String]
     private let trustSelfSigned: Bool
     private let cacheDirectory: URL
-    /// 分块大小：太小会放大请求数，太大首段等待变长。
-    private let chunkSize: Int64 = 8 * 1024 * 1024
+    /// 分块大小：太小会放大请求数，太大首段等待变长。由缓冲档位注入。
+    private let chunkSize: Int64
     /// 单次响应上限：避免 ffmpeg 发 `bytes=0-` 时一次性读进几十 GB。
-    private let maxResponseBytes: Int64 = 16 * 1024 * 1024
+    private let maxResponseBytes: Int64
     /// 只保留最近若干块，避免把整部影片（几十 GB）落在磁盘上。
-    private let retainedChunks: Int64 = 8
+    private let retainedChunks: Int64
     /// 并行预取窗口：千兆网下单条连接往往吃不满，多开几路才能把带宽打满。
-    private let prefetchWindow = 6
+    private var prefetchWindow: Int
     /// 同时在途的分块下载上限。
-    private let maxParallelChunks = 6
+    private var maxParallelChunks: Int
 
     private let downloadQueue = DispatchQueue(label: "luma.remote.range.download",
                                               qos: .userInitiated,
@@ -36,6 +36,8 @@ final class RemoteRangeSource {
     private let resolveLock = NSLock()
     private let stateLock = NSLock()
     private var listenFD: Int32 = -1
+    /// 已由 stop() 摘下的监听 fd：只由接收线程关闭，避免 fd 号被新服务复用后误 accept。
+    private var closingFD: Int32 = -1
     private var session: URLSession?
     /// 共享的 Range 下载会话：连接复用 + 多路并发，避免每块都新建 URLSession。
     private var rangeSession: RangeFetchSession?
@@ -48,22 +50,42 @@ final class RemoteRangeSource {
     private var servedChunk: Int64 = 0
     private var failure: String?
     private var closed = false
+    private let log: (String) -> Void
 
     private(set) var port: UInt16 = 0
     /// 网络 / 鉴权层失败：调用方据此判断"不是编码问题，别再尝试转码兜底"。
     var onFailure: ((String) -> Void)?
     /// 云盘直链过期时重新解析地址（返回新的 URL 与请求头）。
     var onAuthFailure: (() -> (URL, [String: String])?)?
+    /// 每完成一块下载上报一次吞吐（bit/s），供缓冲档位自适应使用。
+    var onThroughput: ((Double) -> Void)?
 
-    init(upstream: URL, headers: [String: String], trustSelfSigned: Bool, cacheDirectory: URL) {
+    init(upstream: URL, headers: [String: String], trustSelfSigned: Bool,
+         cacheDirectory: URL,
+         profile: BufferProfile = .defaultProfile,
+         log: @escaping (String) -> Void) {
         self.upstream = upstream
         self.headers = headers
         self.trustSelfSigned = trustSelfSigned
         self.cacheDirectory = cacheDirectory
+        self.chunkSize = profile.chunkSize
+        self.maxResponseBytes = max(16 * 1024 * 1024, profile.chunkSize * 2)
+        self.retainedChunks = profile.retainedChunks
+        self.prefetchWindow = profile.prefetchWindow
+        self.maxParallelChunks = profile.maxParallelChunks
+        self.log = log
     }
 
     deinit {
         stop()
+    }
+
+    /// 播放中按网络自适应结果调整预取强度；分块大小保持不变，避免正在下载的块尺寸不一致。
+    func updateProfile(_ profile: BufferProfile) {
+        stateLock.lock()
+        prefetchWindow = profile.prefetchWindow
+        maxParallelChunks = profile.maxParallelChunks
+        stateLock.unlock()
     }
 
     /// 绑定 127.0.0.1 的随机端口，返回可直接交给 ffmpeg 的地址。
@@ -124,13 +146,14 @@ final class RemoteRangeSource {
         closed = true
         let fd = listenFD
         listenFD = -1
+        if fd >= 0 { closingFD = fd }
         // 唤醒所有等块的线程，让它们尽快退出。
         let waiters = Array(chunkWaiters.values)
         chunkWaiters.removeAll()
         stateLock.unlock()
         if fd >= 0 {
+            // fd 由接收线程关闭：这里只 shutdown 唤醒阻塞中的 accept / poll。
             shutdown(fd, SHUT_RDWR)
-            close(fd)
         }
         for waiter in waiters { waiter.signal() }
         session?.invalidateAndCancel()
@@ -149,11 +172,28 @@ final class RemoteRangeSource {
     // MARK: - 接收
 
     private func acceptLoop() {
+        defer { closeListenSocket() }
         while true {
             stateLock.lock()
             let fd = listenFD
             stateLock.unlock()
             guard fd >= 0 else { return }
+
+            // poll + 超时：stop() 之后最迟 250ms 退出，不会留下卡死在 accept 的线程。
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, 250)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            if ready == 0 { continue }
+            if descriptor.revents & Int16(POLLNVAL) != 0 { return }
+
+            stateLock.lock()
+            let stillOpen = listenFD == fd
+            stateLock.unlock()
+            guard stillOpen else { return }
+
             let client = accept(fd, nil, nil)
             if client < 0 {
                 if errno == EINTR { continue }
@@ -161,6 +201,20 @@ final class RemoteRangeSource {
             }
             Thread.detachNewThread { [weak self] in self?.serve(client) }
         }
+    }
+
+    /// 监听 fd 只由接收线程关闭，停止时另一线程不会拿到被复用的 fd 号。
+    private func closeListenSocket() {
+        stateLock.lock()
+        var fd = listenFD
+        listenFD = -1
+        if fd < 0 {
+            fd = closingFD
+            closingFD = -1
+        }
+        stateLock.unlock()
+        guard fd >= 0 else { return }
+        close(fd)
     }
 
     private func serve(_ client: Int32) {
@@ -217,7 +271,7 @@ final class RemoteRangeSource {
                 close(client)
                 return
             }
-            let requested = Self.parseRange(rangeLine)
+            let requested = HTTPByteRange.parse(rangeLine, total: total)
             let start = requested?.start ?? 0
             guard start < total else {
                 send(client, status: "416 Range Not Satisfiable", headers: [:], body: Data())
@@ -258,7 +312,7 @@ final class RemoteRangeSource {
             }
             let ok = streamChunks(to: client, from: start, to: total - 1, total: total)
             if !ok {
-                Diagnostics.record("网盘分段流中断：\(start)-\(total - 1)")
+                log("网盘分段流中断：\(start)-\(total - 1)")
             }
             close(client)
         }
@@ -315,9 +369,19 @@ final class RemoteRangeSource {
 
         // 先用 HEAD 拿元数据：不要对有 Range 的请求直接 GET，否则上游忽略 Range 时会把整部片子拉下来。
         var response = probe(method: "HEAD", range: nil)
+        let headResponse = response
+        /// HEAD 200 的 Content-Length 才是整文件长度；206 的 Content-Length 只是分片长度。
+        var headTotal: Int64?
+        if let head = headResponse, head.statusCode == 200,
+           let text = head.value(forHTTPHeaderField: "Content-Length"),
+           let total = Int64(text), total > 0 {
+            headTotal = total
+        }
+        var probedWithRange = false
         if response == nil || !(200...299).contains(response?.statusCode ?? 0) {
             // 少数网盘不支持 HEAD（405/403）：只探测 2 个字节，拿到响应头就取消，不下载正文。
             response = probe(method: "GET", range: 0...1)
+            probedWithRange = true
         }
         guard let response else {
             record("网盘没有返回有效响应")
@@ -333,24 +397,34 @@ final class RemoteRangeSource {
             return nil
         }
 
-        var mode: UpstreamMode = .sequential
+        // 文件总长的可靠来源只有两个：Content-Range 的 "/total"，或 HEAD 200 的 Content-Length。
+        // 206 响应的 Content-Length 是本次分片的字节数（探测时就是 2），绝不能当总长，
+        // 否则本地代理会按 2 字节的文件对外服务。
+        let contentRangeTotal: Int64? = [response, headResponse]
+            .compactMap { $0 }
+            .compactMap { item in
+                item.value(forHTTPHeaderField: "Content-Range")?
+                    .split(separator: "/").last
+                    .flatMap { Int64($0.trimmingCharacters(in: .whitespaces)) }
+            }
+            .first { $0 > 0 }
         let acceptsRange = (response.value(forHTTPHeaderField: "Accept-Ranges") ?? "").lowercased().contains("bytes")
-        if let contentRange = response.value(forHTTPHeaderField: "Content-Range"),
-           let total = contentRange.split(separator: "/").last.flatMap({ Int64($0) }) {
+
+        var mode: UpstreamMode = .sequential
+        if let total = contentRangeTotal {
             mode = .ranged(total)
-        } else if response.statusCode == 206,
-                  let text = response.value(forHTTPHeaderField: "Content-Length"),
-                  let total = Int64(text) {
-            // 206 但没有 Content-Range：总长度不可靠，退化为顺序转发。
-            mode = total > 0 ? .ranged(total) : .sequential
-        } else if acceptsRange,
-                  let text = response.value(forHTTPHeaderField: "Content-Length"),
-                  let total = Int64(text), total > 0 {
-            mode = .ranged(total)
-        } else if let text = response.value(forHTTPHeaderField: "Content-Length"),
-                  let total = Int64(text), total > 0 {
-            // HEAD 没声明 Accept-Ranges 不代表不支持：用 2 字节的 Range 请求验证一次。
-            if let verify = probe(method: "GET", range: 0...1), verify.statusCode == 206 {
+        } else if response.statusCode == 206 {
+            // 支持 Range 却不给 Content-Range：拿不到可靠总长，只能顺序转发；
+            // 至少能从头播，不会因为把分片长度当总长而整片失败。
+            log("网盘返回 206 但缺少 Content-Range，无法确定文件总长，已退化为顺序播放")
+        } else if probedWithRange {
+            // 探测请求本身就带 Range 却回了 200：上游忽略 Range。
+        } else if let total = headTotal ?? response.value(forHTTPHeaderField: "Content-Length")
+                    .flatMap({ Int64($0) }), total > 0 {
+            if acceptsRange {
+                mode = .ranged(total)
+            } else if let verify = probe(method: "GET", range: 0...1), verify.statusCode == 206 {
+                // HEAD 没声明 Accept-Ranges 不代表不支持：用 2 字节的 Range 请求验证一次。
                 mode = .ranged(total)
             }
         }
@@ -387,7 +461,7 @@ final class RemoteRangeSource {
         let response = finished ? delegate.response : nil
         if allowRefresh, let status = response?.statusCode, status == 401 || status == 403,
            refreshCredentials() {
-            Diagnostics.record("网盘地址已过期（HTTP \(status)），重新解析后重试")
+            log("网盘地址已过期（HTTP \(status)），重新解析后重试")
             return probe(method: method, range: range, allowRefresh: false)
         }
         return response
@@ -430,7 +504,7 @@ final class RemoteRangeSource {
         }
         let status = outcome.response?.statusCode
         if allowRefresh, let status, status == 401 || status == 403, refreshCredentials() {
-            Diagnostics.record("网盘地址已过期（HTTP \(status)），重新解析后重试分块")
+            log("网盘地址已过期（HTTP \(status)），重新解析后重试分块")
             return fetch(range: range, timeout: timeout, allowRefresh: false)
         }
         if let message = outcome.failure {
@@ -441,15 +515,6 @@ final class RemoteRangeSource {
             record("读取网盘数据超时")
         }
         return nil
-    }
-
-    /// 返回请求起点与可选终点；终点为 nil 表示开放式请求（bytes=X-）。
-    private static func parseRange(_ line: String?) -> (start: Int64, end: Int64?)? {
-        guard let line, let spec = line.split(separator: "=").last else { return nil }
-        let bounds = spec.split(separator: "-", omittingEmptySubsequences: false)
-        guard let start = Int64(bounds.first ?? "0"), start >= 0 else { return nil }
-        let end = bounds.count > 1 ? Int64(bounds[1]) : nil
-        return (start, end)
     }
 
     // MARK: - 分块缓存
@@ -517,7 +582,12 @@ final class RemoteRangeSource {
         var success = false
         let start = index * chunkSize
         let end = min(start + chunkSize - 1, total - 1)
+        let startedAt = Date()
         if let (data, _) = fetch(range: start...end, timeout: 120), !data.isEmpty {
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if elapsed > 0.05 {
+                onThroughput?(Double(data.count) * 8 / elapsed)
+            }
             do {
                 try data.write(to: chunkFile(index), options: .atomic)
                 success = true

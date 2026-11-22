@@ -33,18 +33,27 @@ struct CinemaTrailerOverlay: View {
     }
 
     var body: some View {
-        ZStack {
-            backdrop
-            VStack(spacing: 16) {
-                header
-                stage
-                if trailers.count > 1 {
-                    picker
+        GeometryReader { proxy in
+            // 画面宽度同时受可视区宽高约束：宽屏尽量铺满，矮窗口自动缩小到能完整显示 16:9。
+            let horizontal: CGFloat = 34
+            let vertical: CGFloat = 28
+            let chrome: CGFloat = trailers.count > 1 ? 180 : 134
+            let availableWidth = max(320, proxy.size.width - horizontal * 2)
+            let widthByHeight = max(320, (proxy.size.height - chrome) * 16.0 / 9.0)
+            let contentWidth = min(availableWidth, widthByHeight)
+
+            ZStack {
+                backdrop
+                VStack(spacing: 16) {
+                    header
+                    stage
+                    if trailers.count > 1 {
+                        picker
+                    }
                 }
+                .frame(width: contentWidth)
+                .padding(.vertical, vertical)
             }
-            .frame(maxWidth: 1040)
-            .padding(.horizontal, 34)
-            .padding(.vertical, 28)
         }
         .task(id: reloadToken) { await load() }
         .onDisappear { playback.stop() }
@@ -150,7 +159,7 @@ struct CinemaTrailerOverlay: View {
             }
         }
         .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .frame(maxWidth: 980)
+        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -238,7 +247,7 @@ struct CinemaTrailerOverlay: View {
             .padding(.vertical, 2)
         }
         .scrollIndicators(.hidden)
-        .frame(maxWidth: 980)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: 加载

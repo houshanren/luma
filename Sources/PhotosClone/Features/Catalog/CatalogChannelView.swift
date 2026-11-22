@@ -185,10 +185,13 @@ struct CatalogChannelView: View {
             }
         }
         .task(id: sourceID) {
-            // 关闭播放器后回到详情：有代打开条目就直接铺开，否则回到列表。
+            // 关闭播放器后回到详情：有代打开条目就直接铺开；
+            // 否则若上次退出时停在详情页，这次进入同一个源也直接还原；都没有才回列表。
             if let pending = catalog.pendingInlineItem {
                 catalog.pendingInlineItem = nil
                 catalog.inlineDetailItem = pending
+            } else if let restored = catalog.consumeLaunchInlineDetail(for: sourceID) {
+                catalog.inlineDetailItem = restored
             } else {
                 catalog.inlineDetailItem = nil
             }

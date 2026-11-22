@@ -41,6 +41,8 @@ extension LibraryStore {
                                                   returning: [(UUID, String?, Int64?)].self) { group in
                     for photo in chunk {
                         group.addTask(priority: .utility) {
+                            // 库外媒体（蓝光原盘）没有 originals 副本，不能按路径哈希整张盘。
+                            guard photo.externalPath == nil else { return (photo.id, nil, nil) }
                             let url = LibraryPaths.originalURL(for: photo)
                             guard FileManager.default.fileExists(atPath: url.path) else {
                                 return (photo.id, nil, nil)

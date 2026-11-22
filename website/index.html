@@ -612,7 +612,7 @@
       <div class="tool-deck-head">
         <div>
           <p class="eyebrow">工具清单</p>
-          <h3>26 个工具，7 类操作。</h3>
+          <h3>55 个工具，9 类操作。</h3>
         </div>
         <p>模型通过 OpenAI function calling 调用本地工具。写操作先弹窗确认，再经 <code>LibraryStore</code> 落盘；失败或取消会如实回传，不伪造成功。</p>
       </div>
@@ -653,9 +653,19 @@
           <p>把项目移入最近删除，或从最近删除恢复；不提供永久删除。</p>
           <div class="tool-tags"><span>trash_photos</span><span>restore_photos</span></div>
         </div>
+        <div class="tool-group">
+          <div class="tool-group-head"><b>影院</b><em>20</em></div>
+          <p>检索本库影片 / 剧集 / 演员，查看继续观看、观看记录、清单、任务与通知；切换影院分段与筛选、播放下一集；收藏 / 想看 / 评分、管理清单、忽略或恢复视频、补详情或重新刮削、跳过片头、清理观看记录。</p>
+          <div class="tool-tags"><span>list_cinema_items</span><span>list_cinema_scopes</span><span>cinema_tree</span><span>search_cinema_library</span><span>list_cinema_series</span><span>list_cinema_lists</span><span>list_cinema_activity</span><span>navigate_cinema</span><span>play_cinema</span><span>search_cinema_candidates</span><span>apply_cinema_match</span><span>scrape_cinema</span><span>match_cinema</span><span>update_cinema_state</span><span>manage_cinema_list</span><span>ignore_cinema</span><span>restore_cinema_ignored</span><span>refresh_cinema_metadata</span><span>set_cinema_intro_skip</span><span>manage_cinema_progress</span></div>
+        </div>
+        <div class="tool-group">
+          <div class="tool-group-head"><b>网络资源</b><em>9</em></div>
+          <p>查看已接入站点、跨源搜索、今日更新、关注与稍后看；打开源的首页 / 排行 / 分类；播放条目；加入或移出稍后看；关注人物 / 片商 / 模特。</p>
+          <div class="tool-tags"><span>list_catalog_sources</span><span>search_catalog</span><span>catalog_new_today</span><span>list_catalog_following</span><span>list_catalog_watchlist</span><span>browse_catalog</span><span>play_catalog_item</span><span>set_catalog_watchlist</span><span>follow_catalog_person</span></div>
+        </div>
       </div>
 
-      <p class="tool-foot">19 个写操作全部需确认 · 只读来源、官方「照片」库与网盘按权限矩阵限制 · 永久删除、导入、编辑原图不在工具集内</p>
+      <p class="tool-foot">31 个写操作全部需确认 · 只读来源、官方「照片」库与网盘按权限矩阵限制 · 永久删除、导入、编辑原图不在工具集内 · 影院忽略与清理观看记录不会删除原视频</p>
     </div>
   </div>
 
@@ -1038,7 +1048,7 @@
           <tr data-cat="smart">
             <th scope="row">智能助手（可选）</th>
             <td>—</td>
-            <td class="luma">自带 API Key；<b>26 个工具</b>，检索 / 相簿 / 文件夹 / 图片视频 / 压缩 / 美化 / 最近删除，19 个写操作先确认</td>
+            <td class="luma">自带 API Key；<b>55 个工具</b>，检索 / 相簿 / 文件夹 / 图片视频 / 压缩 / 美化 / 最近删除 / 影院 / 网络资源，31 个写操作先确认</td>
           </tr>
 
           <tr data-cat="storage">

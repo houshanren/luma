@@ -78,8 +78,8 @@ enum RouPNGCodec {
         if raw.count > 6, raw.first == 0x78 {
             raw = Data(raw.dropFirst(2).dropLast(4))
         }
-        var capacity = max(64 * 1024, raw.count * 6)
-        for _ in 0..<7 {
+        var capacity = max(64 * 1024, raw.count * 8)
+        for _ in 0..<10 {
             var output = Data(count: capacity)
             let written = output.withUnsafeMutableBytes { destination -> Int in
                 guard let outputBase = destination.bindMemory(to: UInt8.self).baseAddress
@@ -92,7 +92,14 @@ enum RouPNGCodec {
                                                      nil, COMPRESSION_ZLIB)
                 }
             }
-            if written > 0 { return output.prefix(written) }
+            if written > 0 {
+                // 输出缓冲区刚好写满时，`compression_decode_buffer` 会直接返回缓冲区大小，
+                // 而不是报错：播放列表一旦超过 64 KB 就会被静默截断（尾部丢 ENDLIST，
+                // AVPlayer 当直播处理，时长变 0、进度条无法拖动）。必须扩容重解。
+                if written < capacity { return output.prefix(written) }
+                capacity *= 2
+                continue
+            }
             capacity *= 2
         }
         return nil

@@ -12,6 +12,7 @@ enum CloudKind: String, Codable {
     case aliyun
     case baidu
     case quark
+    case pan115
 
     var title: String {
         switch self {
@@ -20,11 +21,17 @@ enum CloudKind: String, Codable {
         case .aliyun: return "阿里云盘"
         case .baidu: return "百度网盘"
         case .quark: return "夸克网盘"
+        case .pan115: return "115 网盘"
         }
     }
 
     /// 只有 WebDAV 允许写入；SMB 与官方网盘均为只读。
     var supportsWrite: Bool { self == .webdav }
+
+    /// 是否支持在向导里选择接入范围与排除目录（Cookie 模式与 SMB）。
+    var supportsAccessScope: Bool {
+        self == .smb || self == .aliyun || self == .quark || self == .pan115
+    }
 
     /// 需要 OAuth 令牌的官方网盘（夸克使用浏览器 Cookie）。
     var usesOAuth: Bool { self == .aliyun || self == .baidu }
@@ -37,6 +44,7 @@ enum CloudKind: String, Codable {
         case .aliyun: return "cloud"
         case .baidu: return "cloud.fill"
         case .quark: return "square.stack.3d.up.fill"
+        case .pan115: return "externaldrive.fill"
         }
     }
 
@@ -47,6 +55,7 @@ enum CloudKind: String, Codable {
         case .aliyun: return .aliyun
         case .baidu: return .baidu
         case .quark: return .quark
+        case .pan115: return .pan115
         }
     }
 
@@ -58,6 +67,7 @@ enum CloudKind: String, Codable {
         case .aliyun: return .aliyunCookie
         case .baidu: return .baidu
         case .quark: return .quark
+        case .pan115: return .pan115
         }
     }
 
@@ -80,6 +90,22 @@ struct CloudCrumb: Identifiable, Hashable {
     let name: String
 }
 
+/// 接入范围里的一个目录（Cookie 模式可在向导里多选）。
+struct CloudScopeRoot: Codable, Hashable, Identifiable {
+    var path: String
+    var name: String
+
+    var id: String { path }
+}
+
+/// 向导里的目录勾选：额外记录当前浏览路径上的祖先，便于多选时去重。
+struct CloudScopePick: Identifiable, Hashable {
+    var root: CloudScopeRoot
+    var ancestors: [String]
+
+    var id: String { root.path }
+}
+
 /// 一个网络存储挂载点。
 struct CloudMount: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
@@ -96,11 +122,17 @@ struct CloudMount: Identifiable, Codable, Hashable {
     var trustSelfSigned: Bool = false
     /// 鉴权方式：默认官方 OAuth；Cookie 模式不需要开发者应用。
     var authMode: CloudAuthMode = .oauth
+    /// 接入范围：为空表示整个网盘；否则只扫描这些目录（Cookie 模式与 SMB 共用）。
+    var scopeRoots: [CloudScopeRoot] = []
+    /// 排除目录：始终跳过这些目录（及其子目录）。
+    var excludedRoots: [CloudScopeRoot] = []
 
     init(id: UUID = UUID(), kind: CloudKind = .webdav, name: String,
          baseURL: String = "", username: String = "", remoteDriveID: String? = nil,
          createdAt: Date = Date(), lastPath: String = "", scanAll: Bool = false,
-         trustSelfSigned: Bool = false, authMode: CloudAuthMode = .oauth) {
+         trustSelfSigned: Bool = false, authMode: CloudAuthMode = .oauth,
+         scopeRoots: [CloudScopeRoot] = [],
+         excludedRoots: [CloudScopeRoot] = []) {
         self.id = id
         self.kind = kind
         self.name = name
@@ -112,6 +144,8 @@ struct CloudMount: Identifiable, Codable, Hashable {
         self.scanAll = scanAll
         self.trustSelfSigned = trustSelfSigned
         self.authMode = authMode
+        self.scopeRoots = scopeRoots
+        self.excludedRoots = excludedRoots
     }
 
     init(from decoder: Decoder) throws {
@@ -127,6 +161,8 @@ struct CloudMount: Identifiable, Codable, Hashable {
         scanAll = (try? container.decodeIfPresent(Bool.self, forKey: .scanAll)) ?? false
         trustSelfSigned = (try? container.decodeIfPresent(Bool.self, forKey: .trustSelfSigned)) ?? false
         authMode = (try? container.decodeIfPresent(CloudAuthMode.self, forKey: .authMode)) ?? .oauth
+        scopeRoots = (try? container.decodeIfPresent([CloudScopeRoot].self, forKey: .scopeRoots)) ?? []
+        excludedRoots = (try? container.decodeIfPresent([CloudScopeRoot].self, forKey: .excludedRoots)) ?? []
     }
 }
 
@@ -220,6 +256,10 @@ struct CloudScanRecord: Codable {
     var folderPath: String?
     /// 视频编码（Aliyun list 自带），恢复快照后转封装仍能写对 hvc1 标签。
     var codec: String?
+    /// EXIF 拍摄时间：与远端修改时间分开保存，恢复后时间轴不会被「最近保存」覆盖。
+    var capturedAt: Date? = nil
+    /// 加入 / 保存时间（远端修改时间）。
+    var addedAt: Date? = nil
 }
 
 /// 某个网盘挂载的全盘扫描结果（落当前图库的 `derived_reports`，重开即可先显示）。
@@ -233,6 +273,8 @@ struct CloudScanSnapshot: Codable {
     var complete: Bool? = nil
     /// 路径语义版本：老版本 WebDAV 子目录条目只存文件名，快照需要作废重扫。
     var pathVersion: Int? = nil
+    /// 接入范围签名（选中的目录路径集合）：范围变化后旧快照不能再用。
+    var scopeSignature: String? = nil
 }
 
 /// WebDAV 目录中的一项。

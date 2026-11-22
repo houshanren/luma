@@ -40,7 +40,13 @@ final class CatalogBrowserModel: ObservableObject {
     @Published var pendingInlineItem: CatalogItem?
     /// 当前在频道页里内联展示的详情条目（nil = 列表）。
     /// 提到模型里是为了让窗口工具栏也能读到：返回按钮与详情标题融进顶栏胶囊。
-    @Published var inlineDetailItem: CatalogItem?
+    /// 写入时顺手落盘：退出应用后再打开，仍停在原来那一页详情。
+    @Published var inlineDetailItem: CatalogItem? {
+        didSet {
+            guard oldValue?.id != inlineDetailItem?.id else { return }
+            persistInlineDetail()
+        }
+    }
     /// 频道详情里叠开的人物 / 片商档案（nil = 停留在详情页）。
     /// 工具栏最左的返回按钮据此先退回详情，而不是直接跳出到频道列表。
     @Published var detailPersonTarget: CatalogDetailPersonTarget?
@@ -150,6 +156,8 @@ final class CatalogBrowserModel: ObservableObject {
     static let lastViewKey = "catalog.lastView.v2"
     /// 上次浏览的源：重启后直接回到它，而不是永远落到第一个启用的源。
     static let selectedSourceKey = "catalog.selectedSource.v1"
+    /// 退出时停在的频道详情：重启后第一次进入对应源时铺开这一页。
+    static let inlineDetailKey = "catalog.inlineDetail.v1"
     static let spotlightModeKey = "catalog.spotlightMode.v1"
     static let calendarSelectedDayKey = "catalog.calendar.selectedDay.v1"
     static let calendarScanAtKey = "catalog.calendar.scanAt.v1"
@@ -215,9 +223,48 @@ final class CatalogBrowserModel: ObservableObject {
 
     init() {}
 
+    // MARK: 退出时记住当前详情
+
+    /// 退出应用时正打开着的频道详情：启动后第一次进入对应源时交给频道页铺开，
+    /// 只还原一次，之后切换源或返回列表都不再出现。
+    private var launchInlineDetail: (sourceID: UUID, item: CatalogItem)?
+    /// 加载图库配置期间不要回写详情：清空旧状态会误删上次保存的那一页。
+    private var isLoadingLibraryState = false
+
+    private struct StoredInlineDetail: Codable {
+        let sourceID: UUID
+        let item: CatalogItem
+    }
+
+    /// 频道页进入某个源时调用：返回上次退出时停的详情（只给一次）。
+    func consumeLaunchInlineDetail(for sourceID: UUID) -> CatalogItem? {
+        defer { launchInlineDetail = nil }
+        guard let saved = launchInlineDetail, saved.sourceID == sourceID else { return nil }
+        return saved.item
+    }
+
+    private static func savedInlineDetail() -> (sourceID: UUID, item: CatalogItem)? {
+        guard let data = CatalogStore.data(forKey: Self.inlineDetailKey),
+              let saved = try? JSONDecoder().decode(StoredInlineDetail.self, from: data) else { return nil }
+        return (saved.sourceID, saved.item)
+    }
+
+    private func persistInlineDetail() {
+        guard !isLoadingLibraryState else { return }
+        guard let item = inlineDetailItem, let sourceID = selectedSourceID,
+              let data = try? JSONEncoder().encode(StoredInlineDetail(sourceID: sourceID, item: item)) else {
+            CatalogStore.set(nil, forKey: Self.inlineDetailKey)
+            return
+        }
+        CatalogStore.set(data, forKey: Self.inlineDetailKey)
+    }
+
     /// 读取当前图库自己的网络资源配置。
     /// 图库切换后由宿主调用：先清空上一个图库的状态，再加载新图库的数据。
     func loadForCurrentLibrary() {
+        let savedInline = Self.savedInlineDetail()
+        isLoadingLibraryState = true
+        defer { isLoadingLibraryState = false }
         task?.cancel()
         requestToken &+= 1
         sources = []
@@ -308,6 +355,10 @@ final class CatalogBrowserModel: ObservableObject {
         }
         CatalogStore.string(forKey: Self.selectedSourceKey, value: selectedSourceID?.uuidString)
         restoreLastView()
+        // 上次退出时停在详情页：等频道页第一次进入这个源时再铺开。
+        if let savedInline, savedInline.sourceID == selectedSourceID {
+            launchInlineDetail = savedInline
+        }
 
         // 后台预热更新日历：避开首屏请求，稍后且用户空闲时逐源补录历史日期。
         Task { [weak self] in

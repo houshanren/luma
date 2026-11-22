@@ -43,9 +43,10 @@ if [ -d Resources/Models ]; then
 fi
 chmod +x "$APP/Contents/MacOS/$EXEC"
 
-# MKV / AVI 等容器系统无法解码，App 内置静态 ffmpeg / ffprobe 负责转封装与抽帧。
-# ffmpeg 使用带 libzimg（zscale + tonemap）的静态包：HDR 源转码时能做色调映射，
-# 不再依赖用户自行安装 Homebrew ffmpeg。首次构建下载到 Vendor/ffmpeg 并复用（不提交仓库）。
+# MKV / AVI 等容器系统无法解码，App 内置 ffmpeg / ffprobe 负责转封装与抽帧。
+# 首选把 Homebrew 的 ffmpeg-full（带 libplacebo）连同全部 dylib 与 MoltenVK 打进来：
+# 杜比视界 Profile 5 的 DOVI RPU 只有 libplacebo 能应用，打进包内用户无需自行安装。
+# 没装 ffmpeg-full 时退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
 FFMPEG_DIR="Vendor/ffmpeg"
 mkdir -p "$FFMPEG_DIR"
 case "$(uname -m)" in
@@ -101,22 +102,75 @@ fetch_probe() {
     chmod +x "$dest"
     rm -rf "$work"
 }
-fetch_ffmpeg
-fetch_probe
-if [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ]; then
-    mkdir -p "$APP/Contents/Resources/bin"
-    cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$APP/Contents/Resources/bin/"
-    chmod +x "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"
+# 优先打包带 libplacebo 的 ffmpeg-full：杜比视界 Profile 5 的 DOVI RPU 只有它能应用。
+# 找不到时退回原来的静态 ffmpeg（P5 会偏绿，其余 SDR / HDR10 照常）。
+# 优先使用 Vendor 里已生成的杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK + 全部 dylib）。
+# 缺失时调用 Tools/make_vendor_runtime.sh 从本机 Homebrew 现场生成一份；
+# 都没有才退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
+DV_RUNTIME="Vendor/ffmpeg-dv"
+BUNDLED_DV=0
+if [ ! -x "$DV_RUNTIME/bin/ffmpeg" ]; then
+    sh Tools/make_vendor_runtime.sh >/dev/null 2>&1 || true
+fi
+if [ -x "$DV_RUNTIME/bin/ffmpeg" ]; then
+    echo "复制杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK）…"
+    cp -R "$DV_RUNTIME/bin" "$DV_RUNTIME/lib" "$APP/Contents/Resources/"
+    if [ -f "$DV_RUNTIME/VERSIONS.txt" ]; then
+        cp "$DV_RUNTIME/VERSIONS.txt" "$APP/Contents/Resources/FFmpeg-VERSIONS.txt"
+    fi
+    BUNDLED_DV=1
+fi
+
+if [ "$BUNDLED_DV" = "0" ]; then
+    fetch_ffmpeg
+    fetch_probe
+    if [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ]; then
+        mkdir -p "$APP/Contents/Resources/bin"
+        cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$APP/Contents/Resources/bin/"
+        chmod +x "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"
+    fi
 fi
 
 # 内置二进制必须先单独签名（hardened runtime 不允许未签名的嵌套可执行文件）。
-if [ -n "${CODESIGN_IDENTITY:-}" ]; then
-    codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" \
-        "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"
-else
-    codesign --force --sign - "$APP/Contents/Resources/bin/ffmpeg" >/dev/null 2>&1 || true
-    codesign --force --sign - "$APP/Contents/Resources/bin/ffprobe" >/dev/null 2>&1 || true
+# dylib 要在 ffmpeg / ffprobe 之前签，最后再签外层 App。
+sign_nested() {
+    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+        codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$1"
+    else
+        codesign --force --sign - "$1" >/dev/null 2>&1 || true
+    fi
+}
+if [ -d "$APP/Contents/Resources/lib" ]; then
+    for library in "$APP/Contents/Resources/lib"/*.dylib; do
+        [ -e "$library" ] || continue
+        sign_nested "$library"
+    done
 fi
+for binary in "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"; do
+    [ -x "$binary" ] || continue
+    sign_nested "$binary"
+done
+
+# 打包了 GPL 组件（ffmpeg-full / x264 / x265）时随包附带许可与源码说明。
+if [ "$BUNDLED_DV" = "1" ]; then
+    cat > "$APP/Contents/Resources/FFmpeg-NOTICE.txt" <<'NOTICE'
+本应用内置 FFmpeg 及其依赖，用于视频转封装与 HDR / 杜比视界色调映射。
+
+组件与许可：
+- FFmpeg 9.0.2 — GPL-3.0-or-later · https://ffmpeg.org
+- libplacebo — LGPL-2.1-or-later · https://code.videolan.org/videolan/libplacebo
+- MoltenVK — Apache-2.0 · https://github.com/KhronosGroup/MoltenVK
+- x264 / x265 — GPL-2.0 / GPL-3.0
+- 其余依赖（aom、dav1d、svt-av1、rav1e、libvpx、opus、zimg 等）许可见各自项目主页
+
+对应源码：
+https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/f/ffmpeg-full.rb
+
+如需完整对应源码包，请联系分发者。
+NOTICE
+fi
+
 
 # 固定的本地开发签名身份。
 # ad-hoc 签名的身份等于二进制哈希，每次重编译都会变，钥匙串会把新包当成另一个 App

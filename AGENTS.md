@@ -129,6 +129,30 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Features/Settings/*` | `SettingsKeys`、设置模型 `AppSettings`、设置窗口 | 业务逻辑 |
 | `Services/Cloud/CloudProviders.swift` / `WebDAVClient.swift` / `SMBClient.swift` / `CloudSupport.swift` | 网盘协议与接口 | UI |
 
+### 单文件行数上限
+
+- **单文件 2000 行是硬上限（含注释与空行）。** 新代码不得让文件超过 2000 行。
+- 超过 2000 行时先按职责拆分，再继续加功能。优先拆法：
+  1. 纯模型 / 纯算法 / 解析器 → `Domain/` 或 `Services/`；
+  2. 可独立复用的视图块 → 同 Feature 下的 `*View.swift` / `*Card.swift`；
+  3. 状态与动作 → 独立 `ObservableObject` 或 Store 扩展；
+  4. 最后才保留一个只负责组装的主文件。
+- 现有超限文件不要求一次性重写；每次触碰时必须至少做到“不再增加行数”，并把本次新增逻辑放进新文件。拆分是行为保持重构，必须单独提交，不和功能改动混在一起。
+- 当前超限清单（2026-11-22，按优先级逐步处理）：
+
+| 文件 | 行数 | 首选拆法 |
+| --- | ---: | --- |
+| `Features/Cinema/CinemaLibraryView.swift` | 10088 | 海报墙 / 详情 / 剧集 / 筛选 / 任务 / 设置拆成独立视图 |
+| `Features/Viewer/VideoPlayback.swift` | 3476 | 播放编排、字幕、音频、诊断、UI 覆盖层分文件 |
+| `Features/Gallery/GalleryView.swift` | 3384 | 时间轴、网格、搜索、工具栏、拖放分文件 |
+| `Store/LibraryStore+Cinema.swift` | 3207 | 刮削、播放、进度、清单、作用域拆扩展文件 |
+| `Features/Catalog/CatalogChannelView.swift` | 3021 | 频道页、详情、卡片、筛选、工具栏分文件 |
+| `Features/Collections/CollectionsView.swift` | 2805 | 精选集总览、详情、卡片分文件 |
+| `Services/Library/SystemIndex+Direct.swift` | 2673 | 查询、映射、同步拆文件 |
+| `Store/LibraryStore+Cloud.swift` | 2240 | 扫描、目录、播放、缓存、维护拆扩展文件 |
+| `Features/Viewer/PhotoViewer.swift` | 2106 | 画面、HUD、控制条、手势、键盘分文件 |
+| `Services/Library/SystemIndex.swift` | 2042 | 建库、增量同步、查询拆文件 |
+
 ---
 
 ## 4. 状态与持久化规范

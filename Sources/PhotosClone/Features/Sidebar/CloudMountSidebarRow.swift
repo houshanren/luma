@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 侧边栏里的一个网络存储行：点名称切换到该网盘，点左侧箭头单独展开 / 收起它的分类。
+/// 侧边栏里的一个网络存储行：点名称直接进入该网盘的影院，点右侧箭头单独展开 / 收起它的分类。
 ///
 /// 展开状态放在本视图自己的 `@State` 里：它是 `ForEach` 的子视图，
 /// 状态若放在外层容易被复用成旧值（典型表现是点了收起、分类又回来）。
@@ -12,7 +12,6 @@ struct CloudMountSidebarRow: View {
     @EnvironmentObject private var settings: AppSettings
 
     @State private var isExpanded: Bool
-    @State private var isHovering = false
     @State private var showRename = false
     @State private var renameText = ""
 
@@ -57,56 +56,25 @@ struct CloudMountSidebarRow: View {
     }
 
     private var row: some View {
-        HStack(spacing: 2) {
-            Button {
-                if isMountSelected {
-                    // 回到整个网盘：清掉分类过滤、相簿与总览，高亮回到网盘行。
-                    store.setCloudScope(.all)
-                    store.selectCloudFolder(path: nil)
-                    store.showCloudOverview(nil)
-                } else {
-                    store.navigate(to: item)
-                }
-            } label: {
-                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                    cover
-                    Text(mount.name)
-                        .font(.system(size: LumaMetrics.sidebarTextSize))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    if cloud.loading, isCurrent {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            // 与下方分类行同一左边界：展开箭头放在行尾，不再把封面往里挤。
-            Button {
-                toggle()
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isCurrent && isExpanded ? 0 : -90))
-                    .frame(width: 16, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(isCurrent && isExpanded ? "收起分类" : "展开分类")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-        .background {
-            // 影院也算当前网盘（保持树展开），但高亮只跟随真正选中的那一行：
-            // 影院行 / 分类行 / 相簿行亮起时，网盘行不再同时点亮。
-            LumaRowHighlight(active: showsMountHighlight, hovered: isHovering)
-        }
-        .onHover { isHovering = $0 }
-        .contextMenu {
+        SourceSidebarRow(
+            model: SourceRowModel(
+                title: mount.name,
+                subtitle: nil,
+                badge: nil,
+                countText: nil,
+                isCurrent: showsMountHighlight,
+                isEnabled: true,
+                isLoading: cloud.loading && isCurrent
+            ),
+            isExpanded: isCurrent && isExpanded,
+            showsToggle: true,
+            onOpen: {
+                openCinema()
+            },
+            onToggle: toggle
+        ) { _ in
+            cover
+        } menu: {
             Button("打开整个网盘") {
                 store.navigate(to: item)
                 store.selectCloudFolder(path: nil)
@@ -203,11 +171,18 @@ struct CloudMountSidebarRow: View {
 
     private var icon: String { mount.kind.symbolName }
 
-    /// 未打开时先打开（并展开），已打开时切换。
+    /// 点接入 = 进这个网盘自己的影院：与树里的「影院」入口完全一致，
+    /// 同时展开分类树，让「影院」行能被高亮出来，不会出现整棵树都没有选中态。
+    private func openCinema() {
+        isExpanded = true
+        store.activateCinemaScope(.mount(mount.id))
+        store.navigate(to: .cloudCinema(mount.id))
+    }
+
+    /// 未打开时先切到这个网盘的影院（并展开分类），已打开时切换展开状态。
     private func toggle() {
         if !isCurrent {
-            isExpanded = true
-            store.navigate(to: item)
+            openCinema()
             return
         }
         withAnimation(settings.motion.layout) {

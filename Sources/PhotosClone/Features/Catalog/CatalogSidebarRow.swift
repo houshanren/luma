@@ -10,7 +10,6 @@ struct CatalogSidebarRow: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var catalog: CatalogBrowserModel
 
-    @State private var isHovering = false
     @State private var showRename = false
     @State private var renameText = ""
 
@@ -31,65 +30,28 @@ struct CatalogSidebarRow: View {
     // MARK: - 源行
 
     private var row: some View {
-        // 按钮只负责打开；拖拽手柄单独放在按钮外面，
-        // 避免 Button 吞掉拖动手势（触控板 / 鼠标都从这里拖）。
-        HStack(spacing: 4) {
-            Button {
+        SourceSidebarRow(
+            model: SourceRowModel(
+                title: source.name,
+                subtitle: nil,
+                badge: nil,
+                countText: nil,
+                isCurrent: isCurrent,
+                isEnabled: source.isEnabled,
+                isLoading: catalog.isLoading && isCurrent,
+                showsNewBadge: catalog.hasNewContent(source.id)
+            ),
+            isDropTarget: isDropTarget,
+            onOpen: {
                 // 点资源本身 = 切到这个源并打开它的首页。
                 open { $0.openHome() }
-            } label: {
-                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                    cover
-                    Text(source.name)
-                        .font(.system(size: LumaMetrics.sidebarTextSize))
-                        .lineLimit(1)
-                    // 这个源本次刷新出现了缓存里没有的内容：一排源里直接看得到。
-                    if catalog.hasNewContent(source.id) {
-                        Text("新")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.red.opacity(0.85), in: Capsule(style: .continuous))
-                    }
-                    Spacer(minLength: 0)
-                    if !source.isEnabled {
-                        Text("未启用")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.tertiary)
-                    } else if catalog.isLoading, isCurrent {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            },
+            dragProvider: {
+                catalogSourceDragProvider(source.id)
             }
-            .buttonStyle(.plain)
-
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(isHovering ? Color.secondary : Color.clear)
-                .frame(width: 16)
-                .contentShape(Rectangle())
-                .onDrag { catalogSourceDragProvider(source.id) }
-                .help("拖动调整资源顺序")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-        .background {
-            LumaRowHighlight(active: isCurrent, hovered: isHovering)
-        }
-        .overlay(alignment: .top) {
-            if isDropTarget {
-                Capsule(style: .continuous)
-                    .fill(Color.accentColor)
-                    .frame(height: 2)
-                    .shadow(color: Color.accentColor.opacity(0.5), radius: 3)
-            }
-        }
-        .onHover { isHovering = $0 }
-        .contextMenu {
+        ) { hovered in
+            cover(hovered: hovered)
+        } menu: {
             Button("打开") { open { $0.openHome() } }
             Button("刷新") {
                 open { $0.selectSource(source.id) }
@@ -121,7 +83,7 @@ struct CatalogSidebarRow: View {
         }
     }
 
-    private var cover: some View {
+    private func cover(hovered: Bool) -> some View {
         // 每个源一个专属色块与图标：一排源扫过去能立刻分辨，而不是同一个橙色方块。
         ZStack {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -141,12 +103,12 @@ struct CatalogSidebarRow: View {
         .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(Color.white.opacity(isHovering ? 0.34 : 0.20), lineWidth: 0.6)
+                .strokeBorder(Color.white.opacity(hovered ? 0.34 : 0.20), lineWidth: 0.6)
         }
-        .shadow(color: source.kind.sidebarTint.opacity(isHovering ? 0.45 : 0.26),
-                radius: isHovering ? 6 : 3, y: 1.5)
-        .scaleEffect(isHovering ? 1.06 : 1)
-        .animation(.easeOut(duration: 0.16), value: isHovering)
+        .shadow(color: source.kind.sidebarTint.opacity(hovered ? 0.45 : 0.26),
+                radius: hovered ? 6 : 3, y: 1.5)
+        .scaleEffect(hovered ? 1.06 : 1)
+        .animation(.easeOut(duration: 0.16), value: hovered)
         .opacity(source.isEnabled ? 1 : 0.5)
     }
 

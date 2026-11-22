@@ -20,9 +20,16 @@ let package = Package(
             name: "PlaybackCore",
             path: "Sources/PlaybackCore"
         ),
+        // 内容契约层：源、内容、播放目标、搜索、任务、错误与进度接口。
+        // 纯 Foundation，不依赖 SwiftUI / AppKit；具体源实现留在 App 或 SourceKit。
+        .target(
+            name: "LumaContentCore",
+            dependencies: ["LumaCore", "PlaybackCore"],
+            path: "Sources/LumaContentCore"
+        ),
         .executableTarget(
             name: "PhotosClone",
-            dependencies: ["LumaCore", "PlaybackCore"],
+            dependencies: ["LumaCore", "PlaybackCore", "LumaContentCore"],
             path: "Sources/PhotosClone",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
@@ -35,6 +42,12 @@ let package = Package(
             name: "LumaCoreChecks",
             dependencies: ["LumaCore", "PlaybackCore"],
             path: "Tests/LumaCoreChecks"
+        ),
+        // 内容契约层检查：源激活策略、能力位、内容引用、播放目标与任务中心。
+        .executableTarget(
+            name: "LumaContentChecks",
+            dependencies: ["LumaContentCore", "PlaybackCore"],
+            path: "Tests/LumaContentChecks"
         )
     ]
 )

@@ -274,6 +274,24 @@ public extension ContentRepository {
     }
 }
 
+/// 占位仓库：源还没有实现只读仓库时使用，调用即返回 `unsupported`，
+/// 避免在会话 / 视图里到处判断 optional。
+public struct UnavailableContentRepository: ContentRepository {
+    public let message: String
+
+    public init(message: String = "这个源还没有可用的内容仓库") {
+        self.message = message
+    }
+
+    public func page(_ query: ContentQuery) async throws -> ContentPage {
+        throw SourceError.unsupported(message)
+    }
+
+    public func detail(_ ref: ContentRef) async throws -> ContentDetail {
+        throw SourceError.unsupported(message)
+    }
+}
+
 /// 跨源搜索结果分组：按源展示，失败不影响其他源。
 public struct ContentSearchGroup: Identifiable, Hashable, Codable, Sendable {
     public var source: SourceDescriptor

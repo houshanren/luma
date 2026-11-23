@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import LumaContentCore
 
 /// 回忆影片的风格模板：控制 Ken Burns 的方向、幅度与画面比例。
 enum MemoryStyle: String, CaseIterable, Identifiable, Hashable {
@@ -417,23 +418,38 @@ struct MemoryMovieView: View {
         isPlaying = false
         isExporting = true
         exportProgress = 0
+        // 渲染 + 编码是分钟级任务：登记到统一任务中心，导出期间切页也能看到进度。
+        let jobID = store.beginSourceJob(
+            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+                .standardizedFileURL.path),
+                      kind: .export,
+                      title: "导出回忆影片",
+                      isCancellable: false)
+        )
 
         let snapshot = memory
         let chosenStyle = style
         Task {
             do {
                 try await MemoryExporter.export(memory: snapshot, style: chosenStyle, to: url) { value in
-                    Task { @MainActor in exportProgress = value }
+                    Task { @MainActor in
+                        exportProgress = value
+                        store.updateSourceJob(jobID,
+                                              message: "正在导出 \(Int((value * 100).rounded()))%",
+                                              fraction: value)
+                    }
                 }
                 await MainActor.run {
                     isExporting = false
                     isPlaying = wasPlaying
+                    store.finishSourceJob(jobID, message: "已导出 \(url.lastPathComponent)")
                     store.showToast("已导出「\(url.lastPathComponent)」")
                 }
             } catch {
                 await MainActor.run {
                     isExporting = false
                     isPlaying = wasPlaying
+                    store.failSourceJob(jobID, message: error.localizedDescription)
                     store.showToast("导出失败：\(error.localizedDescription)")
                 }
             }

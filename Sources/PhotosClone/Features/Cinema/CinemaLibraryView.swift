@@ -1,9 +1,41 @@
 import SwiftUI
 import AppKit
 import LumaCore
+import LumaContentCore
 
 /// 影院详情 / 面板统一深色底：避免跟随系统浅色外观出现白底。
 private let cinemaSheetBackground = Color(red: 0.055, green: 0.06, blue: 0.075)
+
+/// 影片 / 剧集 / 演职员详情页的主题色，跟随系统外观：
+/// 深色下保持原来的影院暗色，浅色下切成与海报墙一致的浅灰，
+/// 文字、玻璃底板与描边一起翻转，不再整页固定在暗色里。
+private enum CinemaDetailTone {
+    /// 页面底色：浅色直接吃窗口底色，与海报墙无缝衔接。
+    static let page = dynamic(dark: NSColor(calibratedRed: 0.055, green: 0.06, blue: 0.075, alpha: 1),
+                              light: .windowBackgroundColor)
+    /// 前景：深色下是白，浅色下是近黑的墨色；透明度沿用原来的层次。
+    static let ink = dynamic(dark: .white, light: NSColor(calibratedWhite: 0.10, alpha: 1))
+    /// 浮层卡片的实色底板（悬停档案）：深色下是深面板，浅色下是近白面板。
+    static let plate = dynamic(dark: NSColor(calibratedRed: 0.075, green: 0.08, blue: 0.095, alpha: 1),
+                               light: NSColor(calibratedWhite: 0.99, alpha: 1))
+    /// 强调色前景：深色下是品牌琥珀，浅色下压深一档，小字号在浅底上也能读清。
+    static let accent = dynamic(dark: NSColor(calibratedRed: 1.00, green: 0.77, blue: 0.42, alpha: 1),
+                                light: NSColor(calibratedRed: 0.70, green: 0.43, blue: 0.02, alpha: 1))
+
+    private static func dynamic(dark: NSColor, light: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        })
+    }
+
+    /// 卡片投影：浅色外观下整体减淡，避免浅底上出现一圈脏影。
+    static func shadow(_ opacity: Double) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor.black.withAlphaComponent(dark ? opacity : opacity * 0.35)
+        })
+    }
+}
 
 /// 影院详情面板尽量吃满窗口：大屏更大，小屏也不会溢出。
 private var cinemaDetailWindowSize: CGSize {
@@ -239,7 +271,6 @@ private enum CinemaDetailTarget: Identifiable {
     case newList
     case search
     case history
-    case tasks
     case notifications
     case pin
     case folder(CinemaFolder)
@@ -253,7 +284,6 @@ private enum CinemaDetailTarget: Identifiable {
         case .newList: return "new-list"
         case .search: return "search"
         case .history: return "history"
-        case .tasks: return "tasks"
         case .notifications: return "notifications"
         case .pin: return "pin"
         case .folder(let folder): return "folder-\(folder.id)"
@@ -278,14 +308,11 @@ struct CinemaLibraryView: View {
     @State private var detailTarget: CinemaDetailTarget?
     /// 搜索 / 观看记录 / 任务等辅助面板仍走 sheet，和详情分开存，互不覆盖。
     @State private var panelTarget: CinemaDetailTarget?
-    @State private var selectedCardID: UUID?
-    @State private var selectedSeriesCardID: String?
-    /// 卡片模式剧集胶片条里被选中的那一集（← → 切换，回车播放）。
-    @State private var selectedEpisodeCardID: UUID?
     /// 列表模式的选中行：单击选中、双击详情、空格播放。
     @State private var selectedListEntryID: UUID?
     @State private var selectedListSeriesID: String?
-    @FocusState private var cardFocus: Bool
+    /// 列表行右键「更换海报 / 背景」：候选面板由整页统一承载。
+    @State private var artworkRequest: CinemaArtworkPickerRequest?
     @FocusState private var listFocus: Bool
     /// 文件夹视图的聚合结果：按目录分组，匹配后显示影片 / 剧集名。
     @State private var folders: [CinemaFolder] = []
@@ -296,6 +323,8 @@ struct CinemaLibraryView: View {
     @State private var selectedFolderPath: String?
     /// 默认单击进详情，播放交给详情页里的「播放」按钮；设置里仍可改回单击直接播放。
     @AppStorage("cinema_open_detail_on_click") private var openDetailOnClick = true
+    /// 海报墙密度：紧凑 / 标准 / 大图，设置里可改，立即生效。
+    @AppStorage("cinema_wall_density") private var wallDensity: CinemaWallDensity = .normal
     /// 列表表头的升降序：再次点击同一列时反转，只影响列表呈现。
     @State private var listSortReversed = false
     /// F5 首次建库：用户点过「稍后再说」或已有片源后不再出现。
@@ -374,13 +403,7 @@ struct CinemaLibraryView: View {
 
     /// 是否启用了顶栏筛选（年代 / 类型 / 分辨率 / 观看状态 / 智能 / 收藏 / 清单）。
     private var isFilteringCinema: Bool {
-        !store.cinemaDecades.isEmpty
-            || !store.cinemaGenres.isEmpty
-            || !store.cinemaResolutions.isEmpty
-            || !store.cinemaSpecFilters.isEmpty
-            || !store.cinemaWatchFilters.isEmpty
-            || store.cinemaSmartHighRated
-            || store.cinemaSmartRecent
+        store.cinemaHasAttributeFilters
             || store.cinemaFavoritesOnly
             || store.cinemaActiveListID != nil
     }
@@ -397,9 +420,14 @@ struct CinemaLibraryView: View {
 
     var body: some View {
         ZStack {
-            libraryContent
-                .opacity(detailTarget == nil ? 1 : 0)
-                .allowsHitTesting(detailTarget == nil)
+            // 列表放进 overlay：它只负责显示，不参与整页尺寸推导。
+            // 否则海报墙 / 横向滚动的理想宽度会把窗口的最小宽度撑大，详情页也跟着超宽。
+            Color.clear
+                .overlay {
+                    libraryContent
+                        .opacity(detailTarget == nil ? 1 : 0)
+                        .allowsHitTesting(detailTarget == nil)
+                }
             if let target = detailTarget {
                 inlineDetail(target)
                     // 详情之间直接切换（例如合集里的下一部）时重建状态，
@@ -424,9 +452,8 @@ struct CinemaLibraryView: View {
         .onChange(of: detailTarget?.id) { _, current in
             store.cinemaDetailOpen = current != nil
             if current == nil {
-                if store.cinemaViewMode == .list { listFocus = true } else { cardFocus = true }
+                if store.cinemaViewMode == .list { listFocus = true }
             } else {
-                cardFocus = false
                 listFocus = false
             }
         }
@@ -445,10 +472,9 @@ struct CinemaLibraryView: View {
         // 播放器打开期间把键盘焦点交出去：否则回车 / 空格会被看不见的海报墙截走。
         .onChange(of: store.viewerID) { _, viewing in
             if viewing != nil {
-                cardFocus = false
                 listFocus = false
-            } else if detailTarget == nil {
-                if store.cinemaViewMode == .list { listFocus = true } else { cardFocus = true }
+            } else if detailTarget == nil, store.cinemaViewMode == .list {
+                listFocus = true
             }
         }
         // 顶栏「返回」由详情页自己逐层消费（演职员 → 详情 → 列表）。
@@ -465,20 +491,47 @@ struct CinemaLibraryView: View {
         case .series(let item):
             CinemaSeriesDetailView(
                 series: item,
-                onPlay: { store.openCinema($0) },
-                onOpenEntry: { detailTarget = .entry($0) },
-                onClose: { detailTarget = nil }
+                onPlay: { entry in
+                    store.openCinema(entry, queue: seriesQueue(for: item))
+                },
+                onOpenEntry: { next in
+                    withAnimation(.easeOut(duration: 0.2)) { detailTarget = .entry(next) }
+                },
+                onClose: { withAnimation(.easeOut(duration: 0.2)) { detailTarget = nil } }
             )
             .environmentObject(store)
+            .transition(.opacity.combined(with: .scale(scale: 0.985)))
         case .entry(let entry):
             CinemaDetailView(
                 entry: entry,
-                onOpenEntry: { detailTarget = .entry($0) },
-                onClose: { detailTarget = nil }
+                onOpenEntry: { next in
+                    withAnimation(.easeOut(duration: 0.2)) { detailTarget = .entry(next) }
+                },
+                onClose: { withAnimation(.easeOut(duration: 0.2)) { detailTarget = nil } }
             )
             .environmentObject(store)
+            .transition(.opacity.combined(with: .scale(scale: 0.985)))
         default:
             EmptyView()
+        }
+    }
+
+    /// 统一错误卡的恢复动作：重试刮削 / 去设置里改刮削源。
+    private func handleCinemaRecovery(_ action: RecoveryAction) {
+        switch action {
+        case .retry:
+            store.startCinemaScrape(for: scope, force: true)
+        case .reconfigureSource, .reauthorize:
+            settingsTab = .cinema
+            openSettings()
+        case .openInBrowser(let address):
+            if let url = URL(string: address) { NSWorkspace.shared.open(url) }
+        case .openSystemSettings:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security") {
+                NSWorkspace.shared.open(url)
+            }
+        case .allowInsecureTLS:
+            break
         }
     }
 
@@ -492,6 +545,10 @@ struct CinemaLibraryView: View {
                     }
                     if store.cinemaScrapeRunning, store.cinemaScrapeScope == scope {
                         progressBar
+                    } else if let sourceError = store.cinemaSourceError {
+                        SourceErrorView(error: sourceError) { action in
+                            handleCinemaRecovery(action)
+                        }
                     } else if let message = store.cinemaScrapeMessage {
                         statusBanner(message)
                     }
@@ -572,9 +629,6 @@ struct CinemaLibraryView: View {
                     }
                 }
                 .environmentObject(store)
-            case .tasks:
-                CinemaTaskCenterSheet()
-                    .environmentObject(store)
             case .notifications:
                 CinemaNotificationSheet()
                     .environmentObject(store)
@@ -614,6 +668,14 @@ struct CinemaLibraryView: View {
                 EmptyView()
             }
         }
+        // 列表行右键换封面：和详情页共用同一个候选面板。
+        .sheet(item: $artworkRequest) { request in
+            CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
+                store.applyCinemaArtwork(request.entry,
+                                         posterURL: request.kind == .poster ? url : nil,
+                                         backdropURL: request.kind == .backdrop ? url : nil)
+            }
+        }
         // 顶栏按钮通过 Store 旗标请求面板；这里统一转成单 sheet，避免多个 sheet 互相覆盖。
         .onChange(of: store.cinemaSearchVisible) { _, visible in
             guard visible else { return }
@@ -629,11 +691,6 @@ struct CinemaLibraryView: View {
             guard visible else { return }
             store.cinemaNewListVisible = false
             panelTarget = .newList
-        }
-        .onChange(of: store.cinemaTasksVisible) { _, visible in
-            guard visible else { return }
-            store.cinemaTasksVisible = false
-            panelTarget = .tasks
         }
         .onChange(of: store.cinemaNotificationsVisible) { _, visible in
             guard visible else { return }
@@ -732,7 +789,10 @@ struct CinemaLibraryView: View {
         if store.cinemaTab == .folder {
             folderContent
         } else if allEntries.isEmpty {
-            if showFirstRun {
+            if !store.cinemaIndexLoaded {
+                // 索引还在读：先给骨架屏，别让人以为影院是空的。
+                skeletonGrid
+            } else if showFirstRun {
                 firstRunView
             } else {
                 emptyState
@@ -758,6 +818,26 @@ struct CinemaLibraryView: View {
                 }
             }
         }
+    }
+
+    /// 索引读取期间的骨架屏：按当前海报墙列宽铺一屏占位卡。
+    private var skeletonGrid: some View {
+        LazyVGrid(columns: wallColumns, alignment: .leading, spacing: 16) {
+            ForEach(0..<12, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: 6) {
+                    CinemaShimmer()
+                        .frame(height: 210)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    CinemaShimmer()
+                        .frame(height: 10)
+                        .clipShape(Capsule())
+                    CinemaShimmer()
+                        .frame(width: 64, height: 8)
+                        .clipShape(Capsule())
+                }
+            }
+        }
+        .opacity(0.7)
     }
 
     @ViewBuilder
@@ -801,7 +881,8 @@ struct CinemaLibraryView: View {
         case .folder:
             EmptyView()
         case .all:
-            if !store.cinemaContinueRecords(for: scope).isEmpty {
+            // 按类型浏览时「继续观看」不属于这个类型，先收起来，避免混进无关影片。
+            if store.cinemaTypeFilterID == nil, !store.cinemaContinueRecords(for: scope).isEmpty {
                 continueShelf
             }
             categoryRow
@@ -863,9 +944,10 @@ struct CinemaLibraryView: View {
 
     // MARK: 分类行
 
-    /// 首页第一行分类：全部 / 收藏 / 最近 30 天 / 高分 8+，点一下直接切筛选。
+    /// 首页分类总览：上半是全部 / 收藏 / 最近 / 高分快捷条件，下半把所有内容类型平铺出来。
+    /// 「全部」页因此能直接看到每个类型有多少条，不用再展开顶栏的类型弹层。
     private var categoryRow: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(LumaBrand.amber)
@@ -879,9 +961,9 @@ struct CinemaLibraryView: View {
                     categoryChip("全部",
                                  icon: "square.grid.2x2.fill",
                                  count: allEntries.count,
-                                 active: !store.cinemaFavoritesOnly
-                                     && !store.cinemaSmartRecent
-                                     && !store.cinemaSmartHighRated) {
+                                 active: !store.cinemaHasAttributeFilters
+                                     && !store.cinemaFavoritesOnly
+                                     && store.cinemaActiveListID == nil) {
                         store.resetCinemaFilters()
                     }
                     categoryChip("收藏",
@@ -906,7 +988,69 @@ struct CinemaLibraryView: View {
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
+
+            if !aggregate.types.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 6) {
+                        Text("类型")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text("\(aggregate.types.count) 个")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                        Spacer(minLength: 0)
+                    }
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(aggregate.types) { bucket in
+                                typeChip(bucket)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .scrollIndicators(.hidden)
+                }
+            }
         }
+    }
+
+    /// 类型胶囊：点一下就按这个类型筛选，再点取消；条目数来自未筛选的全量统计。
+    private func typeChip(_ bucket: CinemaTypeBucket) -> some View {
+        let selected = store.cinemaTypeFilterID == bucket.id
+        return Button {
+            withAnimation(.snappy(duration: 0.16)) {
+                if selected {
+                    store.cinemaTypeFilterID = nil
+                } else {
+                    store.cinemaTypeFilterID = bucket.id
+                    store.cinemaTab = .all
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: bucket.type.icon)
+                    .font(.system(size: 9.5, weight: .semibold))
+                Text(bucket.type.title)
+                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
+                Text("\(bucket.count)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .opacity(0.6)
+            }
+            .foregroundStyle(selected ? LumaBrand.amber : Color.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(selected ? LumaBrand.amber.opacity(0.16) : Color.primary.opacity(0.05),
+                        in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(selected ? LumaBrand.amber.opacity(0.45) : Color.clear,
+                                  lineWidth: 0.8)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(bucket.type.title) · \(bucket.count) 部")
     }
 
     private var categoryFavoriteCount: Int { aggregate.favoriteCount }
@@ -1434,7 +1578,7 @@ struct CinemaLibraryView: View {
     /// 列宽交给网格自适应，卡片按列宽铺满（不再固定 156 塞进更宽的格子，
     /// 否则每张卡右边会多出一条空白，看着像缩略图没铺满）。
     private var wallColumns: [GridItem] {
-        [GridItem(.adaptive(minimum: 156), spacing: 16, alignment: .top)]
+        [GridItem(.adaptive(minimum: wallDensity.minimumColumnWidth), spacing: 16, alignment: .top)]
     }
 
     @ViewBuilder
@@ -1445,17 +1589,19 @@ struct CinemaLibraryView: View {
         case .all:
             if !series.isEmpty {
                 wallSection("电视剧", count: series.count) {
-                    ForEach(series) { item in
+                    ForEach(Array(series.enumerated()), id: \.element.id) { index, item in
                         CinemaSeriesCard(series: item, fillWidth: true) {
                             detailTarget = .series(item)
                         }
+                        .onAppear { prefetchSeriesArtwork(series, around: index) }
                     }
                 }
             }
             if !movies.isEmpty {
                 wallSection("电影", count: movies.count) {
-                    ForEach(movies) { entry in
+                    ForEach(Array(movies.enumerated()), id: \.element.id) { index, entry in
                         posterCard(entry, fillWidth: true)
+                            .onAppear { prefetchPosters(movies, around: index) }
                     }
                 }
             }
@@ -1486,8 +1632,9 @@ struct CinemaLibraryView: View {
                 }
             } else {
                 wallSection("电影", count: movies.count) {
-                    ForEach(movies) { entry in
+                    ForEach(Array(movies.enumerated()), id: \.element.id) { index, entry in
                         posterCard(entry, fillWidth: true)
+                            .onAppear { prefetchPosters(movies, around: index) }
                     }
                 }
             }
@@ -1510,14 +1657,28 @@ struct CinemaLibraryView: View {
                 }
             } else {
                 wallSection("全部剧集", count: series.count) {
-                    ForEach(series) { item in
+                    ForEach(Array(series.enumerated()), id: \.element.id) { index, item in
                         CinemaSeriesCard(series: item, fillWidth: true) {
                             detailTarget = .series(item)
                         }
+                        .onAppear { prefetchSeriesArtwork(series, around: index) }
                     }
                 }
             }
         }
+    }
+
+    /// 滚动预取：某张卡出现时，把紧接着的几张海报提前解好，快速滚动不再追帧。
+    private func prefetchPosters(_ entries: [CinemaEntry], around index: Int, peeking: Int = 8) {
+        let upper = min(entries.count, index + peeking)
+        guard index < upper else { return }
+        CinemaArtworkCache.shared.prefetch(entries[index..<upper].compactMap(\.posterURL))
+    }
+
+    private func prefetchSeriesArtwork(_ items: [CinemaSeries], around index: Int, peeking: Int = 8) {
+        let upper = min(items.count, index + peeking)
+        guard index < upper else { return }
+        CinemaArtworkCache.shared.prefetch(items[index..<upper].compactMap(\.artworkURL))
     }
 
     private func posterCard(_ entry: CinemaEntry, fillWidth: Bool = false) -> some View {
@@ -1528,10 +1689,10 @@ struct CinemaLibraryView: View {
                              if openDetailOnClick {
                                  openDetail(entry)
                              } else {
-                                 store.openCinema(entry)
+                                 store.openCinema(entry, queue: aggregate.allEntries)
                              }
                          },
-                         onPlay: { store.openCinema(entry) },
+                         onPlay: { store.openCinema(entry, queue: aggregate.allEntries) },
                          onDetail: { openDetail(entry) })
             .id(entry.id)
     }
@@ -1556,403 +1717,113 @@ struct CinemaLibraryView: View {
 
     // MARK: 卡片模式
 
+    /// 卡片模式：16:9 宽幅卡按网格竖向铺开，几百部也只是往下滚，
+    /// 不再是「一部主卡 + 一条横向长胶片」那种横向无限延伸的浏览方式。
     @ViewBuilder
     private var cardContent: some View {
         switch store.cinemaTab {
         case .folder:
             EmptyView()
         case .movies:
-            movieCardContent
+            if movies.isEmpty {
+                if isFilteringCinema { filterEmptyState } else { tabEmptyState("还没有识别到电影") }
+            } else {
+                cardGrid(movies: movies, series: [])
+            }
         case .shows:
-            seriesCardContent
+            if series.isEmpty {
+                if isFilteringCinema {
+                    filterEmptyState
+                } else if !unmatchedSeries.isEmpty {
+                    cardGrid(movies: [], series: unmatchedSeries)
+                } else {
+                    tabEmptyState("还没有识别到电视剧")
+                }
+            } else {
+                cardGrid(movies: [], series: series)
+            }
         case .all:
-            if !movies.isEmpty {
-                movieCardContent
-            } else if !series.isEmpty {
-                seriesCardContent
-            } else if isFilteringCinema {
-                filterEmptyState
+            if movies.isEmpty, series.isEmpty {
+                if isFilteringCinema { filterEmptyState } else { tabEmptyState("还没有可展示的影片") }
             } else {
-                tabEmptyState("还没有可展示的影片")
+                cardGrid(movies: movies, series: series)
             }
         }
     }
 
-    private var selectedMovie: CinemaEntry? {
-        movies.first(where: { $0.id == selectedCardID }) ?? movies.first
+    /// 自适应列宽：窗口越宽一行放越多，卡片始终铺满可用宽度。
+    private var cardColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: wallDensity.minimumCardWidth), spacing: 16, alignment: .top)]
     }
 
-    private var selectedSeries: CinemaSeries? {
-        series.first(where: { $0.id == selectedSeriesCardID }) ?? series.first
-    }
-
-    @ViewBuilder
-    private var movieCardContent: some View {
-        if movies.isEmpty {
-            if isFilteringCinema {
-                filterEmptyState
-            } else {
-                tabEmptyState("还没有识别到电影")
+    private func cardGrid(movies: [CinemaEntry], series: [CinemaSeries]) -> some View {
+        LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
+            ForEach(series) { item in
+                seriesCard(item)
             }
-        } else if let selected = selectedMovie {
-            VStack(alignment: .leading, spacing: 14) {
-                movieFeature(selected)
-                movieStrip(selected)
-            }
-            .focusable()
-            .focused($cardFocus)
-            .onAppear { cardFocus = true }
-            .onKeyPress(.leftArrow) {
-                stepMovieSelection(-1)
-                return .handled
-            }
-            .onKeyPress(.rightArrow) {
-                stepMovieSelection(1)
-                return .handled
-            }
-            .onKeyPress(.space) {
-                guard store.viewerID == nil else { return .ignored }
-                if let entry = selectedMovie { store.openCinema(entry) }
-                return .handled
-            }
-            .onKeyPress(.return) {
-                guard store.viewerID == nil else { return .ignored }
-                if let entry = selectedMovie { store.openCinema(entry) }
-                return .handled
+            ForEach(movies) { entry in
+                movieCard(entry)
             }
         }
     }
 
-    /// 卡片模式：胶片条与海报墙共用顺序，← → 切换影片，回车播放。
-    private func stepMovieSelection(_ delta: Int) {
-        guard !movies.isEmpty else { return }
-        let current = movies.firstIndex(where: { $0.id == selectedMovie?.id }) ?? 0
-        let next = min(max(current + delta, 0), movies.count - 1)
-        selectedCardID = movies[next].id
+    private func movieCard(_ entry: CinemaEntry) -> some View {
+        let progress = store.cinemaProgress[entry.id]
+        return CinemaWideCard(title: entry.title,
+                              meta: cardMeta(year: entry.year, genres: entry.genres),
+                              artworkURL: entry.backdropURL ?? entry.posterURL,
+                              fallbackPhoto: entry.file.photoItem,
+                              rating: entry.rating,
+                              badges: cardBadges(for: entry),
+                              progressFraction: progress?.fraction,
+                              progressText: progress.map { "已看 \(Int($0.fraction * 100))%" },
+                              onOpen: {
+                                  if openDetailOnClick { openDetail(entry) } else { store.openCinema(entry, queue: aggregate.allEntries) }
+                              },
+                              onPlay: { store.openCinema(entry, queue: aggregate.allEntries) })
+            .id(entry.id)
     }
 
-    @ViewBuilder
-    private var seriesCardContent: some View {
-        if series.isEmpty {
-            if isFilteringCinema {
-                filterEmptyState
-            } else {
-                tabEmptyState("还没有识别到电视剧")
-            }
-        } else if let selected = selectedSeries {
-            VStack(alignment: .leading, spacing: 14) {
-                seriesFeature(selected)
-                episodeStrip(selected)
-            }
-            .focusable()
-            .focused($cardFocus)
-            .onAppear { cardFocus = true }
-            .onKeyPress(.leftArrow) {
-                stepEpisodeSelection(selected, delta: -1)
-                return .handled
-            }
-            .onKeyPress(.rightArrow) {
-                stepEpisodeSelection(selected, delta: 1)
-                return .handled
-            }
-            .onKeyPress(.space) {
-                guard store.viewerID == nil else { return .ignored }
-                if let episode = selectedEpisode(in: selected) { store.openCinema(episode) }
-                return .handled
-            }
-            .onKeyPress(.return) {
-                guard store.viewerID == nil else { return .ignored }
-                if let episode = selectedEpisode(in: selected) { store.openCinema(episode) }
-                return .handled
-            }
-        }
-    }
-
-    private func selectedEpisode(in item: CinemaSeries) -> CinemaEntry? {
-        item.episodes.first(where: { $0.id == selectedEpisodeCardID }) ?? item.episodes.first
-    }
-
-    private func stepEpisodeSelection(_ item: CinemaSeries, delta: Int) {
-        guard !item.episodes.isEmpty else { return }
-        let current = item.episodes.firstIndex(where: { $0.id == selectedEpisode(in: item)?.id }) ?? 0
-        let next = min(max(current + delta, 0), item.episodes.count - 1)
-        selectedEpisodeCardID = item.episodes[next].id
-    }
-
-    private func movieFeature(_ entry: CinemaEntry) -> some View {
-        HStack(alignment: .top, spacing: 18) {
-            posterArtwork(url: entry.posterURL, fallback: entry.file.photoItem)
-                .frame(width: 168, height: 252)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(entry.title)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .lineLimit(2)
-                if let original = entry.originalTitle, !original.isEmpty {
-                    Text(original.uppercased())
-                        .font(.system(size: 9.5, weight: .medium))
-                        .tracking(1.1)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                HStack(spacing: 10) {
-                    if let rating = entry.rating, rating > 0 {
-                        Label(String(format: "%.1f", rating), systemImage: "star.fill")
-                            .foregroundStyle(LumaBrand.amber)
-                    }
-                    if let year = entry.year { Text(String(year)) }
-                    if let genres = entry.genres, !genres.isEmpty {
-                        Text(Array(genres.prefix(3)).joined(separator: " / "))
-                    }
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-
-                if let overview = entry.overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack(spacing: 7) {
-                    featureChip(entrySpec(entry))
-                    if entry.file.fileSize > 0 {
-                        featureChip(ByteCountFormatter.string(fromByteCount: entry.file.fileSize,
-                                                              countStyle: .file))
-                    }
-                    if store.cinemaVersionCount(for: entry) > 1 {
-                        featureChip("\(store.cinemaVersionCount(for: entry)) 版本")
-                    }
-                }
-
-                if let record = store.cinemaProgress[entry.id], record.fraction > 0.01 {
-                    HStack(spacing: 8) {
-                        ProgressView(value: record.fraction)
-                            .tint(LumaBrand.amber)
-                            .frame(maxWidth: 220)
-                        Text("已看 \(Int(record.fraction * 100))%")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Button {
-                        store.openCinema(entry)
-                    } label: {
-                        Label(store.cinemaProgress[entry.id] == nil ? "播放" : "继续播放",
-                              systemImage: "play.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background(LumaBrand.amber, in: Capsule())
-                            .foregroundStyle(.black)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        openDetail(entry)
-                    } label: {
-                        Label("详情", systemImage: "info.circle")
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .background(Color.primary.opacity(0.07), in: Capsule())
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.top, 2)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(16)
-        .background(Color.primary.opacity(0.035),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
-        }
-    }
-
-    private func movieStrip(_ selected: CinemaEntry) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 10) {
-                ForEach(movies) { entry in
-                    Button {
-                        selectedCardID = entry.id
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            stripArtwork(url: entry.backdropURL ?? entry.posterURL,
-                                         fallback: entry.file.photoItem,
-                                         finished: store.cinemaProgress[entry.id]?.isFinished == true)
-                            Text(entry.title)
-                                .font(.system(size: 10.5, weight: selected.id == entry.id ? .semibold : .regular))
-                                .lineLimit(1)
-                        }
-                        .padding(5)
-                        .background(selected.id == entry.id ? LumaBrand.amber.opacity(0.12)
-                                                             : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(selected.id == entry.id ? LumaBrand.amber.opacity(0.45)
-                                                                      : Color.clear,
-                                              lineWidth: 0.8)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 3)
-        }
-    }
-
-    private func seriesFeature(_ item: CinemaSeries) -> some View {
+    private func seriesCard(_ item: CinemaSeries) -> some View {
+        let watched = watchedEpisodeCount(item)
         let resume = resumeEpisode(for: item)
-        let hasProgress = resume
-            .flatMap { store.cinemaProgress[$0.id] }
-            .map { $0.fraction > 0.01 && !$0.isFinished } ?? false
-        return HStack(alignment: .top, spacing: 18) {
-            posterArtwork(url: item.posterURL, fallback: item.latestEpisode?.file.photoItem)
-                .frame(width: 168, height: 252)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(item.title)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .lineLimit(2)
-                HStack(spacing: 10) {
-                    if let rating = item.rating, rating > 0 {
-                        Label(String(format: "%.1f", rating), systemImage: "star.fill")
-                            .foregroundStyle(LumaBrand.amber)
-                    }
-                    if let year = item.year { Text(String(year)) }
-                    Text("\(item.episodeCount) 集")
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-
-                if let overview = item.overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack(spacing: 8) {
-                    Button {
-                        if let resume {
-                            store.openCinema(resume)
-                        }
-                    } label: {
-                        Label(hasProgress ? "继续播放" : "开始观看", systemImage: "play.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background(LumaBrand.amber, in: Capsule())
-                            .foregroundStyle(.black)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        detailTarget = .series(item)
-                    } label: {
-                        Label("查看剧集", systemImage: "list.bullet")
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .background(Color.primary.opacity(0.07), in: Capsule())
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.top, 2)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(16)
-        .background(Color.primary.opacity(0.035),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
-        }
+        let progressText: String? = resumeSubtitle(for: item)
+            ?? (watched > 0 ? "已看 \(watched)/\(item.episodeCount) 集" : nil)
+        let fraction = item.episodeCount > 0 ? Double(watched) / Double(item.episodeCount) : nil
+        return CinemaWideCard(title: item.title,
+                              meta: cardMeta(year: item.year, genres: item.genres),
+                              artworkURL: item.backdropURL ?? item.posterURL,
+                              fallbackPhoto: item.latestEpisode?.file.photoItem,
+                              rating: item.rating,
+                              badges: ["\(item.episodeCount) 集"] + (watched > 0 ? ["已看 \(watched)"] : []),
+                              progressFraction: fraction,
+                              progressText: progressText,
+                              onOpen: { detailTarget = .series(item) },
+                              onPlay: { if let resume { store.openCinema(resume, queue: seriesQueue(for: item)) } })
+            .id(item.id)
     }
 
-    private func episodeStrip(_ item: CinemaSeries) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 10) {
-                ForEach(item.episodes) { episode in
-                    let isCurrent = selectedEpisode(in: item)?.id == episode.id
-                    Button {
-                        selectedEpisodeCardID = episode.id
-                        store.openCinema(episode)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            stripArtwork(url: episode.backdropURL ?? episode.posterURL,
-                                         fallback: episode.file.photoItem,
-                                         finished: store.cinemaProgress[episode.id]?.isFinished == true)
-                            Text(episode.subtitle.isEmpty ? episode.title : episode.subtitle)
-                                .font(.system(size: 10.5, weight: isCurrent ? .semibold : .regular))
-                                .lineLimit(1)
-                        }
-                        .padding(5)
-                        .background(isCurrent ? LumaBrand.amber.opacity(0.12) : Color.primary.opacity(0.03),
-                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(isCurrent ? LumaBrand.amber.opacity(0.45) : Color.clear,
-                                              lineWidth: 0.8)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 3)
+    private func cardMeta(year: Int?, genres: [String]?) -> String {
+        var parts: [String] = []
+        if let year { parts.append(String(year)) }
+        if let genres, !genres.isEmpty {
+            parts.append(contentsOf: genres.prefix(2))
         }
+        return parts.joined(separator: " · ")
     }
 
-    /// 胶片条缩略图：已看整块压暗并打勾，颜色与列表状态点一致。
-    private func stripArtwork(url: String?, fallback: PhotoItem?, finished: Bool) -> some View {
-        ZStack {
-            posterArtwork(url: url, fallback: fallback)
-            if finished {
-                Color.black.opacity(0.55)
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.92))
-            }
+    /// 卡片规格角标：优先取文件标记，没有就按分辨率兜底。
+    private func cardBadges(for entry: CinemaEntry) -> [String] {
+        var tags = Array(entry.file.displayTags.prefix(2))
+        if tags.isEmpty {
+            let width = entry.file.pixelWidth
+            if width >= 3000 { tags.append("4K") }
+            else if width >= 1800 { tags.append("1080P") }
+            else if width > 0 { tags.append("720P") }
         }
-        .frame(width: 124, height: 70)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-
-    private func featureChip(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 9.5, weight: .semibold))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(Color.primary.opacity(0.06), in: Capsule())
-            .foregroundStyle(.secondary)
-    }
-
-    @ViewBuilder
-    private func posterArtwork(url: String?, fallback: PhotoItem?) -> some View {
-        if let url {
-            CinemaArtwork(urlString: url, contentMode: .fill)
-        } else if let fallback {
-            PhotoThumbnailView(photo: fallback, purpose: .cover(260))
-        } else {
-            Color.primary.opacity(0.06)
-        }
+        let versions = store.cinemaVersionCount(for: entry)
+        if versions > 1 { tags.append("\(versions) 版本") }
+        return Array(tags.prefix(3))
     }
 
     // MARK: 列表
@@ -2025,6 +1896,8 @@ struct CinemaLibraryView: View {
                     in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .focusable()
         .focused($listFocus)
+        // 去掉系统默认的蓝色焦点描边：它会把整张列表框成一圈，和影院的暗色面板冲突。
+        .focusEffectDisabled()
         .onAppear { listFocus = true }
         .onKeyPress(.space) {
             guard store.viewerID == nil else { return .ignored }
@@ -2056,8 +1929,42 @@ struct CinemaLibraryView: View {
                           selectedListEntryID = nil
                           selectedListSeriesID = item.id
                       },
-                      onPlay: { if let target = resumeEpisode(for: item) { store.openCinema(target) } },
+                      onPlay: { if let target = resumeEpisode(for: item) { store.openCinema(target, queue: seriesQueue(for: item)) } },
                       singleClickOpensDetail: openDetailOnClick)
+            .contextMenu {
+                Button("播放") {
+                    if let target = resumeEpisode(for: item) {
+                        store.openCinema(target, queue: seriesQueue(for: item))
+                    }
+                }
+                Button("查看详情") { detailTarget = .series(item) }
+                Divider()
+                Button("选择海报…") { requestArtwork(.poster, for: item) }
+                Button("选择背景…") { requestArtwork(.backdrop, for: item) }
+            }
+    }
+
+    /// 列表行右键换封面：取这部剧里已匹配的一集，交给统一候选面板。
+    private func requestArtwork(_ kind: CinemaArtworkKind, for item: CinemaSeries) {
+        guard let sample = item.episodes.first(where: { $0.matched && $0.tmdbID != nil }) else {
+            store.showToast("先匹配这部剧，才能更换封面")
+            return
+        }
+        // 菜单收起后再弹面板，避免菜单窗口抢焦点导致 sheet 不出现。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: sample)
+        }
+    }
+
+    /// 影片列表行 / 卡片右键换封面。
+    private func requestArtwork(_ kind: CinemaArtworkKind, for entry: CinemaEntry) {
+        guard entry.matched, entry.tmdbID != nil else {
+            store.showToast("先匹配这部片，才能更换封面")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: entry)
+        }
     }
 
     /// 上次播放优先：进行中的一集 → 最后看完的下一集 → 第一集。
@@ -2110,9 +2017,9 @@ struct CinemaLibraryView: View {
 
     private func playSelectedListRow() {
         if let entry = selectedListEntry() {
-            store.openCinema(entry)
+            store.openCinema(entry, queue: aggregate.allEntries)
         } else if let item = selectedListSeries(), let target = resumeEpisode(for: item) {
-            store.openCinema(target)
+            store.openCinema(target, queue: seriesQueue(for: item))
         }
     }
 
@@ -2125,15 +2032,18 @@ struct CinemaLibraryView: View {
     }
 
     private var listHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            Color.clear.frame(width: 44, height: 1)
             sortHeader("片名", sort: .title)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
             sortHeader("年份", sort: .year)
-                .frame(width: 48, alignment: .leading)
+                .frame(width: 56, alignment: .leading)
             sortHeader("评分", sort: .rating)
-                .frame(width: 48, alignment: .leading)
-            Text("类型").frame(width: 150, alignment: .leading)
-            Text("规格").frame(width: 90, alignment: .leading)
+                .frame(width: 56, alignment: .leading)
+            Text("类型")
+                .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+            Text("规格")
+                .frame(width: 150, alignment: .leading)
             HStack(spacing: 4) {
                 Text("状态")
                 Button {
@@ -2147,11 +2057,12 @@ struct CinemaLibraryView: View {
                 .buttonStyle(.plain)
                 .help("按最近添加排序")
             }
-            .frame(width: 80, alignment: .trailing)
+            .frame(width: 104, alignment: .trailing)
+            Color.clear.frame(width: 24, height: 1)
         }
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(.tertiary)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
 
@@ -2202,8 +2113,36 @@ struct CinemaLibraryView: View {
                           selectedListSeriesID = nil
                           selectedListEntryID = entry.id
                       },
-                      onPlay: { store.openCinema(entry) },
+                      onPlay: { store.openCinema(entry, queue: aggregate.allEntries) },
                       singleClickOpensDetail: openDetailOnClick)
+            .contextMenu {
+                Button("播放") { store.openCinema(entry, queue: aggregate.allEntries) }
+                Button("查看详情") { openDetail(entry) }
+                Divider()
+                Button("选择海报…") { requestArtwork(.poster, for: entry) }
+                Button("选择背景…") { requestArtwork(.backdrop, for: entry) }
+                Divider()
+                Button(store.cinemaProgress[entry.id]?.isFinished == true ? "标记为未看" : "标记为已看") {
+                    let watched = store.cinemaProgress[entry.id]?.isFinished != true
+                    store.setCinemaWatched(entry, watched: watched)
+                }
+                Button("复制文件路径") {
+                    let text = entry.file.cloudPath ?? entry.file.filename
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    store.showToast("已复制路径")
+                }
+            }
+    }
+
+    /// 整部剧按季、集排好，作为播放队列：播完自动下一集，顶栏「下一集」也能用。
+    private func seriesQueue(for item: CinemaSeries) -> [CinemaEntry] {
+        item.episodes.sorted { lhs, rhs in
+            if (lhs.season ?? 0) != (rhs.season ?? 0) {
+                return (lhs.season ?? 0) < (rhs.season ?? 0)
+            }
+            return (lhs.episode ?? 0) < (rhs.episode ?? 0)
+        }
     }
 
     private func entrySpec(_ entry: CinemaEntry) -> String {
@@ -2221,15 +2160,17 @@ struct CinemaLibraryView: View {
     // MARK: 详情入口
 
     private func openDetail(_ entry: CinemaEntry) {
-        if entry.kind == .tv,
-           let item = store.cinemaSeries(for: scope, matched: entry.matched)
-            .first(where: { series in
-                series.episodes.contains(where: { $0.id == entry.id })
-            }) {
-            detailTarget = .series(item)
-            return
+        withAnimation(.easeOut(duration: 0.2)) {
+            if entry.kind == .tv,
+               let item = store.cinemaSeries(for: scope, matched: entry.matched)
+                .first(where: { series in
+                    series.episodes.contains(where: { $0.id == entry.id })
+                }) {
+                detailTarget = .series(item)
+                return
+            }
+            detailTarget = .entry(entry)
         }
-        detailTarget = .entry(entry)
     }
 
     /// 筛选把当前分页筛空：告诉用户是筛选而不是刮削没结果，并提供一键复位。
@@ -2255,20 +2196,40 @@ struct CinemaLibraryView: View {
         .padding(.top, 40)
     }
 
-    /// 顶栏筛选条件的可读描述，例如「2020 年代 · 科幻 · 4K · 进行中」。
+    /// 顶栏筛选条件的可读描述，例如「2024 · 科幻 · 4K · 进行中」。
     private var filterSummary: String {
         var parts: [String] = []
-        if !store.cinemaDecades.isEmpty {
-            parts.append(store.cinemaDecades.sorted(by: >).map { "\($0)s" }.joined(separator: "/"))
+        if let typeID = store.cinemaTypeFilterID {
+            parts.append(CinemaContentType.descriptor(id: typeID).title)
+        }
+        if !store.cinemaKindFilters.isEmpty {
+            parts.append(store.cinemaKindFilters.map(\.title).sorted().joined(separator: "/"))
+        }
+        if !store.cinemaYears.isEmpty {
+            parts.append(store.cinemaYears.sorted(by: >).map(String.init).joined(separator: "/"))
         }
         if !store.cinemaGenres.isEmpty {
             parts.append(store.cinemaGenres.sorted().joined(separator: "/"))
+        }
+        if !store.cinemaCountries.isEmpty {
+            parts.append(store.cinemaCountries.sorted().joined(separator: "/"))
+        }
+        if !store.cinemaLanguages.isEmpty {
+            parts.append(store.cinemaLanguages.sorted()
+                .map(CinemaLanguageCatalog.title)
+                .joined(separator: "/"))
         }
         if !store.cinemaResolutions.isEmpty {
             parts.append(store.cinemaResolutions.map(\.title).sorted().joined(separator: "/"))
         }
         if !store.cinemaSpecFilters.isEmpty {
             parts.append(store.cinemaSpecFilters.map(\.title).sorted().joined(separator: "/"))
+        }
+        if !store.cinemaRuntimeFilters.isEmpty {
+            parts.append(store.cinemaRuntimeFilters.map(\.title).sorted().joined(separator: "/"))
+        }
+        if !store.cinemaRatingFilters.isEmpty {
+            parts.append(store.cinemaRatingFilters.map(\.title).sorted().joined(separator: "/"))
         }
         if !store.cinemaWatchFilters.isEmpty {
             parts.append(store.cinemaWatchFilters.map(\.title).sorted().joined(separator: "/"))
@@ -2671,7 +2632,7 @@ struct CinemaLibraryView: View {
             CinemaSeriesHeroCard(series: item,
                                  onPlay: {
                                      if let target = resumeEpisode(for: item) {
-                                         store.openCinema(target)
+                                         store.openCinema(target, queue: seriesQueue(for: item))
                                      }
                                  },
                                  onOpen: { detailTarget = .series(item) })
@@ -2723,13 +2684,16 @@ struct CinemaLibraryView: View {
 
 
 /// 海报卡尺寸：海报墙里跟随网格列宽（按 2:3 由宽度推高），书架里固定 156×234。
-/// 这样卡片描边和海报内容始终是同一个矩形，边缘不会再留出空白带。
+/// 尺寸用透明底板锁定、卡片内容放 overlay：角标 / 长标题的最小宽高不会再反过来
+/// 把卡片撑大，同一行每张卡始终是同一个 2:3 矩形。
 private struct CinemaWallCardSizing: ViewModifier {
     let fillWidth: Bool
 
     func body(content: Content) -> some View {
         if fillWidth {
-            content.aspectRatio(2.0 / 3.0, contentMode: .fit)
+            Color.clear
+                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .overlay { content }
         } else {
             content.frame(width: 156, height: 234)
         }
@@ -2741,6 +2705,8 @@ private struct CinemaWallCardSizing: ViewModifier {
 private struct CinemaCastTile: View {
     let member: CinemaCastMember
     let onOpen: () -> Void
+    /// 右键「在网络影院搜索 TA」。
+    let onSearchOnline: () -> Void
 
     @State private var hovered = false
 
@@ -2765,7 +2731,7 @@ private struct CinemaCastTile: View {
                                                                                    LumaBrand.coral,
                                                                                    LumaBrand.amber],
                                                                           center: .center))
-                                          : AnyShapeStyle(Color.white.opacity(0.10)),
+                                          : AnyShapeStyle(Color.primary.opacity(0.10)),
                                           lineWidth: hovered ? 1.6 : 0.6)
                 }
                 .overlay(alignment: .bottomTrailing) {
@@ -2799,7 +2765,10 @@ private struct CinemaCastTile: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .animation(.spring(response: 0.3, dampingFraction: 0.72), value: hovered)
-        .help("查看 \(member.name) 的人物页")
+        .contextMenu {
+            Button("网络影院搜索 \(member.name)（即将上线）") { onSearchOnline() }
+        }
+        .help("查看 \(member.name) 的人物页；右键可在网络影院搜索（即将上线）")
     }
 }
 
@@ -2812,6 +2781,10 @@ private struct CinemaSeriesCard: View {
     @EnvironmentObject private var store: LibraryStore
     /// 悬停状态留在卡片内部：只有这张卡重绘，不会带着整页聚合一起重算。
     @State private var hovered = false
+    /// 右键「手动刮削」打开的选片面板。
+    @State private var showMatchSheet = false
+    /// 右键「更换海报 / 背景」的候选面板。
+    @State private var artworkRequest: CinemaArtworkPickerRequest?
 
     /// 单独声明，避免 body 里的表达式类型检查超时。
     private var overlayGradient: LinearGradient {
@@ -2854,10 +2827,11 @@ private struct CinemaSeriesCard: View {
 
                 VStack {
                     // 157pt 的竖版卡：左上只放最重要的 1–2 个音画角标，右上留评分。
+                    // 左角标用 maxWidth：窄卡片时优先压缩角标，右侧评分始终留在卡内。
                     HStack(alignment: .top, spacing: 5) {
                         CinemaSpecBadges(tags: cinemaBadgeTags(series.latestEpisode?.file),
                                          fontSize: 8)
-                            .frame(width: 102, alignment: .leading)
+                            .frame(maxWidth: 102, alignment: .leading)
                         Spacer(minLength: 0)
                         VStack(alignment: .trailing, spacing: 3) {
                             if !series.isMatched {
@@ -2904,6 +2878,25 @@ private struct CinemaSeriesCard: View {
         .help("\(series.title) · \(series.subtitle)")
         .contextMenu {
             Button("查看 \(series.episodeCount) 集") { onOpen() }
+            Button("手动刮削…") {
+                // 右键菜单收起后再弹面板，避免菜单窗口抢焦点导致 sheet 不出现。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { showMatchSheet = true }
+            }
+            Button("选择海报…") { requestArtwork(.poster) }
+            Button("选择背景…") { requestArtwork(.backdrop) }
+            Button(series.latestEpisode.flatMap { store.cinemaProgress[$0.id]?.isFinished } == true ? "标记为未看" : "标记为已看") {
+                guard let sample = series.latestEpisode else { return }
+                let watched = store.cinemaProgress[sample.id]?.isFinished != true
+                store.setCinemaWatched(sample, watched: watched)
+            }
+            if let sample = series.latestEpisode {
+                Button("复制文件路径") {
+                    let text = sample.file.cloudPath ?? sample.file.filename
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    store.showToast("已复制路径")
+                }
+            }
             Divider()
             Button("忽略整部剧（以后不刮削）") {
                 store.ignoreCinemaSeries(series)
@@ -2912,7 +2905,33 @@ private struct CinemaSeriesCard: View {
                 store.confirmDeleteCinemaEntries(series.episodes, title: series.title)
             }
         }
+        .sheet(isPresented: $showMatchSheet) {
+            // 整部剧一起手动匹配：面板里可以统一选剧并按文件名排季集。
+            CinemaMatchSheet(photos: series.episodes.map(\.file.photoItem),
+                             folderHint: series.episodes.first?.folderHint) {
+                showMatchSheet = false
+            }
+            .environmentObject(store)
+        }
+        .sheet(item: $artworkRequest) { request in
+            CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
+                store.applyCinemaArtwork(request.entry,
+                                         posterURL: request.kind == .poster ? url : nil,
+                                         backdropURL: request.kind == .backdrop ? url : nil)
+            }
+        }
         .id("series-\(series.id)")
+    }
+
+    /// 换封面：用剧里一集已匹配的条目做代理，写回时 `applyCinemaArtwork` 会同步整部剧。
+    private func requestArtwork(_ kind: CinemaArtworkKind) {
+        guard let sample = series.episodes.first(where: { $0.matched && $0.tmdbID != nil }) else {
+            store.showToast("先匹配这部剧，才能更换封面")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: sample)
+        }
     }
 }
 
@@ -2922,7 +2941,11 @@ private struct CinemaSeriesHeroCard: View {
     let series: CinemaSeries
     var onPlay: (() -> Void)? = nil
     let onOpen: () -> Void
+
+    @EnvironmentObject private var store: LibraryStore
     @State private var hover = false
+    @State private var showMatchSheet = false
+    @State private var artworkRequest: CinemaArtworkPickerRequest?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -2988,6 +3011,59 @@ private struct CinemaSeriesHeroCard: View {
         .shadow(color: .black.opacity(0.22), radius: 14, y: 8)
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onTapGesture(perform: onOpen)
+        .contextMenu {
+            Button("查看 \(series.episodeCount) 集") { onOpen() }
+            if let onPlay {
+                Button("继续播放") { onPlay() }
+            }
+            Button("手动刮削…") {
+                // 菜单收起后再弹面板，避免菜单窗口抢焦点导致 sheet 不出现。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { showMatchSheet = true }
+            }
+            Button("选择海报…") { requestArtwork(.poster) }
+            Button("选择背景…") { requestArtwork(.backdrop) }
+            if let sample = series.latestEpisode {
+                Button(store.cinemaProgress[sample.id]?.isFinished == true ? "标记为未看" : "标记为已看") {
+                    let watched = store.cinemaProgress[sample.id]?.isFinished != true
+                    store.setCinemaWatched(sample, watched: watched)
+                }
+                Button("复制文件路径") {
+                    let text = sample.file.cloudPath ?? sample.file.filename
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    store.showToast("已复制路径")
+                }
+            }
+            Divider()
+            Button("忽略整部剧（以后不刮削）") {
+                store.ignoreCinemaSeries(series)
+            }
+        }
+        .sheet(isPresented: $showMatchSheet) {
+            CinemaMatchSheet(photos: series.episodes.map(\.file.photoItem),
+                             folderHint: series.episodes.first?.folderHint) {
+                showMatchSheet = false
+            }
+            .environmentObject(store)
+        }
+        .sheet(item: $artworkRequest) { request in
+            CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
+                store.applyCinemaArtwork(request.entry,
+                                         posterURL: request.kind == .poster ? url : nil,
+                                         backdropURL: request.kind == .backdrop ? url : nil)
+            }
+        }
+    }
+
+    /// 换封面：取剧里一集已匹配的条目做代理，写回时同步整部剧。
+    private func requestArtwork(_ kind: CinemaArtworkKind) {
+        guard let sample = series.episodes.first(where: { $0.matched && $0.tmdbID != nil }) else {
+            store.showToast("先匹配这部剧，才能更换封面")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: sample)
+        }
     }
 }
 
@@ -3006,9 +3082,19 @@ private struct CinemaSeriesDetailView: View {
     /// 键盘方向键游标：只服务键盘切集，鼠标点击不再有「选中」这一步。
     @State private var keyboardEpisodeID: UUID?
     @State private var enriched: CinemaEntry?
-    /// 当前季的单集标题 / 简介 / 剧照（TMDB 按季拉取）。
-    @State private var episodeInfos: [Int: CinemaEpisodeInfo] = [:]
-    /// 当前查看的季；nil 时跟随「下一集」所在季。
+    /// 推荐分组：猜你喜欢 / 豆瓣 / 同系列 / 同导演 / 同演员。
+    @State private var recommendationGroups: [CinemaRecommendationGroup] = []
+    /// 手动挑过封面后先在本页覆盖，不必等上层快照刷新。
+    @State private var artworkPosterOverride: String?
+    @State private var artworkBackdropOverride: String?
+    @State private var artworkRequest: CinemaArtworkPickerRequest?
+    /// 恢复上次查看的季时，不要顺手清掉选中集。
+    @State private var suppressSeasonReset = false
+    /// 滚动偏移：滚过档案卡后浮出紧凑标题条。
+    @State private var scrollOffset: CGFloat = 0
+    /// 各季的单集标题 / 简介 / 剧照（TMDB 按季拉取，季 → 集号 → 信息）。
+    @State private var episodeInfos: [Int: [Int: CinemaEpisodeInfo]] = [:]
+    /// 当前查看的季；nil 时默认落在最新一季（标签栏最左）。
     @State private var selectedSeason: Int?
     /// 演职员 → 人物页。
     @State private var personTarget: CinemaCastMember?
@@ -3036,21 +3122,24 @@ private struct CinemaSeriesDetailView: View {
         case episode
     }
 
-    /// 集卡列数按内容列宽算：窗口变宽就加一列、变窄就减一列。
-    /// 不用 `.adaptive`——它会用 maximum 反推列数，宽窗口反而把卡片拉得很宽、列数不变。
+    /// 集卡列数：完全由外面量到的可视宽度决定，列数确定后卡片只在这条宽度里均分。
+    /// 不用 `.adaptive`：它在某些测量阶段会按「所有卡片排成一行」反推理想宽度，
+    /// 结果反过来把整页 / 窗口的最小宽度撑大。
     private func episodeColumns(width: CGFloat) -> [GridItem] {
         let spacing: CGFloat = 16
-        let width = width > 0 ? width : 900
-        let count = max(2, GridLayout.columns(contentWidth: width, targetSize: 250, spacing: spacing))
-        return Array(repeating: GridItem(.flexible(minimum: 160), spacing: spacing), count: count)
+        let count = max(1, GridLayout.columns(contentWidth: max(1, width),
+                                              targetSize: 210,
+                                              spacing: spacing))
+        return Array(repeating: GridItem(.flexible(minimum: 140, maximum: 340), spacing: spacing),
+                     count: count)
     }
 
     /// 资料项列数：按档案卡右列的实际宽度算，窗口变宽就多排一列。
     private func factsColumns(width: CGFloat) -> [GridItem] {
         let spacing: CGFloat = 12
         let width = width > 0 ? width : 620
-        let count = max(2, GridLayout.columns(contentWidth: width, targetSize: 210, spacing: spacing))
-        return Array(repeating: GridItem(.flexible(minimum: 140), spacing: spacing), count: count)
+        let count = max(1, GridLayout.columns(contentWidth: width, targetSize: 210, spacing: spacing))
+        return Array(repeating: GridItem(.flexible(minimum: 120), spacing: spacing), count: count)
     }
 
     var body: some View {
@@ -3086,12 +3175,14 @@ private struct CinemaSeriesDetailView: View {
         .overlayPreferenceValue(CinemaEpisodeAnchorKey.self) { anchors in
             GeometryReader { proxy in
                 if personTarget == nil, !showTrailer,
+                   // 窄窗口下浮层会盖住大半网格：直接不显示，信息仍在卡片与档案里。
+                   proxy.size.width >= 820,
                    let episode = hoverPanelEpisode,
                    let anchor = anchors[episode.id] {
                     let rect = proxy[anchor]
                     let margin: CGFloat = 12
                     let gap: CGFloat = 14
-                    let width = min(400, max(260, proxy.size.width - margin * 2))
+                    let width = min(380, max(260, proxy.size.width * 0.36))
                     let onRight = rect.maxX + gap + width + margin <= proxy.size.width
                     let rawX = onRight ? rect.maxX + gap : rect.minX - gap - width
                     let x = min(max(margin, rawX), max(margin, proxy.size.width - width - margin))
@@ -3122,20 +3213,24 @@ private struct CinemaSeriesDetailView: View {
         }
         .animation(.easeOut(duration: 0.18), value: hoverPanelEpisode?.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(cinemaSheetBackground)
-        // 只把详情内容切成深色影院风，不改整个窗口外观。
-        .environment(\.colorScheme, .dark)
+        .background(CinemaDetailTone.page)
         .task {
             let sample = series.episodes.first(where: { $0.backdropURL != nil })
                 ?? series.episodes.first
             guard let sample else { return }
             enriched = await store.enrichCinemaEntry(sample)
+            recommendationGroups = await store.cinemaRecommendationGroups(for: enriched ?? sample)
             // 打开详情时顺手补一次在线片头片尾：没设置过的剧集自动填上。
             await store.ensureCinemaIntroMark(for: series)
         }
         .task(id: seasonInfoKey) {
-            // 切季 / 换剧后旧的键盘游标已经不在当前列表里。
-            keyboardEpisodeID = nil
+            // 切季 / 换剧后旧的键盘游标已经不在当前列表里；恢复上次位置时保留。
+            if suppressSeasonReset {
+                suppressSeasonReset = false
+            } else {
+                keyboardEpisodeID = nil
+                hoveredEpisode = nil
+            }
             await loadEpisodeInfos()
         }
         // 顶栏返回：先关预告片，再退演职员页，最后退剧集详情。
@@ -3160,35 +3255,109 @@ private struct CinemaSeriesDetailView: View {
         }
     }
 
+    private var pageTopAnchor: String { "cinema-series-detail-top" }
+
+    /// 详情页默认从顶部开始：不沿用上一部剧 / 上次浏览留下的滚动位置。
+    private func scrollToPageTop(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(pageTopAnchor, anchor: .top)
+        }
+    }
+
     private var pageContent: some View {
-        ZStack {
-            ambientBackground
-            // 整页按窗口宽度自适应：内容列直接跟可视区走，网格列数在布局时就地推导。
-            GeometryReader { proxy in
-                let width = max(320, proxy.size.width - 12)
+        // 底图只能挂 background：它是 aspect-fill 的远程剧照，只锁了高度，
+        // 图片加载完会带出「自然宽度」（760pt 高约等于 1350pt 宽）。
+        // 一旦作为 ZStack 兄弟节点参与布局，整页就会被撑得比窗口更宽，
+        // 表现为「先是占满，图片一出来就超过 100%，拖窗口也缩不回去」。
+        GeometryReader { proxy in
+            let horizontal: CGFloat = 24
+            let width = max(320, proxy.size.width - horizontal * 2)
+            ScrollViewReader { scrollProxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
+                        // 顶部锚点：进入详情 / 切换到另一部剧时回到这里。
+                        Color.clear
+                            .frame(height: 0)
+                            .id(pageTopAnchor)
+                            .background {
+                                GeometryReader { geo in
+                                    Color.clear.preference(key: CinemaScrollOffsetKey.self,
+                                                           value: geo.frame(in: .named("cinemaSeriesScroll")).minY)
+                                }
+                            }
                         dossierSection(width: width)
                         episodesSection(width: width)
+                        let recommendGroups = visibleRecommendationGroups
+                        if !recommendGroups.isEmpty {
+                            CinemaRecommendationShelf(
+                                groups: recommendGroups,
+                                isLocal: { store.cinemaEntry(tmdbID: $0.tmdbID, kind: $0.kind) != nil },
+                                onOpen: { recom in
+                                    if let doubanID = recom.doubanID {
+                                        store.openDoubanPage(doubanID: doubanID)
+                                    } else if let local = store.cinemaEntry(tmdbID: recom.tmdbID,
+                                                                           kind: recom.kind) {
+                                        onOpenEntry(local)
+                                    } else {
+                                        searchOnlineCinema(recom)
+                                    }
+                                },
+                                onSearchOnline: { searchOnlineCinema($0) },
+                                onOpenExternal: { recom in
+                                    if let doubanID = recom.doubanID {
+                                        store.openDoubanPage(doubanID: doubanID)
+                                    } else {
+                                        searchOnlineCinema(recom)
+                                    }
+                                }
+                            )
+                        }
                     }
+                    .padding(.horizontal, horizontal)
                     .padding(.bottom, 36)
-                    .frame(width: width, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+                    // 只填满可视宽度，不能用固定 width：固定宽度会变成窗口的最小宽度，
+                    // 窗口一缩就由「上一次的宽度」反推回来，拖到多大就再也缩不回去。
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.automatic)
+                .coordinateSpace(name: "cinemaSeriesScroll")
+                .onPreferenceChange(CinemaScrollOffsetKey.self) { scrollOffset = $0 }
                 // 键盘上下跨行要知道当前列数：跟着容器宽度一起更新。
-                .onAppear { contentWidth = width }
+                .onAppear {
+                    contentWidth = width
+                    restoreDetailState(scrollProxy)
+                }
                 .onChange(of: width) { _, newValue in contentWidth = newValue }
+                .onChange(of: series.id) { _, _ in restoreDetailState(scrollProxy) }
+                .onChange(of: currentSeason) { _, _ in saveDetailMemory() }
+                .onChange(of: keyboardEpisodeID) { _, _ in saveDetailMemory() }
+            }
+        }
+        .background(alignment: .top) { ambientBackground }
+        .overlay(alignment: .top) { compactHeader }
+        .animation(.easeOut(duration: 0.18), value: scrollOffset < -140)
+        .sheet(item: $artworkRequest) { request in
+            CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
+                store.applyCinemaArtwork(request.entry,
+                                         posterURL: request.kind == .poster ? url : nil,
+                                         backdropURL: request.kind == .backdrop ? url : nil)
+                if request.kind == .poster {
+                    artworkPosterOverride = url
+                } else {
+                    artworkBackdropOverride = url
+                }
             }
         }
     }
 
-    /// 剧集详情用剧照虚化铺底：贴着 Hero 往下渐隐到纯深色，
+    /// 剧集详情用剧照虚化铺底：贴着 Hero 往下渐隐到页面底色，
     /// 不再用固定高度硬切，避免中间出现一条突兀的亮色横带。
     private var ambientBackground: some View {
         ZStack(alignment: .top) {
-            cinemaSheetBackground
-            CinemaArtwork(urlString: series.backdropURL ?? series.posterURL, contentMode: .fill)
+            CinemaDetailTone.page
+            CinemaArtwork(urlString: artworkBackdropOverride ?? series.backdropURL ?? series.posterURL,
+                          contentMode: .fill,
+                          maxPixelSize: 1100)
                 .frame(height: 760)
                 .blur(radius: 90, opaque: true)
                 .opacity(0.20)
@@ -3205,24 +3374,109 @@ private struct CinemaSeriesDetailView: View {
         .ignoresSafeArea()
     }
 
+    /// 滚过档案卡后浮出的紧凑标题条：片名 / 年份 / 评分，一直跟着滚动。
+    @ViewBuilder
+    private var compactHeader: some View {
+        if scrollOffset < -140 {
+            HStack(spacing: 8) {
+                Text(series.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(CinemaDetailTone.ink)
+                    .lineLimit(1)
+                if let year = series.year {
+                    Text(String(year))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
+                }
+                Spacer(minLength: 0)
+                if let rating = seriesRating {
+                    Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(LumaBrand.amber)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 34)
+            .background(.ultraThinMaterial)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(CinemaDetailTone.ink.opacity(0.10))
+                    .frame(height: 0.5)
+            }
+            .transition(.opacity)
+        }
+    }
+
+    /// 换封面用的样本条目：优先已补全的那一集，其次任意已匹配的剧集。
+    private var artworkSample: CinemaEntry? {
+        enriched ?? series.episodes.first(where: { $0.matched && $0.tmdbID != nil })
+    }
+
+    /// 推荐分组：优先本次拉到的，其次条目缓存；旧数据只有 TMDB 列表时兜底成一个 tab。
+    private var visibleRecommendationGroups: [CinemaRecommendationGroup] {
+        if !recommendationGroups.isEmpty { return recommendationGroups }
+        if let cached = enriched?.recommendationGroups, !cached.isEmpty { return cached }
+        if let recs = enriched?.recommendations, !recs.isEmpty {
+            return [CinemaRecommendationGroup(source: .tmdb, title: "猜你喜欢", items: recs)]
+        }
+        return []
+    }
+
+    /// 推荐条目本库没有时：网络影院还没上线，先给占位提示。
+    private func searchOnlineCinema(_ recom: CinemaRecommendation) {
+        store.searchOnlineCinema(recom.title)
+    }
+
+    private func loadArtwork(_ kind: CinemaArtworkKind) {
+        guard let sample = artworkSample else {
+            store.showToast("先匹配这部剧，才能更换封面")
+            return
+        }
+        // 候选由面板自己拉，这里只负责把请求递过去。
+        artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: sample)
+    }
+
+    /// 返回详情时恢复上次看的季与选中集；没有记忆就回到顶部。
+    private func restoreDetailState(_ proxy: ScrollViewProxy) {
+        guard let memory = store.cinemaSeriesMemory[series.id] else {
+            scrollToPageTop(proxy)
+            return
+        }
+        if let season = memory.season, season != currentSeason {
+            suppressSeasonReset = true
+            selectedSeason = season
+        }
+        keyboardEpisodeID = memory.episodeID
+        hoveredEpisode = memory.episodeID
+        guard let id = memory.episodeID else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+        }
+    }
+
+    private func saveDetailMemory() {
+        store.cinemaSeriesMemory[series.id] = CinemaSeriesMemory(season: currentSeason,
+                                                                 episodeID: keyboardEpisodeID)
+    }
+
     private var seasonInfoKey: String {
         guard currentSeason > 0,
               let tvID = series.episodes.first(where: { $0.tmdbID != nil && $0.provider == .tmdb })?.tmdbID else { return "" }
         return "\(tvID)-\(currentSeason)"
     }
 
-    /// 每集标题 / 简介 / 剧照：先用本地缓存秒开，超过 12 小时再后台补一次最新。
+    /// 每集标题 / 简介 / 剧照：按当前标签页的季读取，切回其他季时直接用已缓存结果。
     private func loadEpisodeInfos() async {
         guard currentSeason > 0,
               let tvID = series.episodes.first(where: { $0.tmdbID != nil && $0.provider == .tmdb })?.tmdbID else { return }
-        let cached = store.cachedCinemaEpisodeInfos(tvID: tvID, season: currentSeason)
-        if let cached {
-            episodeInfos = cached.infos
+        let season = currentSeason
+        if let cached = store.cachedCinemaEpisodeInfos(tvID: tvID, season: season) {
+            episodeInfos[season] = cached.infos
             if cached.fresh { return }
         }
-        guard let refreshed = await store.refreshCinemaEpisodeInfos(tvID: tvID, season: currentSeason) else { return }
+        guard let refreshed = await store.refreshCinemaEpisodeInfos(tvID: tvID, season: season) else { return }
         guard !Task.isCancelled else { return }
-        episodeInfos = refreshed
+        episodeInfos[season] = refreshed
     }
 
     // MARK: 季与下一集
@@ -3236,17 +3490,24 @@ private struct CinemaSeriesDetailView: View {
         }
     }
 
+    /// 季标签：最新一季在最左（降序），打开页面默认就是它。
     private var seasons: [Int] {
-        Array(Set(orderedEpisodes.map { $0.season ?? 0 })).sorted()
+        Array(Set(orderedEpisodes.map { $0.season ?? 0 })).sorted(by: >)
     }
 
     private var currentSeason: Int {
-        selectedSeason ?? nextEpisode.map { $0.season ?? 0 } ?? seasons.first ?? 0
+        selectedSeason ?? seasons.first ?? 0
     }
 
     private var visibleEpisodes: [CinemaEntry] {
         guard seasons.count > 1 else { return orderedEpisodes }
         return orderedEpisodes.filter { ($0.season ?? 0) == currentSeason }
+    }
+
+    /// 单集信息按「季 + 集号」取，切换季标签时不会串到别的季。
+    private func episodeInfo(_ episode: CinemaEntry) -> CinemaEpisodeInfo? {
+        guard let number = episode.episode else { return nil }
+        return episodeInfos[episode.season ?? 0]?[number]
     }
 
     /// 悬停档案跟随哪一集：鼠标悬停和键盘选中共用同一个状态，
@@ -3303,17 +3564,17 @@ private struct CinemaSeriesDetailView: View {
 
                 Text("跳过片头尾")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.94))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.94))
 
                 Text(introSummaryText)
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(mark.isEnabled ? LumaBrand.amber.opacity(0.95)
-                                                    : Color.white.opacity(0.45))
+                                                    : CinemaDetailTone.ink.opacity(0.45))
                     .lineLimit(1)
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.4))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
@@ -3321,12 +3582,12 @@ private struct CinemaSeriesDetailView: View {
             .background {
                 Capsule()
                     .fill(mark.isEnabled ? LumaBrand.amber.opacity(0.16)
-                                         : Color.white.opacity(0.14))
+                                         : CinemaDetailTone.ink.opacity(0.14))
             }
             .overlay {
                 Capsule()
                     .strokeBorder(mark.isEnabled ? LumaBrand.amber.opacity(0.42)
-                                                 : Color.white.opacity(0.10),
+                                                 : CinemaDetailTone.ink.opacity(0.10),
                                   lineWidth: 0.7)
             }
             .contentShape(Capsule())
@@ -3425,7 +3686,6 @@ private struct CinemaSeriesDetailView: View {
         }
         .padding(14)
         .frame(width: 340)
-        .environment(\.colorScheme, .dark)
     }
 
     private func introSliderRow(title: String, seconds: Binding<Int>) -> some View {
@@ -3484,7 +3744,17 @@ private struct CinemaSeriesDetailView: View {
     private func runIntroAutoDetect() async {
         guard !detectingIntro else { return }
         detectingIntro = true
-        defer { detectingIntro = false }
+        // 本地静音检测要跑几十秒：登记进任务中心，切换页面后仍能看到进度。
+        let jobID = store.beginSourceJob(
+            SourceJob(sourceID: store.sourceID(for: store.cinemaActiveScope),
+                      kind: .analyze,
+                      title: "片头自动识别",
+                      isCancellable: false)
+        )
+        defer {
+            detectingIntro = false
+            store.finishSourceJob(jobID, message: "片头识别完成")
+        }
         let episode = introScope == .episode ? introTargetEpisode : nil
         let detection: LibraryStore.CinemaIntroDetection?
         if let episode {
@@ -3533,54 +3803,6 @@ private struct CinemaSeriesDetailView: View {
         )
     }
 
-    /// 季下拉：18 季也不挤、不滚丢；菜单里直接带每季集数与已看数。
-    private var seasonMenu: some View {
-        Menu {
-            ForEach(seasons, id: \.self) { season in
-                Button {
-                    selectedSeason = season
-                } label: {
-                    if season == currentSeason {
-                        Label(seasonMenuLabel(season), systemImage: "checkmark")
-                    } else {
-                        Text(seasonMenuLabel(season))
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(currentSeason == 0 ? "未标季" : "第 \(currentSeason) 季")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("\(visibleEpisodes.count) 集")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(LumaBrand.amber.opacity(0.75))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(LumaBrand.amber.opacity(0.75))
-            }
-            .foregroundStyle(LumaBrand.amber)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
-            .background(LumaBrand.amber.opacity(0.12), in: Capsule())
-            .overlay {
-                Capsule().strokeBorder(LumaBrand.amber.opacity(0.34), lineWidth: 0.7)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(seasons.count > 1 ? "切换季（共 \(seasons.count) 季）" : "本季剧集")
-    }
-
-    private func seasonMenuLabel(_ season: Int) -> String {
-        let name = season == 0 ? "未标季" : "第 \(season) 季"
-        let episodes = orderedEpisodes.filter { ($0.season ?? 0) == season }
-        let watched = episodes.filter { store.cinemaWatchState(for: $0) == .finished }.count
-        return watched > 0
-            ? "\(name) · \(episodes.count) 集 · 已看 \(watched)"
-            : "\(name) · \(episodes.count) 集"
-    }
-
     /// 预告片按整部剧找：用详情补全后的条目，没有就退回本剧第一条已识别分集。
     private var trailerRequest: CinemaTrailerRequest? {
         let sample = enriched
@@ -3612,9 +3834,9 @@ private struct CinemaSeriesDetailView: View {
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(cast) { member in
-                        CinemaCastTile(member: member) {
-                            personTarget = member
-                        }
+                        CinemaCastTile(member: member,
+                                       onOpen: { personTarget = member },
+                                       onSearchOnline: { store.searchOnlineCinema(member.name) })
                     }
                 }
                 .padding(.vertical, 2)
@@ -3626,21 +3848,27 @@ private struct CinemaSeriesDetailView: View {
     private func posterCard(width: CGFloat, height: CGFloat) -> some View {
         let radius: CGFloat = width > 100 ? 10 : 5
         return ZStack {
-            if let url = series.posterURL {
+            if let url = artworkPosterOverride ?? series.posterURL {
                 CinemaArtwork(urlString: url, contentMode: .fill)
             } else if let first = series.episodes.first {
                 PhotoThumbnailView(photo: first.file.photoItem, purpose: .cover(240))
             } else {
-                Color.white.opacity(0.06)
+                CinemaDetailTone.ink.opacity(0.06)
             }
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(.white.opacity(0.26), lineWidth: 1)
+                .strokeBorder(CinemaDetailTone.ink.opacity(0.26), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.5), radius: width > 100 ? 18 : 8, y: width > 100 ? 8 : 3)
+        .contextMenu {
+            Button("选择海报…") { loadArtwork(.poster) }
+            Button("选择背景…") { loadArtwork(.backdrop) }
+        }
+        .shadow(color: CinemaDetailTone.shadow(0.5),
+                radius: width > 100 ? 18 : 8,
+                y: width > 100 ? 8 : 3)
     }
 
     private var actions: some View {
@@ -3668,8 +3896,8 @@ private struct CinemaSeriesDetailView: View {
                         .font(.system(size: 12, weight: .medium))
                         .padding(.horizontal, 13)
                         .padding(.vertical, 8)
-                        .background(.white.opacity(0.16), in: Capsule())
-                        .foregroundStyle(.white.opacity(0.94))
+                        .background(CinemaDetailTone.ink.opacity(0.16), in: Capsule())
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.94))
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
@@ -3682,8 +3910,8 @@ private struct CinemaSeriesDetailView: View {
                         .font(.system(size: 12, weight: .medium))
                         .padding(.horizontal, 13)
                         .padding(.vertical, 8)
-                        .background(.white.opacity(0.14), in: Capsule())
-                        .foregroundStyle(.white.opacity(0.92))
+                        .background(CinemaDetailTone.ink.opacity(0.14), in: Capsule())
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.92))
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
@@ -3703,32 +3931,96 @@ private struct CinemaSeriesDetailView: View {
         return "开始观看 \(episodeLabel(episode))"
     }
 
+    /// 季标签栏：最新一季在最左；每枚标签带集数与观看进度，横排可滚动。
+    private var seasonTabBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(seasons, id: \.self) { season in
+                    seasonTab(season)
+                }
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
+    private func seasonTab(_ season: Int) -> some View {
+        let episodes = orderedEpisodes.filter { ($0.season ?? 0) == season }
+        let watched = episodes.filter { store.cinemaWatchState(for: $0) == .finished }.count
+        let fraction = episodes.isEmpty ? 0 : Double(watched) / Double(episodes.count)
+        let active = season == currentSeason
+        let isLatest = season == seasons.first
+        return Button {
+            withAnimation(.easeOut(duration: 0.18)) { selectedSeason = season }
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(season == 0 ? "未标季" : "第 \(season) 季")
+                        .font(.system(size: 12, weight: .semibold))
+                    if isLatest, season > 0 {
+                        Text("最新")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(.black.opacity(0.78))
+                            .padding(.horizontal, 4.5)
+                            .padding(.vertical, 1)
+                            .background(LumaBrand.amber, in: Capsule())
+                    }
+                    Text("\(episodes.count) 集")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(active ? LumaBrand.amber.opacity(0.95) : .secondary)
+                }
+                // 细进度线：一眼看出哪一季看到哪。
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(CinemaDetailTone.ink.opacity(0.12))
+                        if fraction > 0 {
+                            Capsule()
+                                .fill(LumaBrand.amber.opacity(active ? 1 : 0.6))
+                                .frame(width: max(2, geo.size.width * fraction))
+                        }
+                    }
+                }
+                .frame(height: 2.5)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(active ? LumaBrand.amber.opacity(0.16) : CinemaDetailTone.ink.opacity(0.04),
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(active ? LumaBrand.amber.opacity(0.55)
+                                         : CinemaDetailTone.ink.opacity(0.07),
+                                  lineWidth: active ? 1 : 0.6)
+            }
+            .foregroundStyle(active ? LumaBrand.amber : CinemaDetailTone.ink.opacity(0.86))
+        }
+        .buttonStyle(.plain)
+        .help(season == 0 ? "未标季" : "切换到第 \(season) 季")
+    }
+
     private func episodesSection(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            // 多季时把季选择收进标题行：菜单里列出本地每一季的集数与已看数，
-            // 18 季也不会横着滚丢当前季；只有一季时直接标明是哪一季。
-            HStack(alignment: .center, spacing: 9) {
+            // 标题与季标签同一行：最新一季在最左，切换只影响下方网格。
+            HStack(alignment: .center, spacing: 10) {
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(LumaBrand.amber)
                     .frame(width: 3, height: 14)
                 Text("剧集")
                     .font(.system(size: 15, weight: .semibold))
                 if seasons.count > 1 {
-                    seasonMenu
-                } else if currentSeason > 0 {
-                    Text("第 \(currentSeason) 季")
+                    seasonTabBar
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if let season = seasons.first {
+                    Text(season == 0 ? "未标季" : "第 \(season) 季")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(LumaBrand.amber)
                     Text("\(visibleEpisodes.count) 集")
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 } else {
-                    Text("\(visibleEpisodes.count) 集")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
-                if hoveredEpisode == nil {
+                if hoveredEpisode == nil, contentWidth >= 760 {
                     Text("方向键切集 · 空格播放")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
@@ -3741,6 +4033,7 @@ private struct CinemaSeriesDetailView: View {
                             .anchorPreference(key: CinemaEpisodeAnchorKey.self, value: .bounds) {
                                 [episode.id: $0]
                             }
+                            .id(episode.id)
                     }
                 }
                 // 和图库网格一致的键盘操作：← → 逐集，↑ ↓ 跨一行，空格 / 回车播放。
@@ -3780,13 +4073,28 @@ private struct CinemaSeriesDetailView: View {
                 .onAppear {
                     DispatchQueue.main.async { episodeGridFocus = true }
                 }
+                // 切季后把视口带回该季第一集，别停在上一季的滚动位置。
+                .onChange(of: currentSeason) { _, _ in
+                    guard let first = visibleEpisodes.first else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            scrollProxy.scrollTo(first.id, anchor: .top)
+                        }
+                    }
+                }
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            Diagnostics.record("影院剧集网格 width=\(Int(width)) "
+                               + "列数=\(episodeColumns(width: width).count) "
+                               + "集=\(visibleEpisodes.count)")
         }
     }
 
-    /// 方向键跨一行要跳几列：和实际网格列数保持一致。
+    /// 方向键跨一行要跳几列：和外层量到的宽度保持同一套列数规则。
     private var episodeColumnCount: Int {
-        max(1, episodeColumns(width: contentWidth).count)
+        episodeColumns(width: contentWidth).count
     }
 
     private func moveEpisodeCursor(_ delta: Int) {
@@ -3826,22 +4134,24 @@ private struct CinemaSeriesDetailView: View {
     /// 底部接演职员，不再让三块内容各占一整行。
     private func dossierSection(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 24) {
-                dossierPosterColumn
-                VStack(alignment: .leading, spacing: 14) {
-                    dossierKicker
-                    dossierTitleBlock
-                    dossierSynopsis
-                    // 资料网格的可用宽度 = 内容列 - 卡片内边距 - 海报列 - 列间距。
-                    dossierFactsGrid(width: width - 22 * 2 - 156 - 24)
+            // 窄窗口把海报与资料改成上下排列，文字列不会被压成一条缝。
+            if width < 760 {
+                VStack(alignment: .leading, spacing: 18) {
+                    dossierPosterColumn
+                    dossierInfoColumn(width: max(280, width - 44))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(22)
+            } else {
+                HStack(alignment: .top, spacing: 24) {
+                    dossierPosterColumn
+                    dossierInfoColumn(width: width - 22 * 2 - 156 - 24)
+                }
+                .padding(22)
             }
-            .padding(22)
 
             if let cast = enriched?.cast, !cast.isEmpty {
                 Rectangle()
-                    .fill(Color.white.opacity(0.07))
+                    .fill(CinemaDetailTone.ink.opacity(0.07))
                     .frame(height: 0.8)
                     .padding(.horizontal, 22)
                 castStrip(cast)
@@ -3855,20 +4165,32 @@ private struct CinemaSeriesDetailView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(
                     LinearGradient(colors: [LumaBrand.amber.opacity(0.30),
-                                            Color.white.opacity(0.06),
+                                            CinemaDetailTone.ink.opacity(0.06),
                                             Color.clear],
                                    startPoint: .topLeading,
                                    endPoint: .bottomTrailing),
                     lineWidth: 0.8
                 )
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 档案卡底板：深色玻璃 + 左上角一层很淡的琥珀光，和海报的暖色调衔接。
+    /// 档案卡右侧信息列：标题、简介与资料网格共用，窄窗口时也可单独铺满整行。
+    private func dossierInfoColumn(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            dossierKicker
+            dossierTitleBlock
+            dossierSynopsis
+            dossierFactsGrid(width: width)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 档案卡底板：玻璃底 + 左上角一层很淡的琥珀光，和海报的暖色调衔接。
     private var dossierPlate: some View {
         RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .fill(LinearGradient(colors: [Color.white.opacity(0.062),
-                                          Color.white.opacity(0.022)],
+            .fill(LinearGradient(colors: [CinemaDetailTone.ink.opacity(0.062),
+                                          CinemaDetailTone.ink.opacity(0.022)],
                                  startPoint: .top, endPoint: .bottom))
             .overlay {
                 RadialGradient(colors: [LumaBrand.amber.opacity(0.10), .clear],
@@ -3890,18 +4212,20 @@ private struct CinemaSeriesDetailView: View {
                         .foregroundStyle(LumaBrand.amber)
                     Text(String(format: "%.1f", rating))
                         .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(CinemaDetailTone.ink)
                     if let votes = enriched?.voteCount, votes > 0 {
                         Text("· \(voteCountText(votes))")
                             .font(.system(size: 9.5))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                             .lineLimit(1)
                     }
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 24)
-                .background(Color.white.opacity(0.07), in: Capsule())
-                .overlay { Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6) }
+                .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                }
             }
 
             if watchedCount > 0 {
@@ -3913,7 +4237,7 @@ private struct CinemaSeriesDetailView: View {
                         .scaleEffect(x: 1, y: 0.6, anchor: .center)
                     Text("已看 \(watchedCount) / \(orderedEpisodes.count) 集")
                         .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                 }
                 .frame(width: 156)
             }
@@ -3927,13 +4251,13 @@ private struct CinemaSeriesDetailView: View {
             Text("剧集档案")
                 .font(.system(size: 10, weight: .bold))
                 .tracking(2.4)
-                .foregroundStyle(LumaBrand.amber.opacity(0.92))
+                .foregroundStyle(CinemaDetailTone.accent.opacity(0.92))
             Rectangle()
                 .fill(LumaBrand.amber.opacity(0.35))
                 .frame(width: 24, height: 0.8)
             Text(dossierMetaLine)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.45))
                 .lineLimit(1)
             Spacer(minLength: 0)
             dossierStatusPill
@@ -3945,7 +4269,7 @@ private struct CinemaSeriesDetailView: View {
         VStack(alignment: .leading, spacing: 9) {
             Text(series.title)
                 .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(CinemaDetailTone.ink)
                 .lineLimit(2)
                 .textSelection(.enabled)
 
@@ -3955,7 +4279,7 @@ private struct CinemaSeriesDetailView: View {
                 Text(original.uppercased())
                     .font(.system(size: 9.5, weight: .semibold))
                     .tracking(1.8)
-                    .foregroundStyle(.white.opacity(0.42))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.42))
                     .lineLimit(1)
             }
 
@@ -3963,7 +4287,7 @@ private struct CinemaSeriesDetailView: View {
                 Text("「\(tagline)」")
                     .font(.system(size: 12, weight: .medium))
                     .italic()
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.72))
                     .lineLimit(2)
             }
 
@@ -3980,16 +4304,18 @@ private struct CinemaSeriesDetailView: View {
                 || enriched?.status == "Planned"
             HStack(spacing: 5) {
                 Circle()
-                    .fill(running ? LumaBrand.mint : Color.white.opacity(0.32))
+                    .fill(running ? LumaBrand.mint : CinemaDetailTone.ink.opacity(0.32))
                     .frame(width: 5, height: 5)
                 Text(status)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(running ? LumaBrand.mint : Color.white.opacity(0.72))
+                    .foregroundStyle(running ? LumaBrand.mint : CinemaDetailTone.ink.opacity(0.72))
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Color.white.opacity(0.06), in: Capsule())
-            .overlay { Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6) }
+            .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+            }
         }
     }
 
@@ -4000,13 +4326,13 @@ private struct CinemaSeriesDetailView: View {
         if overview.isEmpty {
             Text("暂无剧情简介。可以在顶栏面板里「重新匹配」换一个数据源，通常会补全简介与演职员。")
                 .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 Text(overview)
                     .font(.system(size: 12.8))
-                    .foregroundStyle(.white.opacity(0.78))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.78))
                     .lineSpacing(6)
                     .lineLimit(dossierExpanded ? nil : 5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -4034,17 +4360,17 @@ private struct CinemaSeriesDetailView: View {
                 HStack(spacing: 9) {
                     Image(systemName: fact.icon)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(LumaBrand.amber.opacity(0.90))
+                        .foregroundStyle(CinemaDetailTone.accent.opacity(0.90))
                         .frame(width: 24, height: 24)
                         .background(LumaBrand.amber.opacity(0.10),
                                     in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(fact.label)
                             .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.38))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.38))
                         Text(fact.value)
                             .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.82))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.82))
                             .lineLimit(2)
                             .textSelection(.enabled)
                     }
@@ -4174,7 +4500,7 @@ private struct CinemaSeriesDetailView: View {
         let hovered = hoveredEpisode == episode.id
         // 文档约定：当前集用琥珀描边标出，不靠 hover 才看得出「接着看哪一集」。
         let isCurrent = nextEpisode?.id == episode.id
-        let info = episode.episode.flatMap { episodeInfos[$0] }
+        let info = episodeInfo(episode)
         // 单集剧照优先：TMDB 季接口给的 still 比整部剧的 backdrop 更能区分每一集。
         let artworkURL = info?.stillURL ?? episode.gridArtworkURL
         // 观看状态压在画面里，卡片下面不再重复一行「集号 + 未看」。
@@ -4271,8 +4597,13 @@ private struct CinemaSeriesDetailView: View {
             }
         }
         .help("播放 \(episodeLabel(episode))")
+        .modifier(CinemaFocusRing(active: keyboardEpisodeID == episode.id))
         .contextMenu {
             Button("播放") { onPlay(episode) }
+            Button(store.cinemaProgress[episode.id]?.isFinished == true ? "标记为未看" : "标记为已看") {
+                let watched = store.cinemaProgress[episode.id]?.isFinished != true
+                store.setCinemaWatched(episode, watched: watched)
+            }
             Button("忽略（以后不刮削）") { store.ignoreCinemaEntry(episode) }
             Divider()
             Button("删除视频文件…", role: .destructive) {
@@ -4313,7 +4644,7 @@ private struct CinemaSeriesDetailView: View {
         return "EP"
     }
 
-    /// 集卡角标：季已经在标题行写出来了，卡片上只写「第 N 集」。
+    /// 集卡角标：季已经由标签栏标明，卡片上只写「第 N 集」。
     private func episodeShortLabel(_ episode: CinemaEntry) -> String {
         guard let number = episode.episode else { return "EP" }
         if let end = episode.episodeEnd, end > number {
@@ -4327,7 +4658,7 @@ private struct CinemaSeriesDetailView: View {
     /// 悬停集卡时弹出的完整档案：剧照、完整简介、进度、规格与文件名一次看全。
     /// 宽度固定、浮在卡片侧边，鼠标本身仍在集卡上，所以不做交互（避免遮挡点击）。
     private func episodeHoverCard(_ episode: CinemaEntry) -> some View {
-        let info = episode.episode.flatMap { episodeInfos[$0] }
+        let info = episodeInfo(episode)
         let progress = store.cinemaProgress[episode.id]
         let artworkURL = info?.stillURL ?? episode.gridArtworkURL
         let tags = cinemaBadgeTags(episode.file, limit: 4)
@@ -4371,7 +4702,7 @@ private struct CinemaSeriesDetailView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text(episodeTitleText(episode, info: info))
                     .font(.system(size: 16.5, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CinemaDetailTone.ink)
                     .lineSpacing(3)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -4380,7 +4711,7 @@ private struct CinemaSeriesDetailView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
-                                Capsule().fill(Color.white.opacity(0.14))
+                                Capsule().fill(CinemaDetailTone.ink.opacity(0.14))
                                 Capsule()
                                     .fill(LumaBrand.amber)
                                     .frame(width: max(3, geo.size.width * progress.fraction))
@@ -4396,7 +4727,7 @@ private struct CinemaSeriesDetailView: View {
                                let remaining = minutesText(progress.remainingSeconds) {
                                 Text("剩余 \(remaining)")
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.5))
+                                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.5))
                             }
                         }
                     }
@@ -4405,19 +4736,19 @@ private struct CinemaSeriesDetailView: View {
                 if overview.isEmpty {
                     Text("暂无单集简介")
                         .font(.system(size: 12.5))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.45))
                 } else {
                     // 正文按阅读习惯排版：字号 12.5、行距 6.5、颜色更亮，长段落更好读。
                     Text(overview)
                         .font(.system(size: 12.5))
-                        .foregroundStyle(.white.opacity(0.90))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.90))
                         .lineSpacing(6.5)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if !tags.isEmpty {
-                    CinemaSpecBadges(tags: tags, fontSize: 9, tint: .white,
-                                     background: Color.white.opacity(0.10))
+                    CinemaSpecBadges(tags: tags, fontSize: 9, tint: CinemaDetailTone.ink,
+                                     background: CinemaDetailTone.ink.opacity(0.10))
                 }
 
                 HStack(spacing: 12) {
@@ -4452,25 +4783,25 @@ private struct CinemaSeriesDetailView: View {
                             .foregroundStyle(LumaBrand.amber.opacity(0.82))
                         Text(location.source)
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.88))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.88))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1.5)
-                            .background(Color.white.opacity(0.10), in: Capsule())
+                            .background(CinemaDetailTone.ink.opacity(0.10), in: Capsule())
                         Text(location.path)
                             .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.58))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.58))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.045),
+                    .background(CinemaDetailTone.ink.opacity(0.045),
                                 in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
 
                 Rectangle()
-                    .fill(Color.white.opacity(0.07))
+                    .fill(CinemaDetailTone.ink.opacity(0.07))
                     .frame(height: 0.6)
                     .padding(.top, 1)
 
@@ -4481,11 +4812,11 @@ private struct CinemaSeriesDetailView: View {
                         .font(.system(size: 10))
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(.white.opacity(0.48))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.48))
 
                 Text(episode.file.filename)
                     .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.28))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.28))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -4495,10 +4826,11 @@ private struct CinemaSeriesDetailView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(Color(red: 0.075, green: 0.08, blue: 0.095))
+                .fill(CinemaDetailTone.plate)
                 .overlay {
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .fill(LinearGradient(colors: [Color.white.opacity(0.06), Color.white.opacity(0.015)],
+                        .fill(LinearGradient(colors: [CinemaDetailTone.ink.opacity(0.06),
+                                                      CinemaDetailTone.ink.opacity(0.015)],
                                              startPoint: .top, endPoint: .bottom))
                 }
         }
@@ -4507,7 +4839,7 @@ private struct CinemaSeriesDetailView: View {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .strokeBorder(LumaBrand.amber.opacity(0.26), lineWidth: 0.8)
         }
-        .shadow(color: .black.opacity(0.58), radius: 26, y: 13)
+        .shadow(color: CinemaDetailTone.shadow(0.58), radius: 26, y: 13)
     }
 
     private func hoverChip(_ text: String, tint: Color = .white, darkText: Bool = false) -> some View {
@@ -4526,7 +4858,7 @@ private struct CinemaSeriesDetailView: View {
                 .foregroundStyle(LumaBrand.amber.opacity(0.75))
             Text(text)
                 .font(.system(size: 9.5, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
         }
     }
 
@@ -4677,6 +5009,10 @@ private struct CinemaPosterCard: View {
     @AppStorage("cinema_show_format_badge") private var showFormatBadge = true
     /// 悬停状态留在卡片内部：只有这张卡重绘，不会带着整页聚合一起重算。
     @State private var hovered = false
+    /// 右键「手动刮削」打开的选片面板。
+    @State private var showMatchSheet = false
+    /// 右键「更换海报 / 背景」的候选面板。
+    @State private var artworkRequest: CinemaArtworkPickerRequest?
 
     private var badgeTags: [String] {
         cinemaBadgeTags(entry.file)
@@ -4717,10 +5053,11 @@ private struct CinemaPosterCard: View {
 
                 VStack {
                     // 左上铺满画质 / 音质 / 类型角标（可换行），右上只留评分与版本。
+                    // 左角标用 maxWidth 而不是定宽：窄卡片时先压缩它，评分 / 未识别角标不会被挤出卡片。
                     HStack(alignment: .top, spacing: 5) {
                         if showFormatBadge {
                             CinemaSpecBadges(tags: badgeTags, fontSize: 8)
-                                .frame(width: 102, alignment: .leading)
+                                .frame(maxWidth: 102, alignment: .leading)
                         }
                         Spacer(minLength: 0)
                         VStack(alignment: .trailing, spacing: 3) {
@@ -4837,6 +5174,22 @@ private struct CinemaPosterCard: View {
             Button("重新刮削") {
                 Task { await store.rescrapeCinema(entry) }
             }
+            Button("手动刮削…") {
+                // 右键菜单收起后再弹面板，避免菜单窗口抢焦点导致 sheet 不出现。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { showMatchSheet = true }
+            }
+            Button("选择海报…") { requestArtwork(.poster) }
+            Button("选择背景…") { requestArtwork(.backdrop) }
+            Button(store.cinemaProgress[entry.id]?.isFinished == true ? "标记为未看" : "标记为已看") {
+                let watched = store.cinemaProgress[entry.id]?.isFinished != true
+                store.setCinemaWatched(entry, watched: watched)
+            }
+            Button("复制文件路径") {
+                let text = entry.file.cloudPath ?? entry.file.filename
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                store.showToast("已复制路径")
+            }
             Divider()
             Button("忽略（以后不刮削）") {
                 store.ignoreCinemaEntry(entry)
@@ -4851,6 +5204,28 @@ private struct CinemaPosterCard: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showMatchSheet) {
+            CinemaMatchSheet(entry: entry) { showMatchSheet = false }
+                .environmentObject(store)
+        }
+        .sheet(item: $artworkRequest) { request in
+            CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
+                store.applyCinemaArtwork(request.entry,
+                                         posterURL: request.kind == .poster ? url : nil,
+                                         backdropURL: request.kind == .backdrop ? url : nil)
+            }
+        }
+    }
+
+    /// 换封面：候选面板自己去拉图，这里只负责递请求。
+    private func requestArtwork(_ kind: CinemaArtworkKind) {
+        guard entry.matched, entry.tmdbID != nil else {
+            store.showToast("先匹配这部片，才能更换封面")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: entry)
         }
     }
 }
@@ -4878,39 +5253,42 @@ private struct CinemaListRow: View {
     @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             poster
+
             titleColumn
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+
             Text(year)
-                .frame(width: 48, alignment: .leading)
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 56, alignment: .leading)
+
             ratingView
-                .frame(width: 48, alignment: .leading)
-            Text(genres)
+                .frame(width: 56, alignment: .leading)
+
+            Text(genres == "—" ? "" : genres)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+
+            Text(spec == "—" ? "" : spec)
+                .font(.system(size: 9.5, design: .monospaced))
+                .foregroundStyle(.tertiary)
                 .lineLimit(1)
                 .frame(width: 150, alignment: .leading)
-            Text(spec)
-                .lineLimit(1)
-                .frame(width: 90, alignment: .leading)
+
             statusView
-                .frame(width: 80, alignment: .trailing)
-            if hovered, let onPlay {
-                Button(action: onPlay) {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.black)
-                        .padding(5)
-                        .background(LumaBrand.amber, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .help("播放")
-            }
+                .frame(width: 104, alignment: .trailing)
+
+            playKey
+                .frame(width: 24)
         }
-        .font(.system(size: 11))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(selected ? LumaBrand.amber.opacity(0.10)
-                             : (hovered ? Color.primary.opacity(0.05) : Color.clear))
+                             : (hovered ? Color.primary.opacity(0.045) : Color.clear))
         .overlay(alignment: .leading) {
             if selected {
                 Rectangle()
@@ -4918,7 +5296,14 @@ private struct CinemaListRow: View {
                     .frame(width: 2)
             }
         }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.055))
+                .frame(height: 0.5)
+                .padding(.leading, 12)
+        }
         .contentShape(Rectangle())
+        .modifier(CinemaFocusRing(active: selected))
         .onHover { hovered = $0 }
         .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture {
@@ -4935,25 +5320,37 @@ private struct CinemaListRow: View {
             if let artworkURL {
                 CinemaArtwork(urlString: artworkURL, contentMode: .fill)
             } else if let fallbackPhoto {
-                PhotoThumbnailView(photo: fallbackPhoto, purpose: .cover(50))
+                PhotoThumbnailView(photo: fallbackPhoto, purpose: .cover(70))
             }
         }
-        .frame(width: 34, height: 50)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .frame(width: 44, height: 62)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(hovered ? 0.18 : 0.06), radius: 4, y: 2)
     }
 
     private var titleColumn: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(hovered ? 1 : 0.92))
                 .lineLimit(1)
             Text(subtitle)
-                .font(.system(size: 9.5))
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let progress, progress.fraction > 0.01, !progress.isFinished {
-                progressBar(progress.fraction)
+                HStack(spacing: 6) {
+                    progressBar(progress.fraction)
+                        .frame(maxWidth: 160)
+                    Text("已看 \(Int(progress.fraction * 100))%")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }
@@ -4974,29 +5371,60 @@ private struct CinemaListRow: View {
     private var ratingView: some View {
         if let rating, rating > 0 {
             Label(String(format: "%.1f", rating), systemImage: "star.fill")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
                 .foregroundStyle(LumaBrand.amber)
         } else {
             Text("—").foregroundStyle(.tertiary)
         }
     }
 
-    @ViewBuilder
     private var statusView: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             // 文档约定：状态点只在列表出现：绿=已看、琥珀=有进度、红=未识别。
             Circle()
                 .fill(statusDotColor)
                 .frame(width: 5, height: 5)
-            if let progress, progress.fraction > 0.01, !progress.isFinished {
-                Text("已看 \(Int(progress.fraction * 100))%")
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(LumaBrand.amber)
-            } else {
-                Text(badge)
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(badge == "未识别" ? LumaBrand.coral : Color.secondary)
+            Text(statusText)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(statusTextColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(statusDotColor.opacity(0.10), in: Capsule())
+    }
+
+    private var statusText: String {
+        if badge == "未识别" { return "未识别" }
+        guard let progress else { return badge }
+        if progress.isFinished { return "已看完" }
+        if progress.fraction > 0.01 { return "\(Int(progress.fraction * 100))%" }
+        return badge
+    }
+
+    private var statusTextColor: Color {
+        if badge == "未识别" { return LumaBrand.coral }
+        guard let progress else { return .secondary }
+        if progress.isFinished { return .green }
+        return progress.fraction > 0.01 ? LumaBrand.amber : .secondary
+    }
+
+    @ViewBuilder
+    private var playKey: some View {
+        if let onPlay, hovered {
+            Button(action: onPlay) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(width: 22, height: 22)
+                    .background(LumaBrand.amber, in: Circle())
             }
+            .buttonStyle(.plain)
+            .help("播放")
+        } else {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.secondary.opacity(0.45))
         }
     }
 
@@ -5005,6 +5433,157 @@ private struct CinemaListRow: View {
         guard let progress else { return Color.secondary.opacity(0.35) }
         if progress.isFinished { return .green }
         return progress.fraction > 0.01 ? LumaBrand.amber : Color.secondary.opacity(0.35)
+    }
+}
+
+// MARK: - 卡片模式宽幅卡
+
+/// 卡片模式的宽幅卡：16:9 背景图 + 底部信息层。
+/// 悬停浮起并出现播放键；信息层只保留片名、年份 / 类型、评分、规格与进度。
+private struct CinemaWideCard: View {
+    let title: String
+    let meta: String
+    let artworkURL: String?
+    let fallbackPhoto: PhotoItem?
+    let rating: Double?
+    let badges: [String]
+    let progressFraction: Double?
+    let progressText: String?
+    let onOpen: () -> Void
+    let onPlay: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            artwork
+
+            LinearGradient(colors: [.clear, .black.opacity(0.20), .black.opacity(0.82)],
+                           startPoint: .center, endPoint: .bottom)
+
+            info
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(hovered ? LumaBrand.amber.opacity(0.45) : Color.white.opacity(0.08),
+                              lineWidth: hovered ? 1 : 0.8)
+        }
+        .overlay(alignment: .topLeading) { badgeRow }
+        .overlay(alignment: .topTrailing) { playKey }
+        .shadow(color: .black.opacity(hovered ? 0.26 : 0.10),
+                radius: hovered ? 16 : 8,
+                y: hovered ? 8 : 4)
+        .scaleEffect(hovered ? 1.012 : 1)
+        .animation(.easeOut(duration: 0.16), value: hovered)
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture(perform: onOpen)
+        .onHover { hovered = $0 }
+        .help(meta.isEmpty ? title : "\(title) · \(meta)")
+    }
+
+    private var artwork: some View {
+        ZStack {
+            Color.black.opacity(0.30)
+            if let artworkURL {
+                CinemaArtwork(urlString: artworkURL, contentMode: .fill)
+            } else if let fallbackPhoto {
+                PhotoThumbnailView(photo: fallbackPhoto, purpose: .cover(600))
+            } else {
+                LinearGradient(colors: [Color.primary.opacity(0.16), Color.primary.opacity(0.06)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+    }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Spacer(minLength: 0)
+            Text(title)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
+            HStack(spacing: 8) {
+                if let rating, rating > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 8.5))
+                        Text(String(format: "%.1f", rating))
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundStyle(LumaBrand.amber)
+                }
+                if !meta.isEmpty {
+                    Text(meta)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if let progressText {
+                    Text(progressText)
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineLimit(1)
+                }
+            }
+            if let progressFraction, progressFraction > 0.01 {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.20))
+                        Capsule()
+                            .fill(LumaBrand.amber)
+                            .frame(width: max(2, geo.size.width * min(1, progressFraction)))
+                    }
+                }
+                .frame(height: 2.5)
+                .padding(.top, 1)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var badgeRow: some View {
+        HStack(spacing: 5) {
+            ForEach(badges, id: \.self) { badge in
+                Text(badge)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.black.opacity(0.42), in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.6)
+                    }
+            }
+        }
+        .padding(12)
+    }
+
+    private var playKey: some View {
+        Button(action: onPlay) {
+            Image(systemName: "play.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.black)
+                .frame(width: 34, height: 34)
+                .background(LumaBrand.amber.opacity(hovered ? 1 : 0), in: Circle())
+                .overlay {
+                    Circle().strokeBorder(.white.opacity(hovered ? 0 : 0.16), lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(hovered ? 0.28 : 0), radius: 8, y: 3)
+                .opacity(hovered ? 1 : 0)
+                .scaleEffect(hovered ? 1 : 0.86)
+                .animation(.easeOut(duration: 0.14), value: hovered)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .allowsHitTesting(hovered)
+        .help("播放")
     }
 }
 
@@ -5027,6 +5606,8 @@ private struct CinemaDetailView: View {
     @State private var activeSheet: CinemaDetailSheet?
     /// TMDB 详情补全后的条目（合集 / 演职员 / 预告 / 分级）。
     @State private var enriched: CinemaEntry?
+    /// 推荐分组：猜你喜欢 / 豆瓣 / 同系列 / 同导演 / 同演员。
+    @State private var recommendationGroups: [CinemaRecommendationGroup] = []
     /// 演职员 → 人物页；合集 → 独立合集页。
     @State private var personTarget: CinemaCastMember?
     @State private var showCollection = false
@@ -5034,6 +5615,10 @@ private struct CinemaDetailView: View {
     @State private var showTrailer = false
     /// 档案卡里的长简介：默认收 5 行。
     @State private var dossierExpanded = false
+    /// 手动换封面：海报 / 背景候选面板。
+    @State private var artworkRequest: CinemaArtworkPickerRequest?
+    /// 滚动偏移：滚过档案卡后浮出紧凑标题条。
+    @State private var scrollOffset: CGFloat = 0
 
     private var current: CinemaEntry {
         enriched ?? store.cinemaEntry(for: entry.id) ?? entry
@@ -5089,13 +5674,12 @@ private struct CinemaDetailView: View {
         .animation(.easeOut(duration: 0.16), value: personTarget?.id)
         .animation(.easeOut(duration: 0.16), value: showTrailer)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(cinemaSheetBackground)
-        // 只把详情内容切成深色影院风，不改整个窗口外观。
-        .environment(\.colorScheme, .dark)
+        .background(CinemaDetailTone.page)
         .task {
             if let updated = await store.enrichCinemaEntry(entry) {
                 enriched = updated
             }
+            recommendationGroups = await store.cinemaRecommendationGroups(for: enriched ?? entry)
         }
         // 顶栏返回：先关预告片，再退演职员页，最后退影片详情。
         .onChange(of: store.cinemaDetailCloseTick) { _, _ in
@@ -5114,6 +5698,8 @@ private struct CinemaDetailView: View {
                     activeSheet = nil
                 }
                 .environmentObject(store)
+                // 面板本身仍是影院暗色底，单独锁深色，避免浅色外观下白字压在深底上。
+                .environment(\.colorScheme, .dark)
             case .newList:
                 CinemaNewListSheet { name in
                     let list = store.createCinemaList(named: name)
@@ -5132,17 +5718,38 @@ private struct CinemaDetailView: View {
                 onOpenEntry(other)
             }
             .environmentObject(store)
+            .environment(\.colorScheme, .dark)
+        }
+    }
+
+    private var pageTopAnchor: String { "cinema-movie-detail-top" }
+
+    /// 详情页默认从顶部开始：不沿用上一部片 / 上次浏览留下的滚动位置。
+    private func scrollToPageTop(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(pageTopAnchor, anchor: .top)
         }
     }
 
     private var pageContent: some View {
-        ZStack {
-            ambientBackground
-            // 与剧集详情一致：内容列跟可视区走，资料网格列数在布局时就地推导。
-            GeometryReader { proxy in
-                let width = max(320, proxy.size.width - 12)
+        // 底图只能挂 background：aspect-fill 的远程剧照只锁了高度，
+        // 图片加载完会带出自然宽度，作为 ZStack 兄弟节点会把整页撑得比窗口更宽。
+        GeometryReader { proxy in
+            let horizontal: CGFloat = 24
+            let width = max(320, proxy.size.width - horizontal * 2)
+            ScrollViewReader { scrollProxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
+                        // 顶部锚点：进入详情 / 切换到另一部片时回到这里。
+                        Color.clear
+                            .frame(height: 0)
+                            .id(pageTopAnchor)
+                            .background {
+                                GeometryReader { geo in
+                                    Color.clear.preference(key: CinemaScrollOffsetKey.self,
+                                                           value: geo.frame(in: .named("cinemaMovieScroll")).minY)
+                                }
+                            }
                         dossierSection(width: width)
                         if !collectionEntries.isEmpty {
                             collectionSection
@@ -5151,21 +5758,118 @@ private struct CinemaDetailView: View {
                             versionsSection
                         }
                         technicalSection
+                        let recommendGroups = visibleRecommendationGroups
+                        if !recommendGroups.isEmpty {
+                            CinemaRecommendationShelf(
+                                groups: recommendGroups,
+                                isLocal: { store.cinemaEntry(tmdbID: $0.tmdbID, kind: $0.kind) != nil },
+                                onOpen: { recom in
+                                    if let doubanID = recom.doubanID {
+                                        store.openDoubanPage(doubanID: doubanID)
+                                    } else if let local = store.cinemaEntry(tmdbID: recom.tmdbID,
+                                                                           kind: recom.kind) {
+                                        onOpenEntry(local)
+                                    } else {
+                                        searchOnlineCinema(recom)
+                                    }
+                                },
+                                onSearchOnline: { searchOnlineCinema($0) },
+                                onOpenExternal: { recom in
+                                    if let doubanID = recom.doubanID {
+                                        store.openDoubanPage(doubanID: doubanID)
+                                    } else {
+                                        searchOnlineCinema(recom)
+                                    }
+                                }
+                            )
+                        }
                     }
+                    .padding(.horizontal, horizontal)
                     .padding(.bottom, 36)
-                    .frame(width: width, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+                    // 只填满可视宽度：固定 width 会变成窗口最小宽度，缩下去就回不来。
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.automatic)
+                .coordinateSpace(name: "cinemaMovieScroll")
+                .onPreferenceChange(CinemaScrollOffsetKey.self) { scrollOffset = $0 }
+                .onAppear { scrollToPageTop(scrollProxy) }
+                .onChange(of: entry.id) { _, _ in scrollToPageTop(scrollProxy) }
+            }
+        }
+        .background(alignment: .top) { ambientBackground }
+        .overlay(alignment: .top) { compactHeader }
+        .animation(.easeOut(duration: 0.18), value: scrollOffset < -140)
+        .sheet(item: $artworkRequest) { request in
+            CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
+                store.applyCinemaArtwork(request.entry,
+                                         posterURL: request.kind == .poster ? url : nil,
+                                         backdropURL: request.kind == .backdrop ? url : nil)
             }
         }
     }
 
-    /// 用同一张剧照虚化铺一层氛围：向下渐隐到深色，和下方内容自然衔接。
+    /// 滚过档案卡后浮出的紧凑标题条。
+    @ViewBuilder
+    private var compactHeader: some View {
+        if scrollOffset < -140 {
+            HStack(spacing: 8) {
+                Text(current.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(CinemaDetailTone.ink)
+                    .lineLimit(1)
+                if let year = current.year {
+                    Text(String(year))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
+                }
+                Spacer(minLength: 0)
+                if let rating = current.rating, rating > 0 {
+                    Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(LumaBrand.amber)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 34)
+            .background(.ultraThinMaterial)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(CinemaDetailTone.ink.opacity(0.10))
+                    .frame(height: 0.5)
+            }
+            .transition(.opacity)
+        }
+    }
+
+    /// 换封面：候选由面板自己拉，这里只负责把请求递过去。
+    private func loadArtwork(_ kind: CinemaArtworkKind) {
+        guard current.matched, current.tmdbID != nil else {
+            store.showToast("先匹配这部片，才能更换封面")
+            return
+        }
+        artworkRequest = CinemaArtworkPickerRequest(kind: kind, entry: current)
+    }
+
+    /// 推荐条目本库没有时：网络影院还没上线，先给占位提示。
+    private func searchOnlineCinema(_ recom: CinemaRecommendation) {
+        store.searchOnlineCinema(recom.title)
+    }
+
+    /// 推荐分组：优先本次拉到的，其次条目缓存；旧数据只有 TMDB 列表时兜底成一个 tab。
+    private var visibleRecommendationGroups: [CinemaRecommendationGroup] {
+        if !recommendationGroups.isEmpty { return recommendationGroups }
+        if let cached = enriched?.recommendationGroups, !cached.isEmpty { return cached }
+        if let recs = enriched?.recommendations, !recs.isEmpty {
+            return [CinemaRecommendationGroup(source: .tmdb, title: "猜你喜欢", items: recs)]
+        }
+        return []
+    }
     private var ambientBackground: some View {
         ZStack(alignment: .top) {
-            cinemaSheetBackground
-            CinemaArtwork(urlString: entry.backdropURL ?? entry.posterURL, contentMode: .fill)
+            CinemaDetailTone.page
+            CinemaArtwork(urlString: entry.backdropURL ?? entry.posterURL,
+                          contentMode: .fill,
+                          maxPixelSize: 1100)
                 .frame(height: 720)
                 .blur(radius: 90, opaque: true)
                 .opacity(0.20)
@@ -5188,23 +5892,25 @@ private struct CinemaDetailView: View {
     /// 底部接演职员，整块收进一张深色玻璃卡，不再拆成几张独立小卡。
     private func dossierSection(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 24) {
-                dossierPosterColumn
-                VStack(alignment: .leading, spacing: 14) {
-                    dossierKicker
-                    dossierTitleBlock
-                    dossierSynopsis
-                    // 资料网格的可用宽度 = 内容列 - 卡片内边距 - 海报列 - 列间距。
-                    dossierFactsGrid(width: width - 22 * 2 - 156 - 24)
+            // 窄窗口把海报与资料改成上下排列，文字列不会被压成一条缝。
+            if width < 760 {
+                VStack(alignment: .leading, spacing: 18) {
+                    dossierPosterColumn
+                    dossierInfoColumn(width: max(280, width - 44))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(22)
+            } else {
+                HStack(alignment: .top, spacing: 24) {
+                    dossierPosterColumn
+                    dossierInfoColumn(width: width - 22 * 2 - 156 - 24)
+                }
+                .padding(22)
             }
-            .padding(22)
 
             // 播放进度并进档案卡：电影页同样不再单独占一条。
             if let progress, progress.fraction > 0.01 {
                 Rectangle()
-                    .fill(Color.white.opacity(0.07))
+                    .fill(CinemaDetailTone.ink.opacity(0.07))
                     .frame(height: 0.8)
                     .padding(.horizontal, 22)
                 resumeBar(progress)
@@ -5215,7 +5921,7 @@ private struct CinemaDetailView: View {
 
             if let cast = current.cast, !cast.isEmpty {
                 Rectangle()
-                    .fill(Color.white.opacity(0.07))
+                    .fill(CinemaDetailTone.ink.opacity(0.07))
                     .frame(height: 0.8)
                     .padding(.horizontal, 22)
                 castStrip(cast)
@@ -5229,20 +5935,21 @@ private struct CinemaDetailView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(
                     LinearGradient(colors: [LumaBrand.amber.opacity(0.30),
-                                            Color.white.opacity(0.06),
+                                            CinemaDetailTone.ink.opacity(0.06),
                                             Color.clear],
                                    startPoint: .topLeading,
                                    endPoint: .bottomTrailing),
                     lineWidth: 0.8
                 )
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 档案卡底板：深色玻璃 + 左上角一层很淡的琥珀光，和海报的暖色调衔接。
+    /// 档案卡底板：玻璃底 + 左上角一层很淡的琥珀光，和海报的暖色调衔接。
     private var dossierPlate: some View {
         RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .fill(LinearGradient(colors: [Color.white.opacity(0.062),
-                                          Color.white.opacity(0.022)],
+            .fill(LinearGradient(colors: [CinemaDetailTone.ink.opacity(0.062),
+                                          CinemaDetailTone.ink.opacity(0.022)],
                                  startPoint: .top, endPoint: .bottom))
             .overlay {
                 RadialGradient(colors: [LumaBrand.amber.opacity(0.10), .clear],
@@ -5264,18 +5971,20 @@ private struct CinemaDetailView: View {
                         .foregroundStyle(LumaBrand.amber)
                     Text(String(format: "%.1f", rating))
                         .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(CinemaDetailTone.ink)
                     if let votes = current.voteCount, votes > 0 {
                         Text("· \(voteCountText(votes))")
                             .font(.system(size: 9.5))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                             .lineLimit(1)
                     }
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 24)
-                .background(Color.white.opacity(0.07), in: Capsule())
-                .overlay { Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6) }
+                .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                }
             }
 
             if let rating = userState.rating {
@@ -5293,7 +6002,7 @@ private struct CinemaDetailView: View {
                         .scaleEffect(x: 1, y: 0.6, anchor: .center)
                     Text(progress.isFinished ? "已看完" : "已看 \(Int(progress.fraction * 100))%")
                         .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                 }
                 .frame(width: 156)
             }
@@ -5307,13 +6016,13 @@ private struct CinemaDetailView: View {
             Text("影片档案")
                 .font(.system(size: 10, weight: .bold))
                 .tracking(2.4)
-                .foregroundStyle(LumaBrand.amber.opacity(0.92))
+                .foregroundStyle(CinemaDetailTone.accent.opacity(0.92))
             Rectangle()
                 .fill(LumaBrand.amber.opacity(0.35))
                 .frame(width: 24, height: 0.8)
             Text(dossierMetaLine)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.45))
                 .lineLimit(1)
             Spacer(minLength: 0)
             dossierStatusPill
@@ -5325,7 +6034,7 @@ private struct CinemaDetailView: View {
         VStack(alignment: .leading, spacing: 9) {
             Text(displayTitle)
                 .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(CinemaDetailTone.ink)
                 .lineLimit(2)
                 .textSelection(.enabled)
 
@@ -5335,7 +6044,7 @@ private struct CinemaDetailView: View {
                 Text(original.uppercased())
                     .font(.system(size: 9.5, weight: .semibold))
                     .tracking(1.8)
-                    .foregroundStyle(.white.opacity(0.42))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.42))
                     .lineLimit(1)
             }
 
@@ -5343,7 +6052,7 @@ private struct CinemaDetailView: View {
                 Text("「\(tagline)」")
                     .font(.system(size: 12, weight: .medium))
                     .italic()
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.72))
                     .lineLimit(2)
             }
 
@@ -5363,16 +6072,18 @@ private struct CinemaDetailView: View {
             let released = current.status == "Released"
             HStack(spacing: 5) {
                 Circle()
-                    .fill(released ? LumaBrand.mint : Color.white.opacity(0.32))
+                    .fill(released ? LumaBrand.mint : CinemaDetailTone.ink.opacity(0.32))
                     .frame(width: 5, height: 5)
                 Text(status)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(released ? LumaBrand.mint : Color.white.opacity(0.72))
+                    .foregroundStyle(released ? LumaBrand.mint : CinemaDetailTone.ink.opacity(0.72))
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Color.white.opacity(0.06), in: Capsule())
-            .overlay { Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6) }
+            .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+            }
         }
     }
 
@@ -5383,13 +6094,13 @@ private struct CinemaDetailView: View {
         if overview.isEmpty {
             Text("暂无剧情简介。可以在顶栏面板里「重新匹配」换一个数据源，通常会补全简介与演职员。")
                 .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 Text(overview)
                     .font(.system(size: 12.8))
-                    .foregroundStyle(.white.opacity(0.78))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.78))
                     .lineSpacing(6)
                     .lineLimit(dossierExpanded ? nil : 5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -5409,12 +6120,23 @@ private struct CinemaDetailView: View {
         }
     }
 
+    /// 档案卡右侧信息列：标题、简介与资料网格共用，窄窗口时也可单独铺满整行。
+    private func dossierInfoColumn(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            dossierKicker
+            dossierTitleBlock
+            dossierSynopsis
+            dossierFactsGrid(width: width)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     /// 资料项列数：按档案卡右列的实际宽度算，宽窗口自动多排一列。
     private func factsColumns(width: CGFloat) -> [GridItem] {
         let spacing: CGFloat = 12
         let width = width > 0 ? width : 620
-        let count = max(2, GridLayout.columns(contentWidth: width, targetSize: 210, spacing: spacing))
-        return Array(repeating: GridItem(.flexible(minimum: 140), spacing: spacing), count: count)
+        let count = max(1, GridLayout.columns(contentWidth: width, targetSize: 210, spacing: spacing))
+        return Array(repeating: GridItem(.flexible(minimum: 120), spacing: spacing), count: count)
     }
 
     /// 资料网格：每项一枚琥珀小图标 + 标签 / 值，缺哪项就不占位。
@@ -5425,17 +6147,17 @@ private struct CinemaDetailView: View {
                 HStack(spacing: 9) {
                     Image(systemName: fact.icon)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(LumaBrand.amber.opacity(0.90))
+                        .foregroundStyle(CinemaDetailTone.accent.opacity(0.90))
                         .frame(width: 24, height: 24)
                         .background(LumaBrand.amber.opacity(0.10),
                                     in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(fact.label)
                             .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.38))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.38))
                         Text(fact.value)
                             .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.82))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.82))
                             .lineLimit(2)
                             .textSelection(.enabled)
                     }
@@ -5542,7 +6264,11 @@ private struct CinemaDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(.white.opacity(0.26), lineWidth: 1)
+                .strokeBorder(CinemaDetailTone.ink.opacity(0.26), lineWidth: 1)
+        }
+        .contextMenu {
+            Button("选择海报…") { loadArtwork(.poster) }
+            Button("选择背景…") { loadArtwork(.backdrop) }
         }
     }
 
@@ -5568,8 +6294,8 @@ private struct CinemaDetailView: View {
                         .font(.system(size: 12, weight: .medium))
                         .padding(.horizontal, 13)
                         .padding(.vertical, 8)
-                        .background(.white.opacity(0.14), in: Capsule())
-                        .foregroundStyle(.white.opacity(0.92))
+                        .background(CinemaDetailTone.ink.opacity(0.14), in: Capsule())
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.92))
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
@@ -5582,8 +6308,8 @@ private struct CinemaDetailView: View {
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 13)
                     .padding(.vertical, 8)
-                    .background(.white.opacity(0.16), in: Capsule())
-                    .foregroundStyle(.white.opacity(0.94))
+                    .background(CinemaDetailTone.ink.opacity(0.16), in: Capsule())
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.94))
             }
             .buttonStyle(.plain)
             .fixedSize()
@@ -5615,9 +6341,9 @@ private struct CinemaDetailView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(active ? activeColor : Color.white.opacity(0.92))
+                .foregroundStyle(active ? activeColor : CinemaDetailTone.ink.opacity(0.92))
                 .frame(width: 34, height: 34)
-                .background(Color.white.opacity(0.16), in: Circle())
+                .background(CinemaDetailTone.ink.opacity(0.16), in: Circle())
         }
         .buttonStyle(.plain)
         .help(help)
@@ -5643,9 +6369,10 @@ private struct CinemaDetailView: View {
                         .font(.system(size: 10, weight: .bold))
                 }
             }
-            .foregroundStyle(userState.rating == nil ? Color.white.opacity(0.90) : LumaBrand.amber)
+            .foregroundStyle(userState.rating == nil ? CinemaDetailTone.ink.opacity(0.90)
+                                                     : LumaBrand.amber)
             .frame(width: 34, height: 34)
-            .background(Color.white.opacity(0.16), in: Circle())
+            .background(CinemaDetailTone.ink.opacity(0.16), in: Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -5669,9 +6396,9 @@ private struct CinemaDetailView: View {
         } label: {
             Image(systemName: "text.badge.plus")
                 .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.92))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.92))
                 .frame(width: 34, height: 34)
-                .background(Color.white.opacity(0.16), in: Circle())
+                .background(CinemaDetailTone.ink.opacity(0.16), in: Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -5693,9 +6420,9 @@ private struct CinemaDetailView: View {
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.90))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.90))
                 .frame(width: 34, height: 34)
-                .background(Color.white.opacity(0.14), in: Circle())
+                .background(CinemaDetailTone.ink.opacity(0.14), in: Circle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -5751,16 +6478,17 @@ private struct CinemaDetailView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.6)
+                                        .strokeBorder(CinemaDetailTone.ink.opacity(0.12),
+                                                      lineWidth: 0.6)
                                 }
                                 Text(other.title)
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.90))
+                                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.90))
                                     .lineLimit(1)
                                     .frame(width: 96, alignment: .leading)
                                 Text(other.year.map(String.init) ?? " ")
                                     .font(.system(size: 10))
-                                    .foregroundStyle(.white.opacity(0.45))
+                                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.45))
                                     .frame(width: 96, alignment: .leading)
                             }
                         }
@@ -5773,11 +6501,11 @@ private struct CinemaDetailView: View {
             .scrollIndicators(.hidden)
         }
         .padding(16)
-        .background(Color.white.opacity(0.04),
+        .background(CinemaDetailTone.ink.opacity(0.04),
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.6)
+                .strokeBorder(CinemaDetailTone.ink.opacity(0.07), lineWidth: 0.6)
         }
     }
 
@@ -5801,9 +6529,9 @@ private struct CinemaDetailView: View {
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(cast) { member in
-                        CinemaCastTile(member: member) {
-                            personTarget = member
-                        }
+                        CinemaCastTile(member: member,
+                                       onOpen: { personTarget = member },
+                                       onSearchOnline: { store.searchOnlineCinema(member.name) })
                     }
                 }
                 .padding(.vertical, 2)
@@ -5822,11 +6550,11 @@ private struct CinemaDetailView: View {
             }
         }
         .padding(16)
-        .background(Color.white.opacity(0.04),
+        .background(CinemaDetailTone.ink.opacity(0.04),
                     in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.6)
+                .strokeBorder(CinemaDetailTone.ink.opacity(0.07), lineWidth: 0.6)
         }
     }
 
@@ -5838,31 +6566,35 @@ private struct CinemaDetailView: View {
             HStack(spacing: 10) {
                 Image(systemName: current ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 13))
-                    .foregroundStyle(current ? LumaBrand.amber : Color.white.opacity(0.40))
+                    .foregroundStyle(current ? LumaBrand.amber
+                                             : CinemaDetailTone.ink.opacity(0.40))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(version.file.filename)
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.90))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.90))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text("\(resolutionText(version.file)) · \(byteText(version.file)) · \(durationText(version.file))")
                         .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.50))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.50))
                 }
 
                 Spacer(minLength: 0)
 
                 Text(current ? "当前" : "播放")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(current ? LumaBrand.amber : Color.white.opacity(0.55))
+                    .foregroundStyle(current ? LumaBrand.amber
+                                             : CinemaDetailTone.ink.opacity(0.55))
             }
             .padding(8)
-            .background(current ? LumaBrand.amber.opacity(0.10) : Color.white.opacity(0.05),
+            .background(current ? LumaBrand.amber.opacity(0.10)
+                                : CinemaDetailTone.ink.opacity(0.05),
                         in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(current ? LumaBrand.amber.opacity(0.35) : Color.white.opacity(0.08),
+                    .strokeBorder(current ? LumaBrand.amber.opacity(0.35)
+                                          : CinemaDetailTone.ink.opacity(0.08),
                                   lineWidth: 0.8)
             }
             .contentShape(Rectangle())
@@ -5940,11 +6672,11 @@ private struct CinemaDetailView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
-            .background(Color.white.opacity(0.04),
+            .background(CinemaDetailTone.ink.opacity(0.04),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.6)
+                    .strokeBorder(CinemaDetailTone.ink.opacity(0.07), lineWidth: 0.6)
             }
         }
     }
@@ -5954,8 +6686,8 @@ private struct CinemaDetailView: View {
             .font(.system(size: 10.5, weight: .semibold))
             .padding(.horizontal, 9)
             .padding(.vertical, 4.5)
-            .background(Color.white.opacity(0.07), in: Capsule())
-            .foregroundStyle(.white.opacity(0.72))
+            .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
+            .foregroundStyle(CinemaDetailTone.ink.opacity(0.72))
     }
 
     private func sectionTitle(_ title: String, detail: String? = nil) -> some View {
@@ -6208,6 +6940,8 @@ struct CinemaMatchSheet: View {
     @State private var step: Step = .search
     @State private var chosenMatch: CinemaMatch?
     @State private var season = 1
+    /// 同目录同名（4K / 1080p 等）一次套用，省得逐个版本点。
+    @State private var matchSiblings = true
     @State private var episodeMode: EpisodeMode = .fileName
     /// 集号 = 文件名数字 + 偏移；顺序模式下等于「起始集 - 1」。
     @State private var episodeOffset = 0
@@ -6218,6 +6952,9 @@ struct CinemaMatchSheet: View {
     @State private var aiRunning = false
     @State private var aiMessage: String?
     @State private var aiError: String?
+    /// 静默自动匹配：不打开助手面板，跑完直接回填；期间整页锁住，可手动解锁。
+    @State private var aiLocked = false
+    @State private var aiTask: Task<Void, Never>?
     /// 应用助手结果时不要触发「按模式重算」，否则会覆盖模型给的集号。
     @State private var suppressAutoRefresh = false
 
@@ -6254,23 +6991,54 @@ struct CinemaMatchSheet: View {
     }
 
     var body: some View {
-        Group {
-            switch step {
-            case .search:
-                searchStep
-            case .episodes:
-                episodeStep
+        ZStack {
+            Group {
+                switch step {
+                case .search:
+                    searchStep
+                case .episodes:
+                    episodeStep
+                }
+            }
+            // 静默匹配期间整页不可操作，只留「手动解锁」一个出口。
+            .disabled(aiLocked)
+
+            if aiLocked {
+                Color.black.opacity(0.30)
+                lockCard
             }
         }
         .padding(18)
         .frame(width: step == .episodes ? 760 : 680, height: 540)
         .background(cinemaSheetBackground)
         .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(aiLocked)
         .task {
             if !hasSearched {
                 await search()
             }
         }
+    }
+
+    /// 静默匹配的锁定卡片：进度 + 解锁出口。
+    private var lockCard: some View {
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text("智能助手正在排 \(rows.count) 个文件的季集…")
+                .font(.system(size: 11.5, weight: .semibold))
+            Text("完成后自动回填集号；也可以现在手动解锁，助手的结果将不再写入。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("手动解锁") { unlockAIMatching() }
+                .controlSize(.small)
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(18)
+        .frame(width: 320)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
     }
 
     private var searchStep: some View {
@@ -6391,6 +7159,19 @@ struct CinemaMatchSheet: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
+
+                // 静默自动匹配：不打开助手面板，模型排完直接回填。
+                Button {
+                    runSilentAIPlan()
+                } label: {
+                    Label(aiLocked ? "自动匹配中…" : "智能助手自动匹配",
+                          systemImage: "sparkles")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .tint(LumaBrand.amber)
+                .disabled(aiRunning || rows.isEmpty)
+                .help("静默交给智能助手：不打开界面，排好后自动回填集号；过程中可手动解锁")
 
                 Button {
                     showAIPanel = true
@@ -6515,20 +7296,7 @@ struct CinemaMatchSheet: View {
         aiMessage = nil
         showAIPanel = false
         let snapshot = rows
-        let note = aiNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        let request = CinemaAIMatchRequest(
-            title: chosenMatch?.title ?? query,
-            year: chosenMatch?.year ?? Int(yearText.trimmingCharacters(in: .whitespaces)),
-            season: season,
-            files: snapshot.enumerated().map { index, row in
-                CinemaAIMatchFile(index: index + 1,
-                                  filename: row.photo.displayFilename,
-                                  detectedEpisode: row.detected,
-                                  durationSeconds: row.photo.duration,
-                                  sizeBytes: row.photo.fileSize)
-            },
-            note: note.isEmpty ? nil : note
-        )
+        let request = aiMatchRequest()
         Task { @MainActor in
             do {
                 let plan = try await store.aiPlanEpisodeMapping(request)
@@ -6538,6 +7306,62 @@ struct CinemaMatchSheet: View {
             }
             aiRunning = false
         }
+    }
+
+    /// 静默自动匹配：不打开助手面板，跑完直接把集号回填到列表；
+    /// 期间整页锁住，只留「手动解锁」——解锁后到达的结果直接丢弃。
+    private func runSilentAIPlan() {
+        guard !aiRunning, !rows.isEmpty else { return }
+        aiRunning = true
+        aiLocked = true
+        aiError = nil
+        aiMessage = nil
+        let snapshot = rows
+        let request = aiMatchRequest()
+        aiTask = Task { @MainActor in
+            defer {
+                aiRunning = false
+                aiLocked = false
+                aiTask = nil
+            }
+            do {
+                let plan = try await store.aiPlanEpisodeMapping(request)
+                guard !Task.isCancelled else { return }
+                applyAIPlan(plan, snapshot: snapshot)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                aiError = error.localizedDescription
+            }
+        }
+    }
+
+    /// 手动解锁：取消静默匹配，之后返回的结果不再写入。
+    private func unlockAIMatching() {
+        aiTask?.cancel()
+        aiTask = nil
+        aiLocked = false
+        aiRunning = false
+        aiMessage = "已手动解锁，助手结果已丢弃"
+    }
+
+    /// 静默与弹窗两条路径共用同一份请求：剧名、季、文件事实与补充要求。
+    private func aiMatchRequest() -> CinemaAIMatchRequest {
+        let note = aiNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        return CinemaAIMatchRequest(
+            title: chosenMatch?.title ?? query,
+            year: chosenMatch?.year ?? Int(yearText.trimmingCharacters(in: .whitespaces)),
+            season: season,
+            files: rows.enumerated().map { index, row in
+                CinemaAIMatchFile(index: index + 1,
+                                  filename: row.photo.displayFilename,
+                                  detectedEpisode: row.detected,
+                                  durationSeconds: row.photo.duration,
+                                  sizeBytes: row.photo.fileSize)
+            },
+            note: note.isEmpty ? nil : note
+        )
     }
 
     private func applyAIPlan(_ plan: CinemaAIMatchPlan, snapshot: [EpisodeRow]) {
@@ -6998,6 +7822,10 @@ struct CinemaMatchSheet: View {
                 Text("共 \(results.count) 个候选 · \(targetCountText)")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
+                Toggle("同目录同名一起匹配", isOn: $matchSiblings)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .font(.system(size: 10.5))
             }
             Spacer(minLength: 0)
             Button("取消") { dismiss() }
@@ -7067,10 +7895,12 @@ struct CinemaMatchSheet: View {
     private func applyMatch(_ match: CinemaMatch) {
         if let entry {
             store.applyCinemaMatch(match, to: entry)
+            applySiblingsIfNeeded(match, photos: [entry.file.photoItem])
         } else if photos.count > 1 {
             store.applyCinemaMatch(match, to: photos, season: nil, episodes: [:])
         } else if let photo = photos.first {
             store.applyCinemaMatch(match, to: photo)
+            applySiblingsIfNeeded(match, photos: [photo])
         }
         onApplied()
         dismiss()
@@ -7085,8 +7915,23 @@ struct CinemaMatchSheet: View {
             }
         }
         store.applyCinemaMatch(match, to: rows.map(\.photo), season: season, episodes: mapping)
+        applySiblingsIfNeeded(match, photos: rows.map(\.photo))
         onApplied()
         dismiss()
+    }
+
+    /// 同目录同名多版本 / 同剧其它集：一次套用同一个候选，已匹配的不重复处理。
+    private func applySiblingsIfNeeded(_ match: CinemaMatch, photos: [PhotoItem]) {
+        guard matchSiblings else { return }
+        var extras: [PhotoItem] = []
+        var seen: Set<UUID> = []
+        for photo in photos {
+            for sibling in store.cinemaMatchSiblings(of: photo) where seen.insert(sibling.id).inserted {
+                extras.append(sibling)
+            }
+        }
+        guard !extras.isEmpty else { return }
+        store.applyCinemaMatch(match, to: extras, season: nil, episodes: [:])
     }
 }
 
@@ -7183,28 +8028,376 @@ private struct CinemaContinueCard: View {
 private struct CinemaArtwork: View {
     let urlString: String?
     var contentMode: ContentMode = .fill
+    /// 解码上限（像素）：卡片按列宽量级取图，详情底图再取大一点，避免整张原图常驻内存。
+    var maxPixelSize: Int = 800
     @State private var image: NSImage?
+    @State private var failed = false
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(nsColor: .quaternaryLabelColor).opacity(0.20),
-                                    Color(nsColor: .quaternaryLabelColor).opacity(0.08)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
             if let image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
                     .transition(.opacity)
-            } else {
+            } else if failed {
+                LinearGradient(colors: [Color(nsColor: .quaternaryLabelColor).opacity(0.20),
+                                        Color(nsColor: .quaternaryLabelColor).opacity(0.08)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
                 Image(systemName: "film")
                     .font(.system(size: 20, weight: .light))
                     .foregroundStyle(.tertiary)
+            } else {
+                CinemaShimmer()
             }
         }
-        .task(id: urlString) {
-            guard let urlString else { image = nil; return }
-            image = await CinemaArtworkCache.shared.image(for: urlString)
+        .task(id: "\(urlString ?? "")|\(maxPixelSize)") {
+            guard let urlString else {
+                image = nil
+                failed = true
+                return
+            }
+            let loaded = await CinemaArtworkCache.shared.image(for: urlString, maxPixelSize: maxPixelSize)
+            if let loaded {
+                withAnimation(.easeOut(duration: 0.18)) { image = loaded }
+            } else {
+                failed = true
+            }
         }
+    }
+}
+
+/// 海报占位流光：加载中不显示一块死灰，而是缓慢扫过一道高光。
+struct CinemaShimmer: View {
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                LinearGradient(colors: [Color(nsColor: .quaternaryLabelColor).opacity(0.18),
+                                        Color(nsColor: .quaternaryLabelColor).opacity(0.08)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                LinearGradient(colors: [.clear, .white.opacity(0.16), .clear],
+                               startPoint: .leading, endPoint: .trailing)
+                    .frame(width: max(40, proxy.size.width * 0.5))
+                    .offset(x: phase * proxy.size.width)
+            }
+            .clipped()
+        }
+        .onAppear {
+            withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) {
+                phase = 1.6
+            }
+        }
+    }
+}
+
+// MARK: - 相似推荐
+
+/// 相似推荐横条：只展示，点击回本库找同 tmdbID 的条目。
+private struct CinemaRecommendationShelf: View {
+    let groups: [CinemaRecommendationGroup]
+    /// 本库是否已有这部：悬停时给出「本库已有 / 未入库」提示。
+    let isLocal: (CinemaRecommendation) -> Bool
+    let onOpen: (CinemaRecommendation) -> Void
+    let onSearchOnline: (CinemaRecommendation) -> Void
+    /// 豆瓣条目：只能外部打开。
+    let onOpenExternal: (CinemaRecommendation) -> Void
+
+    /// 悬停项：与演职员头像一致的抬起、琥珀描边、右上角 ↗ 角标。
+    @State private var hovered: String?
+    @State private var activeSource: CinemaRecommendationGroup.Source?
+
+    private var activeGroup: CinemaRecommendationGroup? {
+        if let activeSource,
+           let group = groups.first(where: { $0.source == activeSource }) {
+            return group
+        }
+        return groups.first
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if let group = activeGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(LumaBrand.amber)
+                        .frame(width: 3, height: 14)
+                    Text("相似推荐")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("\(group.items.count)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                tabs
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 12) {
+                        ForEach(group.items) { item in
+                            card(item)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private var tabs: some View {
+        HStack(spacing: 6) {
+            ForEach(groups) { group in
+                let active = group.source == activeGroup?.source
+                Button {
+                    activeSource = group.source
+                } label: {
+                    Text("\(group.title) \(group.items.count)")
+                        .font(.system(size: 10.5, weight: active ? .semibold : .medium))
+                        .foregroundStyle(active ? .black : Color.white.opacity(0.72))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(active ? LumaBrand.amber : Color.white.opacity(0.10),
+                                    in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func card(_ item: CinemaRecommendation) -> some View {
+        let active = hovered == item.id
+        let local = isLocal(item)
+        return Button {
+            onOpen(item)
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                CinemaArtwork(urlString: item.posterURL, contentMode: .fill, maxPixelSize: 420)
+                    .frame(width: 108, height: 162)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(active ? LumaBrand.amber.opacity(0.85) : .white.opacity(0.10),
+                                          lineWidth: active ? 1.4 : 0.6)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundStyle(.black)
+                            .frame(width: 17, height: 17)
+                            .background(LumaBrand.amber, in: Circle())
+                            .overlay { Circle().strokeBorder(.white.opacity(0.45), lineWidth: 0.5) }
+                            .padding(6)
+                            .scaleEffect(active ? 1 : 0.4)
+                            .opacity(active ? 1 : 0)
+                            .offset(x: 1.5, y: 1.5)
+                    }
+                Text(item.title)
+                    .font(.system(size: 11, weight: active ? .semibold : .medium))
+                    .foregroundStyle(active ? LumaBrand.amber : .white.opacity(0.88))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 5) {
+                    Text(item.kind == .tv ? "剧集" : "电影")
+                        .foregroundStyle(.white.opacity(0.45))
+                    if let year = item.year {
+                        Text(String(year))
+                    }
+                    if let rating = item.rating, rating > 0 {
+                        Text(String(format: "★ %.1f", rating))
+                            .foregroundStyle(LumaBrand.amber.opacity(0.9))
+                    }
+                }
+                .font(.system(size: 9.5))
+                .foregroundStyle(active ? .white.opacity(0.72) : .secondary)
+                // 悬停时补一行状态：本库已有直接进详情，未入库去网络影院。
+                // 常驻占位，悬停时高度不跳。
+                Text(local ? "本库已有 · 点击查看" : "未入库 · 点击去网络影院")
+                    .font(.system(size: 9))
+                    .foregroundStyle(local ? LumaBrand.mint : LumaBrand.amber.opacity(0.9))
+                    .lineLimit(1)
+                    .opacity(active ? 1 : 0)
+            }
+            .frame(width: 108, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(active ? 1.03 : 1)
+        .offset(y: active ? -2 : 0)
+        .shadow(color: LumaBrand.amber.opacity(active ? 0.35 : 0), radius: 9, y: 2)
+        .animation(.spring(response: 0.3, dampingFraction: 0.72), value: active)
+        .onHover { inside in
+            if inside {
+                hovered = item.id
+            } else if hovered == item.id {
+                hovered = nil
+            }
+        }
+        .contextMenu {
+            if item.doubanID != nil {
+                Button("在豆瓣打开「\(item.title)」") { onOpenExternal(item) }
+            } else {
+                Button("网络影院搜索「\(item.title)」（即将上线）") { onSearchOnline(item) }
+            }
+        }
+        .help("点击查看；右键可在网络影院搜索（即将上线）")
+    }
+}
+
+// MARK: - 焦点环
+
+/// 详情页滚动偏移：用顶部锚点在滚动坐标系里的位置判断是否滚过档案卡。
+private struct CinemaScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// 统一的键盘焦点环：列表行、集卡都用同一套描边与柔光，避免各处风格不一。
+private struct CinemaFocusRing: ViewModifier {
+    var active: Bool
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if active {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(LumaBrand.amber.opacity(0.9), lineWidth: 2)
+                    .shadow(color: LumaBrand.amber.opacity(0.35), radius: 6)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+// MARK: - 手动选封面
+
+private enum CinemaArtworkKind: String, Identifiable {
+    case poster
+    case backdrop
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .poster: return "海报"
+        case .backdrop: return "背景"
+        }
+    }
+}
+
+private struct CinemaArtworkPickerRequest: Identifiable {
+    let id = UUID()
+    let kind: CinemaArtworkKind
+    let entry: CinemaEntry
+}
+
+/// 封面候选面板：打开时自己去拉候选，详情页 / 卡片 / 列表行共用同一份实现。
+private struct CinemaArtworkPickerSheet: View {
+    let kind: CinemaArtworkKind
+    let entry: CinemaEntry
+    let onPick: (String) -> Void
+
+    @EnvironmentObject private var store: LibraryStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var candidates: [CinemaArtworkCandidate] = []
+    @State private var loading = true
+    /// 没匹配 / 拉不到图时直接写在面板里，不再弹完再提示。
+    @State private var message: String?
+
+    private var tileSize: CGSize {
+        kind == .poster ? CGSize(width: 130, height: 195) : CGSize(width: 240, height: 135)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("选择\(kind.title)")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(CinemaDetailTone.ink)
+                Text(loading ? "加载中…" : "\(candidates.count) 张")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
+                Spacer(minLength: 0)
+                Button("取消") { dismiss() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(LumaBrand.amber)
+            }
+            .padding(16)
+
+            Divider().opacity(0.25)
+
+            Group {
+                if loading {
+                    VStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("正在获取\(kind.title)…")
+                            .font(.system(size: 11))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if candidates.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 22))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.35))
+                        Text(message ?? "没有找到可用的\(kind.title)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.6))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: tileSize.width), spacing: 14)],
+                                  alignment: .leading, spacing: 14) {
+                            ForEach(candidates) { candidate in
+                                Button {
+                                    onPick(candidate.url)
+                                    dismiss()
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        CinemaArtwork(urlString: candidate.url,
+                                                      contentMode: .fill,
+                                                      maxPixelSize: 520)
+                                            .frame(width: tileSize.width, height: tileSize.height)
+                                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                            .overlay {
+                                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                                    .strokeBorder(CinemaDetailTone.ink.opacity(0.16), lineWidth: 0.8)
+                                            }
+                                        HStack(spacing: 6) {
+                                            Text(candidate.language ?? "原版")
+                                            if let rating = candidate.rating, rating > 0 {
+                                                Text(String(format: "★ %.1f", rating))
+                                                    .foregroundStyle(LumaBrand.amber.opacity(0.9))
+                                            }
+                                        }
+                                        .font(.system(size: 9.5))
+                                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 760, minHeight: 560)
+        .background(CinemaDetailTone.page)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard entry.matched, entry.tmdbID != nil else {
+            loading = false
+            message = "先匹配这部片，才能更换\(kind.title)"
+            return
+        }
+        let result = await store.cinemaArtworkCandidates(for: entry)
+        candidates = kind == .poster ? result.posters : result.backdrops
+        if candidates.isEmpty { message = "没有找到可用的\(kind.title)" }
+        loading = false
     }
 }
 
@@ -7909,225 +9102,6 @@ private struct CinemaHistoryPanel: View {
     }
 }
 
-// MARK: - 任务中心
-
-private struct CinemaTaskCenterSheet: View {
-    @EnvironmentObject private var store: LibraryStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var pendingClear = false
-    /// 文档约定：任务按「全部 / 进行中 / 已完成 / 失败」分段，失败项单独重试。
-    @State private var filter: Filter = .all
-
-    private enum Filter: String, CaseIterable, Identifiable {
-        case all, running, done, failed
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .all: return "全部"
-            case .running: return "进行中"
-            case .done: return "已完成"
-            case .failed: return "失败"
-            }
-        }
-    }
-
-    private var filteredTasks: [CinemaTaskRecord] {
-        let sorted = store.cinemaTasks.sorted { $0.startedAt > $1.startedAt }
-        switch filter {
-        case .all:
-            return sorted
-        case .running:
-            return sorted.filter { $0.finishedAt == nil }
-        case .done:
-            return sorted.filter { $0.finishedAt != nil && $0.succeeded }
-        case .failed:
-            return sorted.filter { $0.finishedAt != nil && !$0.succeeded }
-        }
-    }
-
-    /// 近 7 天概览：几次刮削、多少视频、识别多少、失败几次。
-    private var recentStats: (runs: Int, videos: Int, matched: Int, failed: Int) {
-        let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
-        let recent = store.cinemaTasks.filter { $0.startedAt >= cutoff }
-        return (recent.count,
-                recent.reduce(0) { $0 + $1.total },
-                recent.reduce(0) { $0 + $1.matched },
-                recent.filter { $0.finishedAt != nil && !$0.succeeded }.count)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("任务中心")
-                    .font(.system(size: 15, weight: .semibold))
-                Text("\(filteredTasks.count) 条")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                Picker("", selection: $filter) {
-                    ForEach(Filter.allCases) { item in
-                        Text(item.title).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 232)
-                Spacer(minLength: 0)
-                if filter == .failed, !filteredTasks.isEmpty {
-                    Button("重试全部失败") {
-                        let failures = filteredTasks
-                        Task {
-                            for task in failures {
-                                await store.retryCinemaTask(task)
-                            }
-                        }
-                    }
-                    .controlSize(.small)
-                }
-                if !store.cinemaTasks.isEmpty {
-                    Button("清空…") { pendingClear = true }
-                        .controlSize(.small)
-                }
-                Button("完成") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
-            statBar
-
-            Divider()
-
-            if store.cinemaTasks.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "checklist")
-                        .font(.system(size: 22, weight: .light))
-                        .foregroundStyle(.tertiary)
-                    Text("还没有刮削任务")
-                        .font(.system(size: 12, weight: .medium))
-                    Text("每次刮削与重新匹配都会留下记录，失败可以直接重试。")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredTasks.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: filter == .failed ? "checkmark.seal" : "tray")
-                        .font(.system(size: 22, weight: .light))
-                        .foregroundStyle(.tertiary)
-                    Text(emptyText)
-                        .font(.system(size: 12, weight: .medium))
-                    Button("查看全部") { filter = .all }
-                        .controlSize(.small)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(filteredTasks) { task in
-                            row(task)
-                        }
-                    }
-                    .padding(14)
-                }
-            }
-        }
-        .frame(width: 620, height: 500)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .confirmationDialog("清空任务记录？", isPresented: $pendingClear) {
-            Button("清空", role: .destructive) { store.clearCinemaTasks() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只删除任务归档，不影响刮削结果与影片文件。")
-        }
-    }
-
-    private var emptyText: String {
-        switch filter {
-        case .failed: return "近 7 天没有失败任务"
-        case .running: return "当前没有进行中的任务"
-        case .done: return "还没有已完成的任务"
-        case .all: return "没有任务记录"
-        }
-    }
-
-    private var statBar: some View {
-        let stats = recentStats
-        return HStack(spacing: 10) {
-            Text("近 7 天")
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            Text("\(stats.runs) 次刮削")
-            Text("\(stats.videos) 个视频")
-            Text("识别 \(stats.matched)")
-                .foregroundStyle(LumaBrand.amber)
-            if stats.failed > 0 {
-                Text("失败 \(stats.failed) 次")
-                    .foregroundStyle(LumaBrand.coral)
-            }
-            Spacer(minLength: 0)
-        }
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
-
-    private func row(_ task: CinemaTaskRecord) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: statusIcon(task))
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(statusColor(task))
-                .frame(width: 18)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(task.scopeName)
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(task.finishedAt == nil ? "进行中" : (task.succeeded ? "已完成" : "失败"))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(statusColor(task))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background(Capsule().fill(statusColor(task).opacity(0.12)))
-                    Spacer(minLength: 0)
-                    Text(task.startedAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                }
-                Text("共 \(task.total) 个视频 · 识别 \(task.matched) 个")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                if !task.message.isEmpty {
-                    Text(task.message)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            if task.finishedAt != nil, !task.succeeded {
-                Button("重试") {
-                    Task { await store.retryCinemaTask(task) }
-                }
-                .controlSize(.small)
-            }
-        }
-        .padding(9)
-        .background(Color.primary.opacity(0.035),
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-
-    private func statusIcon(_ task: CinemaTaskRecord) -> String {
-        if task.finishedAt == nil { return "clock" }
-        return task.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-    }
-
-    private func statusColor(_ task: CinemaTaskRecord) -> Color {
-        if task.finishedAt == nil { return LumaBrand.amber }
-        return task.succeeded ? .green : LumaBrand.coral
-    }
-}
 
 // MARK: - 右上角 Toast 栈（F4）
 
@@ -8258,23 +9232,23 @@ private struct CinemaPersonDetailView: View {
     }
 
     var body: some View {
-        ZStack {
-            ambient
-            // 人物页与详情页一致：内容列跟可视区走，作品网格列数在布局时就地推导。
-            GeometryReader { proxy in
-                let width = max(320, proxy.size.width - 12)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
-                        profileCard
-                        worksSection(width: width)
-                    }
-                    .padding(.bottom, 36)
-                    .frame(width: width, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+        // 和剧集 / 影片详情同一套结构：底图挂 background，不参与页面尺寸推导。
+        GeometryReader { proxy in
+            let horizontal: CGFloat = 24
+            let width = max(320, proxy.size.width - horizontal * 2)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    profileCard
+                    worksSection(width: width)
                 }
-                .scrollIndicators(.automatic)
+                .padding(.horizontal, horizontal)
+                .padding(.bottom, 36)
+                // 只填满可视宽度：固定 width 会变成窗口最小宽度，缩下去就回不来。
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .scrollIndicators(.automatic)
         }
+        .background(alignment: .top) { ambient }
         // 悬停作品档案：挂在页面最上层，贴着卡片显示，又不会被滚动区裁掉。
         .overlayPreferenceValue(CinemaWorkAnchorKey.self) { anchors in
             GeometryReader { proxy in
@@ -8310,8 +9284,7 @@ private struct CinemaPersonDetailView: View {
         }
         .animation(.easeOut(duration: 0.14), value: hoveredWorkKey)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(cinemaSheetBackground)
-        .environment(\.colorScheme, .dark)
+        .background(CinemaDetailTone.page)
         .task {
             if member.tmdbID != nil {
                 profile = await store.cinemaPersonProfile(for: member)
@@ -8323,7 +9296,7 @@ private struct CinemaPersonDetailView: View {
     /// 用本库作品的海报虚化铺底：和影院其他详情页一致的氛围层。
     private var ambient: some View {
         ZStack(alignment: .top) {
-            cinemaSheetBackground
+            CinemaDetailTone.page
             CinemaArtwork(urlString: works.first?.backdropURL ?? works.first?.posterURL,
                           contentMode: .fill)
                 .frame(height: 720)
@@ -8354,20 +9327,20 @@ private struct CinemaPersonDetailView: View {
                     Text("演职员档案")
                         .font(.system(size: 10, weight: .bold))
                         .tracking(2.4)
-                        .foregroundStyle(LumaBrand.amber.opacity(0.92))
+                        .foregroundStyle(CinemaDetailTone.accent.opacity(0.92))
                     Rectangle()
                         .fill(LumaBrand.amber.opacity(0.35))
                         .frame(width: 24, height: 0.8)
                     Text(departmentText)
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.45))
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
 
                 Text(member.name)
                     .font(.system(size: 34, weight: .bold, design: .serif))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CinemaDetailTone.ink)
                     .textSelection(.enabled)
 
                 if let character = member.character, !character.isEmpty {
@@ -8377,6 +9350,24 @@ private struct CinemaPersonDetailView: View {
                 }
 
                 chipRow
+
+                Button {
+                    store.searchOnlineCinema(member.name)
+                } label: {
+                    Label("网络影院搜索 · 即将上线", systemImage: "globe")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(LumaBrand.amber)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(LumaBrand.amber.opacity(0.14), in: Capsule())
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(LumaBrand.amber.opacity(0.35), lineWidth: 0.8)
+                        }
+                }
+                .buttonStyle(.plain)
+                .help("网络影院还没上线，先用 TA 的名字占个位置")
+
                 bioBlock
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -8384,8 +9375,8 @@ private struct CinemaPersonDetailView: View {
         .padding(24)
         .background {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(LinearGradient(colors: [Color.white.opacity(0.062),
-                                              Color.white.opacity(0.022)],
+                .fill(LinearGradient(colors: [CinemaDetailTone.ink.opacity(0.062),
+                                              CinemaDetailTone.ink.opacity(0.022)],
                                      startPoint: .top, endPoint: .bottom))
                 .overlay {
                     RadialGradient(colors: [LumaBrand.amber.opacity(0.10), .clear],
@@ -8397,7 +9388,7 @@ private struct CinemaPersonDetailView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(
                     LinearGradient(colors: [LumaBrand.amber.opacity(0.30),
-                                            Color.white.opacity(0.06),
+                                            CinemaDetailTone.ink.opacity(0.06),
                                             Color.clear],
                                    startPoint: .topLeading,
                                    endPoint: .bottomTrailing),
@@ -8413,10 +9404,10 @@ private struct CinemaPersonDetailView: View {
                 if let url = profile?.profileURL ?? member.profileURL {
                     CinemaArtwork(urlString: url, contentMode: .fill)
                 } else {
-                    Circle().fill(Color.white.opacity(0.06))
+                    Circle().fill(CinemaDetailTone.ink.opacity(0.06))
                     Image(systemName: "person.fill")
                         .font(.system(size: 44, weight: .light))
-                        .foregroundStyle(.white.opacity(0.35))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.35))
                 }
             }
             .frame(width: 172, height: 172)
@@ -8425,7 +9416,8 @@ private struct CinemaPersonDetailView: View {
                 Circle().strokeBorder(LumaBrand.amber.opacity(0.30), lineWidth: 1.2)
             }
             .overlay {
-                Circle().strokeBorder(Color.white.opacity(0.06), lineWidth: 0.8).padding(-7)
+                Circle().strokeBorder(CinemaDetailTone.ink.opacity(0.06), lineWidth: 0.8)
+                    .padding(-7)
             }
             .shadow(color: LumaBrand.amber.opacity(0.16), radius: 26, y: 12)
 
@@ -8435,12 +9427,14 @@ private struct CinemaPersonDetailView: View {
                     .foregroundStyle(LumaBrand.amber)
                 Text("本库 \(works.count) 部")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.80))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.80))
             }
             .padding(.horizontal, 10)
             .frame(height: 24)
-            .background(Color.white.opacity(0.07), in: Capsule())
-            .overlay { Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6) }
+            .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+            }
         }
         .frame(width: 172, alignment: .top)
     }
@@ -8465,7 +9459,7 @@ private struct CinemaPersonDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(bio)
                     .font(.system(size: 12.5))
-                    .foregroundStyle(.white.opacity(0.76))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.76))
                     .lineSpacing(6)
                     .lineLimit(bioExpanded ? nil : 4)
                     .fixedSize(horizontal: false, vertical: true)
@@ -8489,7 +9483,7 @@ private struct CinemaPersonDetailView: View {
                  ? "本库还没有这位参与的作品，重新刮削后可看到更多资料。"
                  : "本库已收录 \(works.count) 部，可直接播放。")
                 .font(.system(size: 11.5))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.5))
         }
     }
 
@@ -8535,7 +9529,7 @@ private struct CinemaPersonDetailView: View {
                     .font(.system(size: 15, weight: .semibold))
                 Text("\(lane == .library ? works.count : credits.count) 部")
                     .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.45))
                 Spacer(minLength: 0)
                 laneSwitch
             }
@@ -8556,15 +9550,16 @@ private struct CinemaPersonDetailView: View {
                         .background {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(lane == item ? LumaBrand.amber.opacity(0.16)
-                                                   : Color.white.opacity(0.05))
+                                                   : CinemaDetailTone.ink.opacity(0.05))
                         }
                         .overlay {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .strokeBorder(lane == item ? LumaBrand.amber.opacity(0.35)
-                                                           : Color.white.opacity(0.07),
+                                                           : CinemaDetailTone.ink.opacity(0.07),
                                               lineWidth: 0.7)
                         }
-                        .foregroundStyle(lane == item ? LumaBrand.amber : Color.white.opacity(0.62))
+                        .foregroundStyle(lane == item ? LumaBrand.amber
+                                                      : CinemaDetailTone.ink.opacity(0.62))
                 }
                 .buttonStyle(.plain)
             }
@@ -8746,7 +9741,7 @@ private struct CinemaPersonDetailView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(entry.title)
                         .font(.system(size: 15.5, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(CinemaDetailTone.ink)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     if let rating = entry.rating, rating > 0 {
@@ -8758,14 +9753,14 @@ private struct CinemaPersonDetailView: View {
                             if let votes = entry.voteCount, votes > 0 {
                                 Text("· \(voteText(votes))")
                                     .font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.42))
+                                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.42))
                             }
                         }
                         .foregroundStyle(LumaBrand.amber)
                     }
                     Text(entryMeta(entry))
                         .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                         .lineLimit(2)
                     hoverLibraryChip(inLibrary: true)
                     Spacer(minLength: 0)
@@ -8777,7 +9772,7 @@ private struct CinemaPersonDetailView: View {
             if !overview.isEmpty {
                 Text(overview)
                     .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.88))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.88))
                     .lineSpacing(5.5)
                     .lineLimit(5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -8786,8 +9781,8 @@ private struct CinemaPersonDetailView: View {
             }
 
             if !tags.isEmpty {
-                CinemaSpecBadges(tags: tags, fontSize: 9, tint: .white,
-                                 background: Color.white.opacity(0.10))
+                CinemaSpecBadges(tags: tags, fontSize: 9, tint: CinemaDetailTone.ink,
+                                 background: CinemaDetailTone.ink.opacity(0.10))
                     .padding(.horizontal, 14)
                     .padding(.bottom, 12)
             }
@@ -8796,7 +9791,7 @@ private struct CinemaPersonDetailView: View {
                 HStack(spacing: 6) {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(Color.white.opacity(0.14))
+                            Capsule().fill(CinemaDetailTone.ink.opacity(0.14))
                             Capsule()
                                 .fill(LumaBrand.amber)
                                 .frame(width: max(3, geo.size.width * progress.fraction))
@@ -8828,7 +9823,7 @@ private struct CinemaPersonDetailView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(credit.title)
                         .font(.system(size: 15.5, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(CinemaDetailTone.ink)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -8841,7 +9836,7 @@ private struct CinemaPersonDetailView: View {
                             if let votes = details?.voteCount, votes > 0 {
                                 Text("· \(voteText(votes))")
                                     .font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.42))
+                                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.42))
                             }
                         }
                         .foregroundStyle(LumaBrand.amber)
@@ -8849,13 +9844,13 @@ private struct CinemaPersonDetailView: View {
 
                     Text(creditMeta(credit, details: details))
                         .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.55))
                         .lineLimit(2)
 
                     if let role, !role.isEmpty {
                         Text(role)
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.72))
+                            .foregroundStyle(CinemaDetailTone.ink.opacity(0.72))
                             .lineLimit(2)
                     }
 
@@ -8864,10 +9859,10 @@ private struct CinemaPersonDetailView: View {
                             ForEach(genres.prefix(3), id: \.self) { genre in
                                 Text(genre)
                                     .font(.system(size: 9))
-                                    .foregroundStyle(.white.opacity(0.76))
+                                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.76))
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(Color.white.opacity(0.10), in: Capsule())
+                                    .background(CinemaDetailTone.ink.opacity(0.10), in: Capsule())
                             }
                         }
                     }
@@ -8882,7 +9877,7 @@ private struct CinemaPersonDetailView: View {
             if !overview.isEmpty {
                 Text(overview)
                     .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.88))
+                    .foregroundStyle(CinemaDetailTone.ink.opacity(0.88))
                     .lineSpacing(5.5)
                     .lineLimit(5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -8894,7 +9889,7 @@ private struct CinemaPersonDetailView: View {
                         .controlSize(.mini)
                     Text("正在读取简介…")
                         .font(.system(size: 10.5))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(CinemaDetailTone.ink.opacity(0.5))
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
@@ -8908,7 +9903,7 @@ private struct CinemaPersonDetailView: View {
                         .font(.system(size: 11))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .foregroundStyle(.white.opacity(0.62))
+                .foregroundStyle(CinemaDetailTone.ink.opacity(0.62))
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
             }
@@ -8943,14 +9938,14 @@ private struct CinemaPersonDetailView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(Color(red: 0.075, green: 0.08, blue: 0.095))
+                .fill(CinemaDetailTone.plate)
         }
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .strokeBorder(LumaBrand.amber.opacity(0.26), lineWidth: 0.8)
         }
-        .shadow(color: .black.opacity(0.58), radius: 26, y: 13)
+        .shadow(color: CinemaDetailTone.shadow(0.58), radius: 26, y: 13)
     }
 
     private func hoverPoster(url: String?, photo: PhotoItem?) -> some View {
@@ -8960,7 +9955,7 @@ private struct CinemaPersonDetailView: View {
             } else if let photo {
                 PhotoThumbnailView(photo: photo, purpose: .cover(200))
             } else {
-                Color.white.opacity(0.06)
+                CinemaDetailTone.ink.opacity(0.06)
             }
         }
         .frame(width: 74, height: 111)
@@ -8968,22 +9963,24 @@ private struct CinemaPersonDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(.white.opacity(0.10), lineWidth: 0.6)
+                .strokeBorder(CinemaDetailTone.ink.opacity(0.10), lineWidth: 0.6)
         }
     }
 
     private func hoverLibraryChip(inLibrary: Bool) -> some View {
         HStack(spacing: 4) {
             Circle()
-                .fill(inLibrary ? LumaBrand.amber : Color.white.opacity(0.35))
+                .fill(inLibrary ? LumaBrand.amber : CinemaDetailTone.ink.opacity(0.35))
                 .frame(width: 4, height: 4)
             Text(inLibrary ? "在库 · 可直接播放" : "未入库 · 仅展示")
                 .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(inLibrary ? LumaBrand.amber : Color.white.opacity(0.58))
+                .foregroundStyle(inLibrary ? LumaBrand.amber
+                                           : CinemaDetailTone.ink.opacity(0.58))
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background((inLibrary ? LumaBrand.amber : Color.white).opacity(inLibrary ? 0.14 : 0.08),
+        .background((inLibrary ? LumaBrand.amber : CinemaDetailTone.ink)
+                        .opacity(inLibrary ? 0.14 : 0.08),
                     in: Capsule())
     }
 
@@ -8995,10 +9992,10 @@ private struct CinemaPersonDetailView: View {
                 .font(.system(size: 10))
             Spacer(minLength: 0)
         }
-        .foregroundStyle(.white.opacity(0.48))
+        .foregroundStyle(CinemaDetailTone.ink.opacity(0.48))
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.white.opacity(0.035))
+        .background(CinemaDetailTone.ink.opacity(0.035))
     }
 
     private func entryMeta(_ entry: CinemaEntry) -> String {
@@ -9036,7 +10033,7 @@ private struct CinemaPersonDetailView: View {
                     } else if let photo {
                         PhotoThumbnailView(photo: photo, purpose: .cover(240))
                     } else {
-                        Rectangle().fill(Color.white.opacity(0.06))
+                        Rectangle().fill(CinemaDetailTone.ink.opacity(0.06))
                         Image(systemName: "film")
                             .font(.system(size: 20, weight: .light))
                             .foregroundStyle(.tertiary)
@@ -9047,7 +10044,7 @@ private struct CinemaPersonDetailView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.6)
+                    .strokeBorder(CinemaDetailTone.ink.opacity(0.10), lineWidth: 0.6)
             }
     }
 

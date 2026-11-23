@@ -101,6 +101,9 @@ extension LibraryStore {
         for url in LibraryPaths.sidecarArtifacts(in: container) {
             try? fm.removeItem(at: url)
         }
+        libraryIndexTask?.cancel()
+        libraryIndexTask = nil
+        libraryIndexComplete = true
         metadataStore = try? MetadataStore(url: LibraryPaths.metadataFile)
         resetFaceClusterState()
         let data = metadataStore?.loadLibrary() ?? LibraryData()

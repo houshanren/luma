@@ -1,4 +1,5 @@
 import SwiftUI
+import LumaContentCore
 
 /// 侧边栏里的一个网络存储行：点名称直接进入该网盘的影院，点右侧箭头单独展开 / 收起它的分类。
 ///
@@ -6,25 +7,28 @@ import SwiftUI
 /// 状态若放在外层容易被复用成旧值（典型表现是点了收起、分类又回来）。
 struct CloudMountSidebarRow: View {
     let mount: CloudMount
+    /// 哪个网盘的层级树是展开的：同一时间只保留一个，点别的接入会收起上一个。
+    @Binding var expandedMountID: UUID?
 
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
 
-    @State private var isExpanded: Bool
+    @State private var isHovering = false
     @State private var showRename = false
     @State private var renameText = ""
 
-    init(mount: CloudMount) {
-        self.mount = mount
-        // 上次退出时是收起状态就保持收起。
-        _isExpanded = State(initialValue: SidebarStateStorage
-            .stringSet(SidebarStateStorage.Key.expandedCloudMounts)
-            .contains(mount.id.uuidString))
-    }
+    private var isExpanded: Bool { expandedMountID == mount.id }
 
     private var item: SidebarItem { .cloudMount(mount.id) }
     private var isMountSelected: Bool { store.sidebarItem == item }
+    /// 这个网盘正在刮削时给出 0–1 进度，侧边栏行尾直接看到进度环。
+    private var scrapeProgress: Double? {
+        guard store.cinemaScrapeRunning,
+              store.cinemaScrapeScope == .mount(mount.id),
+              store.cinemaScrapeTotal > 0 else { return nil }
+        return Double(store.cinemaScrapeDone) / Double(store.cinemaScrapeTotal)
+    }
     /// 网盘内的分类 / 相簿 / 分区总览被选中时，高亮让给更具体的那一行：
     /// 否则网盘行、全部项目、所有相簿会同时点亮。
     private var showsMountHighlight: Bool {
@@ -44,15 +48,6 @@ struct CloudMountSidebarRow: View {
                 CloudMountDetailView(mountID: mount.id)
             }
         }
-        .onChange(of: isExpanded) { _, value in
-            var expanded = SidebarStateStorage.stringSet(SidebarStateStorage.Key.expandedCloudMounts)
-            if value {
-                expanded.insert(mount.id.uuidString)
-            } else {
-                expanded.remove(mount.id.uuidString)
-            }
-            SidebarStateStorage.save(SidebarStateStorage.Key.expandedCloudMounts, expanded)
-        }
     }
 
     private var row: some View {
@@ -64,7 +59,8 @@ struct CloudMountSidebarRow: View {
                 countText: nil,
                 isCurrent: showsMountHighlight,
                 isEnabled: true,
-                isLoading: cloud.loading && isCurrent
+                isLoading: cloud.loading && isCurrent,
+                progress: scrapeProgress
             ),
             isExpanded: isCurrent && isExpanded,
             showsToggle: true,
@@ -76,7 +72,7 @@ struct CloudMountSidebarRow: View {
             cover
         } menu: {
             Button("打开整个网盘") {
-                store.navigate(to: item)
+                store.sourceHub.activate(.cloud(mount.id))
                 store.selectCloudFolder(path: nil)
             }
             Button("重新扫描") {
@@ -84,9 +80,13 @@ struct CloudMountSidebarRow: View {
                 store.refreshCloudDirectory()
             }
             Divider()
+            Button("上移") { store.moveCloudMount(mount.id, by: -1) }
+                .disabled(store.cloudMounts.first?.id == mount.id)
+            Button("下移") { store.moveCloudMount(mount.id, by: 1) }
+                .disabled(store.cloudMounts.last?.id == mount.id)
+            Divider()
             Button("打开影院") {
-                store.activateCinemaScope(.mount(mount.id))
-                store.navigate(to: .cloudCinema(mount.id))
+                store.sourceHub.activate(.mountCinema(mount.id))
             }
             Button("刮削这个网盘的视频") {
                 store.startCinemaScrape(for: .mount(mount.id))
@@ -172,11 +172,10 @@ struct CloudMountSidebarRow: View {
     private var icon: String { mount.kind.symbolName }
 
     /// 点接入 = 进这个网盘自己的影院：与树里的「影院」入口完全一致，
-    /// 同时展开分类树，让「影院」行能被高亮出来，不会出现整棵树都没有选中态。
+    /// 同时展开它自己的分类树；展开态只有一个，其他接入会自动收起。
     private func openCinema() {
-        isExpanded = true
-        store.activateCinemaScope(.mount(mount.id))
-        store.navigate(to: .cloudCinema(mount.id))
+        setExpanded(true)
+        store.sourceHub.activate(.mountCinema(mount.id))
     }
 
     /// 未打开时先切到这个网盘的影院（并展开分类），已打开时切换展开状态。
@@ -186,7 +185,14 @@ struct CloudMountSidebarRow: View {
             return
         }
         withAnimation(settings.motion.layout) {
-            isExpanded.toggle()
+            setExpanded(!isExpanded)
         }
+    }
+
+    /// 展开 / 收起这个接入，并持久化「当前只展开哪一个」。
+    private func setExpanded(_ expanded: Bool) {
+        expandedMountID = expanded ? mount.id : nil
+        SidebarStateStorage.save(SidebarStateStorage.Key.expandedCloudMounts,
+                                 expanded ? [mount.id] : [])
     }
 }

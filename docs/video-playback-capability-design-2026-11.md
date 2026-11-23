@@ -23,7 +23,7 @@
 | 1 | HDR / 杜比视界 | 发布包内置 libplacebo；DV P5 在 HDR 屏保留原样、SDR 屏映射 | HDR10+ 动态元数据未处理；无「屏幕能力 → 输出模式」计划层；缓存键不含策略 | `HDRPlaybackPlan` | 部分落地 |
 | 2 | 转码性能 | `TranscodeProfile` 已按像素率降档；可选 H.264 / HEVC / 低功耗 HEVC；边播边转与离线转码共用 | 无硬件解码 | `TranscodeProfile` | 已落地（兼容 / 高效 / 低功耗） |
 | 3 | 音频直通 / 降混 | AC-3 / E-AC-3 / ALAC 直通；DTS / TrueHD 转 AC-3 5.1 | 直通实机验证；立体声降混；逐轨混合策略 | `AudioPlaybackPlan` | 已落地（直通 + 逐轨混合 + 降混开关） |
-| 4 | 去隔行 / 画面比例 | 已探测 `field_order`，重编码链插入 `bwdif`；画面仍只有「适应 / 填充」+ 手动旋转 | 比例预设与显示层裁剪 | `VideoTreatment` / `VideoFraming` | 部分落地 |
+| 4 | 去隔行 / 画面比例 | 已探测 `field_order`，重编码链插入 `bwdif`；显示方式（适应 / 填充 / 拉伸 / 原始像素）、比例预设与平移已落地 | 烧进画面的裁剪（crop）不在首版 | `VideoTreatment` / `VideoFraming` | 已落地（显示层） |
 | 5 | 网络缓冲策略 | 四选一「自适应 / 流畅 / 均衡 / 省流」，默认流畅 | 弱网计费感知；多码率 ABR | `BufferProfile` / `VideoBufferMode` | 已落地（三档 + 自适应） |
 | 6 | 字幕偏好 | 语言优先级统一用于自动挂载、字幕菜单与在线搜索；forced 轨识别、手动选择记忆 | 云端自动挂载；语言优先级可编辑 | `SubtitlePreference` | 已落地（默认中文，无设置项） |
 
@@ -42,7 +42,7 @@
 | 网络缓冲 | 省流 / 均衡 / 流畅三档；默认流畅；远端按实测吞吐自适应降档 / 恢复 | [BufferProfile.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/BufferProfile.swift)、[BufferAdaptationState.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/BufferAdaptationState.swift) |
 | 测试 | `LumaCoreChecks` 增加降档、码率、libplacebo 链尺寸、`setparams`、AC-3 直通断言 | [main.swift](file:///Users/lijialong/Documents/gitlab/photos/Tests/LumaCoreChecks/main.swift#L422-L470) |
 
-**仍未落地**：`HDRPlaybackPlan`、硬件解码、比例预设、多码率 ABR、云端自动挂载字幕。
+**仍未落地**：`HDRPlaybackPlan`、硬件解码、多码率 ABR、云端自动挂载字幕。
 
 
 **不做的事**（避免范围膨胀）：视频剪辑 / 转场 / 稳定、Atmos 对象音频渲染、HDR 屏幕强制切换、蓝光原盘菜单、逐帧色彩管理。这些与本次六个缺口不是同一层问题。
@@ -512,7 +512,7 @@ photoID + burnSuffix + plan.signature + version
 
 ## 5. 去隔行 / 画面比例
 
-> 状态：部分落地（`field_order` 探测与 `bwdif` 已接入；隔行源跳过原生直读；比例预设未做）。
+> 状态：已落地（`field_order` 探测 + `bwdif`；隔行源跳过原生直读；显示方式适应 / 填充 / 拉伸 / 原始像素；比例预设 16:9 / 4:3 / 2.35:1 / 1:1 + 平移，纯显示层不改转码）。
 
 ### 5.1 现状
 
@@ -641,6 +641,7 @@ photoID + burnSuffix + plan.signature + version
 - 只有远端片源有 Range 代理，本地盘 / SMB 直接跳过自适应。
 - 设置里的档位是**上限**：用户选省流时不会被自动升档；选流畅时允许临时降到均衡 / 省流，网络恢复后再升回流畅。
 - 设置页把「自适应 / 流畅 / 均衡 / 省流」放在同一个分段控件里，默认「流畅」：选「自适应」时以流畅为上限并开启降档，选其余三项则固定该档位、不做自适应。
+- 起播先攒 4–8 秒生成量（按档位，最多多等 6 秒）再交给播放器：只给首段 2 秒缓冲时，SMB / 网盘上的高码率片源会在出画面后立刻耗尽，表现为「一开播就卡一下」。
 
 **（3）弱网与计费网络**
 
@@ -666,7 +667,8 @@ photoID + burnSuffix + plan.signature + version
 | `Sources/PlaybackCore/BufferAdaptationState.swift`（新增） | 吞吐驱动的降档 / 升档与滞回 | 已落地 |
 | `Sources/PlaybackCore/StreamPlanner.swift` | 远端 readrate 从档位读取 | 已落地 |
 | `Sources/PlaybackCore/RemoteRangeSource.swift` | 分块 / 预取 / 并发从档位注入；上报吞吐；自适应调整预取 | 已落地 |
-| `Sources/PlaybackCore/VideoStreamSession.swift` | 提前量阈值、吞吐采样、码率估算与档位切换 | 已落地 |
+| `Sources/PlaybackCore/VideoStreamSession.swift` | 提前量阈值、吞吐采样、码率估算与档位切换；起播前攒 4–8 秒缓冲 | 已落地 |
+| `Sources/PhotosClone/Services/Media/VideoSupport.swift` | 网络卷 MKV / AVI 跳过 AVFoundation 探测；ffprobe 限 `-probesize 5M -analyzeduration 1s`，远程超时 15s | 已落地 |
 | `Sources/PlaybackCore/VideoPlayerModel.swift` | 前向缓冲可配置、可在线调整 | 已落地 |
 | `Sources/PlaybackCore/PlaybackSession.swift` | 自适应结果同步到播放器前向缓冲 | 已落地 |
 | `Sources/PhotosClone/Features/Settings/*` | 网络缓冲四选一「自适应 / 流畅 / 均衡 / 省流」，默认流畅 | 已落地 |
@@ -799,7 +801,7 @@ score = 语言排名权重 + 来源权重 + forced 权重 + default 权重
 | P1 | 去隔行 | P0 探测字段 | 1080i 正常 | 已完成（探测 + bwdif + 跳过原生直读） |
 | P1 | 字幕偏好 | 无 | 自动选轨可解释、可配置 | 已完成（默认中文，无设置项；forced 识别 + 选择记忆） |
 | P2 | HEVC / 低功耗档 + 硬件解码 | 转码档位 | 4K 发热与等待继续下降 | 部分（HEVC / 低功耗已落地，硬解未做） |
-| P2 | 画面比例预设 | 无 | 显示层裁剪与拉伸 | 未开始 |
+| P2 | 画面比例预设 | 无 | 显示层裁剪与拉伸 | 已完成（适应 / 填充 / 拉伸 / 原始像素 + 比例预设 + 平移） |
 | P2 | 多码率 ABR | 吞吐自适应实测 | 弱网自动降清晰度 | 未开始 |
 
 依赖关系是单向的：P0 的计划层与缓存键必须先做，否则 P1/P2 每加一个策略都会产生新的缓存歧义。缓存签名与清单已落地；后续切换音频 / 去隔行 / HDR 策略时，记得把策略变化带进签名或 +1 `cacheKeyVersion`。
@@ -839,5 +841,6 @@ score = 语言排名权重 + 来源权重 + forced 权重 + default 权重
 | 2026-11-22 | 组合实测后的修复：hev1 原生直读判定；多音轨 `LANGUAGE`；离线转码真实帧率；单音轨直通无音轨回退；`HTTPByteRange` 后缀 / HEAD；SDR 屏拒绝 HDR 缓存；播放中缓存不被容量清理删除；详见 [组合实测](file:///Users/lijialong/Documents/gitlab/photos/docs/video-media-matrix-2026-11.md) |
 | 2026-11-22 | 边界复核修复：上游 206 缺 `Content-Range` 不再把分片长度当总长；ffmpeg 非零退出不再被误判为源失败（保留 remux→transcode 降级）；缓存 SDR 判定改用播放器内生效的 HDR 策略；ffmpeg stderr 落盘失败改为 `nullDevice`；`stop()` 改用 `wasServingCache`；§4 音频状态与实测对齐（AC-3 / E-AC-3 / ALAC 直通、DTS/TrueHD→AC-3） |
 | 2026-11-22 | 音频逐轨策略 + 降混：`AudioPlaybackPlan` 逐条决定 copy / AC-3 / AAC，混合编码同会话（实测 master CODECS 为 `ac-3,mp4a.40.2`）；新增「自动 / 立体声」降混开关。转码编码可选 H.264 / HEVC / 低功耗 HEVC（实测 1080p60 4s 素材：H.264 1.92s、HEVC 3.49s、HEVC 低功耗 1.79s；HEVC fMP4 HLS 输出 `hvc1` / Main10 / `yuv420p10le`）。字幕偏好收尾：外挂候选按语言排序、在线搜索语言参数、forced / default 识别、按影片记忆手动选择；缓存键升至 v5 |
+| 2026-11-22 | 画面比例与显示方式：`VideoFramingGeometry` 纯几何布局；适应 / 填充 / 拉伸 / 原始像素 1:1；比例预设 16:9 / 4:3 / 2.35:1 / 1:1 + 上下左右平移与居中；控制条与顶栏共用画面菜单，A 键仍切适应 / 填充；布局断言全部通过 |
 | 2026-11-22 | 真实来源联调落地：群晖 SMB 5 个真实片源复核；seek 起流去掉 `-copyts -start_at_zero`（首片 850→317ms，长片段末端音画差 <40ms）；音频兜底检测窗口 400ms→2s 且连续 4 次确认；卡死重建阈值 40s→10s；HLS 请求级诊断 + 快照 `seekable/av/local/base`；真实 MKV+AAC 直通复核推翻丢轨假设 |
 | 2026-11-22 | 音质优先：默认 `AudioDownmixMode.source` 不降混；DTS / TrueHD 重编码目标 AC-3 640k → E-AC-3 1536k（真实 DTS-HD 片源实测可播）；多声道 AAC 384k→512k、离线转码 160k→512k；设置项改为「音质与声道 / 保持原样（默认）· 立体声（手动）」 |

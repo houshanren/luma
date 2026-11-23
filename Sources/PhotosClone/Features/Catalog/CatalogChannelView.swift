@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import LumaContentCore
 
 /// 列表滚动进度：只上报内容偏移与总高度，用于 60% 提前预取下一页。
 private struct CatalogScrollMetrics: Equatable {
@@ -469,7 +470,12 @@ struct CatalogChannelView: View {
             if catalog.errorNeedsVerification {
                 verificationBanner(source: source)
             } else {
-                banner(text: error, isError: true)
+                SourceErrorView(error: catalog.sourceError
+                                    ?? SourceError(kind: .unavailable,
+                                                   message: error,
+                                                   recovery: [.retry])) { action in
+                    handleSourceRecovery(action, source: source)
+                }
             }
         }
         if let notice = catalog.notice {
@@ -1275,6 +1281,24 @@ struct CatalogChannelView: View {
         case .continueWatching: return "播放任意一集后，这里会记住上次看到的位置。"
         case .favorites: return "在详情页点「稍后看」，条目就会收在这里。"
         default: return "可以换一个分类，或点右上角刷新重试。"
+        }
+    }
+
+    private func handleSourceRecovery(_ action: RecoveryAction, source: CatalogSource) {
+        switch action {
+        case .retry:
+            catalog.reload()
+        case .reauthorize, .reconfigureSource:
+            store.openCatalogSourceInBrowser(source)
+        case .openInBrowser(let address):
+            if let url = URL(string: address) { NSWorkspace.shared.open(url) }
+        case .openSystemSettings:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security") {
+                NSWorkspace.shared.open(url)
+            }
+        case .allowInsecureTLS:
+            // 站点证书问题在「设置 › 网络资源」里单独处理，页面内不直接放宽。
+            break
         }
     }
 

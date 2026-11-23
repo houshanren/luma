@@ -157,19 +157,7 @@ struct RootView: View {
             }
         }
         .onChange(of: viewer.viewerID) { _, newValue in
-            FullScreenDiagnostics.log("viewerID -> \(String(describing: newValue)) immersive=\(viewer.videoImmersiveFullScreen)")
-            // 幽灵查看器兜底：ID 还在但照片已找不到时，覆盖层会留下一块空白。
-            // 等一个 runloop 再判断，避免打开瞬间的正常空档被误关。
-            if let newValue {
-                DispatchQueue.main.async {
-                    guard store.viewerID == newValue, store.viewerPhoto == nil else { return }
-                    store.closeViewer()
-                }
-            }
-            // 全屏里直接关掉查看器：只退出全屏，布局与侧边栏等系统退出后再恢复，
-            // 避免退出动画途中改布局把窗口尺寸算歪（反复进出会让窗口越来越矮）。
-            guard newValue == nil, viewer.videoImmersiveFullScreen else { return }
-            hostWindow?.toggleFullScreen(nil)
+            handleViewerIDChange(newValue)
         }
         .onOpenURL { url in
             store.handleOpenedLibrary(url)
@@ -184,6 +172,8 @@ struct RootView: View {
             guard let target else { return }
             store.openViewer(target.id)
         }
+        // 影院详情跟随应用外观：浅色皮肤下页面、标题栏与控制台一起保持浅色，
+        // 深色皮肤下仍是影院暗色，不再整窗固定切深色。
         .preferredColorScheme(settings.appearance.colorScheme)
         // tint 负责控件（滑杆、开关、按钮），accentColor 让 Color.accentColor（选中框、高亮、强调文字）
         // 解析成同一个颜色，避免出现「滑杆粉色、选中框蓝色」两套配色。
@@ -235,7 +225,16 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if store.showLibraryPicker { openWindow(id: "libraryPicker") }
         }
+        .modifier(CinemaWindowSizeLock(window: hostWindow, isCinema: isCinemaPage))
         .onDisappear { removeSpaceMonitor() }
+    }
+
+    /// 影院页（本地影院或某个网盘的影院）：进入时锁一次窗口尺寸。
+    private var isCinemaPage: Bool {
+        switch store.sidebarItem {
+        case .cinema, .cloudCinema: return true
+        default: return false
+        }
     }
 
     // MARK: - 选取图库窗口
@@ -398,6 +397,22 @@ struct RootView: View {
         }
     }
 
+    private func handleViewerIDChange(_ newValue: UUID?) {
+        FullScreenDiagnostics.log("viewerID -> \(String(describing: newValue)) immersive=\(viewer.videoImmersiveFullScreen)")
+        // 幽灵查看器兜底：ID 还在但照片已找不到时，覆盖层会留下一块空白。
+        // 等一个 runloop 再判断，避免打开瞬间的正常空档被误关。
+        if let newValue {
+            DispatchQueue.main.async {
+                guard store.viewerID == newValue, store.viewerPhoto == nil else { return }
+                store.closeViewer()
+            }
+        }
+        // 全屏里直接关掉查看器：只退出全屏，布局与侧边栏等系统退出后再恢复，
+        // 避免退出动画途中改布局把窗口尺寸算歪（反复进出会让窗口越来越矮）。
+        guard newValue == nil, viewer.videoImmersiveFullScreen else { return }
+        hostWindow?.toggleFullScreen(nil)
+    }
+
     private var toolbarHidden: Bool {
         // 窗口内浏览保留统一工具栏：返回、缩放、拍摄时间与操作都放在工具栏里。
         // 编辑器 / 「整窗查看器」/ 视频真全屏都会盖满窗口：整条隐藏，
@@ -407,6 +422,74 @@ struct RootView: View {
         viewer.editorID != nil
             || (store.viewerPhoto != nil && settings.viewerLayout == .fullscreen)
             || viewer.videoImmersiveFullScreen
+    }
+}
+
+/// 进入影院时短暂锁住窗口尺寸。
+///
+/// 影院页会把工具栏整体让给标题栏控制台；SwiftUI 重建工具栏 / 标题栏浮层时，
+/// 偶尔会按内容理想尺寸把主窗口缩回默认大小。这里在尺寸真正变小时立即还原，
+/// 用户自己拖拽窗口时立刻解锁，绝不和用户抢尺寸。
+private struct CinemaWindowSizeLock: ViewModifier {
+    let window: NSWindow?
+    let isCinema: Bool
+
+    @State private var lockedFrame: NSRect?
+    @State private var unlockTask: DispatchWorkItem?
+    @State private var isLiveResizing = false
+    @State private var isApplying = false
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: isCinema) { _, entered in
+                if entered {
+                    lock()
+                } else {
+                    release()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willStartLiveResizeNotification)) { note in
+                guard (note.object as? NSWindow) === window else { return }
+                isLiveResizing = true
+                release()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification)) { note in
+                guard (note.object as? NSWindow) === window else { return }
+                isLiveResizing = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
+                enforce(note.object as? NSWindow)
+            }
+    }
+
+    private func lock() {
+        guard let window, !window.styleMask.contains(.fullScreen) else { return }
+        lockedFrame = window.frame
+        unlockTask?.cancel()
+        let task = DispatchWorkItem { lockedFrame = nil }
+        unlockTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: task)
+    }
+
+    private func release() {
+        unlockTask?.cancel()
+        unlockTask = nil
+        lockedFrame = nil
+    }
+
+    private func enforce(_ changed: NSWindow?) {
+        guard let changed, changed === window,
+              !isApplying,
+              !isLiveResizing,
+              !changed.styleMask.contains(.fullScreen),
+              let locked = lockedFrame else { return }
+        let current = changed.frame
+        guard current.width < locked.width - 1 || current.height < locked.height - 1 else { return }
+        isApplying = true
+        FullScreenDiagnostics.log("cinema size lock \(current) -> \(locked)\n"
+                                  + Thread.callStackSymbols.prefix(14).joined(separator: "\n"))
+        changed.setFrame(locked, display: true)
+        isApplying = false
     }
 }
 

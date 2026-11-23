@@ -26,6 +26,81 @@ final class MetadataStore {
         }
     }
 
+    /// 启动分片：只读相簿 / 文件夹这类小表，资产交给 `loadAssets` 按页补。
+    func loadLibraryShell() -> LibraryData {
+        queue.sync {
+            (try? readLibraryShell()) ?? LibraryData()
+        }
+    }
+
+    /// 资产总数：分片加载时用来判断还要不要继续读下一页。
+    func assetCount() -> Int {
+        queue.sync {
+            guard let rows = try? db.query("SELECT COUNT(*) AS c FROM assets"),
+                  let value = rows.first?["c"]?.int else { return 0 }
+            return value
+        }
+    }
+
+    /// 按 captured_at 倒序读一页资产：启动时先渲染第一片，其余在后台补齐。
+    /// 不按文件是否存在过滤：外置盘未挂载 / 文件被外部删除时，过滤出的空结果一旦被
+    /// save() 写回会清空整库元数据；缺失文件交给缩略图占位展示。
+    func loadAssets(limit: Int, offset: Int) -> [PhotoItem] {
+        queue.sync {
+            guard let rows = try? db.query("""
+                SELECT * FROM assets ORDER BY captured_at DESC LIMIT ? OFFSET ?
+                """, [limit, offset]) else { return [] }
+            return rows.compactMap { photo(from: $0) }
+        }
+    }
+
+    // MARK: - 影院刮削索引
+
+    /// 读取某个影院的全部刮削结果：一条一行，启动时按 scope 分批读。
+    func cinemaEntries(scope: String) -> [CinemaEntry] {
+        queue.sync {
+            guard let rows = try? db.query("""
+                SELECT payload FROM cinema_entries WHERE scope = ? ORDER BY updated_at DESC
+                """, [scope]) else { return [] }
+            let decoder = JSONDecoder()
+            return rows.compactMap { row in
+                guard let payload = row["payload"]?.string,
+                      let data = payload.data(using: .utf8) else { return nil }
+                return try? decoder.decode(CinemaEntry.self, from: data)
+            }
+        }
+    }
+
+    /// 写回一个影院的全部结果：在数据库队列里整表替换，不占主线程。
+    func saveCinemaEntries(_ entries: [CinemaEntry], scope: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let encoder = JSONEncoder()
+            let now = Date().timeIntervalSince1970
+            do {
+                try self.db.transaction {
+                    try self.db.execute("DELETE FROM cinema_entries WHERE scope = ?", [scope])
+                    for entry in entries {
+                        guard let data = try? encoder.encode(entry),
+                              let payload = String(data: data, encoding: .utf8) else { continue }
+                        try self.db.execute("""
+                            INSERT OR REPLACE INTO cinema_entries (scope, id, payload, updated_at)
+                            VALUES (?, ?, ?, ?)
+                            """, [scope, entry.id.uuidString, payload, now])
+                    }
+                }
+            } catch {
+                FileHandle.standardError.write(Data("cinema index save failed: \(error)\n".utf8))
+            }
+        }
+    }
+
+    func clearCinemaEntries(scope: String) {
+        queue.async { [weak self] in
+            try? self?.db.execute("DELETE FROM cinema_entries WHERE scope = ?", [scope])
+        }
+    }
+
     func save(_ data: LibraryData) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -89,6 +164,18 @@ final class MetadataStore {
                 try? db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", [key, value])
             } else {
                 try? db.execute("DELETE FROM settings WHERE key = ?", [key])
+            }
+        }
+    }
+
+    /// 异步写设置：启动迁移时清掉大 JSON 用，避免占住主线程。
+    func setSettingAsync(_ key: String, _ value: String?) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if let value {
+                try? self.db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", [key, value])
+            } else {
+                try? self.db.execute("DELETE FROM settings WHERE key = ?", [key])
             }
         }
     }
@@ -628,6 +715,16 @@ final class MetadataStore {
         try addColumnIfNeeded("asset_overlays", "color_label", "TEXT")
         // 网盘索引表：目录聚合 + 媒体索引 + 扫描状态（替代整份 JSON 快照）。
         try migrateCloudIndexSchema()
+        // 影院刮削索引：一条一行存，启动与增量写回都不必整份 JSON 读写。
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS cinema_entries (
+                scope TEXT NOT NULL,
+                id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (scope, id)
+            );
+            """)
     }
 
     private func addColumnIfNeeded(_ table: String, _ column: String, _ type: String) throws {
@@ -657,6 +754,21 @@ final class MetadataStore {
     // MARK: - Read
 
     private func readLibrary() throws -> LibraryData {
+        var data = try readLibraryShell()
+        let photoRows = try db.query("SELECT * FROM assets ORDER BY captured_at DESC")
+        var photos: [PhotoItem] = []
+        photos.reserveCapacity(photoRows.count)
+        for row in photoRows {
+            if let photo = photo(from: row) {
+                photos.append(photo)
+            }
+        }
+        data.photos = photos
+        return data
+    }
+
+    /// 相簿 / 文件夹这类小表：启动时一次读完，资产交给 `loadAssets` 分片。
+    private func readLibraryShell() throws -> LibraryData {
         var data = LibraryData()
 
         let folderRows = try db.query("SELECT * FROM folders ORDER BY name COLLATE NOCASE")
@@ -692,19 +804,6 @@ final class MetadataStore {
         }
         data.albums = albums
 
-        let photoRows = try db.query("SELECT * FROM assets ORDER BY captured_at DESC")
-        var photos: [PhotoItem] = []
-        photos.reserveCapacity(photoRows.count)
-        for row in photoRows {
-            if let photo = photo(from: row) {
-                photos.append(photo)
-            }
-        }
-
-        // 不按文件是否存在过滤：外置盘未挂载、文件被外部删除或路径临时不可达时，
-        // 过滤出的空结果一旦被 save() 写回，整库元数据就被清空了。
-        // 缺失文件的条目交给缩略图占位展示，用户仍然可以自行删除。
-        data.photos = photos
         return data
     }
 

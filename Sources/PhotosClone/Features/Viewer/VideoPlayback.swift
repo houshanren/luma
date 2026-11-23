@@ -339,6 +339,8 @@ private struct VideoBufferingOverlay: View {
     var label: String = "缓冲中"
     /// 起播阶段立即显示，不走 0.22 秒防抖：否则打开视频时中间会空一段时间。
     var immediate = false
+    /// 首帧之前的等待用更大的转圈（盖在海报底图上），出画面后的补缓冲保持紧凑。
+    var prominent = false
 
     @State private var visible = false
     @State private var spinning = false
@@ -367,14 +369,14 @@ private struct VideoBufferingOverlay: View {
                             .scaleEffect(pulsing ? 1.7 : 0.7)
                             .opacity(pulsing ? 0.32 : 1)
                     }
-                    .frame(width: 40, height: 40)
+                    .frame(width: prominent ? 54 : 40, height: prominent ? 54 : 40)
 
                     Text(label)
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.62))
+                        .font(.system(size: prominent ? 11.5 : 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(prominent ? 0.82 : 0.62))
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 15)
+                .padding(.horizontal, prominent ? 28 : 20)
+                .padding(.vertical, prominent ? 20 : 15)
                 .background(.ultraThinMaterial,
                             in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay {
@@ -531,6 +533,9 @@ struct VideoPlayerStage: View {
     var zoom: CGFloat = 1
     var offset: CGSize = .zero
     @State private var sourceURL: URL?
+    /// 当前片源的播放模式与能力：直播不显示进度条 / 续播，后续电视频道页直接读它。
+    @State private var playbackMode: PlaybackMode = .vod
+    @State private var playbackCapabilities: PlaybackCapabilities = .vod
     /// 云端直链要求的请求头（WebDAV 的 Basic 认证等），转码时同样要带上。
     @State private var sourceHeaders: [String: String] = [:]
     /// 百度直链不带扩展名、要求固定 UA，且会 302 到 CDN；
@@ -618,6 +623,12 @@ struct VideoPlayerStage: View {
         return min(1, max(0, model.bufferedEndTime / model.duration))
     }
 
+    /// 起播前向缓冲：先用短缓冲把画面放出来，播放开始后由播放编排拉到设置里的档位。
+    /// 直接给 16 秒会让 AVPlayer 先攒够数据才起播，网络源上就是几秒黑屏。
+    private var startupForwardBuffer: Double {
+        min(4, settings.videoBufferProfile.forwardBufferDuration)
+    }
+
     /// 当前会话还能直接回退到的最早位置：更早的分片已经不在，跳过去会重建流。
     private var bufferedStart: Double {
         guard model.duration > 0 else { return 0 }
@@ -647,10 +658,13 @@ struct VideoPlayerStage: View {
                 VideoPosterBackdrop(image: loadingThumbnail)
                     .transition(.opacity)
             }
-            // 重建流期间也在 preparing：旧画面会冻在原地，必须给一枚轻量反馈。
-            VideoBufferingOverlay(active: model.isStalled || isPreparing,
-                                  label: model.isItemReady ? "缓冲中" : "载入中",
-                                  immediate: !model.isItemReady || isPreparing)
+            // 起播等待只覆盖「还没出画面」：装片完成后的音轨校验不该在画面上继续转圈。
+            // 重建流期间由 isStalled（isReloading）接管，给一枚轻量反馈即可。
+            let preparingFirstFrame = isPreparing && !model.isItemReady
+            VideoBufferingOverlay(active: model.isStalled || preparingFirstFrame,
+                                  label: preparingFirstFrame ? "载入中" : "缓冲中",
+                                  immediate: !model.isItemReady,
+                                  prominent: !model.isItemReady)
         }
     }
 
@@ -915,16 +929,23 @@ struct VideoPlayerStage: View {
             }
 
             if hasLoadedVideo, activeFailure == nil {
-                let frame = playerFrame(in: proxy.size)
-                PlayerLayerView(player: model.player,
-                                gravity: model.gravity,
-                                opaqueBackground: !transparentBackground) { controller in
-                    DispatchQueue.main.async {
-                        model.attachPip(controller)
+                // 画面布局只发生在显示层：比例预设裁出一个居中框，平移与显示方式都在框内完成。
+                let layout = framingLayout(in: proxy.size)
+                ZStack {
+                    PlayerLayerView(player: model.player,
+                                    gravity: settings.videoFramingMode.gravity,
+                                    opaqueBackground: !transparentBackground) { controller in
+                        DispatchQueue.main.async {
+                            model.attachPip(controller)
+                        }
                     }
+                    .frame(width: layout.preRotationContentSize.width,
+                           height: layout.preRotationContentSize.height)
+                    .rotationEffect(.degrees(Double(quarterTurns) * 90))
+                    .offset(layout.panOffset)
                 }
-                .frame(width: frame.width, height: frame.height)
-                .rotationEffect(.degrees(Double(quarterTurns) * 90))
+                .frame(width: layout.boxSize.width, height: layout.boxSize.height)
+                .clipped()
                 .scaleEffect(zoom)
                 .offset(offset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -988,11 +1009,11 @@ struct VideoPlayerStage: View {
                 controlsShown = true
             }
         }
-        // 只用「用户是否想播放」控制转码，不能用 isPlaying：
-        // AVPlayer 播到当前 EVENT 列表末尾会短暂进入 .paused，如果据此挂起 ffmpeg，
-        // 就再也不会写出新分片，形成「有缓冲却一直卡住」的死锁。
+        // 只在「开始 / 继续播放」时恢复生成，**暂停时不挂起 ffmpeg**：
+        // EVENT 列表停更超过 1.5 × TARGETDURATION，AVPlayer 会报 -12888 并判定流已结束，
+        // 之后不再拉新分片，恢复播放时直接卡死。暂停期间继续生成也顺带把后面缓冲做好。
         .onChange(of: model.wantsPlayback) { _, wants in
-            playbackSession.setGenerationActive(wants)
+            if wants { playbackSession.setGenerationActive(true) }
         }
         // 转封装后的 HLS 也可能在解码阶段失败：这时必须把「转换为兼容格式」入口放出来，
         // 否则用户只能停在错误页。真正的兼容性判断由 ffmpeg 转码兜底。
@@ -1040,6 +1061,7 @@ struct VideoPlayerStage: View {
             model.seekRouter = nil
             model.scrubGuard = nil
             playbackSession.onHardStall = nil
+            playbackSession.onNativeStall = nil
             model.stop()
             DisplayModeMatcher.restore()
             cloudResourceLoader?.invalidate()
@@ -1084,6 +1106,19 @@ struct VideoPlayerStage: View {
                 guard photo.id == targetID else { return }
                 if let artwork {
                     loadingThumbnail = artwork
+                }
+            }
+        }
+        // 影院匹配过的本地 / SMB 视频：用刮削背景图做起播底图，
+        // 大文件探测 / 首段生成期间不会只剩一块黑底。
+        if loadingThumbnail == nil,
+           let artwork = store.cinemaGridArtwork(for: photo) {
+            let targetID = photo.id
+            Task { @MainActor in
+                let image = await CinemaArtworkCache.shared.image(for: artwork)
+                guard photo.id == targetID else { return }
+                if let image, loadingThumbnail == nil {
+                    loadingThumbnail = image
                 }
             }
         }
@@ -1193,6 +1228,11 @@ struct VideoPlayerStage: View {
         playbackSession.onHardStall = { target in
             guard !playbackSession.isRestartingStream else { return }
             restartStreaming(at: target)
+        }
+        // 直连云端视频卡住：网盘直链只有一条连接，被限速后永远等不到数据，
+        // 改走转封装 + 本地 Range 代理的并行预取。
+        playbackSession.onNativeStall = { target in
+            switchToStreamingForSlowSource(at: target)
         }
         // 拖动时只允许在已生成区间内落帧预览，越界位置等松手后再重建流。
         model.scrubGuard = { target in
@@ -1377,15 +1417,37 @@ struct VideoPlayerStage: View {
     }
 
     /// 按片源帧率切显示器刷新率：设置里可关，找不到合适模式会自动保持原样。
+    /// 延迟到首帧出来之后再切：切模式会短暂黑屏，和起播叠在一起就会被看成「打开时卡了一下」。
     private func applyDisplayRate(_ rate: Double) {
         guard settings.matchDisplayFrameRate, rate > 1 else { return }
-        DisplayModeMatcher.match(frameRate: rate)
+        let generation = loadGeneration
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            DisplayModeMatcher.match(frameRate: rate)
+        }
     }
 
     /// 显示器是否能显示 HDR（EDR headroom > 1.0）。SDR 屏上让系统自己 tone map 观感会变，
     /// 所以自动策略改为先映射成 SDR 再播。
+    ///
+    /// 必须优先看播放窗口所在的那块屏：`NSScreen.main` 在 App 不是前台 / 窗口全屏切换时
+    /// 可能为 nil，之前会误判成 SDR 屏，把 4K60 HDR 强行转码（只有 1× 实时，必然周期性缓冲）。
     private var displaySupportsHDR: Bool {
-        (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1.0
+        if let screen = playerWindow?.screen ?? NSScreen.main {
+            return screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
+        }
+        // 窗口还没挂到屏幕上：只要任意一块屏支持 EDR 就按 HDR 处理。
+        return NSScreen.screens.contains {
+            $0.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
+        }
+    }
+
+    /// 屏幕信息：排查「为什么这条 HDR 片走了转码」时直接看日志。
+    private var displayHDRDiagnostics: String {
+        let screen = playerWindow?.screen ?? NSScreen.main
+        let edr = screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? -1
+        return "displayHDR=\(displaySupportsHDR) edr=\(String(format: "%.2f", edr))"
     }
 
     /// 缓存快路径没有探测，只能按当前设置与屏幕能力判断是否必须拿 SDR 结果：
@@ -1418,6 +1480,13 @@ struct VideoPlayerStage: View {
         return !displaySupportsHDR
     }
 
+    /// 4K 50/60fps 的 HEVC：实测这台机器的系统解码器出不了画面（有声音、全黑），
+    /// 而且换容器也救不回来。直接重编码虽然多花几秒起播，但比「黑屏几秒再降级」干净。
+    private static func requiresRecodeForHighFrameRate4K(_ probe: VideoProbe) -> Bool {
+        guard probe.isHEVC, probe.frameRate >= 45 else { return false }
+        return max(probe.size.width, probe.size.height) >= 1700
+    }
+
     /// 杜比视界 P5 的播放路径提示：HDR 屏保留原样时记录一次诊断；
     /// 没有 libplacebo 时明确告诉用户颜色无法还原，而不是静默偏色。
     private func notifyIfDolbyVisionUnsupported(_ probe: VideoProbe) {
@@ -1443,7 +1512,7 @@ struct VideoPlayerStage: View {
     }
 
     /// 视频快捷键：
-    /// - 图库视频与照片翻页一致：← / → 上一个 / 下一个视频，↑ / ↓ 快退 / 快进。
+    /// - 图库视频与照片翻页一致：← / → 上一个 / 下一个项目（照片与视频都算），↑ / ↓ 快退 / 快进。
     /// - 网络资源与网络存储影院的视频：← / → 快退 / 快进，↑ / ↓ 上一条 / 下一条。
     /// - ⌘ + 方向键：始终只切换上一个 / 下一个视频。
     /// - J / L：快退 / 快进，与方向键共用同一个步长与加速。
@@ -1467,17 +1536,21 @@ struct VideoPlayerStage: View {
         let episodeTransport = isEpisodeTransport
         switch event.keyCode {
         case 123:
-            if hasCommand || !episodeTransport {
+            if episodeTransport {
+                model.seekStep(-1, base: settings.videoSeekStep, isRepeat: event.isARepeat)
+            } else if hasCommand {
                 store.viewerStepVideo(-1)
             } else {
-                model.seekStep(-1, base: settings.videoSeekStep, isRepeat: event.isARepeat)
+                store.viewerStep(-1)
             }
             return true
         case 124:
-            if hasCommand || !episodeTransport {
+            if episodeTransport {
+                model.seekStep(1, base: settings.videoSeekStep, isRepeat: event.isARepeat)
+            } else if hasCommand {
                 store.viewerStepVideo(1)
             } else {
-                model.seekStep(1, base: settings.videoSeekStep, isRepeat: event.isARepeat)
+                store.viewerStep(1)
             }
             return true
         case 126:
@@ -1678,8 +1751,12 @@ struct VideoPlayerStage: View {
                         model.togglePlay()
                     }
                     VideoControlButton(icon: "backward.end",
-                                       help: isEpisodeTransport ? "上一条 (↑)" : "上一个视频 (←)") {
-                        store.viewerStepVideo(-1)
+                                       help: isEpisodeTransport ? "上一条 (↑)" : "上一个 (←)") {
+                        if isEpisodeTransport {
+                            store.viewerStepVideo(-1)
+                        } else {
+                            store.viewerStep(-1)
+                        }
                     }
                     .disabled(!hasPrevVideo)
                     VideoControlButton(icon: "gobackward",
@@ -1695,8 +1772,12 @@ struct VideoPlayerStage: View {
                         model.seekStep(1, base: settings.videoSeekStep)
                     }
                     VideoControlButton(icon: "forward.end",
-                                       help: isEpisodeTransport ? "下一条 (↓)" : "下一个视频 (→)") {
-                        store.viewerStepVideo(1)
+                                       help: isEpisodeTransport ? "下一条 (↓)" : "下一个 (→)") {
+                        if isEpisodeTransport {
+                            store.viewerStepVideo(1)
+                        } else {
+                            store.viewerStep(1)
+                        }
                     }
                     .disabled(!hasNextVideo)
 
@@ -1735,8 +1816,10 @@ struct VideoPlayerStage: View {
                                        help: model.isLooping ? "关闭循环播放" : "循环播放") {
                         model.isLooping.toggle()
                     }
-                    VideoControlButton(icon: "aspectratio", active: model.gravity == .resizeAspectFill,
-                                       help: model.gravity == .resizeAspectFill ? "适应画面 (A)" : "填充画面 (A)") {
+                    VideoControlButton(icon: "aspectratio",
+                                       active: settings.videoFramingMode == .fill,
+                                       help: settings.videoFramingMode == .fill
+                                           ? "适应画面 (A)" : "填充画面 (A)") {
                         toggleGravity()
                     }
                     VideoControlButton(icon: "rotate.right", active: quarterTurns != 0, help: "旋转 90° (R)") {
@@ -1796,7 +1879,8 @@ struct VideoPlayerStage: View {
     }
 
     private func toggleGravity() {
-        model.gravity = model.gravity == .resizeAspectFill ? .resizeAspect : .resizeAspectFill
+        // A 键/按钮仍是「适应 ↔ 填充」的快捷切换；拉伸、原始像素与比例预设在画面菜单里。
+        settings.videoFramingMode = settings.videoFramingMode == .fill ? .fit : .fill
     }
 
     private func rotatePlayer() {
@@ -1805,30 +1889,27 @@ struct VideoPlayerStage: View {
         }
     }
 
-    /// 旋转后按画面比例计算播放层尺寸；填充模式下按铺满计算，避免旋转后出现黑边。
-    private func playerFrame(in stage: CGSize) -> CGSize {
-        guard stage.width > 0, stage.height > 0 else { return stage }
+    /// 显示层布局：比例预设决定裁剪框，显示方式决定框内画面尺寸，平移只在画面超出裁剪框时生效。
+    private func framingLayout(in stage: CGSize) -> VideoFramingLayout {
         let natural = videoSize.width > 0 && videoSize.height > 0 ? videoSize : stage
-        let swapped = quarterTurns % 2 == 1
-        let aspect = swapped ? natural.height / natural.width : natural.width / natural.height
-        guard aspect.isFinite, aspect > 0 else { return stage }
-        var width = stage.width
-        var height = width / aspect
-        if model.gravity == .resizeAspectFill {
-            if height < stage.height {
-                height = stage.height
-                width = height * aspect
-            }
-        } else if height > stage.height {
-            height = stage.height
-            width = height * aspect
-        }
-        return swapped ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+        return VideoFramingGeometry.layout(stage: stage,
+                                           naturalSize: natural,
+                                           quarterTurns: quarterTurns,
+                                           mode: settings.videoFramingMode,
+                                           preset: settings.videoAspectPreset,
+                                           pan: CGSize(width: settings.videoPanX,
+                                                       height: settings.videoPanY))
     }
 
     private func refreshVideoNeighbors() {
-        hasPrevVideo = store.hasAdjacentVideo(from: photo.id, delta: -1)
-        hasNextVideo = store.hasAdjacentVideo(from: photo.id, delta: 1)
+        // 图库视频的 ← / → 与照片翻页一致：前后总有可跳转的项目（首尾循环）。
+        if isEpisodeTransport {
+            hasPrevVideo = store.hasAdjacentVideo(from: photo.id, delta: -1)
+            hasNextVideo = store.hasAdjacentVideo(from: photo.id, delta: 1)
+        } else {
+            hasPrevVideo = true
+            hasNextVideo = true
+        }
     }
 
     private func resetControlPanel() {
@@ -2088,7 +2169,9 @@ struct VideoPlayerStage: View {
                                          resumeAt: next,
                                          mode: mode,
                                          audioIndex: audio,
-                                         autoplay: true)
+                                         // 原来暂停着拖到未生成区间，重建完会自己播起来；
+                                         // 沿用拖动前的播放意图，暂停就停在目标帧。
+                                         autoplay: wasPlaying)
             }
             switch outcome {
             case .started:
@@ -2154,6 +2237,32 @@ struct VideoPlayerStage: View {
         }
     }
 
+    /// 直连播放被网盘限速时的兜底：改用本地转封装，从当前位置接着播。
+    /// 网盘直链只有一条 HTTP 连接，CDN 限速后缓冲只出不进；转封装走本地 Range 代理，
+    /// 会按档位并发预取多个分块（流畅档 8 路 × 16MB），吞吐通常是单连接的数倍。
+    private func switchToStreamingForSlowSource(at target: Double) {
+        guard photo.isCloud, let url = sourceURL,
+              url.pathExtension.lowercased() != "m3u8",
+              !playbackSession.isRestartingStream, !isPreparing else { return }
+        Diagnostics.record("直连限速切转封装：\(photo.originalName) → \(Int(target))s")
+        let generation = loadGeneration
+        let audioIndex = playbackSession.streamAudioIndex
+        isPreparing = true
+        Task { @MainActor in
+            let started = await startStreaming(generation: generation,
+                                               autoplay: true,
+                                               offset: max(0, target - 1),
+                                               resumeAt: target,
+                                               mode: .remux,
+                                               audioIndex: audioIndex)
+            guard generation == loadGeneration else { return }
+            if !started, failureMessage == nil {
+                failureMessage = "网盘直连太慢，转封装也未能启动。"
+                isPreparing = false
+            }
+        }
+    }
+
     /// 启动转封装会话；编码不兼容时自动降级为重编码 H.264。
     /// 起流：`offset` 是 ffmpeg 的读取位置（会再对齐到关键帧），
     /// `resumeAt` 是播放器最终要落到的绝对秒数（装片后先定位再开播）。
@@ -2213,6 +2322,8 @@ struct VideoPlayerStage: View {
             audioIndex: audioIndex,
             audioDownmix: settings.audioDownmix,
             transcodeMode: settings.videoTranscodeMode,
+            // HDR 屏 + 自动策略：重编码时保留 HDR，跳过色调映射（映射链 4K60 只有 <1× 实时）。
+            preserveHDR: displaySupportsHDR && effectiveHDRMode != .toneMapSDR,
             burnSubtitle: ui.burnSubtitleURL,
             burnSubtitleStream: ui.burnSubtitleStream,
             cacheSignature: VideoStreamSession.lumaCacheSignature,
@@ -2237,6 +2348,15 @@ struct VideoPlayerStage: View {
                 .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
+            if photo.isCloud,
+               store.cloudMount(for: photo.cloudMountID)?.kind == .pan115,
+               message.contains("403") {
+                Text("115 可能触发了风控验证或直链已失效：请先在 115 网页端打开该视频完成验证，再回到拾光重试；仍失败时可在「编辑接入范围」里重新保存一次 Cookie。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
             HStack(spacing: 10) {
                 if canTranscode {
                     Button {
@@ -2326,8 +2446,8 @@ struct VideoPlayerStage: View {
 
     private func load(generation: Int) async {
         FullScreenDiagnostics.log("video load start \(photo.originalName) generation=\(generation)")
-        // 换片先恢复系统刷新率，探测到新片帧率后再匹配。
-        DisplayModeMatcher.restore()
+        // 不在这里恢复刷新率：连播同一帧率的剧集时，先恢复再匹配会让屏幕黑闪两次。
+        // 新片的匹配在首帧出来后由 applyDisplayRate 负责，退出播放时 onDisappear 统一恢复。
         isPreparing = true
         cachedSourcePending = false
         failureMessage = nil
@@ -2342,6 +2462,8 @@ struct VideoPlayerStage: View {
         cloudResourceLoader = nil
         playbackSession.stop()
         playbackSession.beginItem(photo.id, hooks: store)
+        // 当前查看器仍以点播为主；电视直播接入后按 PlaybackTarget 设置 .live。
+        playbackSession.playbackMode = .vod
 
         let autoplay = settings.autoPlayVideo
         // 续播 / 片头由内核钩子统一提供（影院进度、目录起播秒数）。
@@ -2376,13 +2498,14 @@ struct VideoPlayerStage: View {
             applyPlaybackProbe(probe)
             model.load(url: warm.playlistURL, probe: probe, autoplay: autoplay,
                        loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                       startAt: resumeOffset)
+                       startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
                        playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
             hasLoadedVideo = true
             isPreparing = false
             failureMessage = nil
             canTranscode = false
-            playbackSession.setGenerationActive(autoplay)
+            // 预热时生成被暂停过：真正开播后必须恢复，否则不会再有新分片。
+            playbackSession.setGenerationActive(true)
             refreshAudioChoices()
             ui.loadSiblingIfAvailable(sourceURL: sourceURL)
             return
@@ -2427,7 +2550,7 @@ struct VideoPlayerStage: View {
             videoSize = probe.size
             model.load(url: source.url, options: assetOptions, probe: probe, autoplay: autoplay,
                        loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                       startAt: resumeOffset)
+                       startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
                        playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
             hasLoadedVideo = true
             isPreparing = false
@@ -2471,12 +2594,14 @@ struct VideoPlayerStage: View {
                                                  options: assetOptions)
             guard generation == loadGeneration, !Task.isCancelled else { return }
             // AVPlayer 没有去隔行开关：隔行源跳过原生直连，交给 ffmpeg 重编码 + bwdif。
+            // 4K 50/60fps HEVC 直连会黑屏有声音，同样跳过（统一走重编码）。
             if probe.hasVideoTrack, probe.isPlayable, !probe.isInterlaced,
+               !Self.requiresRecodeForHighFrameRate4K(probe),
                !needsToneMapping(probe) {
                 videoSize = probe.size
                 model.load(asset: asset, probe: probe, autoplay: autoplay,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                           startAt: resumeOffset)
+                           startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
                            playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
                 hasLoadedVideo = true
                 isPreparing = false
@@ -2499,7 +2624,9 @@ struct VideoPlayerStage: View {
                 Diagnostics.record("HDR 片源改走色调映射：\(photo.originalName) "
                                    + "dv=\(probe.isDolbyVision) "
                                    + "profile=\(probe.color.dvProfile.map(String.init) ?? "-") "
-                                   + "策略=\(effectiveHDRMode.rawValue)")
+                                   + "策略=\(effectiveHDRMode.rawValue) "
+                                   + "override=\(hdrToneMapOverride.map { $0 ? "on" : "off" } ?? "nil") "
+                                   + displayHDRDiagnostics)
             } else if photo.isCloud {
                 Diagnostics.record("云端视频探测失败 \(photo.originalName)：track=\(probe.hasVideoTrack) "
                                    + "playable=\(probe.isPlayable) codec=\(probe.codec ?? "-") "
@@ -2528,7 +2655,7 @@ struct VideoPlayerStage: View {
                 videoSize = cachedProbe.size
                 model.load(url: cached, probe: cachedProbe, autoplay: autoplay,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                           startAt: resumeOffset)
+                           startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
                            playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
                 hasLoadedVideo = true
                 isPreparing = false
@@ -2562,7 +2689,7 @@ struct VideoPlayerStage: View {
                 videoSize = probe.size
                 model.load(asset: resolved.asset, probe: probe, autoplay: autoplay,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                           startAt: resumeOffset)
+                           startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
                            playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
                 hasLoadedVideo = true
                 isPreparing = false
@@ -2615,9 +2742,24 @@ struct VideoPlayerStage: View {
             // 续播直接从目标位置起流，省掉「先播片头再重建流」的一跳。
             let startOffset = resumeOffset ?? 0
             // HDR / 杜比视界按设置色调映射；隔行源必须重编码去隔行；其余走无损转封装。
+            // 视频轨被系统判定不可解码时也只能重编码：只换容器救不回来，直连更是黑屏有声音。
             let streamProbe = failedProbe ?? playbackProbe
+            if !streamProbe.isVideoDecodable, streamProbe.hasVideoTrack {
+                Diagnostics.record("视频轨系统无法解码，改走重编码：\(photo.originalName) "
+                                   + "codec=\(streamProbe.codec ?? "-") "
+                                   + "\(Int(streamProbe.size.width))x\(Int(streamProbe.size.height)) "
+                                   + "fps=\(Int(streamProbe.frameRate))")
+            }
+            let highFrameRate4K = Self.requiresRecodeForHighFrameRate4K(streamProbe)
+            if highFrameRate4K {
+                Diagnostics.record("4K 高帧率 HEVC 直接重编码：\(photo.originalName) "
+                                   + "codec=\(streamProbe.codec ?? "-") "
+                                   + "\(Int(streamProbe.size.width))x\(Int(streamProbe.size.height)) "
+                                   + "fps=\(Int(streamProbe.frameRate))")
+            }
             let streamMode: VideoStreamSession.Mode =
-                (needsToneMapping(streamProbe) || streamProbe.isInterlaced) ? .transcode : .remux
+                (needsToneMapping(streamProbe) || streamProbe.isInterlaced
+                 || !streamProbe.isVideoDecodable || highFrameRate4K) ? .transcode : .remux
             if await startStreaming(generation: generation, autoplay: autoplay,
                                     offset: startOffset,
                                     resumeAt: startOffset > 0 ? startOffset : nil,
@@ -2724,27 +2866,15 @@ struct VideoPlayerStage: View {
     }
 
     private func resolveSource() async -> (url: URL, headers: [String: String], isHLS: Bool)? {
-        // 网络资源：按虚拟分集取当前集的播放直链。
-        if let context = store.catalogPlaybackContext(for: photo.id) {
-            do {
-                let stream = try await store.catalog.stream(source: context.source,
-                                                            episode: context.episode)
-                return (stream.url, stream.headers, stream.isHLS)
-            } catch {
-                streamFailure = error.localizedDescription
-                return nil
-            }
+        do {
+            let session = try await store.preparePlaybackSession(for: photo)
+            playbackMode = session.mode
+            playbackCapabilities = session.capabilities
+            return (session.stream.url, session.stream.headers, session.stream.isHLS)
+        } catch {
+            streamFailure = error.localizedDescription
+            return nil
         }
-        if photo.isCloud {
-            do {
-                let stream = try await store.cloudStreamOrThrow(for: photo)
-                return (stream.url, stream.headers, stream.isHLS)
-            } catch {
-                streamFailure = error.localizedDescription
-                return nil
-            }
-        }
-        return (LibraryPaths.sourceURL(for: photo), [:], false)
     }
 
     private func cachedTranscodeURL() -> URL? {
@@ -2789,7 +2919,8 @@ struct VideoPlayerStage: View {
                 probeDuration = probe.duration
                 applyDisplayRate(probe.frameRate)
                 model.load(url: destination, probe: probe, autoplay: true,
-                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault)
+                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                           forwardBufferDuration: startupForwardBuffer)
                 hasLoadedVideo = true
                 failureMessage = nil
                 canTranscode = false
@@ -2857,13 +2988,13 @@ struct VideoToolbarTransport: View {
     /// 快进 / 快退步长：与播放器和快捷键共用设置里的值。
     var seekStep: Double = 10
     /// 网络资源剧集：↑ / ↓ 切集，← / → 快进快退；
-    /// 图库视频与照片翻页一致：← / → 切换视频，↑ / ↓ 快进快退。
+    /// 图库视频与照片翻页一致：← / → 上一个 / 下一个项目，↑ / ↓ 快进快退。
     var episodeMode: Bool = false
 
     var body: some View {
         HStack(spacing: 1) {
             VideoDeckButton(icon: "backward.end.fill",
-                            help: episodeMode ? "上一集 (↑)" : "上一个视频 (←)") {
+                            help: episodeMode ? "上一集 (↑)" : "上一个 (←)") {
                 onPrev()
             }
             .disabled(!hasPrev)
@@ -2889,7 +3020,7 @@ struct VideoToolbarTransport: View {
             transportDivider
 
             VideoDeckButton(icon: "forward.end.fill",
-                            help: episodeMode ? "下一集 (↓)" : "下一个视频 (→)") {
+                            help: episodeMode ? "下一集 (↓)" : "下一个 (→)") {
                 onNext()
             }
             .disabled(!hasNext)
@@ -3125,14 +3256,10 @@ struct VideoInlineVolume: View {
 /// 顶栏只留一枚入口，避免按钮挤在一起。
 struct VideoToolbarOptions: View {
     @ObservedObject var model: VideoPlayerModel
+    @ObservedObject var settings: AppSettings
     let quarterTurns: Int
     let onRotate: () -> Void
     let onCapture: () -> Void
-
-    private var gravityFilled: Binding<Bool> {
-        Binding(get: { model.gravity == .resizeAspectFill },
-                set: { model.gravity = $0 ? .resizeAspectFill : .resizeAspect })
-    }
 
     private var pipActive: Binding<Bool> {
         Binding(get: { model.isPipActive },
@@ -3160,7 +3287,43 @@ struct VideoToolbarOptions: View {
 
             Section("画面") {
                 Toggle("循环播放", isOn: $model.isLooping)
-                Toggle("填充画面", isOn: gravityFilled)
+                Menu("显示方式") {
+                    ForEach(VideoFramingMode.allCases) { mode in
+                        Toggle(isOn: Binding(
+                            get: { settings.videoFramingMode == mode },
+                            set: { isOn in
+                                if isOn { settings.videoFramingMode = mode }
+                            }
+                        )) {
+                            Text(mode.title)
+                        }
+                    }
+                }
+                Menu("画面比例") {
+                    ForEach(VideoAspectPreset.allCases) { preset in
+                        Toggle(isOn: Binding(
+                            get: { settings.videoAspectPreset == preset },
+                            set: { isOn in
+                                guard isOn else { return }
+                                settings.videoAspectPreset = preset
+                                settings.videoPanX = 0
+                                settings.videoPanY = 0
+                            }
+                        )) {
+                            Text(preset.title)
+                        }
+                    }
+                }
+                Menu("平移画面") {
+                    Button("上移画面") { nudgePan(dx: 0, dy: -0.25) }
+                    Button("下移画面") { nudgePan(dx: 0, dy: 0.25) }
+                    Button("左移画面") { nudgePan(dx: -0.25, dy: 0) }
+                    Button("右移画面") { nudgePan(dx: 0.25, dy: 0) }
+                    Button("居中") {
+                        settings.videoPanX = 0
+                        settings.videoPanY = 0
+                    }
+                }
                 Button("旋转 90°") { onRotate() }
                 Toggle("画中画", isOn: pipActive)
                     .disabled(!model.isPipAvailable)
@@ -3187,6 +3350,11 @@ struct VideoToolbarOptions: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help(quarterTurns == 0 ? "播放选项" : "播放选项（画面已旋转）")
+    }
+
+    private func nudgePan(dx: Double, dy: Double) {
+        settings.videoPanX = min(1, max(-1, settings.videoPanX + dx))
+        settings.videoPanY = min(1, max(-1, settings.videoPanY + dy))
     }
 
     private func speedLabel(_ value: Double) -> String {
@@ -3218,9 +3386,12 @@ struct VideoMediaMenuButtons: View {
     @ObservedObject var ui: VideoPlaybackUI
     @ObservedObject var model: VideoPlayerModel
     var style: Style = .overlay
+    @EnvironmentObject private var settings: AppSettings
 
     var body: some View {
         HStack(spacing: 2) {
+            // 画面入口顶栏与画面内共用：显示方式、比例预设与平移都只改显示层。
+            framingMenu
             if ui.audioChoices.count > 1 { audioMenu }
             // 章节 / 角度 / HDR 入口顶栏与画面内共用：蓝光与电影都靠它跳段、切视角与切映射。
             if ui.chapters.count > 1 { chapterMenu }
@@ -3229,6 +3400,64 @@ struct VideoMediaMenuButtons: View {
             // 顶栏只保留音轨入口：字幕在画面内控制条与「视频 › 字幕」菜单里切换。
             if style == .overlay { subtitleMenu }
         }
+    }
+
+    private var framingMenu: some View {
+        Menu {
+            Section("显示方式") {
+                ForEach(VideoFramingMode.allCases) { mode in
+                    Toggle(isOn: Binding(
+                        get: { settings.videoFramingMode == mode },
+                        set: { isOn in
+                            if isOn { settings.videoFramingMode = mode }
+                        }
+                    )) {
+                        Text(mode.title)
+                    }
+                }
+            }
+            Section("画面比例") {
+                ForEach(VideoAspectPreset.allCases) { preset in
+                    Toggle(isOn: Binding(
+                        get: { settings.videoAspectPreset == preset },
+                        set: { isOn in
+                            guard isOn else { return }
+                            settings.videoAspectPreset = preset
+                            // 换比例后原来的平移量没有意义，回到居中。
+                            settings.videoPanX = 0
+                            settings.videoPanY = 0
+                        }
+                    )) {
+                        Text(preset.title)
+                    }
+                }
+            }
+            Section("平移") {
+                Button("上移画面") { nudgePan(dx: 0, dy: -0.25) }
+                Button("下移画面") { nudgePan(dx: 0, dy: 0.25) }
+                Button("左移画面") { nudgePan(dx: -0.25, dy: 0) }
+                Button("右移画面") { nudgePan(dx: 0.25, dy: 0) }
+                Button("居中") {
+                    settings.videoPanX = 0
+                    settings.videoPanY = 0
+                }
+            }
+            Divider()
+            Text("\(settings.videoFramingMode.title) · \(settings.videoAspectPreset.title)")
+        } label: {
+            icon("crop", active: settings.videoFramingMode != .fit
+                || settings.videoAspectPreset != .source)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("画面显示方式 / 比例 / 平移")
+    }
+
+    /// 平移量是 -1...1 的比例，由布局层换算成像素；画面不超出裁剪框时移动不会有可见效果。
+    private func nudgePan(dx: Double, dy: Double) {
+        settings.videoPanX = min(1, max(-1, settings.videoPanX + dx))
+        settings.videoPanY = min(1, max(-1, settings.videoPanY + dy))
     }
 
     private var chapterMenu: some View {

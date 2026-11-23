@@ -1,11 +1,13 @@
+import AppKit
 import SwiftUI
 
 /// 导入网络资源：三步合一，但必须完成「首页 / 详情 / 封面」三项校验才允许添加。
-/// 站点地址支持一次填多个：逗号、空格、换行都能作为分隔符。
+/// 配置与站点地址写在同一个文本域里，按行 / 逗号 / 空格分开，逐条自动识别类型。
 struct CatalogWizardView: View {
     @EnvironmentObject private var catalog: CatalogBrowserModel
     @EnvironmentObject private var store: LibraryStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
 
     @State private var urlText = ""
     @State private var imported: [ImportedSource] = []
@@ -14,24 +16,23 @@ struct CatalogWizardView: View {
     @State private var errorMessage: String?
     @State private var enableAfterAdd = false
     @State private var allowInsecure = false
-    @State private var importMode: ImportMode = .fongmi
+    @FocusState private var inputFocused: Bool
 
-    /// 两种接入方式：FongMi 兼容配置，或直接给网页站点的地址。
-    private enum ImportMode: String, CaseIterable, Identifiable {
-        case fongmi
+    /// 逐条自动判定：FongMi 兼容配置，或直接给网页站点的地址。
+    private enum AddressKind {
+        case config
         case site
 
-        var id: String { rawValue }
-        var title: String {
+        var label: String {
             switch self {
-            case .fongmi: return "FongMi 配置"
-            case .site: return "直接站点地址"
+            case .config: return "配置"
+            case .site: return "站点"
             }
         }
-        var placeholder: String {
+        var icon: String {
             switch self {
-            case .fongmi: return "https://…/huangguo_fongmi_config.json"
-            case .site: return "https://91quanji.com/  https://javcl.com/  https://javgg.com/  https://madou.club/\n多个地址可用逗号、空格或换行分隔"
+            case .config: return "doc.text"
+            case .site: return "globe"
             }
         }
     }
@@ -99,7 +100,7 @@ struct CatalogWizardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("导入网络资源")
                     .font(.system(size: 15, weight: .semibold))
-                Text("支持 FongMi 兼容配置，或直接填网页站点地址（可一次填多个）")
+                Text("支持 FongMi 兼容配置与网页站点地址，可混填多条，自动识别")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
             }
@@ -119,12 +120,9 @@ struct CatalogWizardView: View {
     }
 
     private var intro: some View {
-        Text(importMode == .fongmi
-             ? "填写单站点配置文件（例如 huangguo_fongmi_config.json）或其指向的脚本地址。"
-                + "Luma 会读取站点地址、分类与封面解密参数，不会执行脚本。"
-             : "直接填写站点首页地址，可以一次填多个：用逗号、空格或换行分隔。"
-                + "Luma 会解析站点导航作为分类、列表卡片作为条目，详情页里的播放器作为分集；"
-                + "站点改版时以页面结构为准。")
+        Text("把要导入的地址直接粘进下面的文本框：配置文件（.json）和站点首页可以混在一起，"
+             + "每行一条，或用逗号、空格分隔。Luma 会自动判断每条的类型，"
+             + "读取配置里的站点地址、分类与封面解密参数（不执行脚本），再逐项校验首页、详情与封面。")
             .font(.system(size: 11.5))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -132,41 +130,154 @@ struct CatalogWizardView: View {
 
     private var field: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("接入方式", selection: $importMode) {
-                ForEach(ImportMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 280)
-            .disabled(isWorking)
-            .onChange(of: importMode) { _, _ in
-                imported = []
-                progressText = nil
-                errorMessage = nil
-            }
+            inputCard
 
-            // 地址可能有好几条：用多行输入框，回车换行不会被当成「立即提交」。
-            TextField(importMode.placeholder, text: $urlText, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11.5, design: .monospaced))
-                .lineLimit(2...5)
-                .disabled(isWorking)
-
-            HStack(spacing: 8) {
-                if isWorking {
+            if isWorking || progressText != nil {
+                HStack(spacing: 8) {
                     ProgressView().controlSize(.mini)
                     Text(progressText ?? "正在读取配置并验证站点…")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                Spacer()
-                Button("解析并校验") { runImport() }
-                    .disabled(Self.splitAddresses(urlText).isEmpty || isWorking)
             }
         }
+    }
+
+    /// 输入卡片：一个文本域装下所有地址，底栏负责识别摘要与提交。
+    private var inputCard: some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                if urlText.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("粘贴配置或站点地址，每行一条")
+                            .foregroundStyle(.secondary)
+                        Text("https://example.com/huangguo_fongmi_config.json")
+                            .foregroundStyle(.tertiary)
+                        Text("https://example.com/  https://example.org/")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 10)
+                    .allowsHitTesting(false)
+                }
+
+                TextEditor(text: $urlText)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .focused($inputFocused)
+                    .disabled(isWorking)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+            }
+            .frame(height: 126)
+
+            Divider().opacity(0.5)
+
+            HStack(spacing: 8) {
+                detectionSummary
+                Spacer(minLength: 8)
+                if !urlText.isEmpty, !isWorking {
+                    Button("清空") {
+                        urlText = ""
+                        imported = []
+                        errorMessage = nil
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                } else if urlText.isEmpty, !isWorking {
+                    Button("粘贴") { pasteFromClipboard() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    runImport()
+                } label: {
+                    Label("解析并校验", systemImage: "wand.and.stars")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(addresses.isEmpty || isWorking)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(scheme == .dark ? Color.white.opacity(0.05) : Color.white.opacity(0.60))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(inputFocused ? Color.accentColor.opacity(0.55) : Color.primary.opacity(0.10),
+                              lineWidth: inputFocused ? 1.5 : 1)
+        }
+        .shadow(color: .black.opacity(inputFocused ? (scheme == .dark ? 0.30 : 0.07) : 0),
+                radius: 8, y: 3)
+        .animation(.easeOut(duration: 0.16), value: inputFocused)
+    }
+
+    /// 底栏左侧：实时告诉用户「粘进来的内容会被当成什么」。
+    @ViewBuilder
+    private var detectionSummary: some View {
+        if addresses.isEmpty {
+            Text("配置与站点地址可混填，自动识别")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        } else {
+            HStack(spacing: 6) {
+                Text("识别到 \(addresses.count) 条")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                ForEach(kindCounts) { entry in
+                    HStack(spacing: 3) {
+                        Image(systemName: entry.kind.icon)
+                            .font(.system(size: 8.5))
+                        Text("\(entry.count) 个\(entry.kind.label)")
+                            .font(.system(size: 10, design: .monospaced))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
+                }
+            }
+            .lineLimit(1)
+        }
+    }
+
+    private var addresses: [String] { Self.splitAddresses(urlText) }
+
+    private struct KindCount: Identifiable {
+        var kind: AddressKind
+        var count: Int
+        var id: String { kind.label }
+    }
+
+    /// 只展示实际出现过的类型，避免「0 个站点」这类噪音。
+    private var kindCounts: [KindCount] {
+        var configs = 0
+        var sites = 0
+        for address in addresses {
+            switch Self.kind(of: address) {
+            case .config: configs += 1
+            case .site: sites += 1
+            }
+        }
+        return [KindCount(kind: .config, count: configs),
+                KindCount(kind: .site, count: sites)]
+            .filter { $0.count > 0 }
+    }
+
+    private func pasteFromClipboard() {
+        guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        urlText = text
+        inputFocused = true
     }
 
     // MARK: - 解析结果
@@ -339,15 +450,14 @@ struct CatalogWizardView: View {
     }
 
     private func runImport() {
-        var addresses = Self.splitAddresses(urlText)
+        let addresses = Self.splitAddresses(urlText)
         guard !addresses.isEmpty else { return }
-        // FongMi 配置文件只有一个，多填时取第一条。
-        if importMode == .fongmi { addresses = Array(addresses.prefix(1)) }
 
         isWorking = true
         progressText = nil
         errorMessage = nil
         imported = []
+        inputFocused = false
 
         Task {
             var results: [ImportedSource] = []
@@ -388,38 +498,46 @@ struct CatalogWizardView: View {
         }
     }
 
+    /// 按地址自身特征判断类型：JSON 配置文件或 FongMi 相关路径走配置解析，其余按站点处理。
+    private static func kind(of address: String) -> AddressKind {
+        let lower = address.lowercased()
+        let path = URLComponents(string: address)?.path.lowercased() ?? lower
+        if path.hasSuffix(".json") || lower.contains("fongmi") || path.contains("config") {
+            return .config
+        }
+        return .site
+    }
+
     /// 按地址挑适配器：域名特征优先，其余按 91 站处理。
     private func importOne(_ address: String) async throws -> CatalogSource {
-        switch importMode {
-        case .fongmi:
+        if Self.kind(of: address) == .config {
             return try await HuangguoCatalogProvider.importSource(from: address)
-        case .site:
-            let lower = address.lowercased()
-            if lower.contains("91porna") {
-                return try await NinetyOnePornaCatalogProvider.importSource(from: address)
-            } else if lower.contains("xsz-av") {
-                return try await XszCatalogProvider.importSource(from: address)
-            } else if lower.contains("missav") {
-                return try await MissavCatalogProvider.importSource(from: address)
-            } else if lower.contains("avple") {
-                return try await AvpleCatalogProvider.importSource(from: address)
-            } else if lower.contains("shise") {
-                return try await ShiseCatalogProvider.importSource(from: address)
-            } else if lower.contains("avgle") {
-                return try await AvgleCatalogProvider.importSource(from: address)
-            } else if lower.contains("rou.video") {
-                return try await RouVideoCatalogProvider.importSource(from: address)
-            } else if lower.contains("91quanji") || lower.contains("quanji") {
-                return try await QuanjiCatalogProvider.importSource(from: address)
-            } else if lower.contains("javcl") {
-                return try await JavClCatalogProvider.importSource(from: address)
-            } else if lower.contains("madou") {
-                return try await MadouCatalogProvider.importSource(from: address)
-            } else if lower.contains("javgg") {
-                return try await JavGGCatalogProvider.importSource(from: address)
-            } else {
-                return try await NinetyOneCatalogProvider.importSource(from: address)
-            }
+        }
+        let lower = address.lowercased()
+        if lower.contains("91porna") {
+            return try await NinetyOnePornaCatalogProvider.importSource(from: address)
+        } else if lower.contains("xsz-av") {
+            return try await XszCatalogProvider.importSource(from: address)
+        } else if lower.contains("missav") {
+            return try await MissavCatalogProvider.importSource(from: address)
+        } else if lower.contains("avple") {
+            return try await AvpleCatalogProvider.importSource(from: address)
+        } else if lower.contains("shise") {
+            return try await ShiseCatalogProvider.importSource(from: address)
+        } else if lower.contains("avgle") {
+            return try await AvgleCatalogProvider.importSource(from: address)
+        } else if lower.contains("rou.video") {
+            return try await RouVideoCatalogProvider.importSource(from: address)
+        } else if lower.contains("91quanji") || lower.contains("quanji") {
+            return try await QuanjiCatalogProvider.importSource(from: address)
+        } else if lower.contains("javcl") {
+            return try await JavClCatalogProvider.importSource(from: address)
+        } else if lower.contains("madou") {
+            return try await MadouCatalogProvider.importSource(from: address)
+        } else if lower.contains("javgg") {
+            return try await JavGGCatalogProvider.importSource(from: address)
+        } else {
+            return try await NinetyOneCatalogProvider.importSource(from: address)
         }
     }
 

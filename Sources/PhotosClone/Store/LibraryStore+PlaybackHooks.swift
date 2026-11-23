@@ -73,11 +73,11 @@ extension LibraryStore: PlaybackHooks {
             return
         }
         if let context = catalogPlaybackContexts[photoID] {
-            catalogModel.updateProgress(source: context.source,
-                                        item: context.item,
-                                        episode: context.episode.index,
-                                        seconds: position,
-                                        duration: duration)
+            playbackProgressStore.recordCatalogProgress(source: context.source,
+                                                        item: context.item,
+                                                        episode: context.episode.index,
+                                                        seconds: position,
+                                                        duration: duration)
         }
     }
 
@@ -92,11 +92,11 @@ extension LibraryStore: PlaybackHooks {
             return
         }
         if let context = catalogPlaybackContexts[photoID] {
-            catalogModel.updateProgress(source: context.source,
-                                        item: context.item,
-                                        episode: context.episode.index,
-                                        seconds: duration,
-                                        duration: duration)
+            playbackProgressStore.recordCatalogProgress(source: context.source,
+                                                        item: context.item,
+                                                        episode: context.episode.index,
+                                                        seconds: duration,
+                                                        duration: duration)
         }
     }
 }

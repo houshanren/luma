@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import LumaContentCore
 
 /// 图库保险库的入口：选择目标目录、后台备份 / 校验 / 恢复，并把状态发布给设置页。
 extension LibraryStore {
@@ -36,6 +37,10 @@ extension LibraryStore {
         vaultReport = nil
         vaultProgress = VaultProgress(phase: .scanning, completed: 0, total: 0, bytes: 0,
                                       message: "准备备份…")
+        // 备份 / 校验 / 恢复都在后台跑，且没有中断句柄：登记任务但不显示取消。
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(root.path), kind: .backup, title: "备份图库", isCancellable: false)
+        )
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -43,6 +48,11 @@ extension LibraryStore {
                     try LibraryVaultService.createBackup(libraryRoot: root, destination: destination) { progress in
                         DispatchQueue.main.async {
                             self.vaultProgress = progress
+                            self.updateSourceJob(jobID,
+                                                 completed: progress.completed,
+                                                 total: progress.total > 0 ? progress.total : nil,
+                                                 message: "\(progress.phase.rawValue) · \(progress.message)",
+                                                 fraction: progress.total > 0 ? progress.fraction : nil)
                         }
                     }
                 }.value
@@ -53,11 +63,13 @@ extension LibraryStore {
                     self.metadataStore?.setSetting(Self.lastBackupDateKey,
                                                    String(Date().timeIntervalSince1970))
                     self.vaultProgress = nil
+                    self.finishSourceJob(jobID, message: "已备份到 \(url.lastPathComponent)")
                     self.showToast("图库已备份到 \(url.lastPathComponent)")
                 }
             } catch {
                 await MainActor.run {
                     self.vaultProgress = nil
+                    self.failSourceJob(jobID, message: error.localizedDescription)
                     self.showToast("备份失败：\(error.localizedDescription)")
                 }
             }
@@ -73,6 +85,9 @@ extension LibraryStore {
         vaultProgress = VaultProgress(phase: .verifying, completed: 0, total: 0, bytes: 0,
                                       message: "准备校验…")
         vaultReport = nil
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(root.path), kind: .backup, title: "校验保险库", isCancellable: false)
+        )
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -80,6 +95,11 @@ extension LibraryStore {
                     try LibraryVaultService.verify(libraryRoot: root, backupRoot: backup) { progress in
                         DispatchQueue.main.async {
                             self.vaultProgress = progress
+                            self.updateSourceJob(jobID,
+                                                 completed: progress.completed,
+                                                 total: progress.total > 0 ? progress.total : nil,
+                                                 message: "\(progress.phase.rawValue) · \(progress.message)",
+                                                 fraction: progress.total > 0 ? progress.fraction : nil)
                         }
                     }
                 }.value
@@ -87,6 +107,10 @@ extension LibraryStore {
                     self.vaultBackupPath = backup.path
                     self.vaultReport = report
                     self.vaultProgress = nil
+                    self.finishSourceJob(jobID,
+                                         message: report.isHealthy
+                                         ? "校验通过 · \(report.checked) 个文件完整"
+                                         : "发现 \(report.issues.count) 个问题")
                     self.showToast(report.isHealthy
                                    ? "校验通过：\(report.checked) 个文件完整"
                                    : "发现 \(report.issues.count) 个问题")
@@ -94,6 +118,7 @@ extension LibraryStore {
             } catch {
                 await MainActor.run {
                     self.vaultProgress = nil
+                    self.failSourceJob(jobID, message: error.localizedDescription)
                     self.showToast("校验失败：\(error.localizedDescription)")
                 }
             }
@@ -109,6 +134,9 @@ extension LibraryStore {
         }
         vaultProgress = VaultProgress(phase: .restoring, completed: 0, total: 0, bytes: 0,
                                       message: "准备恢复…")
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(root.path), kind: .backup, title: "恢复保险库", isCancellable: false)
+        )
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -116,17 +144,24 @@ extension LibraryStore {
                     try LibraryVaultService.restore(libraryRoot: root, backupRoot: backup, report: report) { progress in
                         DispatchQueue.main.async {
                             self.vaultProgress = progress
+                            self.updateSourceJob(jobID,
+                                                 completed: progress.completed,
+                                                 total: progress.total > 0 ? progress.total : nil,
+                                                 message: "\(progress.phase.rawValue) · \(progress.message)",
+                                                 fraction: progress.total > 0 ? progress.fraction : nil)
                         }
                     }
                 }.value
                 await MainActor.run {
                     self.vaultProgress = nil
+                    self.finishSourceJob(jobID, message: "已恢复 \(restored) 个文件")
                     self.showToast("已恢复 \(restored) 个文件；原文件已移入 vault-quarantine")
                     self.verifyVault(backupRoot: backup)
                 }
             } catch {
                 await MainActor.run {
                     self.vaultProgress = nil
+                    self.failSourceJob(jobID, message: error.localizedDescription)
                     self.showToast("恢复失败：\(error.localizedDescription)")
                 }
             }

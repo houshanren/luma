@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
+import LumaContentCore
 
 /// 经常同框的两位人物。
 struct PeoplePair: Identifiable, Hashable {
@@ -332,6 +333,14 @@ extension LibraryStore {
                                                   total: pending.count,
                                                   faces: 0,
                                                   people: localPeople.count)
+        let libraryPath = (LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+            .standardizedFileURL.path
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(libraryPath), kind: .cluster, title: "人脸聚类"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelFaceClustering() }
+            }
+        )
 
         faceClusterTask = Task { [weak self] in
             guard let self else { return }
@@ -346,7 +355,10 @@ extension LibraryStore {
                     FaceClusterEngine.analyze(photo: photo)
                 }.value
                 // 期间点了「重新识别」：旧任务不再写回。
-                guard self.faceClusterToken == token else { return }
+                guard self.faceClusterToken == token else {
+                    self.cancelSourceJob(jobID)
+                    return
+                }
                 for sample in samples {
                     FaceClusterEngine.assign(sample, to: &people)
                     faces += 1
@@ -360,6 +372,10 @@ extension LibraryStore {
                                                                    total: pending.count,
                                                                    faces: faces,
                                                                    people: refined.count)
+                    self.updateSourceJob(jobID,
+                                         completed: processed,
+                                         total: pending.count,
+                                         message: "已分析 \(processed) / \(pending.count) 张 · \(refined.count) 位人物")
                 }
                 // 定期落盘，长时间分析中途退出也不会丢结果。
                 if processed % 200 == 0 {
@@ -371,7 +387,10 @@ extension LibraryStore {
                 }
             }
 
-            guard self.faceClusterToken == token else { return }
+            guard self.faceClusterToken == token else {
+                self.cancelSourceJob(jobID)
+                return
+            }
             let refined = FaceClusterEngine.refined(people)
             self.localPeople = refined
             self.scannedFaceIDs = scanned
@@ -382,10 +401,13 @@ extension LibraryStore {
             self.faceClusterTask = nil
 
             if Task.isCancelled {
+                self.cancelSourceJob(jobID)
                 self.showToast("已停止人物分析")
             } else if refined.isEmpty {
+                self.finishSourceJob(jobID, message: "分析完成 · 未发现人物")
                 self.showToast("分析完成，未发现可聚类的人物")
             } else {
+                self.finishSourceJob(jobID, message: "分析完成 · \(refined.count) 位人物")
                 self.showToast("人物分析完成，共 \(refined.count) 位")
             }
         }
@@ -820,6 +842,15 @@ extension LibraryStore {
         isResolvingPlaces = true
         placeResolveTotal = entries.count
         placeResolveDone = 0
+        let placesPath = scopedToSystemLibrary
+            ? (systemLibraryPath ?? "")
+            : (LibraryPaths.containerLibraryURL ?? LibraryPaths.root).standardizedFileURL.path
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(placesPath),
+                      kind: .places,
+                      title: "补齐照片地点",
+                      isCancellable: false)
+        )
 
         Task { [weak self] in
             guard let self else { return }
@@ -895,7 +926,13 @@ extension LibraryStore {
                                 }
                             }
                         }
-                        if attempt == 1 { self.placeResolveDone += 1 }
+                        if attempt == 1 {
+                            self.placeResolveDone += 1
+                            self.updateSourceJob(jobID,
+                                                 completed: self.placeResolveDone,
+                                                 total: entries.count,
+                                                 message: "已补齐 \(self.placeResolveDone) / \(entries.count) 个地点")
+                        }
                         if info == nil {
                             try? await Task.sleep(nanoseconds: 250_000_000)
                         }
@@ -926,6 +963,7 @@ extension LibraryStore {
             self.objectWillChange.send()
             self.savePlaceCache()
             self.isResolvingPlaces = false
+            self.finishSourceJob(jobID, message: "已补齐 \(self.placeResolveDone) 个地点")
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 /// 查重 2.0：为本地资产补齐 SHA-256 与 dHash，并生成相似照片组。
 /// 扫描在后台按 CPU 核数并发；结果逐批写回内存与 SQLite，可随时取消。
@@ -29,6 +30,14 @@ extension LibraryStore {
         hashScanTotal = pending.count
         let token = UUID()
         hashScanToken = token
+        let libraryPath = (LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+            .standardizedFileURL.path
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(libraryPath), kind: .dedupe, title: "重复项哈希扫描"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelHashScan() }
+            }
+        )
         hashScanTask = Task { [weak self] in
             guard let self else { return }
             let concurrency = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount))
@@ -71,11 +80,23 @@ extension LibraryStore {
                 index = end
                 self.hashScanCompleted = index
                 self.duplicateGroupsCacheKey = nil
+                self.updateSourceJob(jobID,
+                                     completed: index,
+                                     total: pending.count,
+                                     message: "已计算 \(index.formatted()) / \(pending.count.formatted()) 项")
             }
-            guard self.hashScanToken == token else { return }
+            guard self.hashScanToken == token else {
+                self.cancelSourceJob(jobID)
+                return
+            }
             self.isScanningHashes = false
             self.hashScanTask = nil
             self.refreshSimilarPhotoGroups()
+            if Task.isCancelled {
+                self.cancelSourceJob(jobID)
+            } else {
+                self.finishSourceJob(jobID, message: "完成 · \(self.similarPhotoGroups.count) 组相似照片")
+            }
             self.showToast("查重扫描完成：\(self.similarPhotoGroups.count) 组相似照片")
         }
     }

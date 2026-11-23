@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import LumaContentCore
 
 /// 体检阈值：与 UI 状态无关，放在文件级便于在后台任务里直接使用。
 enum LibraryHealthTuning {
@@ -71,6 +72,18 @@ extension LibraryStore {
         let photosOnly = targets.filter { !$0.isVideo }
         let token = UUID()
         healthScanToken = token
+        // 体检可能要跑几分钟：进统一任务中心，切走页面也能看到进度并暂停。
+        let sourcePath = systemScope
+            ? (systemLibraryPath ?? "")
+            : (LibraryPaths.containerLibraryURL ?? LibraryPaths.root).standardizedFileURL.path
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(sourcePath),
+                      kind: .healthCheck,
+                      title: systemScope ? "系统图库体检" : "图库体检"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelHealthScan() }
+            }
+        )
 
         healthTask = Task { [weak self] in
             guard let self else { return }
@@ -99,7 +112,10 @@ extension LibraryStore {
                     }
                 }.value
                 if Task.isCancelled { break }
-                guard self.healthScanToken == token else { return }
+                guard self.healthScanToken == token else {
+                    self.cancelSourceJob(jobID)
+                    return
+                }
                 for entry in part {
                     scores.append((entry.id, entry.score))
                     if let feature = entry.feature {
@@ -108,6 +124,10 @@ extension LibraryStore {
                 }
                 index = end
                 self.healthScanProgress = Double(index) / Double(max(1, photosOnly.count))
+                self.updateSourceJob(jobID,
+                                     completed: index,
+                                     total: photosOnly.count,
+                                     message: "已检查 \(index.formatted()) / \(photosOnly.count.formatted()) 张")
                 // 最多每秒 5 次刷新，避免大图库扫描时频繁重绘整页。
                 if end == photosOnly.count || Date().timeIntervalSince(lastPublish) >= 0.2 {
                     lastPublish = Date()
@@ -138,7 +158,10 @@ extension LibraryStore {
                                         photos: photosByName,
                                         scores: Dictionary(uniqueKeysWithValues: scores))
             }.value
-            guard self.healthScanToken == token else { return }
+            guard self.healthScanToken == token else {
+                self.cancelSourceJob(jobID)
+                return
+            }
 
             let report = LibraryHealthReport(
                 blurry: scores
@@ -161,10 +184,13 @@ extension LibraryStore {
             self.healthScanProgress = 0
             self.healthTask = nil
             if paused {
+                self.cancelSourceJob(jobID)
                 self.showToast("已暂停，保留已检查的 \(scores.count.formatted()) 张结果")
             } else {
                 let duplicates = report.similarDuplicatePhotos.count
                 let blurry = report.blurry.count
+                self.finishSourceJob(jobID,
+                                     message: "完成 · \(blurry) 张模糊 · \(duplicates) 张相似备选")
                 self.showToast("体检完成：\(blurry) 张可能模糊，\(duplicates) 张相似备选")
             }
         }

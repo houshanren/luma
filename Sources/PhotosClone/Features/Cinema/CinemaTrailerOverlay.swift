@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import AVKit
 import AVFoundation
@@ -16,7 +17,28 @@ struct CinemaTrailerRequest: Identifiable, Hashable {
     }
 }
 
-/// 详情页内的预告片播放层：深色铺满、不打开浏览器。
+/// 播放层的前景色：深色下是白，浅色下是近黑的墨色。
+private let trailerInk = Color(nsColor: NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        ? NSColor.white
+        : NSColor(calibratedWhite: 0.10, alpha: 1)
+})
+
+/// 播放层背景：深色下保持影院暗色，浅色下切到窗口底色，和详情页同一套。
+private let trailerBackdrop = Color(nsColor: NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        ? NSColor(calibratedRed: 0.03, green: 0.033, blue: 0.042, alpha: 1)
+        : NSColor.windowBackgroundColor
+})
+
+/// 背景角落的暗角：浅色下只留极淡的一层，避免整页发灰。
+private let trailerShade = Color(nsColor: NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        ? NSColor.black.withAlphaComponent(0.35)
+        : NSColor.black.withAlphaComponent(0.04)
+})
+
+/// 详情页内的预告片播放层：铺满页面、不打开浏览器，底色跟随页面外观。
 /// 片源来自豆瓣的 mp4 直链，多条时底部给一排切换胶囊。
 struct CinemaTrailerOverlay: View {
     let request: CinemaTrailerRequest
@@ -63,10 +85,10 @@ struct CinemaTrailerOverlay: View {
 
     private var backdrop: some View {
         ZStack {
-            Color(red: 0.03, green: 0.033, blue: 0.042).opacity(0.975)
+            trailerBackdrop.opacity(0.975)
             RadialGradient(colors: [LumaBrand.amber.opacity(0.10), .clear],
                            center: .topLeading, startRadius: 0, endRadius: 620)
-            RadialGradient(colors: [Color.black.opacity(0.35), .clear],
+            RadialGradient(colors: [trailerShade, .clear],
                            center: .bottomTrailing, startRadius: 0, endRadius: 720)
         }
         .ignoresSafeArea()
@@ -88,12 +110,12 @@ struct CinemaTrailerOverlay: View {
                 }
                 Text(request.title)
                     .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(trailerInk)
                     .lineLimit(1)
                 if let selected {
                     Text([selected.title, selected.runtime].compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(trailerInk.opacity(0.55))
                         .lineLimit(1)
                 }
             }
@@ -124,11 +146,11 @@ struct CinemaTrailerOverlay: View {
         Button(action: onClose) {
             Image(systemName: "xmark")
                 .font(.system(size: 11.5, weight: .bold))
-                .foregroundStyle(.white.opacity(0.9))
+                .foregroundStyle(trailerInk.opacity(0.9))
                 .frame(width: 32, height: 32)
-                .background(Color.white.opacity(0.12), in: Circle())
+                .background(trailerInk.opacity(0.12), in: Circle())
                 .overlay {
-                    Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.6)
+                    Circle().strokeBorder(trailerInk.opacity(0.10), lineWidth: 0.6)
                 }
         }
         .buttonStyle(.plain)
@@ -231,13 +253,14 @@ struct CinemaTrailerOverlay: View {
                                     .opacity(0.6)
                             }
                         }
-                        .foregroundStyle(active ? Color.black : Color.white.opacity(0.88))
+                        .foregroundStyle(active ? Color.black : trailerInk.opacity(0.88))
                         .padding(.horizontal, 11)
                         .padding(.vertical, 6)
-                        .background(active ? LumaBrand.amber : Color.white.opacity(0.10), in: Capsule())
+                        .background(active ? LumaBrand.amber : trailerInk.opacity(0.10),
+                                    in: Capsule())
                         .overlay {
                             if !active {
-                                Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.6)
+                                Capsule().strokeBorder(trailerInk.opacity(0.08), lineWidth: 0.6)
                             }
                         }
                     }

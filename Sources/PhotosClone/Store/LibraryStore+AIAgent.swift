@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import LumaContentCore
 
 /// 智能助手：只读问答 + 检索建议。
 /// 每条消息随当前图库保存；API Key 只存钥匙串。
@@ -139,10 +140,26 @@ extension LibraryStore {
         let prompt = context.promptText(question: question)
         let imageLimit = config.includeImages ? max(1, config.maxImages) : 0
         let imagePhotos = imageLimit > 0 ? Array(candidates.prefix(imageLimit * 2)) : []
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+                .standardizedFileURL.path),
+                      kind: .assistant,
+                      title: "AI 助手"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.stopAIResponse() }
+            }
+        )
 
         aiTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.aiAutoMatchCinema = false }
+            defer {
+                self.aiAutoMatchCinema = false
+                if Task.isCancelled {
+                    self.cancelSourceJob(jobID)
+                } else {
+                    self.finishSourceJob(jobID, message: "已回复")
+                }
+            }
             var imagePairs: [(UUID, String)] = []
             if imageLimit > 0 {
                 imagePairs = await Task.detached(priority: .userInitiated) {

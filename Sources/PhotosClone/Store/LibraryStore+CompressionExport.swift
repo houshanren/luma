@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
+import LumaContentCore
 
 extension LibraryStore {
     // MARK: - Compression
@@ -74,6 +75,15 @@ extension LibraryStore {
                                           completed: 0,
                                           currentName: targets[0].originalName)
         compressionProgress = progress
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+                .standardizedFileURL.path),
+                      kind: .compress,
+                      title: "批量压缩"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelCompression() }
+            }
+        )
 
         compressionTask = Task { [weak self] in
             guard let self else { return }
@@ -101,6 +111,10 @@ extension LibraryStore {
 
                 progress.completed = index + 1
                 self.compressionProgress = progress
+                self.updateSourceJob(jobID,
+                                     completed: progress.completed,
+                                     total: progress.total,
+                                     message: "已处理 \(progress.completed) / \(progress.total) 项 · \(photo.originalName)")
                 if progress.completed % 10 == 0 {
                     self.save()
                 }
@@ -115,6 +129,12 @@ extension LibraryStore {
             self.compressionTargets = []
             self.showCompressionSheet = false
 
+            if cancelled {
+                self.cancelSourceJob(jobID)
+            } else {
+                self.finishSourceJob(jobID,
+                                     message: "已压缩 \(progress.compressed) 张 · 节省 \(formatFileSize(progress.savedBytes))")
+            }
             if cancelled {
                 self.showToast("已取消压缩，已节省 \(formatFileSize(progress.savedBytes))")
             } else if progress.compressed == 0 {

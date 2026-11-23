@@ -807,3 +807,180 @@ AVPlayer 播到当前 EVENT 列表末尾会进入 `.paused`。原逻辑用 `isPl
 - 领先几百秒却还在等 → 服务或播放器问题（对应 17.1 / 17.2 / 17.3）。
 
 同时 ffmpeg 被挂起 / 恢复时会记录原因（用户暂停 / 提前量过大）。
+
+## 18. NAS / SMB 片源适配（2026-11-22）
+
+**现场结论**：`/Volumes/迅雷` 是 Synology 的 `smbfs` 挂载，实测读取约 22 MB/s。57 GB 的 4K REMUX 码率接近 10 MB/s，转封装生成只有约 1.7× 实时，ffmpeg 大部分时间处于磁盘等待（`ps` 状态 U）。因此前几分钟缓冲很薄，共享盘一抖动就卡；领先攒到几百秒后才稳定。
+
+**改动**：
+
+| 位置 | 改动 |
+| --- | --- |
+| [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift) | 网络卷探测超时 15s → 45s；播放前探测跳过 `-show_chapters`（MKV 章节在文件尾部，SMB 上要跨大半个文件） |
+| 同上 | 起播后不再对网络卷跑第二次技术探测：它和 ffmpeg 抢同一块带宽，会让正在播的片源变卡；章节 / 码率信息以起播探测为准 |
+| [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift) | 起播前先攒 `startupLeadSeconds`（4–8s）生成量，最多多等 6s：避免「刚出画面就卡一下」 |
+
+**日志**：起播时会记录 `起播缓冲 Xs / 目标 8s`；播放中每 10 秒记录 `播放心跳 pos=… 领先=…s`；卡住时输出完整 AVPlayer 状态快照。
+
+**注意**：22 MB/s 是链路 / NAS 的硬上限。4K REMUX 想稳定播放，建议检查 NAS 到 Mac 的连接（优先有线 2.5G/10G，避免 Wi-Fi 半双工）；否则片源码率接近带宽时，任何抖动都会直接表现为缓冲。
+
+## 19. HDR 屏判定：`NSScreen.main` 为 nil 时误转码（2026-11-22）
+
+**现象**：4K60 HDR10 片源（`走马上任`）明明是 HDR 屏，却被送去 `libplacebo` 色调映射 + `hevc_videotoolbox` 转码，`缓冲等待` 每几十秒出现一次。
+
+**根因**：`displaySupportsHDR` 只看 `NSScreen.main`。App 不在前台或窗口全屏切换的瞬间，`NSScreen.main` 为 nil → 判成 SDR 屏 → `needsToneMapping` 返回 true。实测该屏 `potentialEDR = 16.0`。
+
+**修复**（[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift)）：
+
+- 优先用 `playerWindow?.screen`，其次 `NSScreen.main`；
+- 窗口还没挂到屏幕上时，只要任意一块屏支持 EDR 就按 HDR 处理；
+- 诊断日志补 `displayHDR=` / `edr=` / `override=`，下次直接看日志就能判断走了哪条策略。
+
+## 20. ffprobe 探测把 MKV 误标成「原生可播」（2026-11-22）
+
+**现象**：同一部 HDR MKV，11:07 还是 `mode=remux`，11:43 之后全部变成 `mode=transcode`，并且日志里多了一条：
+
+```text
+装片失败 …：AVFoundationErrorDomain -11828 incompatible=true
+自动兼容转码 … at 1331s（AVFoundationErrorDomain -11828）
+```
+
+**根因**：为 NAS 适配新增的「网络卷只用 ffprobe 探测」路径（SMB 上的 MKV / AVI 跳过 AVFoundation，避免打开大文件黑屏）里，ffprobe 解析器无条件写了 `probe.isPlayable = true`。播放页据此认为系统能原生播放，把 MKV 直接交给 AVPlayer → `-11828` → 回退到「自动兼容转码」，于是 4K60 HDR 片被迫实时转码，转码速度追不上播放，表现为周期性缓冲。
+
+**修复**（[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift)）：ffprobe 结果对本地文件统一走 `applyingNativePlayability`，复用 `VideoProbe.allowsNativePlayback` 的容器白名单——只有 `mp4 / m4v / mov / qt + HEVC` 才放宽为可直读，MKV / AVI / TS 等一律走 ffmpeg 转封装。这样既保留 `hev1` 误报的修复，也不会再把 MKV 送进原生播放。
+
+**日志判据**：起流日志出现 `mode=remux` 即正确；若又看到 `装片失败 -11828 + 自动兼容转码`，说明探测仍把容器判成原生可播。
+
+## 21. 播放中挂起 ffmpeg → AVPlayer 判定「流已结束」（2026-11-22）
+
+**现象**：`走马上任 S01E06` 播到 350s 卡住，暂停态转圈；日志 `缓冲等待 16s：已生成领先 1129s · mode=remux · empty=true keepUp=false ranges=[188.7-239.1]`。分片明明都在，播放器就是不再拉。
+
+**现场链**：
+
+1. `12:29:55 生成挂起（提前量过大）`：领先量超过 1200s，`SIGSTOP` 停掉 ffmpeg；
+2. 之后 `live.m3u8` 停在 327 个分片不再变化；
+3. `12:30:50` 系统日志出现决定性错误：
+
+```text
+CoreMediaErrorDomain Code=-12888 "Playlist File unchanged for longer than 1.5 * target duration"
+fpfs_BytePumpFn: At end of all streams; result = -12888, end flag Yes
+```
+
+4. AVPlayer 的 HLS 引擎把 EVENT 列表当直播流：超过 **1.5 × TARGETDURATION**（11s × 1.5 ≈ 16.5s）不更新就判定流已结束，不再请求新分片；
+5. AVPlayer 手上约 75 秒缓冲播完（`350.7 - 275 ≈ 75s`），停在缓冲末尾，直到重建流才恢复。
+
+**修复**（[VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift)）：
+
+- 删除「提前量过大 → SIGSTOP」的生成节流：播放中 ffmpeg 一直生成到片尾，列表持续增长，最后写出 `#EXT-X-ENDLIST`，AVPlayer 转为 VOD 模式；
+- 用户暂停也不再挂起生成（暂停后恢复同样会触发 -12888，恢复播放即卡死）；
+- `setGenerationActive` 只保留给影院「预热下一集」：此时还没有播放器在读该列表，出首段后暂停是安全的，真正开播时恢复。
+
+**代价**：播放期间会把该集完整写进工作目录（4K 一集约 1–2GB），会话结束统一清理；换来的是 EVENT 列表不再停更。
+
+**判据**：日志不再出现 `生成挂起（提前量过大）`；如系统日志再次出现 `-12888`，说明还有别的路径在挂起生成。
+
+## 22. 网盘直连被单连接限速（2026-11-22）
+
+**现象**：网络视频播到 4634s 卡住；日志 `缓冲等待 … 领先 -4634s · mode=remux · empty=false keepUp=false ranges=[4604.8-4634.6]`。
+
+`领先 -4634s` 说明当时没有本地 HLS 会话（`streamSession == nil`），是 AVPlayer 直连网盘直链在播。
+
+**根因**（系统日志里的实测吞吐）：
+
+```text
+SEGPUMP MediaHandleDownloadTimer: bw 326.916 kbps required 856.179 dur 10.01
+  received 409378 bytes in 10.0179 seconds latency 284 ms
+```
+
+CDN 只给了 **327 kbps**，片源需要 **856 kbps**，连实时都不到一半，缓冲只会越来越薄直到卡死。直连播放是单条 HTTP 连接，网盘按连接限速时没有任何余量。
+
+**修复**：
+
+- [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift)：新增 `onNativeStall`。直连播放（没有本地会话）卡住 8 秒就上报一次，提示「改用本地转封装」；
+- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift)：收到后从当前位置重建为 ffmpeg 转封装会话。远端输入走 `RemoteRangeSource`，按档位**并发预取**（流畅档 8 路），并对直链过期做 403 重解析 —— 单连接 327kbps 的场景下，多连接通常能到实时所需之上。
+
+**判据**：日志出现 `直连播放卡住 8s，改用本地转封装（并行预取）` 后，`首段就绪 … mode=remux`，之后应出现 `播放心跳 pos=… 领先=…s` 且领先为正、随时间增长。若转封装后领先仍不增长，说明网盘对账号整体限速，需要开通会员或换链路。
+
+## 23. 跳转起播「先声音、后画面、再卡一下」（2026-11-23）
+
+**现象**：续播 / 拖动后起播，先出声音，隔一会才有画面，随后又顿一下。
+
+**原因**（日志 `起播缓冲 5s / 目标 3s` + `缓冲等待 5s：已生成领先 10s · ranges=[0.0-9.9]`）：
+
+1. 重建流只攒了约 3 秒生成量就装片，播放器出画面几秒后缓冲就耗尽 → 卡一下；
+2. 装片用的是 `playImmediately(atRate:)`，音频轨先就绪就先出声，视频轨还在解首帧；
+3. 起播定位用了零容差 seek，播放器必须从前一个关键帧解完整个 GOP 才出画面，
+   这段时间正好只剩音频在响。
+
+**修复**：
+
+| 位置 | 改动 |
+| --- | --- |
+| [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift) | 起播提前量 1.5/2.5/3.5s → **3/4/5s**（省流 / 均衡 / 流畅），等待上限 6s → 8s |
+| [VideoPlayerModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoPlayerModel.swift) | 装片后首播改用 `play()`（等缓冲就绪），不再用 `playImmediately`；用户手动暂停后恢复仍用立即播放 |
+| 同上 | 起播定位容差 0 → 0.5s：就近关键帧解码，首帧更快出来，音画一起起播 |
+
+**判据**：日志应出现 `起播缓冲 8s / 目标 8s`，并且起播后不再有 `缓冲等待`。
+
+## 24. 「只有声音没画面」：系统不可解码的 hev1 被送去直连（2026-11-23）
+
+**现象**：`长安二十四计 S01E03 … H265.50fps.mp4` 播放时有声音、画面全黑。
+
+**实测**（同一文件用 AVFoundation 探测）：
+
+```text
+isPlayable=false  videoTracks=1
+track decodable=false  size=3840x2160  fps=50  codec=hev1
+```
+
+系统明确判定这条视频轨**不可解码**（4K50 hev1），但音频轨正常，所以 AVPlayer 会出声、画面黑屏且不报错。
+
+**根因**：`VideoProbe.allowsNativePlayback` 为了绕开「hev1 的 HEVC 被误报 isPlayable=false」，对
+「mp4 / mov / qt + HEVC」直接放宽为可直读，没有检查 `AVAssetTrack.isDecodable`。
+误报和真的解不了在这一层分不开，于是真正解不了的片源也被送去直连。
+
+**修复**：
+
+| 位置 | 改动 |
+| --- | --- |
+| [PlaybackModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackModels.swift) | `VideoProbe` 新增 `isVideoDecodable`（来自 `AVAssetTrack.isDecodable`） |
+| [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift) | 视频轨不可解码时**不再放宽**：`isPlayable = isVideoDecodable && …` |
+| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift) | 不可解码时起流模式直接选 `.transcode`（转封装救不回来），并记录 `视频轨系统无法解码，改走重编码` |
+
+**结论**：这类 4K50/60 hev1 片源只能重编码（输出按像素率档位降到 ~2844×1600）。直连 / 转封装都会黑屏。
+
+**补充（同日）**：MKV 等容器走 ffprobe 探测时拿不到 `isDecodable`，但实测 4K 50/60fps 的 HEVC 在这台机器上同样解不出画面。
+现在对「HEVC + 高≥1700 + 帧率≥45」的片源直接选 `.transcode`，直连与转封装都不再尝试，省掉「黑屏 5–8 秒再降级」。
+日志：`4K 高帧率 HEVC 直接重编码：… 3840x2160 fps=60`。
+
+## 25. 4K60 HDR 转码只有 ~0.4× 实时：软解 + 色调映射（2026-11-23）
+
+**现象**：`走马上任 S01E08`（4K60 HDR10）转码播放，`播放心跳 领先=1~5s` 且每几十秒 `缓冲等待`；ffmpeg CPU 300%。
+
+**实测**（同一段 10 秒 4K60 HDR10 素材，输出 1440p）：
+
+| 配方 | 用时 | 相对实时 |
+| --- | --- | --- |
+| 只解码（ffmpeg 默认软解） | 16.4s | **0.61×** |
+| 只解码（`-hwaccel videotoolbox`） | 6.6s | **1.52×** |
+| 当前管线：软解 + libplacebo 映射 + H.264 VT | 24.2s | 0.41× |
+| 硬解 + libplacebo 映射 + H.264 VT | 18.4s | 0.54× |
+| 硬解 + CPU scale 1440p + H.264 VT（SDR） | 6.8s | 1.48× |
+| **硬解 + CPU scale + HEVC VT 10bit（保留 HDR）** | **6.7s** | **1.49×** |
+
+**根因**：
+
+1. ffmpeg 默认**软解** 4K60 HEVC，单这一项就只有 0.6× 实时；
+2. HDR 屏上也强制跑 libplacebo 色调映射（`needsToneMap` 没看屏幕能力），4K60 上再砍掉一截。
+
+**修复**：
+
+| 位置 | 改动 |
+| --- | --- |
+| [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift) | 重编码输入加 `-hwaccel videotoolbox`（硬解） |
+| 同上 | HDR 屏 + HDR10 源：`preserveHDR` 时不跑色调映射，`scale=-2:1440` + `format=p010le`，强制 HEVC 10bit 输出并写回 bt2020/smpte2084 标记 |
+| [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift) | `needsToneMap` 增加 `!preserveHDR`；记录 `重编码保留 HDR（不映射）` |
+| [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift) / [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift) | 上下文新增 `preserveHDR`，由「HDR 屏 且 未被用户强制映射」决定 |
+
+**验证**：输出片段 `hevc Main 10 2560×1440 60fps bt2020/smpte2084`，AVFoundation 探测 `isPlayable=true / decodable=true`。
+杜比视界仍走 libplacebo 映射（RPU 只能由它应用）。

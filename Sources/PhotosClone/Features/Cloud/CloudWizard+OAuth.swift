@@ -11,6 +11,8 @@ extension CloudSetupWizardView {
             oauthCredentialStep(flow: flow)
         case 1:
             oauthAuthorizeStep(flow: flow)
+        case 2:
+            oauthScopeStep(flow: flow)
         default:
             oauthFinishStep(flow: flow)
         }
@@ -121,9 +123,25 @@ extension CloudSetupWizardView {
         }
     }
 
+    /// 授权完成后的「接入范围」：只扫描勾选的子目录，减少百度网盘的目录遍历量。
+    private func oauthScopeStep(flow: CloudWizardFlow) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("3. 选择接入范围")
+                .font(.system(size: 13, weight: .semibold))
+            Text("默认扫描整个网盘；也可以只接入电影、相册等子目录，扫描更快、侧边栏也更干净。之后可在右键菜单「编辑接入范围…」里随时修改。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            labeledField("名称", text: $mountName, prompt: flow.title)
+
+            accessScopeSection
+        }
+    }
+
     private func oauthFinishStep(flow: CloudWizardFlow) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("3. 完成")
+            Text("4. 完成")
                 .font(.system(size: 13, weight: .semibold))
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill")
@@ -132,13 +150,14 @@ extension CloudSetupWizardView {
                     .font(.system(size: 12))
             }
             VStack(alignment: .leading, spacing: 6) {
+                infoRow("浏览范围", accessScopeSummary)
                 infoRow("缩略图", "服务端生成，浏览大目录不会下载原图")
                 infoRow("视频", "官方直链流式播放")
                 infoRow("写操作", "当前为只读；上传/删除请到网盘 App")
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
-            Text("在侧边栏「网络存储」中可以找到新的挂载点；右击可重新授权或断开连接。")
+            Text("在侧边栏「网络存储」中可以找到新的挂载点；右击可重新授权、编辑接入范围或断开连接。")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
         }
@@ -239,30 +258,68 @@ extension CloudSetupWizardView {
         isBusy = true
         defer { isBusy = false }
 
-        let token: CloudToken
-        let name: String
-        let trimmedName = mountName.trimmingCharacters(in: .whitespacesAndNewlines)
-
         switch kind {
         case .baidu:
-            token = try await BaiduOAuth.exchange(clientID: clientID,
-                                                  clientSecret: clientSecret,
-                                                  code: code,
-                                                  redirectURI: redirectURI)
-            name = trimmedName.isEmpty ? "百度网盘" : trimmedName
+            let granted = try await BaiduOAuth.exchange(clientID: clientID,
+                                                        clientSecret: clientSecret,
+                                                        code: code,
+                                                        redirectURI: redirectURI)
+            baiduToken = granted
+            // 重新授权时沿用已有挂载与范围：只换令牌，不重置用户选过的目录。
+            if let existing = store.cloudMounts.first(where: { $0.kind == .baidu }) {
+                editingMountID = existing.id
+                scopePicks = existing.scopeRoots.map { CloudScopePick(root: $0, ancestors: []) }
+                scopeExcludePicks = existing.excludedRoots.map { CloudScopePick(root: $0, ancestors: []) }
+                if mountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    mountName = existing.name
+                }
+            } else if mountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                mountName = "百度网盘"
+            }
         case .webdav, .smb, .quark, .pan115, .aliyun:
             throw CloudOAuthError.unsupportedProvider
         }
 
-        if let error = store.registerOAuthMount(kind: kind,
-                                                name: name,
-                                                driveID: nil,
-                                                token: token) {
-            throw CloudOAuthError.api(error)
-        }
         isAuthorizing = false
-        status = "授权成功，已添加「\(name)」"
+        status = "授权成功，请选择接入范围"
         statusIsError = false
         step = 2
+        prepareAccessScopeStep()
+    }
+
+    /// 「接入范围」页的完成动作：新建挂载时带上范围，编辑已有挂载时只更新范围。
+    func finishBaiduSetup() {
+        if let editingID = editingMountID,
+           let mount = store.cloudMounts.first(where: { $0.id == editingID }) {
+            if let granted = baiduToken {
+                CloudOAuthStore.saveToken(granted, mountID: editingID)
+            }
+            store.updateCloudMountAccess(editingID, scopes: resolvedScopes, excludes: resolvedExcludes)
+            if case .cloudMount(let current) = store.sidebarItem, current == editingID {
+                store.beginCloudAlbumScan(mountID: editingID, forceFull: true)
+            }
+            store.showToast("已更新「\(mount.name)」的接入范围")
+            close()
+            return
+        }
+
+        guard let granted = baiduToken else {
+            status = "授权信息已失效，请重新授权"
+            statusIsError = true
+            return
+        }
+        let trimmedName = mountName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmedName.isEmpty ? "百度网盘" : trimmedName
+        if let error = store.registerOAuthMount(kind: .baidu,
+                                                name: name,
+                                                driveID: nil,
+                                                token: granted,
+                                                scopes: resolvedScopes,
+                                                excludes: resolvedExcludes) {
+            status = error
+            statusIsError = true
+            return
+        }
+        close()
     }
 }

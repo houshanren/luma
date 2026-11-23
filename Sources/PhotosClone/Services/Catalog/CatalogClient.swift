@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 /// 标记当前请求是否属于后台任务（更新日历补录、健康探测、跨源榜单）。
 /// 后台请求走独立的低优先限流通道，用户点开的列表不会排在它们后面。
@@ -197,21 +198,6 @@ enum CatalogTrust {
     }
 }
 
-final class CatalogSessionDelegate: NSObject, URLSessionDelegate {
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition,
-                                                  URLCredential?) -> Void) {
-        guard challenge.protectionSpace.authenticationMethod
-                == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust,
-              CatalogTrust.isTrusted(challenge.protectionSpace.host) else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-        completionHandler(.useCredential, URLCredential(trust: trust))
-    }
-}
-
 // MARK: - HTTP
 
 enum CatalogHTTP {
@@ -279,17 +265,32 @@ enum CatalogHTTP {
 
     private static func perform(_ request: URLRequest, url: URL,
                                 accepting: Set<Int> = [200]) async throws -> Data {
+        // 统一走 HTTPSourceTransport：UA / Referer / 自签证书 / 超时只在一处维护。
+        let profile = RequestProfile(trustSelfSigned: CatalogTrust.isTrusted(url.host ?? ""))
         do {
-            let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard accepting.contains(status) else { throw CatalogError.http(status) }
-            return data
-        } catch let error as URLError {
-            switch error.code {
-            case .serverCertificateUntrusted, .serverCertificateHasBadDate,
-                 .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
-                 .secureConnectionFailed:
+            let response = try await HTTPSourceTransport.shared.send(
+                HTTPTransportRequest(url: url,
+                                     method: request.httpMethod ?? "GET",
+                                     headers: request.allHTTPHeaderFields ?? [:],
+                                     body: request.httpBody,
+                                     timeout: request.timeoutInterval > 0 ? request.timeoutInterval : 20,
+                                     throwsOnHTTPError: false),
+                profile: profile,
+                retryPolicy: .none
+            )
+            guard accepting.contains(response.statusCode) else {
+                throw CatalogError.http(response.statusCode)
+            }
+            return response.data
+        } catch let error as SourceError {
+            // 现有 Provider 仍按 CatalogError 分支处理，这里做一层等价映射。
+            switch error.kind {
+            case .http:
+                throw CatalogError.http(error.statusCode ?? 0)
+            case .tlsUntrusted:
                 throw CatalogError.tls(url.host ?? url.absoluteString)
+            case .unavailable:
+                throw CatalogError.unavailable
             default:
                 throw error
             }
@@ -305,17 +306,6 @@ enum CatalogHTTP {
         ])
         return String(decoding: data, as: UTF8.self)
     }
-
-    private static let delegate = CatalogSessionDelegate()
-
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 60
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-    }()
 }
 
 // MARK: - 轻量 HTML 正则

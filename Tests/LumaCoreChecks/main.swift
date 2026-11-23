@@ -1010,6 +1010,89 @@ expectEqual(TranscodeProfile.make(sourceSize: CGSize(width: 1920, height: 1080),
                                   transcodeMode: .efficiency).codec, .hevc,
             "高效档的转码档位带 HEVC")
 
+// MARK: - 画面比例 / 显示方式（只改显示层）
+
+let fitLayout = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 1000),
+                                            naturalSize: CGSize(width: 1600, height: 900),
+                                            quarterTurns: 0,
+                                            mode: .fit,
+                                            preset: .source,
+                                            pan: .zero)
+expectClose(fitLayout.boxSize.width, 1000, accuracy: 0.01, "源比例裁剪框就是舞台")
+expectClose(fitLayout.preRotationContentSize.width, 1000, accuracy: 0.01, "适应模式宽度撑满")
+expectClose(fitLayout.preRotationContentSize.height, 562.5, accuracy: 0.01, "适应模式高度按片源比例")
+expectClose(fitLayout.panOffset.width, 0, accuracy: 0.01, "适应模式没有可平移的余量")
+
+let fillLayout = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 1000),
+                                             naturalSize: CGSize(width: 1600, height: 900),
+                                             quarterTurns: 0,
+                                             mode: .fill,
+                                             preset: .source,
+                                             pan: CGSize(width: 1, height: 0))
+expectClose(fillLayout.preRotationContentSize.height, 1000, accuracy: 0.01, "填充模式高度撑满")
+expectClose(fillLayout.preRotationContentSize.width, 1777.78, accuracy: 0.05, "填充模式按比例放大")
+expectClose(fillLayout.panOffset.width, 388.89, accuracy: 0.05, "右移画面用满左右余量")
+
+let stretchLayout = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 800),
+                                                naturalSize: CGSize(width: 1600, height: 900),
+                                                quarterTurns: 0,
+                                                mode: .stretch,
+                                                preset: .source,
+                                                pan: .zero)
+expectClose(stretchLayout.preRotationContentSize.width, 1000, accuracy: 0.01, "拉伸模式宽度等于舞台")
+expectClose(stretchLayout.preRotationContentSize.height, 800, accuracy: 0.01, "拉伸模式高度等于舞台")
+
+let actualLayout = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 800),
+                                               naturalSize: CGSize(width: 1600, height: 900),
+                                               quarterTurns: 0,
+                                               mode: .actualSize,
+                                               preset: .source,
+                                               pan: CGSize(width: 1, height: 1))
+expectClose(actualLayout.preRotationContentSize.width, 1600, accuracy: 0.01, "原始像素保持片源宽度")
+expectClose(actualLayout.preRotationContentSize.height, 900, accuracy: 0.01, "原始像素保持片源高度")
+expectClose(actualLayout.panOffset.width, 300, accuracy: 0.01, "原始像素可左右平移超出部分")
+expectClose(actualLayout.panOffset.height, 50, accuracy: 0.01, "原始像素可上下平移超出部分")
+
+let widePreset = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 1000),
+                                             naturalSize: CGSize(width: 1600, height: 900),
+                                             quarterTurns: 0,
+                                             mode: .fit,
+                                             preset: .widescreen,
+                                             pan: .zero)
+expectClose(widePreset.boxSize.width, 1000, accuracy: 0.01, "16:9 裁剪框宽度")
+expectClose(widePreset.boxSize.height, 562.5, accuracy: 0.01, "16:9 裁剪框高度")
+
+let classicPreset = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 800),
+                                                naturalSize: CGSize(width: 1600, height: 900),
+                                                quarterTurns: 0,
+                                                mode: .fit,
+                                                preset: .classic,
+                                                pan: .zero)
+expectClose(classicPreset.boxSize.width, 1000, accuracy: 0.01, "4:3 裁剪框宽度")
+expectClose(classicPreset.boxSize.height, 750, accuracy: 0.01, "4:3 裁剪框高度")
+
+let rotatedLayout = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 600),
+                                                naturalSize: CGSize(width: 1920, height: 1080),
+                                                quarterTurns: 1,
+                                                mode: .fit,
+                                                preset: .source,
+                                                pan: .zero)
+expectClose(rotatedLayout.preRotationContentSize.width, 600, accuracy: 0.01, "旋转 90° 后预旋转宽度取屏幕高度")
+expectClose(rotatedLayout.preRotationContentSize.height, 337.5, accuracy: 0.01, "旋转 90° 后预旋转高度按竖屏比例")
+
+let clampedPan = VideoFramingGeometry.layout(stage: CGSize(width: 1000, height: 1000),
+                                             naturalSize: CGSize(width: 1600, height: 900),
+                                             quarterTurns: 0,
+                                             mode: .fill,
+                                             preset: .source,
+                                             pan: CGSize(width: 5, height: -5))
+expectClose(clampedPan.panOffset.width, 388.89, accuracy: 0.05, "平移量上限收敛到 1")
+expectClose(clampedPan.panOffset.height, 0, accuracy: 0.01, "没有纵向余量时纵向不平移")
+
+expectEqual(VideoFramingMode.fill.gravity, .resizeAspectFill, "填充模式用 AVPlayerLayer 填充重力")
+expectEqual(VideoFramingMode.stretch.gravity, .resize, "拉伸模式用 AVPlayerLayer 拉伸重力")
+expectEqual(VideoFramingMode.actualSize.gravity, .resizeAspect, "原始像素仍按比例缩放后再由布局定尺寸")
+
 // MARK: - 结果
 
 if failures > 0 {

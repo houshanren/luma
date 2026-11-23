@@ -4,9 +4,11 @@ import LumaContentCore
 /// 把现有图库 / 链接图库 / 云盘 / 资源 / 影院适配成统一源目录。
 /// 这里只做“描述”，不替换现有导航与播放；后续 Feature 再逐步改为读 SourceDescriptor。
 extension LibraryStore {
-    /// 当前应用的源目录快照。链接图库与当前图库同为 library kind，
-    /// 云盘 / 资源 / 影院是只读浏览源；电视与本地磁盘在接入后追加，当前为空。
-    var sourceRegistryState: SourceRegistryState {
+    /// 应用级源目录：注册表状态统一由 `sourceHub` 提供（含排序 / 启用覆盖）。
+    var sourceRegistryState: SourceRegistryState { sourceHub.state }
+
+    /// 从当前各模块状态构建原始源目录；只有 `SourceHubModel` 会调用它。
+    func buildSourceRegistryState() -> SourceRegistryState {
         var sources: [SourceDescriptor] = []
 
         let activeLibraryPath = (LibraryPaths.containerLibraryURL ?? LibraryPaths.root)

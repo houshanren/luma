@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
+import LumaContentCore
 
 /// 系统图库侧边栏计数：一次遍历算完，供徽标与「更多项目」的显示条件共用。
 struct SystemSidebarCounts {
@@ -216,6 +217,12 @@ extension LibraryStore {
         let revision = contentRevision
         let overlays = isNativeContainer ? systemOverlays : [:]
         isLoadingSystemDuplicates = true
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(systemLibraryPath ?? LibraryPaths.root.standardizedFileURL.path),
+                      kind: .index,
+                      title: "计算重复分组",
+                      isCancellable: false)
+        )
         systemDuplicateGroupsTask = Task.detached(priority: .userInitiated) { [weak self, index, overlays, key] in
             let photos = index.duplicatePhotos().map { photo in
                 Self.applyAssetOverlay(overlays[photo.id], to: photo)
@@ -225,6 +232,7 @@ extension LibraryStore {
                 guard let self else { return }
                 self.systemDuplicateGroupsTask = nil
                 self.isLoadingSystemDuplicates = false
+                self.finishSourceJob(jobID, message: "重复分组已更新")
                 guard self.contentRevision == revision else {
                     // 计算期间图库内容变了：丢弃结果，按最新内容重算。
                     self.loadSystemDuplicateGroupsIfNeeded()
@@ -355,6 +363,9 @@ extension LibraryStore {
             showToast("无法创建照片图库")
             return
         }
+        libraryIndexTask?.cancel()
+        libraryIndexTask = nil
+        libraryIndexComplete = true
         metadataStore = try? MetadataStore(url: LibraryPaths.metadataFile)
         resetFaceClusterState()
         let data = metadataStore?.loadLibrary() ?? LibraryData()
@@ -479,6 +490,9 @@ extension LibraryStore {
                 showToast("无法切换照片图库")
                 return
             }
+            libraryIndexTask?.cancel()
+            libraryIndexTask = nil
+            libraryIndexComplete = true
             metadataStore = try? MetadataStore(url: LibraryPaths.metadataFile)
             resetFaceClusterState()
             let data = metadataStore?.loadLibrary() ?? LibraryData()
@@ -1020,12 +1034,23 @@ extension LibraryStore {
         // 每次载入递增令牌：重扫时旧的扫描结果与缓存写入都要作废。
         systemLoadToken &+= 1
         let token = systemLoadToken
+        // 十万级图库的索引构建可能要跑一阵：登记为后台任务，切走页面也能看到进度。
+        let loadJobID = beginSourceJob(
+            SourceJob(sourceID: .library(url.path), kind: .index, title: "载入系统图库", isCancellable: false)
+        )
 
         if forceRefresh, let file = LibraryPaths.systemIndexFile(for: url) {
             try? FileManager.default.removeItem(at: file)
         }
 
         Task {
+            defer {
+                if token == systemLoadToken {
+                    finishSourceJob(loadJobID, message: "系统图库已载入")
+                } else {
+                    cancelSourceJob(loadJobID)
+                }
+            }
             // 0. 相簿 / 文件夹 / 人物都只是元数据：先从 Photos.sqlite 读出并展示，
             //    不必等照片扫描 / 索引构建完成（十万项图库这一步只读几张元数据表）。
             let albumsTask = Task.detached(priority: .userInitiated) {
@@ -1109,6 +1134,8 @@ extension LibraryStore {
                                 Task { @MainActor [weak self] in
                                     guard let self, self.systemLoadToken == token else { return }
                                     self.systemScanCount = count
+                                    self.updateSourceJob(loadJobID,
+                                                         message: "已载入 \(count.formatted()) 项")
                                 }
                             },
                             onBatch: { batch in continuation.yield(batch) })
@@ -1172,6 +1199,8 @@ extension LibraryStore {
                             Task { @MainActor in
                                 guard let self, self.systemLoadToken == token else { return }
                                 self.systemScanCount = count
+                                self.updateSourceJob(loadJobID,
+                                                     message: "已载入 \(count.formatted()) 项")
                             }
                         },
                         onBatch: streamBatches ? { batch in batchContinuation?.yield(batch) } : nil

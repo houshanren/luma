@@ -172,18 +172,18 @@ enum VideoSupport {
     /// 轨道信息也是同一份缓存，交给 AVPlayerItem 后首帧更快。
     static func probe(asset: AVAsset, fallbackURL: URL?,
                       options: [String: Any] = [:]) async -> VideoProbe {
+        let headers = options[CloudPlayback.headerFieldsKey] as? [String: String] ?? [:]
+        // 网络卷（SMB / WebDAV）上的 MKV / AVI：AVFoundation 既解析不了，又可能卡在读取上。
+        // 直接跳过它，只用带读取上限的 ffprobe——否则打开 60GB 这类大文件会先黑屏几十秒。
+        if let fallbackURL, shouldProbeWithFFprobeOnly(fallbackURL) {
+            return await boundedProbe(url: fallbackURL, headers: headers, timeout: 15)
+        }
         var probe = await probe(asset: asset)
         guard let fallbackURL else { return probe }
         if !probe.isPlayable || probe.duration <= 0 || probe.size.width <= 0 {
-            // 云端 MKV 的 ffprobe 也必须带鉴权头，否则拿不到时长 / 音轨数 / HDR 信息。
-            let headers = options[CloudPlayback.headerFieldsKey] as? [String: String] ?? [:]
             // ffprobe 是阻塞子进程：外置盘 / 网盘片源动辄几秒到几十秒，
             // 一定不能跑在调用方线程（打开视频时就是主线程）上，否则整个 App 像卡死。
-            let fallback = await Task.detached(priority: .userInitiated) {
-                headers.isEmpty
-                    ? ffprobeMetadata(url: fallbackURL, timeout: 30)
-                    : ffprobeMetadata(url: fallbackURL, headers: headers, timeout: 30)
-            }.value
+            let fallback = await boundedProbe(url: fallbackURL, headers: headers, timeout: 15)
             if probe.duration <= 0 { probe.duration = fallback.duration }
             if probe.size.width <= 0 { probe.size = fallback.size }
             if probe.codec == nil { probe.codec = fallback.codec }
@@ -208,10 +208,21 @@ enum VideoSupport {
     /// 调用方在后台任务里 await，不阻塞起播；ffprobe 失败时退回 AVFoundation 探测。
     static func technicalProbe(url: URL, options: [String: Any] = [:]) async -> VideoProbe {
         let headers = options[CloudPlayback.headerFieldsKey] as? [String: String] ?? [:]
+        // NAS 上再跑一次探测会和起流抢同一块网络带宽，大文件尤其明显；
+        // 播放阶段优先保证不卡，信息以起播时的探测为准。
+        if headers.isEmpty, isNetworkVolume(url) {
+            return VideoProbe()
+        }
         let probed = await Task.detached(priority: .utility) {
-            headers.isEmpty
-                ? ffprobeMetadata(url: url, timeout: 20)
-                : ffprobeMetadata(url: url, headers: headers, timeout: 20)
+            if !headers.isEmpty {
+                return ffprobeMetadata(url: url, headers: headers, timeout: 15)
+            }
+            // 远端大文件不能放任 ffprobe 读几十 MB 再解析：WebDAV / 网盘上经常直接超时。
+            if !url.isFileURL {
+                return ffprobeMetadata(inputArguments: remoteProbeArguments + ["-i", url.path],
+                                       timeout: 15)
+            }
+            return ffprobeMetadata(url: url, timeout: 20)
         }.value
         if probed.hasVideoTrack || probed.duration > 0 {
             return probed
@@ -328,6 +339,9 @@ enum VideoSupport {
             let oriented = natural.applying(transform)
             probe.size = CGSize(width: abs(oriented.width), height: abs(oriented.height))
             probe.frameRate = Double(track.nominalFrameRate)
+            // 4K50/60 的 hev1 片源系统会直接报不可解码：这时直连只会「有声音没画面」，
+            // 必须改走重编码。宁可多一次转码，也不能让用户对着黑屏听声音。
+            probe.isVideoDecodable = (try? await track.load(.isDecodable)) ?? true
             if let formats = try? await track.load(.formatDescriptions), let first = formats.first {
                 probe.codec = codecDisplayName(CMFormatDescriptionGetMediaSubType(first))
                 probe.isHEVC = probe.codec == "HEVC"
@@ -349,7 +363,8 @@ enum VideoSupport {
             }
         }
         // `isPlayable` 对 hev1 的 HEVC 会误报 false：按容器 + 编码放宽，避免白走 remux。
-        probe.isPlayable = VideoProbe.allowsNativePlayback(
+        // 但视频轨被系统明确判定不可解码时不能放宽：直连会黑屏有声音，必须重编码。
+        probe.isPlayable = probe.isVideoDecodable && VideoProbe.allowsNativePlayback(
             assetIsPlayable: playable,
             hasVideoTrack: probe.hasVideoTrack,
             codec: probe.codec,
@@ -426,6 +441,65 @@ enum VideoSupport {
         return probe
     }
 
+    /// 远端探测的读取上限：WebDAV / 网盘上不限制 analyzeduration 会先读几十 MB，
+    /// 61 GB 这类大文件经常直接超过 20~30 秒超时，表现为打开视频长时间没有反馈。
+    static let remoteProbeArguments = ["-probesize", "5M", "-analyzeduration", "1000000"]
+
+    /// 网络卷（SMB / WebDAV / NFS）：随机读与首次打开都明显慢于本地盘。
+    static func isNetworkVolume(_ url: URL) -> Bool {
+        guard url.isFileURL else { return true }
+        let values = try? url.resourceValues(forKeys: [.volumeIsLocalKey])
+        return values?.volumeIsLocal == false
+    }
+
+    /// ffprobe 只能确认「有视频轨」，判断不了 AVFoundation 能不能解这个容器。
+    /// 本地文件必须按容器白名单重新判定：否则 MKV / AVI 会被当成原生可播，
+    /// 装片时报 -11828 再回退成重编码，4K60 上转码追不上播放，表现为周期性缓冲。
+    private static func applyingNativePlayability(_ probe: VideoProbe, for url: URL) -> VideoProbe {
+        guard url.isFileURL, probe.hasVideoTrack else { return probe }
+        var result = probe
+        result.isPlayable = VideoProbe.allowsNativePlayback(
+            assetIsPlayable: false,
+            hasVideoTrack: true,
+            codec: probe.codec,
+            containerExtension: url.pathExtension)
+        return result
+    }
+
+    /// 网络卷上的这些容器系统本来就播不了，AVFoundation 探测只会白等。
+    private static func shouldProbeWithFFprobeOnly(_ url: URL) -> Bool {
+        guard isNetworkVolume(url) else { return false }
+        switch url.pathExtension.lowercased() {
+        case "mkv", "avi", "ts", "m2ts", "mts", "wmv", "flv",
+             "rmvb", "rm", "divx", "vob", "ogv":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 带读取上限的 ffprobe：远端（或网络卷）先限制探测读量，避免大文件卡在解析上。
+    private static func boundedProbe(url: URL,
+                                     headers: [String: String],
+                                     timeout: TimeInterval) async -> VideoProbe {
+        let network = isNetworkVolume(url)
+        // 网络盘上 57GB 这类 REMUX 光读头部也可能超过 15 秒；给足时间，
+        // 同时不读章节（MKV 章节常在文件尾部，SMB 上要额外跨大半个文件）。
+        let effectiveTimeout = network && headers.isEmpty ? max(timeout, 45) : timeout
+        return await Task.detached(priority: .userInitiated) {
+            if !headers.isEmpty {
+                return ffprobeMetadata(url: url, headers: headers, timeout: effectiveTimeout)
+            }
+            if network {
+                return applyingNativePlayability(
+                    ffprobeMetadata(inputArguments: remoteProbeArguments + ["-i", url.path],
+                                    timeout: effectiveTimeout, includeChapters: false),
+                    for: url)
+            }
+            return ffprobeMetadata(url: url, timeout: effectiveTimeout)
+        }.value
+    }
+
     /// 远端视频探测：WebDAV 需要 Basic 认证头等，ffprobe 同样要带上。
     static func ffprobeMetadata(url: URL, headers: [String: String],
                                 tlsInsecure: Bool = false,
@@ -433,15 +507,23 @@ enum VideoSupport {
         guard !headers.isEmpty || tlsInsecure else { return ffprobeMetadata(url: url, timeout: timeout) }
         var input: [String] = []
         if tlsInsecure { input += ["-tls_verify", "0"] }
+        input += remoteProbeArguments
         input += inputArguments(url: url, headers: headers)
         return ffprobeMetadata(inputArguments: input, timeout: timeout)
     }
 
-    static func ffprobeMetadata(url: URL, timeout: TimeInterval? = nil) -> VideoProbe {
+    static func ffprobeMetadata(url: URL, timeout: TimeInterval? = nil,
+                                includeChapters: Bool = true) -> VideoProbe {
         // 蓝光目录 / ISO 必须走 bluray 协议：直接给目录路径 ffprobe 读不出流信息，
         // 章节 / HDR / 隔行标记也全都拿不到。
         let input = BluraySource.ffmpegInput(for: url) ?? url.path
-        var probe = ffprobeMetadata(inputArguments: ["-i", input], timeout: timeout)
+        // 网络卷上的 SMB / WebDAV 文件也要限制探测读量，否则大文件会卡在 ffprobe 解析上。
+        let arguments = url.isFileURL && !isNetworkVolume(url)
+            ? ["-i", input]
+            : remoteProbeArguments + ["-i", input]
+        var probe = ffprobeMetadata(inputArguments: arguments, timeout: timeout,
+                                    includeChapters: includeChapters)
+        probe = applyingNativePlayability(probe, for: url)
         // libbluray 不把播放列表的章节标记交给 ffmpeg：目录原盘从 MPLS 里补，
         // 否则章节菜单与 ⌥← / ⌥→ 在电影盘上永远不可用。
         if probe.chapters.count < 2, BluraySource.discRoot(for: url) != nil {
@@ -452,8 +534,10 @@ enum VideoSupport {
     }
 
     private static func ffprobeMetadata(inputArguments: [String],
-                                        timeout: TimeInterval? = nil) -> VideoProbe {
-        ffprobeRun(inputArguments: inputArguments, timeout: timeout).probe
+                                        timeout: TimeInterval? = nil,
+                                        includeChapters: Bool = true) -> VideoProbe {
+        ffprobeRun(inputArguments: inputArguments, timeout: timeout,
+                   includeChapters: includeChapters).probe
     }
 
     /// 蓝光导入诊断：跑一次 ffprobe 并保留 stderr，
@@ -469,13 +553,17 @@ enum VideoSupport {
 
     private static func ffprobeRun(inputArguments: [String],
                                    timeout: TimeInterval?,
-                                   logLevel: String = "error") -> (probe: VideoProbe, error: String) {
+                                   logLevel: String = "error",
+                                   includeChapters: Bool = true) -> (probe: VideoProbe, error: String) {
         var probe = VideoProbe()
         guard let ffprobe = FFmpeg.probe else { return (probe, "未检测到 ffprobe") }
         let process = Process()
         process.executableURL = ffprobe
-        process.arguments = ["-v", logLevel, "-print_format", "json",
-                             "-show_format", "-show_streams", "-show_chapters"] + inputArguments
+        var arguments = ["-v", logLevel, "-print_format", "json",
+                         "-show_format", "-show_streams"]
+        // 章节留在文件尾部：网络盘 / 大 MKV 上读它会额外跨大半个文件，播放前探测可以跳过。
+        if includeChapters { arguments.append("-show_chapters") }
+        process.arguments = arguments + inputArguments
         let pipe = Pipe()
         process.standardOutput = pipe
         // stderr 落到临时文件：用 Pipe 却不读会写满缓冲区而永久阻塞；

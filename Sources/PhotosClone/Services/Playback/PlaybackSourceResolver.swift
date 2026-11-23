@@ -1,9 +1,68 @@
 import Foundation
 import PlaybackCore
+import LumaContentCore
 
 /// 把现有本地 / 云盘 / 网络资源三种片源收敛成一个解析入口。
 /// 播放器只消费 `ResolvedStream`，后续影院在线源与电视直播源在这里追加即可。
 extension LibraryStore {
+    /// 播放会话统一入口：现有 PhotoItem 流程也带上模式与能力语义。
+    func preparePlaybackSession(for photo: PhotoItem) async throws -> ResolvedPlayback {
+        let target = playbackTarget(for: photo)
+        do {
+            return try await playbackCoordinator.prepare(target)
+        } catch let error as SourceError where error.kind == .unsupported {
+            // 注册表里找不到这个条目时退回当前 PhotoItem 流程。
+            let stream = try await resolvePlaybackStream(for: photo)
+            return playbackCoordinator.session(for: target, stream: stream)
+        }
+    }
+
+    /// 按 photoID 找回用于播放的条目：图库 / 云盘 / 影院 / 网络资源虚拟分集统一入口。
+    func playbackPhoto(id: UUID) -> PhotoItem? {
+        if let photo = catalogPlaybackPhoto(for: id) { return photo }
+        if let entry = cinemaPlaybackEntry, entry.file.photoID == id { return entry.file.photoItem }
+        if let photo = anyPhoto(id: id) { return photo }
+        if let photo = cloudPhotos.first(where: { $0.id == id }) { return photo }
+        for entries in cinemaIndexes.values {
+            if let entry = entries[id] { return entry.file.photoItem }
+        }
+        return nil
+    }
+
+    /// 把一个照片 / 虚拟分集映射成统一播放目标：用于模式、能力与后续进度定位。
+    func playbackTarget(for photo: PhotoItem) -> PlaybackTarget {
+        if let context = catalogPlaybackContext(for: photo.id) {
+            return PlaybackTarget(storage: .provider(sourceID: .catalog(context.source.id),
+                                                     itemID: context.item.id,
+                                                     episodeID: String(context.episode.index)),
+                                  mode: .vod,
+                                  title: context.item.title)
+        }
+        if let entry = cinemaEntry(for: photo)
+            ?? (cinemaPlaybackEntry?.file.photoID == photo.id ? cinemaPlaybackEntry : nil) {
+            let sourceID: SourceID = entry.file.cloudMountID.map(SourceID.mountCinema) ?? .localCinema
+            return PlaybackTarget(storage: .provider(sourceID: sourceID,
+                                                     itemID: photo.id.uuidString,
+                                                     episodeID: nil),
+                                  mode: .vod,
+                                  title: entry.title,
+                                  artworkURL: entry.gridArtworkURL)
+        }
+        if photo.isCloud, let mountID = photo.cloudMountID {
+            return PlaybackTarget(storage: .provider(sourceID: .cloud(mountID),
+                                                     itemID: photo.id.uuidString,
+                                                     episodeID: nil),
+                                  mode: .vod,
+                                  title: photo.title ?? photo.originalName)
+        }
+        let path = (LibraryPaths.containerLibraryURL ?? LibraryPaths.root).standardizedFileURL.path
+        return PlaybackTarget(storage: .provider(sourceID: .library(path),
+                                                 itemID: photo.id.uuidString,
+                                                 episodeID: nil),
+                              mode: .vod,
+                              title: photo.title ?? photo.originalName)
+    }
+
     func resolvePlaybackStream(for photo: PhotoItem) async throws -> ResolvedStream {
         // 网络资源：按虚拟分集取当前集的播放直链。
         if let context = catalogPlaybackContext(for: photo.id) {
@@ -30,5 +89,29 @@ extension LibraryStore {
                               headers: [:],
                               isHLS: false,
                               mode: .vod)
+    }
+}
+
+/// 播放 Provider 注册表：把历史图库 / 云盘 / 影院 / 网络资源的 `.provider` 目标
+/// 解析回现有片源流程，新源只需要在 `LibraryStore.resolvePlaybackStream` 里追加分支。
+@MainActor
+final class LibraryPlaybackProvider: PlaybackResolving {
+    private unowned let store: LibraryStore
+
+    init(store: LibraryStore) {
+        self.store = store
+    }
+
+    func resolve(_ target: PlaybackTarget) async throws -> ResolvedStream {
+        switch target.storage {
+        case .localFile, .remote:
+            return try await DirectPlaybackResolver().resolve(target)
+        case .provider(_, let itemID, _):
+            guard let uuid = UUID(uuidString: itemID),
+                  let photo = store.playbackPhoto(id: uuid) else {
+                throw SourceError.unsupported("找不到要播放的条目：\(itemID)")
+            }
+            return try await store.resolvePlaybackStream(for: photo)
+        }
     }
 }

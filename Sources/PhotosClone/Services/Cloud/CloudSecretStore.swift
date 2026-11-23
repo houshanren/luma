@@ -18,13 +18,5 @@ enum CloudSecretStore {
     static func remove(_ key: String) {
         LumaKeychainVault.remove(prefix + key)
     }
-
-    /// 旧版本每个账号一个钥匙串条目：迁移只尝试一次，标记后不再读取。
-    static func isMarked(_ name: String) -> Bool {
-        data(for: "flag.\(name)") != nil
-    }
-
-    static func mark(_ name: String) {
-        set(Data(), for: "flag.\(name)")
-    }
 }
+

@@ -82,6 +82,8 @@ public final class VideoStreamSession {
     private let audioDownmix: AudioDownmixMode
     /// 重编码目标编码：H.264 兼容 / HEVC 高效 / HEVC 低功耗。
     private let transcodeMode: VideoTranscodeMode
+    /// 重编码时保留 HDR（HDR 屏）：跳过色调映射，直接缩放到 HDR HEVC。
+    private let preserveHDR: Bool
     /// 是否允许音轨直通。兜底会话为 false：一律重编码，且不复用 / 不写入只含直通结果的缓存。
     private let audioPassthrough: Bool
     /// 本次会话是否包含多条音轨（播放器侧可即时切换）。
@@ -112,9 +114,7 @@ public final class VideoStreamSession {
     private var stopping = false
     /// ffmpeg 是否被暂停生成（播放器暂停时挂起进程，避免后台把整片转完）。
     private var generationPaused = false
-    /// 提前生成太多时临时挂起 ffmpeg：长片不会在几分钟内写满磁盘 / 跑满网盘。
-    private var leadPaused = false
-    /// 进程当前是否真的处于 SIGSTOP（上面两个意图合并后的实际状态）。
+    /// 进程当前是否真的处于 SIGSTOP。
     private var processStopped = false
     /// 当前保留的最小分片序号（播放中滚动清理）。
     private var minSegmentIndex = 0
@@ -154,6 +154,7 @@ public final class VideoStreamSession {
                 audioDelay: Double = 0,
                 audioDownmix: AudioDownmixMode = .source,
                 transcodeMode: VideoTranscodeMode = .compatibility,
+                preserveHDR: Bool = false,
                 audioPassthrough: Bool = true,
                 burnSubtitle: URL? = nil,
                 burnSubtitleStream: Int? = nil,
@@ -195,6 +196,7 @@ public final class VideoStreamSession {
         self.audioDelay = audioDelay
         self.audioDownmix = audioDownmix
         self.transcodeMode = transcodeMode
+        self.preserveHDR = preserveHDR
         self.audioPassthrough = audioPassthrough
         self.isMultiAudio = StreamPlanner.usesMultipleAudioTracks(
             mode: mode,
@@ -319,7 +321,9 @@ public final class VideoStreamSession {
         return minSegmentIndex
     }
 
-    /// 播放器暂停时挂起 ffmpeg，继续播放时恢复：避免暂停期间把整部片转成缓存。
+    /// 预热会话专用：出首段后先停止生成，等真正开播时再恢复。
+    /// 注意只用于「还没有播放器在读这个列表」的会话——播放中挂起 ffmpeg 会让
+    /// EVENT 列表停更，AVPlayer 会报 -12888 并判定流结束（见 `updateGenerationPacing`）。
     public func setGenerationActive(_ active: Bool) {
         guard !usesCache, let process, process.isRunning else { return }
         stateLock.lock()
@@ -328,32 +332,20 @@ public final class VideoStreamSession {
         applyGenerationState()
     }
 
-    /// 提前生成窗口：领先播放超过 10 分钟就挂起，回落到 3 分钟内再恢复。
-    /// 放宽阈值是为了减少 SIGSTOP / SIGCONT 切换次数：频繁启停会让 SMB 读取抖动，
-    /// 播放端表现为周期性卡顿；磁盘由会话结束统一清理。
+    /// 播放中只做网络自适应，**绝不把 ffmpeg 挂起（SIGSTOP）**。
+    ///
+    /// HLS 播放列表是 EVENT 类型，AVPlayer 会当直播处理：列表超过 1.5 × TARGETDURATION
+    /// （约 16 秒）没有更新就报 `-12888 Playlist File unchanged`，并直接判定
+    /// “end of all streams”，之后不再拉新分片；缓冲耗尽后必然卡在暂停态。
+    /// 因此「提前量过大」不再挂起生成：让 ffmpeg 一直跑到片尾（会写满该集的工作目录，
+    /// 会话结束时统一清理）。挂起只保留给用户主动暂停。
     private func updateGenerationPacing(playback seconds: Double) {
         guard let process, process.isRunning else { return }
-        let directory = workDirectory
         let offset = playbackStartOffset
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             guard let produced = Self.playlistDuration(self.durationPlaylistPath) else { return }
             let ahead = produced + offset - seconds
-            let profile = self.currentAdaptiveProfile
-
-            self.stateLock.lock()
-            var changed: Bool?
-            if ahead > profile.leadPauseSeconds, !self.leadPaused {
-                self.leadPaused = true
-                changed = true
-            } else if ahead < profile.leadResumeSeconds, self.leadPaused {
-                self.leadPaused = false
-                changed = false
-            }
-            self.stateLock.unlock()
-            if changed != nil {
-                self.applyGenerationState()
-            }
             self.evaluateAdaptation(produced: produced, ahead: ahead)
         }
     }
@@ -421,24 +413,24 @@ public final class VideoStreamSession {
         }
     }
 
-    /// 把「用户暂停」与「提前量过大」两个意图合并成一次 SIGSTOP / SIGCONT。
+    /// 把「用户暂停」意图转换成一次 SIGSTOP / SIGCONT。
+    /// 播放中的提前量不再挂起生成：EVENT 列表停更会让 AVPlayer 判定流已结束。
     private func applyGenerationState() {
         guard !usesCache, let process, process.isRunning,
               process.processIdentifier > 1 else { return }
         stateLock.lock()
-        let shouldStop = generationPaused || leadPaused
+        let shouldStop = generationPaused
         guard processStopped != shouldStop else {
             stateLock.unlock()
             return
         }
-        let reason = generationPaused ? "用户暂停" : "提前量过大"
         processStopped = shouldStop
         stateLock.unlock()
         // 进程可能在这几行之间退出：再确认一次，避免给复用后的 pid 发信号。
         guard process.isRunning, process.processIdentifier > 1 else { return }
         kill(process.processIdentifier, shouldStop ? SIGSTOP : SIGCONT)
         // 卡住排查最需要知道的一件事：ffmpeg 是被谁挂起的。
-        environment.record(shouldStop ? "生成挂起（\(reason)）" : "生成恢复")
+        environment.record(shouldStop ? "生成挂起（用户暂停）" : "生成恢复")
     }
 
     /// 是否已被主动关闭：起流是后台任务，stop() 可能在任意一步之间发生。
@@ -719,13 +711,20 @@ public final class VideoStreamSession {
     }
 
     private func launch() throws {
+        // HDR 屏 + HDR10 源：保留 HDR 只缩放，不跑色调映射（映射链只有 <1× 实时）。
+        // 杜比视界必须靠 libplacebo 应用 RPU，仍走原来的映射路径。
+        let keepsHDR = preserveHDR && (isHDR || color.isHDR) && !color.isDolbyVision
         let needsToneMap = mode == .transcode && (isHDR || color.isDolbyVision)
-            && environment.supportsToneMapping
+            && !keepsHDR && environment.supportsToneMapping
         // 杜比视界的 RPU 只能由 libplacebo 应用：没有它就别把错误的颜色烘进转码结果。
         let needsLibplacebo = needsToneMap && color.isDolbyVision && environment.supportsLibplacebo
         guard let ffmpeg = environment.executable(preferToneMap: needsToneMap,
                                                   preferLibplacebo: needsLibplacebo) else {
             throw VideoError.transcodeUnavailable
+        }
+        if keepsHDR, mode == .transcode {
+            environment.record("重编码保留 HDR（不映射）："
+                               + "primary=\(color.primaries ?? "bt2020") trc=\(color.transfer ?? "smpte2084")")
         }
         if needsToneMap {
             // 排查偏色时先看这条：HDR / DV 到底走了哪条映射链。
@@ -818,6 +817,7 @@ public final class VideoStreamSession {
                                     audioDelay: audioDelay,
                                     audioDownmix: audioDownmix,
                                     transcodeMode: transcodeMode,
+                                    preserveHDR: preserveHDR,
                                     audioPassthrough: audioPassthrough,
                                     bufferProfile: environment.bufferProfile,
                                     burnSubtitle: burnSubtitle,
@@ -987,7 +987,11 @@ public final class VideoStreamSession {
 
     /// 等 ffmpeg 写出第一版播放列表（第一段分片完成后才会写）。
     /// 网盘限速时 4K 视频的首段可能要几十秒，这里每 5 秒记一次已写入字节，便于排查卡在下载还是卡在封装。
+    /// 首段就绪后再多等一小段提前量：只给播放器 2 秒缓冲时，网络卷上的高码率片源几乎立刻耗尽，
+    /// 表现就是「刚出画面就卡一下」。本地盘生成很快，这段等待几乎不增加起播时间。
     private func waitForPlaylist() async throws {
+        var firstSegmentAt: Date?
+        let leadTarget = startupLeadSeconds
         for index in 0..<1200 {
             try Task.checkCancellation()
             if isStopping { throw CancellationError() }
@@ -995,7 +999,17 @@ public final class VideoStreamSession {
             // 播一下就停在开头。必须等到至少写出一段（或明确结束）再交给播放器。
             if Self.playlistHasSegments(durationPlaylistPath),
                !isMultiAudio || FileManager.default.fileExists(atPath: playlistPath.path) {
-                return
+                if leadTarget <= 0 { return }
+                if firstSegmentAt == nil { firstSegmentAt = Date() }
+                let generated = Self.playlistDuration(durationPlaylistPath) ?? 0
+                let waited = Date().timeIntervalSince(firstSegmentAt ?? Date())
+                // 生成太慢时不无限等：最多多等 8 秒，先把播放器接上，后续靠卡顿自愈。
+                if generated >= leadTarget || waited >= 8 {
+                    if generated > 0 {
+                        environment.record("起播缓冲 \(Int(generated))s / 目标 \(Int(leadTarget))s")
+                    }
+                    return
+                }
             }
             if let process, !process.isRunning {
                 let reason = currentSourceFailure ?? Self.tail(of: logURL)
@@ -1011,6 +1025,18 @@ public final class VideoStreamSession {
         let size = Self.directorySize(workDirectory)
         let extra = currentSourceFailure.map { "：\($0)" } ?? ""
         throw VideoError.transcodeFailedMessage("等待首段超时，已写入 \(size / 1024 / 1024) MB\(extra)")
+    }
+
+    /// 起播前希望先攒下的生成量。
+    /// 只攒 2–3 秒时，跳转后播放器出画面几秒就把缓冲耗尽，立刻「卡一下」；
+    /// 音轨又比视频轨先就绪，观感是先有声、后有画面、再顿一下。
+    /// 5 秒是「起播够快」与「第一跳不卡」的折中：本地盘生成是实时的数倍，通常只多等一秒。
+    private var startupLeadSeconds: Double {
+        switch currentAdaptiveProfile {
+        case .thrifty: return 3
+        case .balanced: return 4
+        case .smooth: return 5
+        }
     }
 
     /// 播放列表里已经有分片，才算真的可以交给播放器。

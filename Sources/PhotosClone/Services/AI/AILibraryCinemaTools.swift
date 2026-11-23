@@ -30,8 +30,8 @@ extension AILibraryTools {
                 "filter": enumSchema(["all", "favorites", "watchlist", "rated", "unmatched"],
                                      "all 全部已识别；favorites 影院收藏；watchlist 想看；rated 已评分；unmatched 未识别"),
                 "genre": stringSchema("类型标签，例如「科幻」「悬疑」，可省略"),
-                "decade": integerSchema("年代，例如 2020（表示 2020 年代）；0 表示不限",
-                                        minimum: 0, maximum: 2100),
+                "year": integerSchema("年份，例如 2024；0 表示不限",
+                                      minimum: 0, maximum: 2100),
                 "kind": enumSchema(["all", "movie", "tv"], "只看电影或只看剧集，默认 all"),
                 "watch_state": enumSchema(["unwatched", "inProgress", "finished"],
                                           "观看状态，可省略"),
@@ -87,7 +87,7 @@ extension AILibraryTools {
     private static var navigateCinema: AIRequestTool {
         AIRequestTool(
             name: "navigate_cinema",
-            description: "打开并切换影院界面：切到某个影院、全部 / 电影 / 电视剧 / 文件夹分段、书架 / 海报墙 / 卡片 / 列表视图、排序与筛选，也可直接打开搜索、观看记录、任务中心、通知或新建清单面板。只改变界面，不修改数据。",
+            description: "打开并切换影院界面：切到某个影院、全部 / 电影 / 电视剧 / 文件夹分段、书架 / 海报墙 / 卡片 / 列表视图、排序与筛选，也可直接打开搜索、观看记录、通知或新建清单面板。只改变界面，不修改数据。",
             parameters: objectSchema([
                 "scope": stringSchema("影院 id（local 或网盘 id）或网盘名称；省略则当前影院"),
                 "tab": enumSchema(["all", "movies", "shows", "folder"], "顶部分段，默认 all"),
@@ -95,7 +95,7 @@ extension AILibraryTools {
                                         "呈现方式：书架 / 海报墙 / 卡片 / 列表"),
                 "sort": enumSchema(["recent", "rating", "year", "title", "duration"],
                                    "排序字段"),
-                "decades": arraySchema(["type": "integer"], description: "年代筛选，例如 [2020]"),
+                "years": arraySchema(["type": "integer"], description: "年份筛选，例如 [2024]"),
                 "genres": arraySchema(["type": "string"], description: "类型筛选，例如 [\"科幻\"]"),
                 "resolutions": arraySchema(["type": "string",
                                             "enum": ["uhd4k", "fullHD", "sd"]],
@@ -112,7 +112,7 @@ extension AILibraryTools {
                 "list_id": stringSchema("按某个自定义清单筛选：清单 id；与 list_name 二选一"),
                 "list_name": stringSchema("按某个自定义清单筛选：清单名称；与 list_id 二选一"),
                 "reset_filters": booleanSchema("先清空全部影院筛选，再应用本次参数"),
-                "panel": enumSchema(["none", "search", "history", "tasks", "notifications", "new_list"],
+                "panel": enumSchema(["none", "search", "history", "notifications", "new_list"],
                                     "顺带打开的影院面板，默认 none")
             ])
         )

@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 /// 网盘派生缓存的回填与落库：EXIF、场景识别、特征向量、查看记录、体检 / 美化报告。
 /// 全部写当前图库自己的 `PhotosClone.sqlite`，不写 NAS / 网盘，也不写 Apple 的数据库。
@@ -56,6 +57,9 @@ extension LibraryStore {
         guard cloudModel.featuresLoadedMountID != mountID,
               !cloudModel.isLoadingCloudFeatures else { return }
         cloudModel.isLoadingCloudFeatures = true
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .cloud(mountID), kind: .index, title: "加载网盘特征", isCancellable: false)
+        )
         Task { [weak self] in
             let features = await Task.detached(priority: .utility) {
                 store.loadCloudFeatures(mountID: mountID)
@@ -63,7 +67,10 @@ extension LibraryStore {
             guard let self else { return }
             self.cloudModel.isLoadingCloudFeatures = false
             self.cloudModel.featuresLoadedMountID = mountID
-            guard !features.isEmpty else { return }
+            guard !features.isEmpty else {
+                self.finishSourceJob(jobID, message: "没有已缓存的特征")
+                return
+            }
             var pathToID: [String: UUID] = [:]
             pathToID.reserveCapacity(self.cloudModel.scanPhotos.count)
             for photo in self.cloudModel.scanPhotos {
@@ -72,6 +79,7 @@ extension LibraryStore {
             // 扫描清单还没到时先不算完成，下次载入目录再补一次。
             guard !pathToID.isEmpty else {
                 self.cloudModel.featuresLoadedMountID = nil
+                self.finishSourceJob(jobID, message: "等待扫描清单")
                 return
             }
             var merged = self.cloudModel.features
@@ -79,6 +87,7 @@ extension LibraryStore {
                 if let id = pathToID[path] { merged[id] = data }
             }
             if !merged.isEmpty { self.cloudModel.features = merged }
+            self.finishSourceJob(jobID, message: "已加载 \(features.count.formatted()) 条特征")
         }
     }
 

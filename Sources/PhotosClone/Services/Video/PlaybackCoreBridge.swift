@@ -21,6 +21,8 @@ typealias PlaybackTimeline = PlaybackCore.PlaybackTimeline
 typealias BufferProfile = PlaybackCore.BufferProfile
 typealias AudioDownmixMode = PlaybackCore.AudioDownmixMode
 typealias VideoTranscodeMode = PlaybackCore.VideoTranscodeMode
+typealias VideoFramingMode = PlaybackCore.VideoFramingMode
+typealias VideoAspectPreset = PlaybackCore.VideoAspectPreset
 
 // MARK: - 内核依赖注入
 

@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
+import LumaContentCore
 import PlaybackCore
 
 extension LibraryStore {
@@ -89,6 +90,15 @@ extension LibraryStore {
                                         currentName: entries[0].url.lastPathComponent)
         isImporting = true
         importCancelled = false
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+                .standardizedFileURL.path),
+                      kind: .ingest,
+                      title: "导入媒体"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelImport() }
+            }
+        )
         let albumsBefore = albums.count
         let batchID = UUID()
         // 拷贝、EXIF 解析与缩略图互不依赖，按 CPU 核数并发执行，避免逐张串行等待。
@@ -200,6 +210,10 @@ extension LibraryStore {
                     $0.failedCount = failed
                     $0.verifiedCount = verified
                 }
+                self.updateSourceJob(jobID,
+                                     completed: nextIndex,
+                                     total: entries.count,
+                                     message: "已导入 \(imported) / \(entries.count) 项 · \(lastName)")
 
                 // 批量落盘：积攒一批再写，避免上千次全量重写 SQLite。
                 if buffer.count >= 80 || Date().timeIntervalSince(lastFlush) >= 2 {
@@ -236,6 +250,7 @@ extension LibraryStore {
                 + (failed > 0 ? "，失败 \(failed) 个" : "")
                 + (options.verifyCopies ? "，校验 \(verified) 个" : "")
             if cancelled {
+                self.cancelSourceJob(jobID)
                 self.showToast("已取消导入，\(summary)")
             } else if imported == 0 {
                 // 具体失败原因（蓝光加密 / 结构无效等）比「导入失败」有用得多。
@@ -248,6 +263,9 @@ extension LibraryStore {
                 self.showToast("\(summary)，创建 \(createdAlbums) 个相簿")
             } else {
                 self.showToast(summary)
+            }
+            if !cancelled {
+                self.finishSourceJob(jobID, message: summary)
             }
 
             // 蓝光原盘 / ISO 只写外部引用、不进 originals，目录监听收不到变化；

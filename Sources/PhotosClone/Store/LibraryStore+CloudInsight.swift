@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 /// 网络存储的分类浏览：媒体类型、场景、图内文字，以及由 EXIF 派生的地图 / 位置 / 人物 /
 /// 值得重看 / 重复项目。
@@ -204,6 +205,16 @@ extension LibraryStore {
         cloudModel.isAnalyzing = true
         cloudModel.analysisProgress = 0
         let total = Double(targets.count)
+        // 网盘识别也进任务中心：任务条与详情浮层能直接看到当前列表的识别进度。
+        let mountID = cloudModel.insightMountID
+        let jobID = mountID.map { id in
+            beginSourceJob(
+                SourceJob(sourceID: .cloud(id), kind: .analyze, title: "识别网盘内容"),
+                cancel: { [weak self] in
+                    Task { @MainActor in self?.cancelCloudContentAnalysis() }
+                }
+            )
+        }
         cloudModel.analysisTask = Task { [weak self] in
             guard let self else { return }
             var done = 0
@@ -241,6 +252,12 @@ extension LibraryStore {
                 }
                 done += 1
                 self.cloudModel.analysisProgress = Double(done) / total
+                if let jobID {
+                    self.updateSourceJob(jobID,
+                                         completed: done,
+                                         total: targets.count,
+                                         message: "已识别 \(done) / \(targets.count)")
+                }
             }
             let analysed = self.cloudModel.analysis.count
             self.cloudModel.isAnalyzing = false
@@ -249,8 +266,10 @@ extension LibraryStore {
             self.cloudScopeCountsCacheKey = nil
             self.cloudVisibleCacheKey = nil
             if Task.isCancelled {
+                if let jobID { self.cancelSourceJob(jobID) }
                 self.showToast("已停止识别，当前已识别 \(analysed) 张")
             } else {
+                if let jobID { self.finishSourceJob(jobID, message: "已识别 \(analysed) 张") }
                 self.showToast("内容识别完成，共识别 \(analysed) 张")
             }
         }

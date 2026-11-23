@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import LumaContentCore
 
 /// 场景总览用的汇总：数量与封面各一次遍历算完。
 struct SceneSummary {
@@ -169,6 +170,17 @@ extension LibraryStore {
         intelligenceDone = 0
         intelligenceTotal = targets.count
         sceneCountsCacheKey = nil
+        // 进统一任务中心：侧边栏底部任务条与详情浮层都能看到这次识别，也能从那里取消。
+        let libraryPath = (LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+            .standardizedFileURL.path
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(libraryPath),
+                      kind: .analyze,
+                      title: "分析本地图库内容"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelIntelligenceAnalysis() }
+            }
+        )
 
         intelligenceTask = Task { [weak self] in
             guard let self else { return }
@@ -193,7 +205,13 @@ extension LibraryStore {
                     }
                 }
                 self.intelligenceDone = index + 1
-                if index % 8 == 0 { self.sceneCountsCacheKey = nil }
+                if index % 8 == 0 {
+                    self.sceneCountsCacheKey = nil
+                    self.updateSourceJob(jobID,
+                                         completed: index + 1,
+                                         total: targets.count,
+                                         message: "已分析 \(index + 1) / \(targets.count)")
+                }
             }
             if !buffer.isEmpty { store.saveAnalysis(buffer) }
 
@@ -204,9 +222,11 @@ extension LibraryStore {
             self.intelligenceTotal = 0
             self.intelligenceDone = 0
             if self.intelligenceCancelled {
+                self.cancelSourceJob(jobID)
                 self.intelligenceCancelled = false
                 self.showToast("已停止内容分析，已分析 \(analysed) 张")
             } else {
+                self.finishSourceJob(jobID, message: "已分析 \(analysed) 张")
                 self.showToast("内容分析完成，共分析 \(analysed) 张")
             }
         }
@@ -309,6 +329,17 @@ extension LibraryStore {
         systemAnalysisCancelled = false
         systemAnalysisDone = 0
         systemAnalysisTotal = pending
+        // 与本地图库识别一致：进统一任务中心，任务条 / 详情浮层都能看到进度并取消。
+        let libraryPath = systemLibraryPath
+            ?? (LibraryPaths.containerLibraryURL ?? LibraryPaths.root).standardizedFileURL.path
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: .library(libraryPath),
+                      kind: .analyze,
+                      title: "识别系统图库场景"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.cancelSystemContentAnalysis() }
+            }
+        )
 
         let index = systemIndex
         // 只取照片，和本地图库的识别范围一致（视频不参与）。
@@ -381,6 +412,12 @@ extension LibraryStore {
                         remaining = max(0, remaining - 1)
                     }
                     self.systemAnalysisDone += 1
+                    if self.systemAnalysisDone % 16 == 0 {
+                        self.updateSourceJob(jobID,
+                                             completed: self.systemAnalysisDone,
+                                             total: self.systemAnalysisTotal,
+                                             message: "已识别 \(self.systemAnalysisDone) / \(self.systemAnalysisTotal)")
+                    }
                     // 让界面按张刷新：场景行与「包含文字」会随识别进度逐步出现。
                     await Task.yield()
                 }
@@ -407,9 +444,11 @@ extension LibraryStore {
             self.systemAnalysisTotal = 0
             self.systemAnalysisDone = 0
             if self.systemAnalysisCancelled {
+                self.cancelSourceJob(jobID)
                 self.systemAnalysisCancelled = false
                 self.showToast("已停止识别，本次识别 \(analysed) 张（已缓存到图库）")
             } else {
+                self.finishSourceJob(jobID, message: "已识别 \(analysed) 张")
                 if self.systemPendingAnalysisCount == 0 {
                     // 全部完成：清掉断点与自动续跑标记，下次从最新的照片重新找增量。
                     self.saveSystemAnalysisOffset(0)

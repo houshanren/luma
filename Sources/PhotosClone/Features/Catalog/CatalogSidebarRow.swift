@@ -1,4 +1,5 @@
 import SwiftUI
+import LumaContentCore
 
 /// 侧边栏里的一个网络资源：只有一行入口。
 /// 分类都在右侧频道区展示，侧边栏不再铺一棵树，也没有展开 / 收起。
@@ -113,11 +114,10 @@ struct CatalogSidebarRow: View {
     }
 
     private func open(_ action: (CatalogBrowserModel) -> Void) {
-        // 先切到本源再加载：否则在另一个资源页里点本源的入口，
-        // 会拿旧源的 selectedSource 去请求新源的路径。
-        catalog.focus(source.id)
+        // 统一走 sourceHub：先切到本源，再执行调用方要的加载动作；
+        // 否则在另一个资源页里点本源的入口，会拿旧源的 selectedSource 去请求新源。
+        store.sourceHub.activate(.catalog(source.id))
         action(catalog)
-        store.navigate(to: item)
     }
 }
 

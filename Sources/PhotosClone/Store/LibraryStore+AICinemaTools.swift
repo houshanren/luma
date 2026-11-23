@@ -260,7 +260,7 @@ extension LibraryStore {
         let query = AILibraryTools.string(args["query"])
         let filter = AILibraryTools.string(args["filter"]) ?? "all"
         let genre = AILibraryTools.string(args["genre"])
-        let decade = AILibraryTools.integer(args["decade"], fallback: 0)
+        let year = AILibraryTools.integer(args["year"], fallback: 0)
         let kind = AILibraryTools.string(args["kind"]) ?? "all"
         let watchState = AILibraryTools.string(args["watch_state"])
         let limit = min(60, max(1, AILibraryTools.integer(args["limit"], fallback: 30)))
@@ -282,7 +282,7 @@ extension LibraryStore {
                !(entry.genres ?? []).contains(where: { $0.localizedCaseInsensitiveContains(genre) }) {
                 return false
             }
-            if decade > 0, entry.decade != decade { return false }
+            if year > 0, entry.year != year { return false }
             if let watchState, cinemaWatchState(for: entry).rawValue != watchState { return false }
             if let query, !query.isEmpty, !aiCinemaEntryMatchesQuery(entry, query: query) {
                 return false
@@ -301,7 +301,7 @@ extension LibraryStore {
                !series.genres.contains(where: { $0.localizedCaseInsensitiveContains(genre) }) {
                 return false
             }
-            if decade > 0, !series.episodes.contains(where: { $0.decade == decade }) {
+            if year > 0, !series.episodes.contains(where: { $0.year == year }) {
                 return false
             }
             if let watchState, cinemaWatchState(for: series).rawValue != watchState {
@@ -552,6 +552,8 @@ extension LibraryStore {
             resetCinemaFilters()
         }
         if let raw = AILibraryTools.string(args["tab"]), let tab = CinemaTab(rawValue: raw) {
+            // 顶栏类型与频道互斥：显式切频道时清掉类型筛选。
+            cinemaTypeFilterID = nil
             cinemaTab = tab
         }
         if let raw = AILibraryTools.string(args["view_mode"]),
@@ -562,8 +564,8 @@ extension LibraryStore {
            let sort = CinemaSort(rawValue: raw) {
             cinemaSort = sort
         }
-        if args["decades"] != nil {
-            cinemaDecades = Set(aiIntArray(args["decades"]))
+        if let raw = args["years"] ?? args["decades"] {
+            cinemaYears = Set(aiIntArray(raw))
         }
         if args["genres"] != nil {
             cinemaGenres = Set(AILibraryTools.stringArray(args["genres"]))
@@ -596,7 +598,6 @@ extension LibraryStore {
                 switch panel {
                 case "search": self.cinemaSearchVisible = true
                 case "history": self.cinemaHistoryVisible = true
-                case "tasks": self.cinemaTasksVisible = true
                 case "notifications": self.cinemaNotificationsVisible = true
                 case "new_list": self.cinemaNewListVisible = true
                 default: break
@@ -605,8 +606,16 @@ extension LibraryStore {
         }
 
         var filters: [String] = []
-        if !cinemaDecades.isEmpty { filters.append("年代") }
+        if !cinemaYears.isEmpty { filters.append("年份") }
         if !cinemaGenres.isEmpty { filters.append("类型") }
+        if !cinemaKindFilters.isEmpty { filters.append("内容") }
+        if !cinemaCountries.isEmpty { filters.append("地区") }
+        if !cinemaLanguages.isEmpty { filters.append("语言") }
+        if !cinemaRuntimeFilters.isEmpty { filters.append("片长") }
+        if !cinemaRatingFilters.isEmpty { filters.append("评分") }
+        if let typeID = cinemaTypeFilterID {
+            filters.append("内容类型：\(CinemaContentType.descriptor(id: typeID).title)")
+        }
         if !cinemaResolutions.isEmpty { filters.append("分辨率") }
         if !cinemaWatchFilters.isEmpty { filters.append("观看状态") }
         if !cinemaSpecFilters.isEmpty { filters.append("规格") }

@@ -9,7 +9,7 @@
 
 ## 下载
 
-- 发布产物：[Luma-1.4.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v1.4.0/Luma-1.4.0-macOS.zip)（macOS 14+，ad-hoc 签名，未做 Apple 公证）
+- 发布产物：[Luma-2.0.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v2.0.0/Luma-2.0.0-macOS.zip)（macOS 14+，ad-hoc 签名，未做 Apple 公证）
 - 全部版本：[Releases](https://github.com/houshanren/luma/releases)
 - 从源码构建：`./build.sh`（见下文）
 
@@ -102,7 +102,7 @@
 - 常用案例：`把这 3 张照片压到长边 2048、质量 80`、`把这组照片做无损压缩`、`把去年在上海拍的照片整理成相簿`、`把这 8 张照片自动美化一下`、`按主题建 4 个相簿`、`把视频放进「旅行」`、`从最近删除恢复刚才那批`、`搜一下 XX 并播放第一条`、`把今天新片加入稍后看`、`我收藏了哪些电影`、`继续播放上次没看完的`、`把这部剧设为跳过片头 90 秒`。
 - 工具共 **55 个**：照片检索与浏览 4（`search_photos` / `list_albums` / `list_folders` / `list_videos`）、导航与选择 3（`navigate` / `select_photos` / `open_photo`）、相簿与文件夹 10（`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover` / `create_folder` / `rename_folder` / `delete_folder`）、图片与视频 7（`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title` / `compress_photos` / `beautify_photos`）、最近删除 2（`trash_photos` / `restore_photos`）、影院 20（`list_cinema_items` / `list_cinema_scopes` / `cinema_tree` / `search_cinema_library` / `list_cinema_series` / `list_cinema_lists` / `list_cinema_activity` / `navigate_cinema` / `play_cinema` / `search_cinema_candidates` / `apply_cinema_match` / `scrape_cinema` / `match_cinema` / `update_cinema_state` / `manage_cinema_list` / `ignore_cinema` / `restore_cinema_ignored` / `refresh_cinema_metadata` / `set_cinema_intro_skip` / `manage_cinema_progress`）、网络资源 9（`list_catalog_sources` / `search_catalog` / `catalog_new_today` / `list_catalog_following` / `list_catalog_watchlist` / `browse_catalog` / `play_catalog_item` / `set_catalog_watchlist` / `follow_catalog_person`）。其中 31 个写操作必须先经用户确认；系统图库、网盘与官方「照片」库按现有权限矩阵限制。
 - 每次请求最多带 40 张候选照片的元数据，避免把整个图库塞进提示词；更大范围的检索通过「应用筛选」回到现有搜索与分页管线完成。
-- API Key 只保存在 macOS 钥匙串（service `com.baymax.luma.ai`），不写入图库数据库、`UserDefaults` 或日志；模型配置与对话记录随当前图库保存，切换图库会切换到各自的对话。
+- API Key 只保存在 macOS 钥匙串的统一凭据保险库（`LumaKeychainVault`，单个条目 `com.baymax.luma.credentials`；旧版 `com.baymax.luma.ai` 条目首次读取时迁移），不写入图库数据库、`UserDefaults` 或日志；模型配置与对话记录随当前图库保存，切换图库会切换到各自的对话。
 
 ### 回忆
 - 精选集顶部按「按月」「按地点」「收藏」「那年今日」自动生成回忆卡片，仅收录数量足够的主题。

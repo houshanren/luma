@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import LumaContentCore
 
 /// 下一集预热好的边下边播流：首段已生成、ffmpeg 处于挂起状态。
 /// 切换过去时直接复用播放列表，省掉解析直链、ffprobe 与首段等待。
@@ -61,6 +62,8 @@ struct CinemaAggregate {
     var recentCount = 0
     var highRatedCount = 0
     var wallItemCount = 0
+    /// 当前影院的类型分布：顶栏固定类型与「类型」弹层都读它。
+    var types: [CinemaTypeBucket] = []
 }
 
 // MARK: - 影院刮削与播放
@@ -120,15 +123,30 @@ extension LibraryStore {
 
     /// 启动时把本地与每个网盘的结果都读进内存，网格缩略图随时能拿到海报。
     func loadCinemaIndexes() {
-        guard let metadataStore else { return }
+        guard let metadataStore else {
+            cinemaIndexLoaded = true
+            return
+        }
         var loaded: [CinemaScope: [UUID: CinemaEntry]] = [:]
         let scopes: [CinemaScope] = [.local] + cloudMounts.map { .mount($0.id) }
         for scope in scopes {
             let key = Self.cinemaSettingKey(for: scope)
+            // 新格式：一条一行存 SQLite。
+            let rows = metadataStore.cinemaEntries(scope: key)
+            if !rows.isEmpty {
+                loaded[scope] = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+                continue
+            }
+            // 旧格式：整份 JSON 存在设置表里，读到后一次性迁进新表，下次启动直接读表。
             guard let json = metadataStore.setting(key),
                   let data = json.data(using: .utf8),
                   let list = try? JSONDecoder().decode([CinemaEntry].self, from: data) else { continue }
-            loaded[scope] = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+            loaded[scope] = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            // 旧版把所有网盘条目混在本地 key 里：留给 migrateLegacy 拆分，别提前迁走。
+            if !list.contains(where: { $0.file.cloudMountID != nil }) {
+                metadataStore.saveCinemaEntries(list, scope: key)
+                metadataStore.setSettingAsync(key, nil)
+            }
         }
         cinemaIndexes = loaded
         var ignored: [CinemaScope: Set<UUID>] = [:]
@@ -144,6 +162,7 @@ extension LibraryStore {
         loadCinemaTasks()
         loadCinemaIntroMarks()
         loadCinemaNotifications()
+        cinemaIndexLoaded = true
     }
 
     // MARK: 跳过片头 / 片尾
@@ -279,6 +298,28 @@ extension LibraryStore {
         cinemaContinueRecords(for: scope).first
     }
 
+    /// 所有网盘的续播记录（不含本地图库）：网络存储总览的「续播」页用它跨盘汇总。
+    var cloudMountContinueRecords: [CinemaProgressRecord] {
+        let mountIDs = Set(cloudMounts.map(\.id))
+        return cinemaProgress.values
+            .filter { record in
+                guard let mountID = record.mountID, mountIDs.contains(mountID) else { return false }
+                return !record.isFinished && record.position > 3 && record.duration > 0
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// 所有网盘里已经看完的记录：续播页底部的「最近看完」用它。
+    var cloudMountFinishedRecords: [CinemaProgressRecord] {
+        let mountIDs = Set(cloudMounts.map(\.id))
+        return cinemaProgress.values
+            .filter { record in
+                guard let mountID = record.mountID, mountIDs.contains(mountID) else { return false }
+                return record.isFinished
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     // MARK: 收藏 / 想看 / 评分 / 清单
 
     func loadCinemaUserState() {
@@ -410,18 +451,10 @@ extension LibraryStore {
     func saveCinemaProgress(position: Double,
                                     duration: Double,
                                     entry: CinemaEntry) {
-        let subtitle = entry.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        cinemaProgress[entry.id] = CinemaProgressRecord(
-            photoID: entry.id,
-            mountID: entry.file.cloudMountID,
-            title: entry.title,
-            subtitle: subtitle.isEmpty ? nil : subtitle,
-            artworkURL: entry.gridArtworkURL,
-            position: position,
-            duration: duration,
-            updatedAt: Date()
-        )
-        persistCinemaProgress()
+        // 统一续播存储是唯一写入方：新记录也能补齐标题 / 海报。
+        playbackProgressStore.recordCinemaProgress(entry: entry,
+                                                   position: position,
+                                                   duration: duration)
     }
 
     /// 关闭查看器或切换到其他视频前落盘。
@@ -630,13 +663,14 @@ extension LibraryStore {
             cinemaIndexes[scope] = entries
             persistCinemaIndex(for: scope)
         }
+        // 拆完就把旧的混合 JSON 删掉，下次启动只读新表。
+        metadataStore.setSettingAsync(Self.cinemaIndexSettingKey, nil)
     }
 
     func persistCinemaIndex(for scope: CinemaScope) {
-        guard let metadataStore,
-              let data = try? JSONEncoder().encode(Array((cinemaIndexes[scope] ?? [:]).values)),
-              let json = String(data: data, encoding: .utf8) else { return }
-        metadataStore.setSetting(Self.cinemaSettingKey(for: scope), json)
+        guard let metadataStore else { return }
+        metadataStore.saveCinemaEntries(Array((cinemaIndexes[scope] ?? [:]).values),
+                                        scope: Self.cinemaSettingKey(for: scope))
     }
 
     func clearCinemaIndex(for scope: CinemaScope) {
@@ -648,8 +682,14 @@ extension LibraryStore {
 
     /// 清空影院筛选（不改作用域，也不清数据）。
     func resetCinemaFilters() {
-        cinemaDecades = []
+        cinemaYears = []
         cinemaGenres = []
+        cinemaTypeFilterID = nil
+        cinemaKindFilters = []
+        cinemaCountries = []
+        cinemaLanguages = []
+        cinemaRuntimeFilters = []
+        cinemaRatingFilters = []
         cinemaResolutions = []
         cinemaWatchFilters = []
         cinemaSpecFilters = []
@@ -663,8 +703,14 @@ extension LibraryStore {
         if cinemaActiveScope != scope {
             cinemaScrapeMessage = nil
             // 换了影院就回到「全部年代 / 全部类型」，避免筛选条件在另一个库里把人筛空。
-            cinemaDecades = []
+            cinemaYears = []
             cinemaGenres = []
+            cinemaTypeFilterID = nil
+            cinemaKindFilters = []
+            cinemaCountries = []
+            cinemaLanguages = []
+            cinemaRuntimeFilters = []
+            cinemaRatingFilters = []
             cinemaResolutions = []
             cinemaWatchFilters = []
             cinemaSpecFilters = []
@@ -706,14 +752,42 @@ extension LibraryStore {
 
     // MARK: 筛选
 
+    /// 除收藏 / 清单外的条目级筛选是否启用：分类行与空态用它判断「是否在筛」。
+    var cinemaHasAttributeFilters: Bool {
+        !cinemaYears.isEmpty
+            || !cinemaGenres.isEmpty
+            || cinemaTypeFilterID != nil
+            || !cinemaKindFilters.isEmpty
+            || !cinemaCountries.isEmpty
+            || !cinemaLanguages.isEmpty
+            || !cinemaRuntimeFilters.isEmpty
+            || !cinemaRatingFilters.isEmpty
+            || !cinemaResolutions.isEmpty
+            || !cinemaSpecFilters.isEmpty
+            || !cinemaWatchFilters.isEmpty
+            || cinemaSmartHighRated
+            || cinemaSmartRecent
+    }
+
     /// 影院筛选的单一判定：年代 / 类型 / 分辨率 / 观看状态可多选，组内 OR、组间 AND。
     func cinemaPassesFilters(_ entry: CinemaEntry) -> Bool {
         guard entry.matched else { return false }
         if cinemaIsRestricted(entry) { return false }
-        if !cinemaDecades.isEmpty,
-           !(entry.decade.map { cinemaDecades.contains($0) } ?? false) { return false }
+        if !cinemaYears.isEmpty,
+           !(entry.year.map { cinemaYears.contains($0) } ?? false) { return false }
         if !cinemaGenres.isEmpty,
            Set(entry.genres ?? []).isDisjoint(with: cinemaGenres) { return false }
+        if let typeID = cinemaTypeFilterID,
+           !CinemaContentType.descriptor(id: typeID).matches(entry.genres) { return false }
+        if !cinemaKindFilters.isEmpty, !cinemaKindFilters.contains(entry.kind) { return false }
+        if !cinemaCountries.isEmpty,
+           Set(entry.countries ?? []).isDisjoint(with: cinemaCountries) { return false }
+        if !cinemaLanguages.isEmpty,
+           !(entry.originalLanguage.map { cinemaLanguages.contains($0) } ?? false) { return false }
+        if !cinemaRuntimeFilters.isEmpty,
+           !cinemaRuntimeFilters.contains(where: { $0.matches(entry.runtime) }) { return false }
+        if !cinemaRatingFilters.isEmpty,
+           !cinemaRatingFilters.contains(where: { $0.matches(entry.rating) }) { return false }
         if !cinemaResolutions.isEmpty,
            !cinemaResolutions.contains(where: { $0.matches(entry.file) }) { return false }
         if !cinemaSpecFilters.isEmpty,
@@ -733,14 +807,33 @@ extension LibraryStore {
 
     func cinemaPassesFilters(_ series: CinemaSeries) -> Bool {
         if !series.episodes.contains(where: { !cinemaIsRestricted($0) }) { return false }
-        if !cinemaDecades.isEmpty,
-           !series.episodes.contains(where: { $0.decade.map { cinemaDecades.contains($0) } ?? false }) {
+        if !cinemaYears.isEmpty,
+           !series.episodes.contains(where: { $0.year.map { cinemaYears.contains($0) } ?? false }) {
             return false
         }
         if !cinemaGenres.isEmpty,
            !series.episodes.contains(where: { !Set($0.genres ?? []).isDisjoint(with: cinemaGenres) }) {
             return false
         }
+        if let typeID = cinemaTypeFilterID,
+           !CinemaContentType.descriptor(id: typeID).matches(series.genres) { return false }
+        if !cinemaKindFilters.isEmpty, !cinemaKindFilters.contains(.tv) { return false }
+        if !cinemaCountries.isEmpty,
+           !series.episodes.contains(where: { !Set($0.countries ?? []).isDisjoint(with: cinemaCountries) }) {
+            return false
+        }
+        if !cinemaLanguages.isEmpty,
+           !series.episodes.contains(where: { $0.originalLanguage.map { cinemaLanguages.contains($0) } ?? false }) {
+            return false
+        }
+        if !cinemaRuntimeFilters.isEmpty,
+           !series.episodes.contains(where: { episode in
+               cinemaRuntimeFilters.contains { $0.matches(episode.runtime) }
+           }) {
+            return false
+        }
+        if !cinemaRatingFilters.isEmpty,
+           !cinemaRatingFilters.contains(where: { $0.matches(series.rating) }) { return false }
         if !cinemaResolutions.isEmpty,
            !series.episodes.contains(where: { episode in
                cinemaResolutions.contains { $0.matches(episode.file) }
@@ -865,24 +958,31 @@ extension LibraryStore {
     }
 
     private func cinemaAggregateSignature(for scope: CinemaScope) -> String {
-        [
+        var parts: [String] = [
             Self.cinemaScopeKey(scope),
             String(cinemaDataRevision),
-            cinemaSort.rawValue,
-            cinemaDecades.sorted().map(String.init).joined(separator: ","),
-            cinemaGenres.sorted().joined(separator: ","),
-            cinemaResolutions.map(\.rawValue).sorted().joined(separator: ","),
-            cinemaSpecFilters.map(\.rawValue).sorted().joined(separator: ","),
-            cinemaWatchFilters.map(\.rawValue).sorted().joined(separator: ","),
-            cinemaSmartHighRated ? "1" : "0",
-            cinemaSmartRecent ? "1" : "0",
-            cinemaFavoritesOnly ? "1" : "0",
-            cinemaActiveListID?.uuidString ?? "-",
-            cinemaParentalLocked ? "1" : "0",
-            String(AppSettings.shared.cinemaParentalLevel.rawValue),
-            // 「最近 30 天」按天滚动：跨天后签名变化，缓存自然刷新。
-            String(Int(Date().timeIntervalSince1970 / 86_400))
-        ].joined(separator: "|")
+            cinemaSort.rawValue
+        ]
+        parts.append(cinemaYears.sorted().map(String.init).joined(separator: ","))
+        parts.append(cinemaGenres.sorted().joined(separator: ","))
+        parts.append(cinemaTypeFilterID ?? "-")
+        parts.append(cinemaKindFilters.map(\.rawValue).sorted().joined(separator: ","))
+        parts.append(cinemaCountries.sorted().joined(separator: ","))
+        parts.append(cinemaLanguages.sorted().joined(separator: ","))
+        parts.append(cinemaRuntimeFilters.map(\.rawValue).sorted().joined(separator: ","))
+        parts.append(cinemaRatingFilters.map(\.rawValue).sorted().joined(separator: ","))
+        parts.append(cinemaResolutions.map(\.rawValue).sorted().joined(separator: ","))
+        parts.append(cinemaSpecFilters.map(\.rawValue).sorted().joined(separator: ","))
+        parts.append(cinemaWatchFilters.map(\.rawValue).sorted().joined(separator: ","))
+        parts.append(cinemaSmartHighRated ? "1" : "0")
+        parts.append(cinemaSmartRecent ? "1" : "0")
+        parts.append(cinemaFavoritesOnly ? "1" : "0")
+        parts.append(cinemaActiveListID?.uuidString ?? "-")
+        parts.append(cinemaParentalLocked ? "1" : "0")
+        parts.append(String(AppSettings.shared.cinemaParentalLevel.rawValue))
+        // 「最近 30 天」按天滚动：跨天后签名变化，缓存自然刷新。
+        parts.append(String(Int(Date().timeIntervalSince1970 / 86_400)))
+        return parts.joined(separator: "|")
     }
 
     private func buildCinemaAggregate(for scope: CinemaScope) -> CinemaAggregate {
@@ -907,6 +1007,7 @@ extension LibraryStore {
         result.letters = cinemaLetters(movies: result.movies, series: result.series)
         result.wallItemCount = result.movies.count + result.series.count
         result.stats = cinemaStats(entries: result.entries)
+        result.types = cinemaTypeBuckets(for: scope)
 
         // 版本数一次算完：卡片渲染时直接查表。
         var versionCounts: [String: Int] = [:]
@@ -922,6 +1023,36 @@ extension LibraryStore {
             if (entry.rating ?? 0) >= 8 { result.highRatedCount += 1 }
         }
         return result
+    }
+
+    /// 类型分布：只统计已识别内容，电影按版本去重、剧集按整部计。
+    /// 不受其它筛选影响，保证顶栏固定类型的数量不会随筛选跳动。
+    private func cinemaTypeBuckets(for scope: CinemaScope) -> [CinemaTypeBucket] {
+        var counts: [String: Int] = [:]
+        var seenMovies = Set<String>()
+        for entry in cinemaEntries(for: scope).values where entry.matched && entry.kind == .movie {
+            guard !cinemaIsRestricted(entry) else { continue }
+            guard seenMovies.insert(cinemaVersionKey(for: entry)).inserted else { continue }
+            for id in CinemaContentType.ids(matching: entry.genres ?? []) {
+                counts[id, default: 0] += 1
+            }
+        }
+        for series in cinemaSeries(for: scope) {
+            guard series.episodes.contains(where: { !cinemaIsRestricted($0) }) else { continue }
+            for id in CinemaContentType.ids(matching: series.genres) {
+                counts[id, default: 0] += 1
+            }
+        }
+        let builtInOrder = CinemaContentType.builtIns.map(\.id)
+        return counts
+            .map { CinemaTypeBucket(type: .descriptor(id: $0.key), count: $0.value) }
+            .sorted { lhs, rhs in
+                let lIndex = builtInOrder.firstIndex(of: lhs.id) ?? Int.max
+                let rIndex = builtInOrder.firstIndex(of: rhs.id) ?? Int.max
+                if lIndex != rIndex { return lIndex < rIndex }
+                if lhs.count != rhs.count { return lhs.count > rhs.count }
+                return lhs.type.title.localizedStandardCompare(rhs.type.title) == .orderedAscending
+            }
     }
 
     private func cinemaStats(entries: [CinemaEntry]) -> CinemaAggregateStats {
@@ -1198,6 +1329,10 @@ extension LibraryStore {
 
     /// 目录有变化：重新读一次图库清单，必要时自动刮削本地影院的新视频。
     private func handleLocalCinemaDirectoryChange() async {
+        // 这是一次完整重载：先停掉启动分片，避免它把旧分片追加到新结果后面。
+        libraryIndexTask?.cancel()
+        libraryIndexTask = nil
+        libraryIndexComplete = true
         if let data = metadataStore?.loadLibrary() {
             photos = data.photos
         }
@@ -1890,9 +2025,11 @@ extension LibraryStore {
         let sources = metadataSources()
         guard !sources.isEmpty else {
             cinemaScrapeMessage = "没有可用的刮削源，请检查设置 › 影院"
+            cinemaSourceError = SourceError(kind: .unsupported,
+                                            message: cinemaScrapeMessage ?? "没有可用的刮削源",
+                                            recovery: [.reconfigureSource])
             return
         }
-
         let all = cinemaCandidates(for: scope)
         let existing = cinemaIndexes[scope] ?? [:]
         // 没识别成功的条目留在「未识别」里；再次点刮削时重试它们，而不是直接说「都已刮削」。
@@ -1909,7 +2046,13 @@ extension LibraryStore {
         cinemaScrapeDone = 0
         cinemaScrapeTotal = pending.count
         cinemaScrapeMessage = nil
+        cinemaSourceError = nil
         let taskID = beginCinemaTask(for: scope, total: pending.count)
+        let scrapeJobID = beginSourceJob(
+            SourceJob(sourceID: sourceID(for: scope),
+                      kind: .scrape,
+                      title: "刮削 \(cinemaScopeName(scope))")
+        )
         showToast("开始刮削这个链接下的 \(pending.count) 个视频…")
 
         // 同一部剧的多集共用同名搜索结果，避免几十集重复请求；
@@ -1922,68 +2065,128 @@ extension LibraryStore {
         var failures = 0
         var consecutiveFailures = 0
         var firstError: String?
-        // 每刮到一条就全量编码一次索引，几千条时会明显卡主线程；
-        // 这里按时间批量落盘，中断 / 取消 / 结束时再补一次，不丢结果。
+        var processed = 0
+        // 结果先写进本地草稿，再按 0.3s 批量发布：几千条时不会每写一条就整库重算。
+        var working = existing
         var lastPersistAt = Date.distantPast
-        for (index, candidate) in pending.enumerated() {
+        var lastPublishAt = Date.distantPast
+
+        func publish(force: Bool = false) {
+            let now = Date()
+            if force || now.timeIntervalSince(lastPublishAt) >= 0.3 {
+                cinemaIndexes[scope] = working
+                cinemaScrapeDone = processed
+                updateSourceJob(scrapeJobID,
+                                completed: processed,
+                                total: pending.count,
+                                message: "已刮削 \(processed) / \(pending.count)")
+                lastPublishAt = now
+            }
+            if force || now.timeIntervalSince(lastPersistAt) >= 2 {
+                persistCinemaIndex(for: scope)
+                lastPersistAt = now
+            }
+        }
+
+        func advance(_ count: Int) {
+            processed += count
+        }
+
+        // 连续失败多半是断网 / 代理 / 凭据失效：立刻停下并说清楚原因，
+        // 不要每个视频再等一轮超时，也不要让界面看起来「毫无反应」。
+        func stopIfSourceUnreachable() -> Bool {
+            guard consecutiveFailures >= 2 else { return false }
+            publish(force: true)
+            cinemaScrapeRunning = false
+            cinemaScrapeScope = nil
+            cinemaScrapeMessage = "刮削中断：连续 \(consecutiveFailures) 个视频请求失败。"
+                + Self.cinemaNetworkHint(for: firstError ?? "网络异常")
+            cinemaSourceError = SourceError(kind: .unavailable,
+                                            message: cinemaScrapeMessage ?? "刮削中断",
+                                            recovery: [.retry, .reconfigureSource])
+            finishCinemaTask(taskID,
+                             matched: working.values.filter { $0.matched }.count,
+                             succeeded: false,
+                             message: cinemaScrapeMessage ?? "刮削中断")
+            failSourceJob(scrapeJobID, message: cinemaScrapeMessage ?? "刮削中断")
+            showToast("刮削中断：刮削源都无法访问")
+            postCinemaToast(.failure,
+                            title: "刮削中断 · 刮削源不可达",
+                            detail: Self.cinemaNetworkHint(for: firstError ?? "网络异常"),
+                            actionTitle: "重试") { [weak self] in
+                self?.startCinemaScrape(for: scope, force: true)
+            }
+            return true
+        }
+
+        // NFO 读取要复用目录缓存，先顺序处理；剩下需要联网的再按并发批量刮削。
+        var webQueue: [CinemaCandidate] = []
+        for candidate in pending {
             if Task.isCancelled { break }
             if let nfoEntry = await cinemaNFOEntry(for: candidate, scope: scope) {
-                cinemaIndexes[scope, default: [:]][nfoEntry.id] = nfoEntry
+                working[nfoEntry.id] = nfoEntry
                 consecutiveFailures = 0
             } else {
-                let outcome = await CinemaScraper.scrape(photo: candidate.photo,
-                                                         folderHint: candidate.folderHint,
-                                                         sources: sources,
-                                                         cache: cache,
-                                                         detailsCache: detailsCache)
+                webQueue.append(candidate)
+            }
+            advance(1)
+            if processed % 5 == 0 { await Task.yield() }
+            publish()
+        }
+
+        let concurrency = max(1, min(6, AppSettings.shared.cinemaScrapeConcurrency))
+        var cursor = 0
+        while cursor < webQueue.count {
+            if Task.isCancelled { break }
+            let end = min(webQueue.count, cursor + concurrency)
+            let batch = Array(webQueue[cursor..<end])
+            let outcomes = await withTaskGroup(of: CinemaScrapeOutcome.self) { group in
+                for candidate in batch {
+                    group.addTask {
+                        await CinemaScraper.scrape(photo: candidate.photo,
+                                                   folderHint: candidate.folderHint,
+                                                   sources: sources,
+                                                   cache: cache,
+                                                   detailsCache: detailsCache)
+                    }
+                }
+                var collected: [CinemaScrapeOutcome] = []
+                for await outcome in group { collected.append(outcome) }
+                return collected
+            }
+            for outcome in outcomes {
                 if let entry = outcome.entry {
-                    cinemaIndexes[scope, default: [:]][entry.id] = entry
+                    var merged = entry
+                    // 用户手动挑过的封面不被重新刮削覆盖。
+                    if let old = working[entry.id], old.artworkLocked == true {
+                        merged.posterURL = old.posterURL
+                        merged.backdropURL = old.backdropURL
+                        merged.artworkLocked = true
+                    }
+                    working[merged.id] = merged
                 }
                 if let error = outcome.error {
                     failures += 1
                     consecutiveFailures += 1
                     if firstError == nil { firstError = error }
-                    // 连续失败多半是断网 / 代理 / 凭据失效：立刻停下并说清楚原因，
-                    // 不要每个视频再等一轮超时，也不要让界面看起来「毫无反应」。
-                    if consecutiveFailures >= 2 {
-                        persistCinemaIndex(for: scope)
-                        cinemaScrapeRunning = false
-                        cinemaScrapeScope = nil
-                        cinemaScrapeMessage = "刮削中断：连续 \(consecutiveFailures) 个视频请求失败。"
-                            + Self.cinemaNetworkHint(for: error)
-                        finishCinemaTask(taskID,
-                                         matched: (cinemaIndexes[scope] ?? [:]).values.filter { $0.matched }.count,
-                                         succeeded: false,
-                                         message: cinemaScrapeMessage ?? "刮削中断")
-                        showToast("刮削中断：刮削源都无法访问")
-                        postCinemaToast(.failure,
-                                        title: "刮削中断 · 刮削源不可达",
-                                        detail: Self.cinemaNetworkHint(for: firstError ?? "网络异常"),
-                                        actionTitle: "重试") { [weak self] in
-                            self?.startCinemaScrape(for: scope, force: true)
-                        }
-                        return
-                    }
                 } else {
                     consecutiveFailures = 0
                 }
             }
-            cinemaScrapeDone = index + 1
-            // 渲染让出主线程，保持进度条与网格可响应。
-            if index % 5 == 0 {
-                await Task.yield()
-            }
-            if Date().timeIntervalSince(lastPersistAt) >= 2 {
-                persistCinemaIndex(for: scope)
-                lastPersistAt = Date()
-            }
+            cursor = end
+            advance(batch.count)
+            publish()
+            if stopIfSourceUnreachable() { return }
+            await Task.yield()
         }
+        publish(force: true)
 
         if Task.isCancelled {
             persistCinemaIndex(for: scope)
             cinemaScrapeRunning = false
             cinemaScrapeScope = nil
             cinemaScrapeMessage = "已取消刮削，已完成的结果会保留"
+            cinemaSourceError = nil
             cinemaFolderRefreshToken &+= 1
             let matched = (cinemaIndexes[scope] ?? [:]).values.filter { $0.matched }.count
             finishCinemaTask(taskID,
@@ -1991,6 +2194,7 @@ extension LibraryStore {
                              succeeded: false,
                              message: "已取消",
                              notify: false)
+            cancelSourceJob(scrapeJobID)
             return
         }
 
@@ -2012,6 +2216,7 @@ extension LibraryStore {
                          matched: matched,
                          succeeded: failures == 0,
                          message: message)
+        finishSourceJob(scrapeJobID, message: message)
         postCinemaToast(failures == 0 ? .success : .failure,
                         title: failures == 0
                             ? "刮削完成 · \(matched) 部已识别"
@@ -2048,11 +2253,20 @@ extension LibraryStore {
                                                  detailsCache: CinemaDetailsCache())
         if let error = outcome.error {
             cinemaScrapeMessage = "重新刮削失败：\(error)"
+            cinemaSourceError = SourceError(kind: .unavailable,
+                                            message: cinemaScrapeMessage ?? "重新刮削失败",
+                                            recovery: [.retry, .reconfigureSource])
             showToast("重新刮削失败")
             return
         }
         guard let updated = outcome.entry else { return }
-        cinemaIndexes[scope, default: [:]][updated.id] = updated
+        var merged = updated
+        if let old = cinemaIndexes[scope]?[entry.id], old.artworkLocked == true {
+            merged.posterURL = old.posterURL
+            merged.backdropURL = old.backdropURL
+            merged.artworkLocked = true
+        }
+        cinemaIndexes[scope, default: [:]][merged.id] = merged
         persistCinemaIndex(for: scope)
         showToast(updated.matched ? "已匹配「\(updated.title)」" : "仍未找到匹配结果")
     }
@@ -2104,7 +2318,14 @@ extension LibraryStore {
     // MARK: 播放
 
     /// 从影院直接进入查看器；不依赖该网盘目录当前是否加载。
-    func openCinema(_ entry: CinemaEntry) {
+    /// `queue` 传入当前列表或整季剧集，用于播完自动连播与顶栏「下一集」。
+    func openCinema(_ entry: CinemaEntry, queue: [CinemaEntry]? = nil) {
+        if let queue {
+            cinemaQueue = queue
+        }
+        if !cinemaQueue.contains(where: { $0.id == entry.id }) {
+            cinemaQueue = [entry]
+        }
         // 切换影片前先把上一条的进度落盘，避免连续点两部片时丢掉前一部的位置。
         finishCinemaPlayback()
         let photo = anyPhoto(id: entry.file.photoID) ?? entry.file.photoItem
@@ -2128,11 +2349,95 @@ extension LibraryStore {
         }
     }
 
+    /// 队列里当前条目的前 / 后一条（按打开时的列表顺序）。
+    func cinemaQueueNeighbor(of id: UUID, delta: Int) -> CinemaEntry? {
+        guard let current = cinemaQueue.firstIndex(where: { $0.id == id }) else { return nil }
+        let index = current + delta
+        guard cinemaQueue.indices.contains(index) else { return nil }
+        return cinemaQueue[index]
+    }
+
+    /// 播放器「上一集 / 下一集」与播完自动连播统一走这里。
+    @discardableResult
+    func stepCinemaQueue(_ delta: Int) -> Bool {
+        guard let current = cinemaPlaybackEntry,
+              let next = cinemaQueueNeighbor(of: current.id, delta: delta) else { return false }
+        openCinema(next)
+        return true
+    }
+
     // MARK: 忽略 / 删除
 
     func isCinemaIgnored(_ entry: CinemaEntry) -> Bool {
         let scope: CinemaScope = entry.file.cloudMountID.map { .mount($0) } ?? .local
         return cinemaIgnoredIDs[scope]?.contains(entry.file.photoID) == true
+    }
+
+    /// 相似推荐点击时回本库找同 tmdbID 的条目；找不到就由调用方给出提示。
+    func cinemaEntry(tmdbID: Int, kind: CinemaMediaKind) -> CinemaEntry? {
+        for entries in cinemaIndexes.values {
+            if let found = entries.values.first(where: {
+                $0.matched && $0.tmdbID == tmdbID && $0.kind == kind
+            }) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// 「去网络影院搜索」占位：网络影院还没实现，先给明确提示，
+    /// 不能跳进「网络资源」（那是另一个分区，内容也不相干）。
+    /// 上线后把这里换成网络影院搜索页的导航即可。
+    @discardableResult
+    func searchOnlineCinema(_ keyword: String) -> Bool {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        showToast("网络影院即将上线，暂时搜不了「\(trimmed)」")
+        return true
+    }
+
+    /// 拉 TMDB 图片候选：详情页「换封面」用，结果不落盘，选中的那张才写回索引。
+    func cinemaArtworkCandidates(for entry: CinemaEntry) async
+        -> (posters: [CinemaArtworkCandidate], backdrops: [CinemaArtworkCandidate]) {
+        guard entry.matched, entry.provider == .tmdb, let tmdbID = entry.tmdbID else {
+            return ([], [])
+        }
+        for source in metadataSources() {
+            guard let tmdb = source as? TMDBClient else { continue }
+            if let result = try? await tmdb.artworkCandidates(id: tmdbID, isTV: entry.kind == .tv) {
+                return result
+            }
+        }
+        return ([], [])
+    }
+
+    /// 写回手动挑选的海报 / 背景；剧集同步整部剧，避免卡片与详情各用一张图。
+    func applyCinemaArtwork(_ entry: CinemaEntry,
+                            posterURL: String?,
+                            backdropURL: String?) {
+        let scope: CinemaScope = entry.file.cloudMountID.map { .mount($0) } ?? .local
+        guard var current = cinemaIndexes[scope]?[entry.id] else { return }
+
+        func stamp(_ item: inout CinemaEntry) {
+            if let posterURL { item.posterURL = posterURL }
+            if let backdropURL { item.backdropURL = backdropURL }
+            item.artworkLocked = true
+        }
+
+        stamp(&current)
+        cinemaIndexes[scope, default: [:]][current.id] = current
+
+        if current.kind == .tv {
+            let key = cinemaSeriesKey(for: current)
+            for (id, var item) in cinemaIndexes[scope] ?? [:]
+            where id != current.id && item.kind == .tv && cinemaSeriesKey(for: item) == key {
+                stamp(&item)
+                cinemaIndexes[scope]?[id] = item
+            }
+        }
+        persistCinemaIndex(for: scope)
+        cinemaFolderRefreshToken &+= 1
+        showToast("封面已更新")
     }
 
     /// 忽略一个视频：从影院里移除，以后刮削也不会再处理它（原文件不动）。
@@ -2301,7 +2606,8 @@ extension LibraryStore {
         let hasOverviewFacts = current.runtime != nil || current.status != nil || current.releaseDate != nil
         if !force,
            hasOverviewFacts,
-           current.cast != nil {
+           current.cast != nil,
+           current.recommendations != nil {
             return current
         }
         for source in metadataSources() where source.provider == .tmdb {
@@ -2327,6 +2633,11 @@ extension LibraryStore {
             if let value = details.voteCount, value > 0 { current.voteCount = value }
             if let value = details.budget, value > 0 { current.budget = value }
             if let value = details.revenue, value > 0 { current.revenue = value }
+            if current.recommendations == nil,
+               let tmdb = source as? TMDBClient,
+               let recs = try? await tmdb.recommendations(id: tmdbID, isTV: entry.kind == .tv) {
+                current.recommendations = recs
+            }
             cinemaIndexes[scope, default: [:]][current.id] = current
             persistCinemaIndex(for: scope)
             return current
@@ -2454,6 +2765,152 @@ extension LibraryStore {
             if let info = try? await tmdb.collection(id: collectionID) { return info }
         }
         return nil
+    }
+
+    /// 外部打开豆瓣条目：豆瓣推荐没有 TMDB ID，只能跳网页。
+    func openDoubanPage(doubanID: String) {
+        guard let url = URL(string: "https://movie.douban.com/subject/\(doubanID)/") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: 推荐分组（详情页 tab）
+
+    /// 详情页推荐分组：猜你喜欢（TMDB）/ 豆瓣 / 同系列 / 同导演 / 同演员。
+    /// 首次打开详情时并发补齐并写回条目缓存，之后直接读缓存。
+    func cinemaRecommendationGroups(for entry: CinemaEntry,
+                                    force: Bool = false) async -> [CinemaRecommendationGroup] {
+        if !force, let cached = entry.recommendationGroups, !cached.isEmpty {
+            return cached
+        }
+        let scope: CinemaScope = entry.file.cloudMountID.map { .mount($0) } ?? .local
+        let current = cinemaIndexes[scope]?[entry.id] ?? entry
+        guard current.matched else { return [] }
+
+        var tmdbClient: TMDBClient?
+        var doubanClient: DoubanClient?
+        for source in metadataSources() {
+            if let tmdb = source as? TMDBClient { tmdbClient = tmdb }
+            if let douban = source as? DoubanClient { doubanClient = douban }
+        }
+
+        let tmdbID = current.tmdbID
+        let usableTMDB = tmdbClient != nil && tmdbID != nil
+            && (current.provider == .tmdb || current.provider == nil)
+        var collected: [CinemaRecommendationGroup] = []
+
+        await withTaskGroup(of: CinemaRecommendationGroup?.self) { group in
+            if usableTMDB, let tmdb = tmdbClient, let tmdbID {
+                let isTV = current.kind == .tv
+                group.addTask {
+                    guard let items = try? await tmdb.recommendations(id: tmdbID, isTV: isTV),
+                          !items.isEmpty else { return nil }
+                    return CinemaRecommendationGroup(source: .tmdb,
+                                                     title: "猜你喜欢",
+                                                     items: Array(items.prefix(12)))
+                }
+                if let collectionID = current.collectionID {
+                    group.addTask {
+                        guard let items = try? await tmdb.collectionRecommendations(id: collectionID,
+                                                                                    excluding: tmdbID),
+                              !items.isEmpty else { return nil }
+                        return CinemaRecommendationGroup(source: .collection,
+                                                         title: "同系列",
+                                                         items: Array(items.prefix(12)))
+                    }
+                }
+                if let director = current.directors?.first(where: { !$0.isEmpty }) {
+                    group.addTask {
+                        guard let personID = try? await tmdb.searchPersonID(name: director),
+                              let profile = try? await tmdb.person(id: personID) else { return nil }
+                        let items = profile.credits
+                            .filter { $0.tmdbID != tmdbID }
+                            .prefix(12)
+                            .map { credit in
+                                CinemaRecommendation(tmdbID: credit.tmdbID,
+                                                     kind: credit.isTV ? .tv : .movie,
+                                                     title: credit.title,
+                                                     year: credit.year,
+                                                     posterURL: credit.posterURL,
+                                                     rating: nil)
+                            }
+                        guard !items.isEmpty else { return nil }
+                        return CinemaRecommendationGroup(source: .director,
+                                                         title: "同导演",
+                                                         items: Array(items))
+                    }
+                }
+                for castID in (current.cast ?? []).compactMap(\.tmdbID).prefix(2) {
+                    group.addTask {
+                        guard let profile = try? await tmdb.person(id: castID) else { return nil }
+                        let items = profile.credits
+                            .filter { $0.tmdbID != tmdbID }
+                            .prefix(12)
+                            .map { credit in
+                                CinemaRecommendation(tmdbID: credit.tmdbID,
+                                                     kind: credit.isTV ? .tv : .movie,
+                                                     title: credit.title,
+                                                     year: credit.year,
+                                                     posterURL: credit.posterURL,
+                                                     rating: nil)
+                            }
+                        guard !items.isEmpty else { return nil }
+                        return CinemaRecommendationGroup(source: .cast,
+                                                         title: "同演员",
+                                                         items: Array(items))
+                    }
+                }
+            }
+            if let douban = doubanClient {
+                let title = current.title
+                let originalTitle = current.originalTitle
+                let year = current.year
+                let isTV = current.kind == .tv
+                group.addTask {
+                    guard let items = try? await douban.recommendations(title: title,
+                                                                        originalTitle: originalTitle,
+                                                                        year: year,
+                                                                        isTV: isTV),
+                          !items.isEmpty else { return nil }
+                    return CinemaRecommendationGroup(source: .douban,
+                                                     title: "豆瓣",
+                                                     items: Array(items.prefix(12)))
+                }
+            }
+            for await result in group {
+                if let result { collected.append(result) }
+            }
+        }
+
+        // 同演员会并行拉两三个人：按来源合并去重，同一个 tab 只出现一次。
+        var merged: [CinemaRecommendationGroup] = []
+        for source in [CinemaRecommendationGroup.Source.tmdb,
+                       .douban, .collection, .director, .cast] {
+            let same = collected.filter { $0.source == source }
+            guard !same.isEmpty else { continue }
+            var seenTMDB = Set<Int>()
+            var seenDouban = Set<String>()
+            var items: [CinemaRecommendation] = []
+            for item in same.flatMap(\.items) {
+                if let doubanID = item.doubanID {
+                    guard seenDouban.insert(doubanID).inserted else { continue }
+                    items.append(item)
+                } else {
+                    guard item.tmdbID != tmdbID, seenTMDB.insert(item.tmdbID).inserted else { continue }
+                    items.append(item)
+                }
+            }
+            guard !items.isEmpty else { continue }
+            merged.append(CinemaRecommendationGroup(source: source,
+                                                    title: same[0].title,
+                                                    items: Array(items.prefix(12))))
+        }
+
+        if !merged.isEmpty, var stored = cinemaIndexes[scope]?[entry.id] {
+            stored.recommendationGroups = merged
+            cinemaIndexes[scope]?[stored.id] = stored
+            persistCinemaIndex(for: scope)
+        }
+        return merged
     }
 
     // MARK: 通知中心 / Toast
@@ -2645,6 +3102,27 @@ extension LibraryStore {
         showToast("已从观看记录中移除")
     }
 
+    /// 右键「标记为已看 / 未看」：已看写成 100% 记录，未看直接移除续播记录。
+    func setCinemaWatched(_ entry: CinemaEntry, watched: Bool) {
+        if watched {
+            let total = max(1, entry.file.duration ?? 0)
+            cinemaProgress[entry.id] = CinemaProgressRecord(photoID: entry.id,
+                                                           mountID: entry.file.cloudMountID,
+                                                           title: entry.title,
+                                                           subtitle: entry.subtitle,
+                                                           artworkURL: entry.artworkURL,
+                                                           position: total,
+                                                           duration: total,
+                                                           updatedAt: Date())
+            persistCinemaProgress()
+            showToast("已标记为已看「\(entry.title)」")
+        } else {
+            cinemaProgress.removeValue(forKey: entry.id)
+            persistCinemaProgress()
+            showToast("已标记为未看「\(entry.title)」")
+        }
+    }
+
     // MARK: 任务中心
 
     func loadCinemaTasks() {
@@ -2766,6 +3244,33 @@ extension LibraryStore {
         cinemaFolderRefreshToken &+= 1
         showToast("已匹配「\(updated.title)」")
         return updated
+    }
+
+    /// 视频所在目录：同目录判断用。网盘取 cloudPath 的上级，本地取源文件目录。
+    func cinemaDirectoryKey(for photo: PhotoItem) -> String {
+        if let cloudPath = photo.cloudPath, !cloudPath.isEmpty {
+            return (cloudPath as NSString).deletingLastPathComponent
+        }
+        return LibraryPaths.sourceURL(for: photo).deletingLastPathComponent().path
+    }
+
+    /// 同目录、同解析片名（必要时同年代）且仍未识别的视频。
+    /// 手动匹配一部片时顺带套用到它们，4K / 1080p 这类同名版本不用逐个点。
+    func cinemaMatchSiblings(of photo: PhotoItem) -> [PhotoItem] {
+        let scope = cinemaScope(for: photo)
+        let folderHint = cinemaIndexes[scope]?[photo.id]?.folderHint
+        let parsed = CinemaScraper.parse(filename: photo.displayFilename, folderHint: folderHint)
+        let directory = cinemaDirectoryKey(for: photo)
+        var siblings: [PhotoItem] = []
+        for entry in cinemaEntries(for: scope).values {
+            guard entry.id != photo.id, !entry.matched else { continue }
+            guard cinemaDirectoryKey(for: entry.file.photoItem) == directory else { continue }
+            let sibling = CinemaScraper.parse(filename: entry.file.filename, folderHint: entry.folderHint)
+            guard sibling.title == parsed.title else { continue }
+            if let year = parsed.year, let siblingYear = sibling.year, year != siblingYear { continue }
+            siblings.append(anyPhoto(id: entry.file.photoID) ?? entry.file.photoItem)
+        }
+        return siblings
     }
 
     /// 批量匹配剧集：同一部剧一次写给多个视频，季与每集集号由匹配面板确认。

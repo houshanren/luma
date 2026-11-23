@@ -614,7 +614,7 @@ enum CinemaScraper {
 }
 
 /// 同一次刮削任务里的搜索缓存：同一部剧的几十集只查一次同名结果。
-final class CinemaSearchCache {
+actor CinemaSearchCache {
     private var results: [String: [CinemaMatch]] = [:]
 
     func search(query: String,
@@ -631,7 +631,7 @@ final class CinemaSearchCache {
 }
 
 /// 同一次刮削里的详情缓存：同一部剧的几十集只拉一次 credits / videos / 分级。
-final class CinemaDetailsCache {
+actor CinemaDetailsCache {
     private var values: [String: CinemaDetails?] = [:]
 
     func details(for match: CinemaMatch, source: any CinemaMetadataSource) async -> CinemaDetails? {

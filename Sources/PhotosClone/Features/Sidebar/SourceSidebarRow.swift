@@ -24,6 +24,8 @@ struct SourceRowModel {
     var isEnabled: Bool = true
     var isLoading: Bool = false
     var showsNewBadge: Bool = false
+    /// 刮削进度（0–1）：有值时在行尾画一枚小进度环。
+    var progress: Double? = nil
 }
 
 /// 侧边栏源行的统一外壳：封面、标题、状态、悬停、拖拽手柄、展开按钮与右键菜单。
@@ -73,6 +75,19 @@ struct SourceSidebarRow<Cover: View, Menu: View>: View {
                     } else if model.isLoading {
                         ProgressView()
                             .controlSize(.mini)
+                    }
+                    if let progress = model.progress {
+                        ZStack {
+                            Circle()
+                                .stroke(Color.secondary.opacity(0.18), lineWidth: 2)
+                            Circle()
+                                .trim(from: 0, to: max(0.02, min(1, progress)))
+                                .stroke(LumaBrand.amber,
+                                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                        }
+                        .frame(width: 12, height: 12)
+                        .help("刮削中 \(Int(progress * 100))%")
                     }
                     if let badge = model.badge {
                         badgeView(badge)

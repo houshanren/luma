@@ -159,6 +159,9 @@ public struct VideoProbe {
     /// 隔行片源（ffprobe 的 field_order 为 tt / bb / tb / bt）：转码时必须先做去隔行。
     /// DVD / 老蓝光演唱会常见 1080i，不处理会出现梳齿。
     public var isInterlaced = false
+    /// 系统能否解码主视频轨（AVAssetTrack.isDecodable）。
+    /// false 时既不能直连也不能只转封装：AVPlayer 会出声音但画面是黑的，必须重编码。
+    public var isVideoDecodable = true
     /// 蓝光多角度视角数量：1 表示普通影片。来自主播放列表（MPLS）。
     public var angleCount = 1
     /// 容器名（format_name，例如 matroska,webm）。

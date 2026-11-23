@@ -383,6 +383,16 @@ final class RemoteRangeSource {
             response = probe(method: "GET", range: 0...1)
             probedWithRange = true
         }
+        // 还有 CDN 会拒绝 HEAD 与 Range 探测（如 115 的部分节点），但普通 GET 可用：
+        // 再试一次无 Range 的 GET，成功则退化为顺序转发，至少能从头播放。
+        if let status = response?.statusCode, [400, 403, 405, 416].contains(status),
+           let plain = probe(method: "GET", range: nil),
+           (200...299).contains(plain.statusCode) {
+            log("上游拒绝 HEAD / Range（HTTP \(status)），改用顺序读取")
+            response = plain
+            probedWithRange = false
+            headTotal = plain.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0) }
+        }
         guard let response else {
             record("网盘没有返回有效响应")
             return nil
@@ -393,7 +403,7 @@ final class RemoteRangeSource {
             return nil
         }
         guard (200...299).contains(response.statusCode) else {
-            record("网盘返回 HTTP \(response.statusCode)")
+            record("网盘返回 HTTP \(response.statusCode)（\(response.url?.host ?? "-")）")
             return nil
         }
 

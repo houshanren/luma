@@ -183,6 +183,8 @@ extension LibraryStore {
     /// 视频播完后自动连播列表里的下一个视频（跳过照片）；已是最后一个则保持停住。
     func playNextVideo(after id: UUID) {
         guard viewerID == id else { return }
+        // 影院条目不在 viewerNavigationPhotos 里，直接走影院自己带的播放队列。
+        if cinemaPlaybackEntry?.file.photoID == id, stepCinemaQueue(1) { return }
         // 用窗口内的局部位次，避免分页模式下全局下标与窗口长度不一致。
         let items = viewerNavigationPhotos
         guard let current = items.firstIndex(where: { $0.id == id }) else { return }
@@ -204,6 +206,8 @@ extension LibraryStore {
     /// 在查看器里跳到上一个 / 下一个视频（跳过照片），供视频控制条使用。
     func viewerStepVideo(_ delta: Int) {
         guard let viewerID else { return }
+        // 影院播放时让「上一集 / 下一集」走播放队列，和自动连播保持同一条路径。
+        if cinemaPlaybackEntry?.file.photoID == viewerID, stepCinemaQueue(delta) { return }
         let items = viewerNavigationPhotos
         guard let current = items.firstIndex(where: { $0.id == viewerID }) else { return }
         let step = viewerNavigationStep(delta)
@@ -231,6 +235,9 @@ extension LibraryStore {
 
     /// 从指定项目出发，前 / 后是否还有可跳转的视频。
     func hasAdjacentVideo(from id: UUID, delta: Int) -> Bool {
+        if cinemaPlaybackEntry?.file.photoID == id {
+            return cinemaQueueNeighbor(of: id, delta: delta) != nil
+        }
         let items = viewerNavigationPhotos
         guard let current = items.firstIndex(where: { $0.id == id }) else { return false }
         let step = viewerNavigationStep(delta)
@@ -257,7 +264,7 @@ extension LibraryStore {
 
     var videoIsMuted: Bool { viewerModel.videoPlayer.isMuted }
     var videoIsLooping: Bool { viewerModel.videoPlayer.isLooping }
-    var videoUsesFill: Bool { viewerModel.videoPlayer.gravity == .resizeAspectFill }
+    var videoUsesFill: Bool { AppSettings.shared.videoFramingMode == .fill }
     var videoPipActive: Bool { viewerModel.videoPlayer.isPipActive }
     var videoPipAvailable: Bool { viewerModel.videoPlayer.isPipAvailable }
     var videoSpeed: Double { viewerModel.videoPlayer.speed }
@@ -362,7 +369,8 @@ extension LibraryStore {
 
     func toggleVideoGravityCommand() {
         guard canControlVideoPlayback else { return }
-        viewerModel.videoPlayer.gravity = videoUsesFill ? .resizeAspect : .resizeAspectFill
+        let settings = AppSettings.shared
+        settings.videoFramingMode = settings.videoFramingMode == .fill ? .fit : .fill
     }
 
     func setVideoSpeedCommand(_ speed: Double) {

@@ -90,7 +90,6 @@ public final class VideoPlayerModel: ObservableObject {
         didSet { player.isMuted = isMuted }
     }
     @Published public var isLooping = false
-    @Published public var gravity: AVLayerVideoGravity = .resizeAspect
     /// 变速播放是否保持音调（频谱算法）。由播放页按设置注入，装片时生效。
     public var preservesPitch = true
     /// 媒体选项读取完成：参数是可选音轨数量。
@@ -377,20 +376,23 @@ public final class VideoPlayerModel: ObservableObject {
                     if let start = self.pendingInitialSeek {
                         self.pendingInitialSeek = nil
                         let local = self.timeline.local(absolute: start)
+                        // 允许半秒误差：HLS 分片只能从关键帧起解，零容差会逼播放器先解完
+                        // 前一整个 GOP 才出画面；这段时间里音频已经开唱，就成了「先有声音再有画面」。
+                        let tolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
                         self.player.seek(to: CMTime(seconds: local, preferredTimescale: 600),
-                                         toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                                         toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
                             DispatchQueue.main.async {
                                 guard let self else { return }
                                 self.suppressTimeUpdates = false
                                 if self.pendingAutoplay {
                                     self.pendingAutoplay = false
-                                    self.play()
+                                    self.beginInitialPlayback()
                                 }
                             }
                         }
                     } else if self.pendingAutoplay {
                         self.pendingAutoplay = false
-                        self.play()
+                        self.beginInitialPlayback()
                     }
                 case .failed:
                     let failure = PlaybackFailure(error: item.error.map { $0 as NSError },
@@ -434,6 +436,18 @@ public final class VideoPlayerModel: ObservableObject {
         }
         wantsPlayback = true
         player.playImmediately(atRate: Float(speed))
+    }
+
+    /// 装片后的首播：不用 playImmediately。
+    /// playImmediately 会立刻把音频推出去，而视频轨还在解首帧；再加上缓冲只有几秒，
+    /// 表现就是「先有声音、后有画面、然后再卡一下」。这里交给 AVPlayer 等缓冲就绪再起播。
+    private func beginInitialPlayback() {
+        guard player.currentItem != nil else { return }
+        if duration > 0, currentTime >= duration - 0.05 {
+            seek(to: timeline.sessionStart)
+        }
+        wantsPlayback = true
+        player.play()
     }
 
     public func pause() {

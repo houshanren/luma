@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import LumaContentCore
 
 /// 网盘的 EXIF 元数据读取与派生范围（地图 / 位置 / 人物 / 值得重看 / 重复项目）。
 ///
@@ -43,6 +44,15 @@ extension LibraryStore {
         cloudModel.isScanningMetadata = true
         cloudModel.metadataProgress = 0
         let total = Double(targets.count)
+        let mountID = currentCloudMountID
+        let jobID = mountID.map { id in
+            beginSourceJob(
+                SourceJob(sourceID: .cloud(id), kind: .metadata, title: "读取网盘 EXIF"),
+                cancel: { [weak self] in
+                    Task { @MainActor in self?.cancelCloudMetadataScan() }
+                }
+            )
+        }
         cloudModel.metadataTask = Task { [weak self] in
             guard let self else { return }
             var done = 0
@@ -53,7 +63,15 @@ extension LibraryStore {
                 done += 1
                 // 界面合并刷新：每 40 张才重排一次网格 / 重算一次计数，进度条每 10 张更新一次。
                 if done % 40 == 0 { self.flushCloudMetadata() }
-                if done % 10 == 0 { self.cloudModel.metadataProgress = Double(done) / total }
+                if done % 10 == 0 {
+                    self.cloudModel.metadataProgress = Double(done) / total
+                    if let jobID {
+                        self.updateSourceJob(jobID,
+                                             completed: done,
+                                             total: targets.count,
+                                             message: "已读取 \(done) / \(targets.count) 张")
+                    }
+                }
                 await Task.yield()
             }
             self.flushCloudMetadata()
@@ -63,6 +81,13 @@ extension LibraryStore {
             self.cloudModel.metadataRevision += 1
             self.cloudScopeCountsCacheKey = nil
             self.cloudVisibleCacheKey = nil
+            if let jobID {
+                if Task.isCancelled {
+                    self.cancelSourceJob(jobID)
+                } else {
+                    self.finishSourceJob(jobID, message: "已读取 \(done) 张")
+                }
+            }
         }
     }
 
@@ -205,6 +230,12 @@ extension LibraryStore {
         isResolvingPlaces = true
         placeResolveTotal = entries.count
         placeResolveDone = 0
+        let placesMountID = currentCloudMountID
+        let jobID = placesMountID.map { id in
+            beginSourceJob(
+                SourceJob(sourceID: .cloud(id), kind: .places, title: "补齐网盘照片地点", isCancellable: false)
+            )
+        }
 
         Task { [weak self] in
             guard let self else { return }
@@ -227,6 +258,12 @@ extension LibraryStore {
                     }
                 }
                 self.placeResolveDone += 1
+                if let jobID {
+                    self.updateSourceJob(jobID,
+                                         completed: self.placeResolveDone,
+                                         total: entries.count,
+                                         message: "已补齐 \(self.placeResolveDone) / \(entries.count) 个地点")
+                }
                 if info == nil {
                     try? await Task.sleep(nanoseconds: 250_000_000)
                 }
@@ -236,6 +273,9 @@ extension LibraryStore {
             self.cloudVisibleCacheKey = nil
             self.savePlaceCache()
             self.isResolvingPlaces = false
+            if let jobID {
+                self.finishSourceJob(jobID, message: "已补齐 \(self.placeResolveDone) 个地点")
+            }
         }
     }
 
@@ -345,6 +385,15 @@ extension LibraryStore {
         cloudModel.isScanningHealth = true
         cloudModel.healthScanProgress = 0
         let total = Double(targets.count)
+        let healthMountID = currentCloudMountID
+        let jobID = healthMountID.map { id in
+            beginSourceJob(
+                SourceJob(sourceID: .cloud(id), kind: .healthCheck, title: "网盘体检"),
+                cancel: { [weak self] in
+                    Task { @MainActor in self?.cancelCloudHealthScan() }
+                }
+            )
+        }
         cloudModel.healthTask = Task { [weak self] in
             guard let self else { return }
             var scores: [(UUID, Double)] = []
@@ -371,6 +420,12 @@ extension LibraryStore {
                 }
                 done += 1
                 self.cloudModel.healthScanProgress = Double(done) / total
+                if let jobID {
+                    self.updateSourceJob(jobID,
+                                         completed: done,
+                                         total: targets.count,
+                                         message: "已检查 \(done) / \(targets.count) 张")
+                }
                 await Task.yield()
             }
 
@@ -378,6 +433,7 @@ extension LibraryStore {
                 self.cloudModel.isScanningHealth = false
                 self.cloudModel.healthScanProgress = 0
                 self.cloudModel.healthTask = nil
+                if let jobID { self.cancelSourceJob(jobID) }
                 return
             }
 
@@ -406,6 +462,10 @@ extension LibraryStore {
             self.cloudModel.isScanningHealth = false
             self.cloudModel.healthScanProgress = 0
             self.cloudModel.healthTask = nil
+            if let jobID {
+                self.finishSourceJob(jobID,
+                                     message: "完成 · \(report.blurry.count) 张模糊 · \(report.similarDuplicatePhotos.count) 张相似备选")
+            }
             self.showToast("体检完成：\(report.blurry.count) 张可能模糊，\(report.similarDuplicatePhotos.count) 张相似备选")
         }
     }
@@ -461,6 +521,15 @@ extension LibraryStore {
         cloudModel.isClusteringPeople = true
         cloudModel.peopleProgress = 0
         let total = Double(targets.count)
+        let mountID = cloudModel.insightMountID ?? currentCloudMountID
+        let jobID = mountID.map { id in
+            beginSourceJob(
+                SourceJob(sourceID: .cloud(id), kind: .cluster, title: "网盘人物聚类"),
+                cancel: { [weak self] in
+                    Task { @MainActor in self?.cancelCloudPeopleScan() }
+                }
+            )
+        }
         cloudModel.peopleTask = Task { [weak self] in
             guard let self else { return }
             var done = 0
@@ -478,19 +547,32 @@ extension LibraryStore {
                 self.cloudModel.peopleScanned.insert(photo.id)
                 done += 1
                 self.cloudModel.peopleProgress = Double(done) / total
+                if let jobID {
+                    self.updateSourceJob(jobID,
+                                         completed: done,
+                                         total: targets.count,
+                                         message: "已分析 \(done) / \(targets.count) 张 · \(self.cloudPeople.count) 位人物")
+                }
                 await Task.yield()
             }
             self.cloudModel.isClusteringPeople = false
             self.cloudModel.peopleProgress = 0
             self.cloudModel.peopleTask = nil
             // 聚类结果与已扫描标记写入当前图库数据库，重开网盘不必重新跑一遍。
-            if let mountID = self.cloudModel.insightMountID ?? self.currentCloudMountID {
+            if let mountID {
                 let paths = targets.compactMap(\.cloudPath)
                 self.metadataStore?.markCloudPeopleScanned(mountID: mountID, paths: paths)
                 self.metadataStore?.saveCloudPeople(mountID: mountID, people: self.cloudModel.people)
             }
             self.cloudScopeCountsCacheKey = nil
             self.cloudVisibleCacheKey = nil
+            if let jobID {
+                if Task.isCancelled {
+                    self.cancelSourceJob(jobID)
+                } else {
+                    self.finishSourceJob(jobID, message: "分析完成 · \(self.cloudPeople.count) 位人物")
+                }
+            }
         }
     }
 

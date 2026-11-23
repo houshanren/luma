@@ -177,9 +177,11 @@ extension LibraryStore {
             let current = viewerModel.videoPlayer.currentTime
             let duration = viewerModel.videoPlayer.duration
             if duration > 0, current > 3 {
-                catalogModel.updateProgress(source: context.source, item: context.item,
-                                            episode: context.episode.index,
-                                            seconds: current, duration: duration)
+                playbackProgressStore.recordCatalogProgress(source: context.source,
+                                                            item: context.item,
+                                                            episode: context.episode.index,
+                                                            seconds: current,
+                                                            duration: duration)
             }
         }
         catalogPlaybackPhotos = []

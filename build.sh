@@ -221,18 +221,39 @@ CNF
     fi
     security unlock-keychain -p "$PASS" "$SIGNING_KEYCHAIN" >/dev/null 2>&1 || return 1
 
-    # codesign 只从钥匙串搜索列表里找身份：缺了就补上（逐行去掉缩进与引号，保留路径里的空格）。
-    if ! security list-keychains -d user | grep -q "LumaDev.keychain-db"; then
-        OLD_IFS=$IFS
-        IFS='
+    # `security list-keychains` 会把多个路径放在同一行并用引号包裹。之前按行解析会把
+    # 「路径A 路径B」当成一个条目写进搜索列表，导致 login.keychain-db 实际上不在列表里：
+    # App 写入钥匙串成功，但 SecItem* 永远读不到（表现为设置不保存、反复弹授权）。
+    # 这里按引号拆分、一行一个路径，并且只在文件真实存在时写入列表。
+    kc_paths() {
+        security list-keychains -d user | sed -e 's/^[[:space:]]*//' | awk '
+            {
+                if (index($0, "\"") > 0) {
+                    n = split($0, parts, "\"")
+                    for (i = 2; i <= n; i += 2) print parts[i]
+                } else if (NF > 0) {
+                    print $0
+                }
+            }'
+    }
+    LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+    [ -f "$LOGIN_KEYCHAIN" ] || LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain"
+
+    OLD_IFS=$IFS
+    IFS='
 '
-        set --
-        for kc in $(security list-keychains -d user | sed -e 's/^[[:space:]]*//' -e 's/^"//' -e 's/"$//'); do
-            set -- "$@" "$kc"
-        done
-        IFS=$OLD_IFS
-        security list-keychains -d user -s "$@" "$SIGNING_KEYCHAIN"
-    fi
+    set --
+    if [ -f "$LOGIN_KEYCHAIN" ]; then set -- "$LOGIN_KEYCHAIN"; fi
+    for kc in $(kc_paths); do
+        [ -f "$kc" ] || continue
+        [ "$kc" = "$LOGIN_KEYCHAIN" ] && continue
+        [ "$kc" = "$SIGNING_KEYCHAIN" ] && continue
+        set -- "$@" "$kc"
+    done
+    IFS=$OLD_IFS
+    set -- "$@" "$SIGNING_KEYCHAIN"
+    security list-keychains -d user -s "$@"
+
     security find-identity -p codesigning "$SIGNING_KEYCHAIN" 2>/dev/null \
         | grep -q "$LOCAL_SIGN_IDENTITY"
 }

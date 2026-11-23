@@ -46,6 +46,9 @@ public struct StreamRequest {
     public var audioDownmix: AudioDownmixMode
     /// 重编码时的目标编码：H.264 兼容优先，或 HEVC 高效 / 低功耗。
     public var transcodeMode: VideoTranscodeMode
+    /// 重编码时保留 HDR（输出 HDR10），而不是先做色调映射。
+    /// HDR 屏上没必要映射：映射链（libplacebo）4K60 实测只有 <1× 实时，去掉后能到 1.5×。
+    public var preserveHDR: Bool
     /// 网络缓冲档位：决定远端 readrate。
     public var bufferProfile: BufferProfile
     /// 是否允许音轨直通（copy）。AC-3 / E-AC-3 直通后若播放器读不到音轨，
@@ -79,6 +82,7 @@ public struct StreamRequest {
                 audioDelay: Double = 0,
                 audioDownmix: AudioDownmixMode = .source,
                 transcodeMode: VideoTranscodeMode = .compatibility,
+                preserveHDR: Bool = false,
                 audioPassthrough: Bool = true,
                 bufferProfile: BufferProfile = .defaultProfile,
                 burnSubtitle: URL?,
@@ -105,6 +109,7 @@ public struct StreamRequest {
         self.audioDelay = audioDelay
         self.audioDownmix = audioDownmix
         self.transcodeMode = transcodeMode
+        self.preserveHDR = preserveHDR
         self.audioPassthrough = audioPassthrough
         self.bufferProfile = bufferProfile
         self.burnSubtitle = burnSubtitle
@@ -221,6 +226,11 @@ public enum StreamPlanner {
             arguments += ["-canvas_size",
                           "\(Int(request.sourceSize.width))x\(Int(request.sourceSize.height))"]
         }
+        // 重编码时先接硬件解码：4K60 HEVC 软解实测只有约 0.6× 实时，转码永远追不上播放；
+        // 接上 VideoToolbox 后解码几乎不占 CPU。转封装用不到解码，不加。
+        if effectiveMode == .transcode {
+            arguments += ["-hwaccel", "videotoolbox"]
+        }
         arguments += ["-i", request.input]
         if seeking {
             // 实测三种配方（copyts + start_at_zero / 不用 copyts / copyts + output_ts_offset）
@@ -287,11 +297,22 @@ public enum StreamPlanner {
                                                 transcodeMode: request.transcodeMode)
             // 图形字幕按源分辨率合成：降档后字幕帧与视频帧尺寸不一致，位置会错乱，
             // 因此烧录 PGS / VobSub 时不做分辨率降档（UHD BD 是 24p，本来也不触发降档）。
-            let effectiveProfile = request.burnSubtitleStream == nil
+            let scaled = request.burnSubtitleStream == nil
                 ? profile
                 : TranscodeProfile(bitrate: TranscodeProfile.bitrate(
                     forHeight: request.sourceSize.height > 0 ? Int(request.sourceSize.height) : 1080),
                     codec: profile.codec)
+            // HDR 屏上的 HDR10 源：保留 HDR，只缩放 + 重编码。
+            // 色调映射链（libplacebo）4K60 实测只有 <1× 实时，去掉后同样素材能到约 1.5×。
+            // 杜比视界必须靠 libplacebo 应用 RPU，不能走这条路。
+            let keepsHDR = request.preserveHDR
+                && (request.isHDR || request.color.isHDR || request.color.isDolbyVision)
+                && !request.color.isDolbyVision
+            // 保留 HDR 只能输出 HEVC 10bit（H.264 没有 10bit / HDR 输出）。
+            var effectiveProfile = scaled
+            if keepsHDR, effectiveProfile.codec != .hevc {
+                effectiveProfile.codec = .hevc
+            }
             let usesHEVC = effectiveProfile.codec == .hevc
             arguments += ["-c:v", usesHEVC ? "hevc_videotoolbox" : "h264_videotoolbox",
                           "-b:v", "\(effectiveProfile.bitrate)",
@@ -317,7 +338,13 @@ public enum StreamPlanner {
                 filters.append(PlaybackFilters.subtitleBurnFilter(burnSubtitle))
             }
             var toneMapped = false
-            if request.isHDR || request.color.isDolbyVision,
+            if keepsHDR {
+                // 保留 HDR 时只做缩放，色彩原样（不转 bt709）。
+                if let outputHeight = effectiveProfile.outputSize.map({ Int($0.height) }) {
+                    filters.append("scale=-2:\(outputHeight):flags=bicubic")
+                }
+                filters.append("format=p010le")
+            } else if request.isHDR || request.color.isDolbyVision,
                request.supportsToneMapping,
                let chain = PlaybackFilters.toneMapChain(
                    dolbyVision: request.color.isDolbyVision,
@@ -344,6 +371,14 @@ public enum StreamPlanner {
             }
             if toneMapped {
                 arguments += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+            } else if keepsHDR {
+                // 保留 HDR：写回源色彩标记；缺失时按 HDR10 默认值补齐，否则播放器按 SDR 解码。
+                var color = request.color
+                if color.primaries == nil { color.primaries = "bt2020" }
+                if color.transfer == nil { color.transfer = "smpte2084" }
+                if color.matrix == nil { color.matrix = "bt2020nc" }
+                if color.range == nil { color.range = "tv" }
+                appendColorTags(&arguments, color: color)
             }
             appendEncodedAudio(&arguments, request: request)
         }

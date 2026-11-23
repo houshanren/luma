@@ -28,6 +28,8 @@ public struct PlaybackStreamContext {
     public var audioDownmix: AudioDownmixMode
     /// 重编码目标编码：兼容 / 高效 / 低功耗。
     public var transcodeMode: VideoTranscodeMode
+    /// 重编码时保留 HDR（HDR 屏 + HDR10 源）：不做色调映射，输出 HDR HEVC。
+    public var preserveHDR: Bool
     /// 需要烧录的外挂字幕；有值时强制走重编码。
     public var burnSubtitle: URL?
     /// 需要烧录的内嵌图形字幕轨序号（PGS / VobSub）。
@@ -65,6 +67,7 @@ public struct PlaybackStreamContext {
                 audioIndex: Int,
                 audioDownmix: AudioDownmixMode = .source,
                 transcodeMode: VideoTranscodeMode = .compatibility,
+                preserveHDR: Bool = false,
                 burnSubtitle: URL?,
                 burnSubtitleStream: Int? = nil,
                 cacheSignature: String = "",
@@ -94,6 +97,7 @@ public struct PlaybackStreamContext {
         self.audioIndex = audioIndex
         self.audioDownmix = audioDownmix
         self.transcodeMode = transcodeMode
+        self.preserveHDR = preserveHDR
         self.burnSubtitle = burnSubtitle
         self.burnSubtitleStream = burnSubtitleStream
         self.cacheSignature = cacheSignature
@@ -137,6 +141,9 @@ public final class PlaybackSession: ObservableObject {
     /// 当前条目的播放钩子（影院 / 目录），由播放页在载入前注入。
     public private(set) weak var hooks: PlaybackHooks?
     public private(set) var currentPhotoID: UUID?
+    /// 播放模式：直播跳过续播、片头片尾、剩余预热与进度写回。
+    /// 由播放页在 `beginItem` 后设置；默认点播，保持旧行为不变。
+    public var playbackMode: PlaybackMode = .vod
     /// 本次起播是否用了续播位置：片头识别据此决定是否再跳。
     public private(set) var resumeApplied = false
     /// 音频延迟（秒）：正值音频延后、负值提前。调整后需要重建一次流。
@@ -146,6 +153,10 @@ public final class PlaybackSession: ObservableObject {
     /// 长时间卡死且分片充足时的兜底：由播放页重建一次流（目标秒数）。
     /// AVPlayer 偶发进入无法自愈的等待状态，重新装片是唯一可靠的恢复方式。
     public var onHardStall: (@MainActor (Double) -> Void)?
+    /// 直连播放（没有本地 HLS 会话）卡住时的兜底入口：目标秒数。
+    /// 网盘直链基本只有一条连接，被 CDN 限速时播放器怎么等都等不到数据；
+    /// 播放页收到后改用 ffmpeg 转封装，由本地 Range 代理并发预取。
+    public var onNativeStall: (@MainActor (Double) -> Void)?
 
     private var pendingResume: Double?
     private var resumeAttempted = false
@@ -170,6 +181,8 @@ public final class PlaybackSession: ObservableObject {
     /// 本次装片是否已由播放器报出音轨组（`onMediaOptionsLoaded` 回调置位）。
     private var mediaOptionsLoaded = false
     private var loadedAudioTrackCount = 0
+    /// 起播阶段是否已经把前向缓冲从「短」升到档位设定。
+    private var didUpgradeStartupBuffer = false
     /// 单音轨会话的判据：`AVPlayerItem.tracks` 里实际装了几条音轨。
     private var itemTracksLoaded = false
     private var loadedItemTrackCount = 0
@@ -211,17 +224,18 @@ public final class PlaybackSession: ObservableObject {
         nearEndSent = false
         lastProgressSavedAt = .distantPast
         audioDelay = 0
+        didUpgradeStartupBuffer = false
     }
 
     /// 当前条目的续播位置：原生播放与边下边播共用同一来源。
     public var resumePosition: Double? {
-        guard let photoID = currentPhotoID else { return nil }
+        guard playbackMode != .live, let photoID = currentPhotoID else { return nil }
         return hooks?.resumePosition(for: photoID)
     }
 
     /// 续播是否来自「上次看到一半」的进度；片头起播不算。
     public var resumeIsProgress: Bool {
-        guard let photoID = currentPhotoID else { return false }
+        guard playbackMode != .live, let photoID = currentPhotoID else { return false }
         return hooks?.hasResumeProgress(for: photoID) ?? false
     }
 
@@ -255,9 +269,19 @@ public final class PlaybackSession: ObservableObject {
             .combineLatest(engine.$currentTime)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] duration, current in
-                self?.refreshBufferedEnd()
-                self?.handleTick(current: current, duration: duration)
+                guard let self else { return }
+                self.refreshBufferedEnd()
+                self.upgradeStartupBufferIfNeeded()
+                self.handleTick(current: current, duration: duration)
             }
+    }
+
+    /// 起播先用短缓冲把画面放出来，播放真正开始后再拉到档位设定。
+    /// 16 秒的前向缓冲会让 AVPlayer 先攒够数据才起播，云端 4K 上就是好几秒的黑屏。
+    private func upgradeStartupBufferIfNeeded() {
+        guard !didUpgradeStartupBuffer, engine.isPlaying else { return }
+        didUpgradeStartupBuffer = true
+        engine.setForwardBufferDuration(environment.bufferProfile.forwardBufferDuration)
     }
 
     /// 缓冲段取「已生成区间末尾」与 AVPlayer 自身已加载范围的较大值：
@@ -289,6 +313,15 @@ public final class PlaybackSession: ObservableObject {
         guard let began = stallBeganAt else { return }
         let stalled = now.timeIntervalSince(began)
 
+        // 直连播放（没有本地 HLS 会话）卡住：网盘直链基本是单连接，容易被 CDN 限速
+        // （实测 115 只有 ~327kbps，片源需要 856kbps）。这里不再干等，
+        // 交给播放页改用转封装 —— Range 代理会并发预取，吞吐通常是单连接的数倍。
+        if stalled >= 8, streamSession == nil, !didEscalateStall, !engine.isSeeking {
+            didEscalateStall = true
+            environment.record("直连播放卡住 \(Int(stalled))s，改用本地转封装（并行预取）")
+            onNativeStall?(engine.currentTime)
+        }
+
         // 分片明明已经就绪，播放器却长时间不前进：轻推一次目标时间重新触发解码。
         if stalled >= 12, ahead >= 8, nudgeCount < 3,
            now.timeIntervalSince(lastNudgeAt) >= 10 {
@@ -315,6 +348,8 @@ public final class PlaybackSession: ObservableObject {
 
     private func handleTick(current: Double, duration: Double) {
         trackStall()
+        // 直播没有有限时长：续播、片头片尾、剩余预热与进度写回都不适用。
+        guard playbackMode != .live else { return }
         guard let photoID = currentPhotoID, let hooks else { return }
 
         // 续播重试：云盘起流前 seek 可能暂时无效，最多重试 8 次、每秒一次。
@@ -435,6 +470,7 @@ public final class PlaybackSession: ObservableObject {
                 audioDelay: audioDelay,
                 audioDownmix: context.audioDownmix,
                 transcodeMode: context.transcodeMode,
+                preserveHDR: context.preserveHDR,
                 audioPassthrough: !audioFallbackUsed,
                 burnSubtitle: context.burnSubtitle,
                 burnSubtitleStream: context.burnSubtitleStream,
@@ -487,7 +523,9 @@ public final class PlaybackSession: ObservableObject {
                             loop: context.loop, muted: context.muted,
                             timelineOffset: base,
                             startAt: appliedStartAt,
-                            forwardBufferDuration: environment.bufferProfile.forwardBufferDuration)
+                            // 起播只用短缓冲，播放开始后再由 upgradeStartupBufferIfNeeded 拉到档位设定。
+                            forwardBufferDuration: min(4, environment.bufferProfile.forwardBufferDuration))
+                didUpgradeStartupBuffer = false
                 // 直通 / AC-3 会话可能「有画面没声音」：多音轨看 audible 组，
                 // 单音轨 HLS 没有 audible 组，改看 AVPlayerItem.tracks 实际装了几条音轨。
                 if !audioFallbackUsed, !context.audioTracks.isEmpty,
@@ -515,8 +553,8 @@ public final class PlaybackSession: ObservableObject {
                         continue
                     }
                 }
-                // 打开时未自动播放：首段已就绪，先挂起后台生成。
-                session.setGenerationActive(context.autoplay)
+                // 预热会话可能已挂起生成：装片后恢复，否则列表不再增长。
+                session.setGenerationActive(true)
                 let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
                 let remote = context.sourceURL.isFileURL ? "本地" : "网盘"
                 environment.record("首段就绪 \(context.title) \(remote) mode=\(mode) "
@@ -605,6 +643,7 @@ public final class PlaybackSession: ObservableObject {
         streamSession = session
         streamMode = mode
         streamAudioIndex = audioIndex
+        didUpgradeStartupBuffer = false
         startTrimLoop()
     }
 
@@ -683,6 +722,8 @@ public final class PlaybackSession: ObservableObject {
     /// 等待起流目标稳定：期间收到更新的目标就继续等，最多 0.6 秒。
     /// 返回 false 表示会话已被关闭（页面退出 / stop），调用方应直接结束。
     private func waitForSettledTarget(_ target: inout Double) async -> Bool {
+        // 单次点击 / 单次拖动松手没有排队目标：直接起流，不为防抖白等 150ms。
+        if pendingRestartTarget == nil { return isRestartingStream && !Task.isCancelled }
         var quietSince = Date()
         while Date().timeIntervalSince(quietSince) < 0.15 {
             try? await Task.sleep(nanoseconds: 60_000_000)

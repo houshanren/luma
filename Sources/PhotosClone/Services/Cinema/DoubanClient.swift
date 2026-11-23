@@ -134,6 +134,71 @@ struct DoubanClient: CinemaMetadataSource {
         return data
     }
 
+    // MARK: 推荐
+
+    /// 豆瓣「喜欢这部的人也喜欢」：先用片名命中条目，再取 rexxar 推荐。
+    /// 豆瓣条目没有 TMDB ID，返回项的 `doubanID` 用于点击时打开豆瓣页。
+    func recommendations(title: String,
+                         originalTitle: String?,
+                         year: Int?,
+                         isTV: Bool) async throws -> [CinemaRecommendation] {
+        var queries: [String] = [title]
+        if let originalTitle, !originalTitle.isEmpty, originalTitle != title {
+            queries.append(originalTitle)
+        }
+        for query in queries {
+            guard let matches = try? await suggest(query: query), !matches.isEmpty,
+                  let index = bestIndex(in: matches, isTV: isTV, year: year) else { continue }
+            let pick = matches[index]
+            if let items = try? await rexxarRecommendations(id: pick.id, isTV: pick.isTV || isTV),
+               !items.isEmpty {
+                return items
+            }
+        }
+        return []
+    }
+
+    private func rexxarRecommendations(id: String, isTV: Bool) async throws -> [CinemaRecommendation] {
+        let path = isTV ? "/rexxar/api/v2/tv/\(id)/recommendations"
+                        : "/rexxar/api/v2/movie/\(id)/recommendations"
+        let data = try await mobileGet(path: path)
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let items = object["items"] as? [[String: Any]] else { throw DoubanError.blocked }
+        return items.prefix(12).compactMap { item -> CinemaRecommendation? in
+            let idValue = (item["id"] as? String) ?? (item["id"] as? NSNumber)?.stringValue
+            guard let idValue, !idValue.isEmpty,
+                  let title = item["title"] as? String, !title.isEmpty else { return nil }
+            let kind: CinemaMediaKind = ((item["type"] as? String) ?? "").contains("tv") ? .tv : .movie
+            let pic = (item["pic"] as? [String: Any])?["normal"] as? String
+                ?? (item["pic"] as? [String: Any])?["large"] as? String
+            let rating = ((item["rating"] as? [String: Any])?["value"] as? NSNumber)?.doubleValue
+            let year = Int((item["year"] as? String) ?? "") ?? (item["year"] as? NSNumber)?.intValue
+            return CinemaRecommendation(tmdbID: 0,
+                                        kind: kind,
+                                        title: title,
+                                        year: year,
+                                        posterURL: posterURL(pic),
+                                        rating: rating,
+                                        doubanID: idValue)
+        }
+    }
+
+    /// rexxar 接口固定在 m.douban.com，和搜索用的 apiBase 分开。
+    private func mobileGet(path: String) async throws -> Data {
+        guard let url = URL(string: "https://m.douban.com" + path) else { throw DoubanError.invalidBase }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        request.setValue("https://movie.douban.com/", forHTTPHeaderField: "Referer")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        let trimmedCookie = cookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCookie.isEmpty { request.setValue(trimmedCookie, forHTTPHeaderField: "Cookie") }
+        let (data, response) = try await Self.session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 403 || status == 418 { throw DoubanError.blocked }
+        guard status == 200 else { throw DoubanError.http(status) }
+        return data
+    }
+
     /// 搜索建议里只给 `s_ratio_poster`（小图），换成 `l_ratio_poster` 更清晰。
     private func posterURL(_ raw: String?) -> String? {
         guard var value = raw, !value.isEmpty else { return nil }

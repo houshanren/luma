@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreImage
 import LumaCore
+import LumaContentCore
 import SwiftUI
 
 /// 一次批量美化的结果，供推荐面板与智能助手复用。
@@ -116,6 +117,7 @@ extension LibraryStore {
         beautyReportIsSystem = false
         isScanningBeauty = true
         beautyScanProgress = 0
+        let jobID = beginBeautyScanJob()
         beautyTask = Task { [weak self] in
             guard let self else { return }
             var found: [(UUID, BeautyAdvice)] = []
@@ -136,12 +138,17 @@ extension LibraryStore {
                 found.append(contentsOf: part)
                 index = end
                 self.beautyScanProgress = Double(index) / Double(max(1, slice.count))
+                self.updateSourceJob(jobID,
+                                     completed: index,
+                                     total: slice.count,
+                                     message: "已分析 \(index) / \(slice.count) 张")
             }
 
             if Task.isCancelled {
                 self.isScanningBeauty = false
                 self.beautyScanProgress = 0
                 self.beautyTask = nil
+                self.cancelSourceJob(jobID)
                 return
             }
 
@@ -153,6 +160,7 @@ extension LibraryStore {
             self.isScanningBeauty = false
             self.beautyScanProgress = 0
             self.beautyTask = nil
+            self.finishSourceJob(jobID, message: "完成 · \(report.distinctCount) 张可美化")
             if report.distinctCount == 0 {
                 self.showToast("分析完成：这 \(slice.count) 张画面已经比较均衡")
             } else {
@@ -182,6 +190,7 @@ extension LibraryStore {
         beautyScanProgress = 0
         cloudModel.beautyReportIsCloud = true
         beautyReportIsSystem = false
+        let jobID = beginBeautyScanJob()
         beautyTask = Task { [weak self] in
             guard let self else { return }
             var found: [(UUID, BeautyAdvice)] = []
@@ -199,6 +208,10 @@ extension LibraryStore {
                 }
                 done += 1
                 self.beautyScanProgress = Double(done) / Double(slice.count)
+                self.updateSourceJob(jobID,
+                                     completed: done,
+                                     total: slice.count,
+                                     message: "已分析 \(done) / \(slice.count) 张")
                 await Task.yield()
             }
 
@@ -206,6 +219,7 @@ extension LibraryStore {
                 self.isScanningBeauty = false
                 self.beautyScanProgress = 0
                 self.beautyTask = nil
+                self.cancelSourceJob(jobID)
                 return
             }
 
@@ -216,6 +230,7 @@ extension LibraryStore {
             self.isScanningBeauty = false
             self.beautyScanProgress = 0
             self.beautyTask = nil
+            self.finishSourceJob(jobID, message: "完成 · \(report.distinctCount) 张可美化")
             if report.distinctCount == 0 {
                 self.showToast("分析完成：这 \(slice.count) 张画面已经比较均衡")
             } else {
@@ -238,6 +253,7 @@ extension LibraryStore {
         beautyScanProgress = 0
         cloudModel.beautyReportIsCloud = false
         beautyReportIsSystem = true
+        let jobID = beginBeautyScanJob()
         beautyTask = Task { [weak self] in
             guard let self else { return }
             var found: [(UUID, BeautyAdvice)] = []
@@ -258,6 +274,10 @@ extension LibraryStore {
                 found.append(contentsOf: part)
                 index = end
                 self.beautyScanProgress = Double(index) / Double(slice.count)
+                self.updateSourceJob(jobID,
+                                     completed: index,
+                                     total: slice.count,
+                                     message: "已分析 \(index) / \(slice.count) 张")
                 await Task.yield()
             }
 
@@ -265,6 +285,7 @@ extension LibraryStore {
                 self.isScanningBeauty = false
                 self.beautyScanProgress = 0
                 self.beautyTask = nil
+                self.cancelSourceJob(jobID)
                 return
             }
 
@@ -275,6 +296,7 @@ extension LibraryStore {
             self.isScanningBeauty = false
             self.beautyScanProgress = 0
             self.beautyTask = nil
+            self.finishSourceJob(jobID, message: "完成 · \(report.distinctCount) 张可美化")
             if report.distinctCount == 0 {
                 self.showToast("分析完成：这 \(slice.count) 张画面已经比较均衡")
             } else {
@@ -326,9 +348,36 @@ extension LibraryStore {
 
     // MARK: - 批量应用
 
+    /// 美化任务归属：网盘挂到挂载，系统图库挂系统图库，其余挂当前图库。
+    private var beautyJobSourceID: SourceID {
+        if isCloudScope, let mountID = currentCloudMountID { return .cloud(mountID) }
+        if isSystemScope, let path = systemLibraryPath { return .library(path) }
+        return .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root).standardizedFileURL.path)
+    }
+
+    private func beginBeautyScanJob() -> UUID {
+        beginSourceJob(SourceJob(sourceID: beautyJobSourceID, kind: .beauty, title: "智能美化扫描"),
+                       cancel: { [weak self] in
+                           Task { @MainActor in self?.cancelBeautyScan() }
+                       })
+    }
+
     /// 为指定照片生成美化副本。已经是编辑过的照片会在原有编辑点上叠加，不会丢弃已有调整。
     @discardableResult
     func applyBeauty(to photoIDs: [UUID], strength: Double = 1) async -> BeautyBatchResult {
+        // 批量渲染没有中断句柄：只登记任务与结果，不提供取消按钮。
+        let jobID = beginSourceJob(
+            SourceJob(sourceID: beautyJobSourceID,
+                      kind: .beauty,
+                      title: "批量美化",
+                      isCancellable: false)
+        )
+        let result = await applyBeautyCore(to: photoIDs, strength: strength)
+        finishSourceJob(jobID, message: result.message)
+        return result
+    }
+
+    private func applyBeautyCore(to photoIDs: [UUID], strength: Double) async -> BeautyBatchResult {
         if isCloudScope {
             return await applyCloudBeauty(to: photoIDs, strength: strength)
         }

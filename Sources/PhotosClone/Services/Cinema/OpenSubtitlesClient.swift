@@ -180,6 +180,27 @@ enum OpenSubtitlesClient {
         return fileURL
     }
 
+    /// 设置页「测试连接」：用一次轻量搜索验证 API Key；填了账号时顺带验证登录。
+    static func testConnection(credentials: Credentials) async -> CinemaConnectionResult {
+        guard !credentials.trimmedKey.isEmpty else {
+            return CinemaConnectionResult(ok: false, message: "请先填写 OpenSubtitles API Key")
+        }
+        do {
+            _ = try await search(query: "the",
+                                 isTV: false,
+                                 season: nil,
+                                 episode: nil,
+                                 credentials: credentials)
+            if credentials.hasAccount {
+                _ = try await login(credentials: credentials)
+                return CinemaConnectionResult(ok: true, message: "API Key 可用，账号登录成功")
+            }
+            return CinemaConnectionResult(ok: true, message: "API Key 可用；未填账号，只能搜索不能下载")
+        } catch {
+            return CinemaConnectionResult(ok: false, message: error.localizedDescription)
+        }
+    }
+
     private static func login(credentials: Credentials) async throws -> String {
         guard let url = URL(string: base + "/login") else { throw SubtitleError.decoding }
         var request = URLRequest(url: url, timeoutInterval: 20)

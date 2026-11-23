@@ -15,12 +15,14 @@ struct CinemaToolbarConsole: View {
     @AppStorage(SettingsKeys.selectedTab) private var settingsTab: SettingsTab = .general
 
     @State private var hoveredTab: CinemaTab?
+    @State private var hoveredTypeKey = false
     @State private var hoveredScrape = false
     @State private var hoveredMore = false
     @State private var hoveredAssistant = false
     @State private var hoveredAutoMatch = false
     @State private var showStatus = false
     @State private var showFilter = false
+    @State private var showTypePanel = false
 
     private var scope: CinemaScope {
         if case .cloudCinema(let id) = store.sidebarItem { return .mount(id) }
@@ -140,10 +142,15 @@ struct CinemaToolbarConsole: View {
                       : Color(white: 0.30).opacity(hovered ? 1 : 0.85)
     }
 
-    /// 当前是否启用了年代 / 类型 / 分辨率 / 观看状态 / 智能筛选。
+    /// 当前是否启用了年份 / 类型 / 分辨率 / 观看状态 / 智能筛选。
     private var hasFilter: Bool {
-        !store.cinemaDecades.isEmpty
+        !store.cinemaYears.isEmpty
             || !store.cinemaGenres.isEmpty
+            || !store.cinemaKindFilters.isEmpty
+            || !store.cinemaCountries.isEmpty
+            || !store.cinemaLanguages.isEmpty
+            || !store.cinemaRuntimeFilters.isEmpty
+            || !store.cinemaRatingFilters.isEmpty
             || !store.cinemaResolutions.isEmpty
             || !store.cinemaSpecFilters.isEmpty
             || !store.cinemaWatchFilters.isEmpty
@@ -155,8 +162,13 @@ struct CinemaToolbarConsole: View {
 
     private var filterCount: Int {
         var count = 0
-        if !store.cinemaDecades.isEmpty { count += 1 }
+        if !store.cinemaYears.isEmpty { count += 1 }
         if !store.cinemaGenres.isEmpty { count += 1 }
+        if !store.cinemaKindFilters.isEmpty { count += 1 }
+        if !store.cinemaCountries.isEmpty { count += 1 }
+        if !store.cinemaLanguages.isEmpty { count += 1 }
+        if !store.cinemaRuntimeFilters.isEmpty { count += 1 }
+        if !store.cinemaRatingFilters.isEmpty { count += 1 }
         if !store.cinemaResolutions.isEmpty { count += 1 }
         if !store.cinemaSpecFilters.isEmpty { count += 1 }
         if !store.cinemaWatchFilters.isEmpty { count += 1 }
@@ -170,11 +182,27 @@ struct CinemaToolbarConsole: View {
     private var filterTitle: String {
         if filterCount > 1 { return "筛选 \(filterCount)" }
         var parts: [String] = []
-        if let first = store.cinemaDecades.sorted(by: >).first {
-            parts.append(store.cinemaDecades.count == 1 ? "\(first)s" : "\(first)s+\(store.cinemaDecades.count - 1)")
+        if let first = store.cinemaYears.sorted(by: >).first {
+            parts.append(store.cinemaYears.count == 1 ? "\(first) 年" : "\(first) 年+\(store.cinemaYears.count - 1)")
         }
         if let first = store.cinemaGenres.sorted().first {
             parts.append(store.cinemaGenres.count == 1 ? first : "\(first)+\(store.cinemaGenres.count - 1)")
+        }
+        if let first = store.cinemaKindFilters.map(\.title).sorted().first {
+            parts.append(store.cinemaKindFilters.count == 1 ? first : "\(first)+\(store.cinemaKindFilters.count - 1)")
+        }
+        if let first = store.cinemaCountries.sorted().first {
+            parts.append(store.cinemaCountries.count == 1 ? first : "\(first)+\(store.cinemaCountries.count - 1)")
+        }
+        if let first = store.cinemaLanguages.sorted().first {
+            let title = CinemaLanguageCatalog.title(first)
+            parts.append(store.cinemaLanguages.count == 1 ? title : "\(title)+\(store.cinemaLanguages.count - 1)")
+        }
+        if let first = store.cinemaRuntimeFilters.map(\.title).sorted().first {
+            parts.append(store.cinemaRuntimeFilters.count == 1 ? first : "\(first)+\(store.cinemaRuntimeFilters.count - 1)")
+        }
+        if let first = store.cinemaRatingFilters.map(\.title).sorted().first {
+            parts.append(store.cinemaRatingFilters.count == 1 ? first : "\(first)+\(store.cinemaRatingFilters.count - 1)")
         }
         if let first = store.cinemaResolutions.map(\.title).sorted().first {
             parts.append(store.cinemaResolutions.count == 1 ? first : "\(first)+\(store.cinemaResolutions.count - 1)")
@@ -392,51 +420,11 @@ struct CinemaToolbarConsole: View {
 
     private var tabs: some View {
         HStack(spacing: 2) {
-            ForEach(CinemaTab.allCases) { item in
-                let active = store.cinemaTab == item
-                let hovered = hoveredTab == item
-                Button {
-                    withAnimation(.snappy(duration: 0.16)) { store.cinemaTab = item }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: item.icon)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(tabIconColor(active: active, hovered: hovered))
-                        Text(item.title)
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(tabTextColor(active: active, hovered: hovered))
-                            .shadow(color: ledColor.opacity(active ? (isDark ? 0.55 : 0.16) : 0), radius: 4)
-                    }
-                    .frame(width: segmentWidth(item), height: 28)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(segmentFill(active: active, hovered: hovered))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(active ? ledColor.opacity(isDark ? 0.34 : 0.42) : Color.clear,
-                                          lineWidth: 0.7)
-                    }
-                    .overlay(alignment: .bottom) {
-                        Capsule()
-                            .fill(active ? ledColor : .clear)
-                            .frame(width: 18, height: 1.6)
-                            .padding(.bottom, 2.5)
-                            .shadow(color: ledColor.opacity(active ? 0.75 : 0), radius: 3)
-                    }
-                    .shadow(color: ledColor.opacity(active ? 0.14 : 0), radius: 5)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering {
-                        hoveredTab = item
-                    } else if hoveredTab == item {
-                        hoveredTab = nil
-                    }
-                }
-                .help(item.title)
-            }
+            channelSegment(.all)
+            channelSegment(.movies)
+            channelSegment(.shows)
+            typeSlot
+            channelSegment(.folder)
         }
         .padding(2)
         .background {
@@ -448,6 +436,126 @@ struct CinemaToolbarConsole: View {
                 }
         }
         .padding(.horizontal, 8)
+    }
+
+    /// 主频道：全部 / 电影 / 电视剧 / 文件夹。切换频道时清掉内容类型筛选。
+    private func channelSegment(_ item: CinemaTab) -> some View {
+        let active = store.cinemaTab == item && !(item == .all && store.cinemaTypeFilterID != nil)
+        let hovered = hoveredTab == item
+        return Button {
+            withAnimation(.snappy(duration: 0.16)) {
+                store.cinemaTypeFilterID = nil
+                store.cinemaTab = item
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: item.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tabIconColor(active: active, hovered: hovered))
+                Text(item.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(tabTextColor(active: active, hovered: hovered))
+                    .shadow(color: ledColor.opacity(active ? (isDark ? 0.55 : 0.16) : 0), radius: 4)
+            }
+            .frame(width: segmentWidth(item), height: 28)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(segmentFill(active: active, hovered: hovered))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(active ? ledColor.opacity(isDark ? 0.34 : 0.42) : Color.clear,
+                                  lineWidth: 0.7)
+            }
+            .overlay(alignment: .bottom) {
+                Capsule()
+                    .fill(active ? ledColor : .clear)
+                    .frame(width: 18, height: 1.6)
+                    .padding(.bottom, 2.5)
+                    .shadow(color: ledColor.opacity(active ? 0.75 : 0), radius: 3)
+            }
+            .shadow(color: ledColor.opacity(active ? 0.14 : 0), radius: 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering {
+                hoveredTab = item
+            } else if hoveredTab == item {
+                hoveredTab = nil
+            }
+        }
+        .help(item.title)
+    }
+
+    /// 类型占位：未选择时只留一枚小箭头，不占文字位；选中后这里直接显示选中的类型。
+    private var typeSlot: some View {
+        let bucket = selectedTypeBucket
+        let active = bucket != nil || showTypePanel
+        return Button {
+            showTypePanel.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                if let bucket {
+                    Image(systemName: bucket.type.icon)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(accentText)
+                    Text(bucket.type.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(accentText)
+                        .lineLimit(1)
+                        .shadow(color: ledColor.opacity(isDark ? 0.55 : 0.16), radius: 4)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7.5, weight: .black))
+                    .foregroundStyle(hoveredTypeKey || active
+                                     ? accentText
+                                     : (isDark ? Color.white.opacity(0.46) : Color(white: 0.40)))
+                    .rotationEffect(.degrees(showTypePanel ? 180 : 0))
+                    .shadow(color: ledColor.opacity(hoveredTypeKey || active ? 0.5 : 0), radius: 3)
+            }
+            .frame(height: 28)
+            .padding(.horizontal, bucket == nil ? 7 : 9)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(segmentFill(active: active, hovered: hoveredTypeKey))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(active ? ledColor.opacity(isDark ? 0.34 : 0.42) : Color.clear,
+                                  lineWidth: 0.7)
+            }
+            .overlay(alignment: .bottom) {
+                Capsule()
+                    .fill(active ? ledColor : .clear)
+                    .frame(width: 14, height: 1.6)
+                    .padding(.bottom, 2.5)
+                    .shadow(color: ledColor.opacity(active ? 0.75 : 0), radius: 3)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .animation(.easeOut(duration: 0.16), value: showTypePanel)
+        .onHover { hoveredTypeKey = $0 }
+        .help(bucket.map { "类型：\($0.type.title) · 点按切换" } ?? "按类型浏览")
+        .popover(isPresented: $showTypePanel, arrowEdge: .bottom) {
+            CinemaTypePanel(scope: scope) {
+                showTypePanel = false
+            }
+            .environmentObject(store)
+        }
+    }
+
+    private var typeBuckets: [CinemaTypeBucket] {
+        store.cinemaAggregate(for: scope).types
+    }
+
+    /// 当前选中的类型；类型列表里找不到时仍按 id 还原一个，保证占位处显示正确。
+    private var selectedTypeBucket: CinemaTypeBucket? {
+        guard let id = store.cinemaTypeFilterID else { return nil }
+        return typeBuckets.first { $0.id == id }
+            ?? CinemaTypeBucket(type: .descriptor(id: id), count: 0)
     }
 
     /// 窄窗口下主导航宽度：文字始终展示，只压缩留白。
@@ -629,7 +737,7 @@ struct CinemaToolbarConsole: View {
         .buttonStyle(.plain)
         .fixedSize()
         .padding(.horizontal, 8)
-        .help("按年代、类型、分辨率、观看状态筛选")
+        .help("按内容、年份、类型、地区、语言、分辨率、规格、片长、评分与观看状态筛选")
         .popover(isPresented: $showFilter, arrowEdge: .bottom) {
             CinemaFilterPanel(scope: scope) {
                 showFilter = false
@@ -819,16 +927,15 @@ struct CinemaToolbarConsole: View {
                              startPoint: .top, endPoint: .bottom)
     }
 
-    // MARK: 更多（清单 / 记录 / 任务 / 通知 / 设置）
+    // MARK: 更多（清单 / 记录 / 通知 / 设置）
 
     /// 右侧「更多」：清单筛选与记录类入口收进一个带图标的菜单，设置也从这里进。
-    /// 按键带未读角标，通知 / 任务收起来之后不会丢掉提示。
+    /// 按键带未读角标，通知收起来之后不会丢掉提示。
     private var moreMenu: some View {
         let unread = store.cinemaUnreadNotificationCount
-        let needsAttention = store.cinemaTasks.contains { $0.finishedAt == nil || !$0.succeeded }
         let favoriteCount = store.cinemaUserStates.values.filter(\.favorite).count
         let listsActive = store.cinemaFavoritesOnly || store.cinemaActiveListID != nil
-        let hot = hoveredMore || unread > 0 || needsAttention || listsActive
+        let hot = hoveredMore || unread > 0 || listsActive
         return Menu {
             Button {
                 store.cinemaFavoritesOnly.toggle()
@@ -865,9 +972,6 @@ struct CinemaToolbarConsole: View {
 
             Button { store.cinemaHistoryVisible = true } label: {
                 Label("观看记录", systemImage: "clock.arrow.circlepath")
-            }
-            Button { store.cinemaTasksVisible = true } label: {
-                Label(needsAttention ? "任务中心 · 有待处理" : "任务中心", systemImage: "checklist")
             }
             Button { store.cinemaNotificationsVisible = true } label: {
                 Label(unread > 0 ? "通知中心 · \(unread) 条未读" : "通知中心",
@@ -913,7 +1017,7 @@ struct CinemaToolbarConsole: View {
         .onHover { hoveredMore = $0 }
         .padding(.leading, 7)
         .padding(.trailing, 2)
-        .help("更多：清单 / 观看记录 / 任务中心 / 通知中心 / 影院设置")
+        .help("更多：清单 / 观看记录 / 通知中心 / 影院设置")
     }
 
     // MARK: 面板质感
@@ -1089,6 +1193,56 @@ struct CinemaToolbarConsole: View {
 
 // MARK: - 筛选面板
 
+/// 筛选项流式布局：按标签实际宽度排版，一行放不下就换行。
+/// 不用等宽网格，像「1080P / 2K」「杜比全景声」这种长标签也能完整显示、不被截断。
+private struct CinemaFilterFlow: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        var lineWidth: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if lineWidth > 0, lineWidth + spacing + size.width > maxWidth {
+                width = max(width, lineWidth)
+                height += lineHeight + lineSpacing
+                lineWidth = size.width
+                lineHeight = size.height
+            } else {
+                lineWidth += (lineWidth > 0 ? spacing : 0) + size.width
+                lineHeight = max(lineHeight, size.height)
+            }
+        }
+        width = max(width, lineWidth)
+        height += lineHeight
+        return CGSize(width: min(width, maxWidth), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect,
+                       proposal: ProposedViewSize,
+                       subviews: Subviews,
+                       cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+
 private struct CinemaFilterPanel: View {
     let scope: CinemaScope
     let onClose: () -> Void
@@ -1099,12 +1253,73 @@ private struct CinemaFilterPanel: View {
         store.cinemaEntries(for: scope).values.filter { $0.matched }
     }
 
-    private var decades: [Int] {
-        Set(matchedEntries.compactMap(\.decade)).sorted(by: >)
+    /// 具体年份，而不是「2020s」这种年代区间。
+    private var years: [Int] {
+        Set(matchedEntries.compactMap(\.year)).sorted(by: >)
+    }
+
+    // 以下选项全部从当前影院的刮削结果聚合：库里没有的档位不出现。
+
+    private var kinds: [CinemaMediaKind] {
+        let present = Set(matchedEntries.map(\.kind))
+        return CinemaMediaKind.allCases.filter { present.contains($0) }
+    }
+
+    private var resolutions: [CinemaResolutionFilter] {
+        CinemaResolutionFilter.allCases.filter { option in
+            matchedEntries.contains { option.matches($0.file) }
+        }
+    }
+
+    private var specs: [CinemaSpecFilter] {
+        CinemaSpecFilter.allCases.filter { option in
+            matchedEntries.contains { option.matches($0.file) }
+        }
+    }
+
+    private var runtimes: [CinemaRuntimeFilter] {
+        CinemaRuntimeFilter.allCases.filter { option in
+            matchedEntries.contains { option.matches($0.runtime) }
+        }
+    }
+
+    private var ratings: [CinemaRatingFilter] {
+        CinemaRatingFilter.allCases.filter { option in
+            matchedEntries.contains { option.matches($0.rating) }
+        }
+    }
+
+    private var watchStates: [CinemaWatchFilter] {
+        let present = Set(matchedEntries.map { store.cinemaWatchState(for: $0) })
+        return CinemaWatchFilter.allCases.filter { present.contains($0) }
     }
 
     private var genres: [String] {
         Set(matchedEntries.flatMap { $0.genres ?? [] }).sorted()
+    }
+
+    private var countries: [String] {
+        ranked { $0.countries ?? [] }
+    }
+
+    private var languages: [String] {
+        ranked { $0.originalLanguage.map { [$0] } ?? [] }
+    }
+
+    /// 地区 / 语言按出现次数排序：常用项排前面，避免弹层里出现一长串冷门值。
+    private func ranked(_ values: (CinemaEntry) -> [String]) -> [String] {
+        var counts: [String: Int] = [:]
+        for entry in matchedEntries {
+            for value in values(entry) where !value.isEmpty {
+                counts[value, default: 0] += 1
+            }
+        }
+        return counts.keys.sorted { lhs, rhs in
+            let l = counts[lhs] ?? 0
+            let r = counts[rhs] ?? 0
+            if l != r { return l > r }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
     }
 
     private var matchCount: Int {
@@ -1114,7 +1329,7 @@ private struct CinemaFilterPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("筛选")
                     .font(.system(size: 13, weight: .semibold))
@@ -1124,91 +1339,178 @@ private struct CinemaFilterPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            group("年代（可多选）") {
-                chip("全部", selected: store.cinemaDecades.isEmpty) {
-                    store.cinemaDecades = []
-                }
-                ForEach(decades, id: \.self) { decade in
-                    chip("\(decade)s", selected: store.cinemaDecades.contains(decade)) {
-                        var next = store.cinemaDecades
-                        if next.contains(decade) { next.remove(decade) } else { next.insert(decade) }
-                        store.cinemaDecades = next
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 11) {
+                    group("内容（可多选）") {
+                        chip("全部", selected: store.cinemaKindFilters.isEmpty) {
+                            store.cinemaKindFilters = []
+                        }
+                        ForEach(kinds) { kind in
+                            chip(kind.title, selected: store.cinemaKindFilters.contains(kind)) {
+                                var next = store.cinemaKindFilters
+                                if next.contains(kind) { next.remove(kind) } else { next.insert(kind) }
+                                store.cinemaKindFilters = next
+                            }
+                        }
+                    }
+
+                    if !years.isEmpty {
+                        group("年份（可多选）") {
+                            chip("全部", selected: store.cinemaYears.isEmpty) {
+                                store.cinemaYears = []
+                            }
+                            ForEach(years, id: \.self) { year in
+                                chip("\(year)", selected: store.cinemaYears.contains(year)) {
+                                    var next = store.cinemaYears
+                                    if next.contains(year) { next.remove(year) } else { next.insert(year) }
+                                    store.cinemaYears = next
+                                }
+                            }
+                        }
+                    }
+
+                    group("类型（可多选）") {
+                        chip("全部", selected: store.cinemaGenres.isEmpty) {
+                            store.cinemaGenres = []
+                        }
+                        ForEach(genres, id: \.self) { genre in
+                            chip(genre, selected: store.cinemaGenres.contains(genre)) {
+                                var next = store.cinemaGenres
+                                if next.contains(genre) { next.remove(genre) } else { next.insert(genre) }
+                                store.cinemaGenres = next
+                            }
+                        }
+                    }
+
+                    if !countries.isEmpty {
+                        group("地区（可多选）") {
+                            chip("全部", selected: store.cinemaCountries.isEmpty) {
+                                store.cinemaCountries = []
+                            }
+                            ForEach(capped(countries, selected: store.cinemaCountries, limit: 18),
+                                    id: \.self) { country in
+                                chip(country, selected: store.cinemaCountries.contains(country)) {
+                                    var next = store.cinemaCountries
+                                    if next.contains(country) { next.remove(country) } else { next.insert(country) }
+                                    store.cinemaCountries = next
+                                }
+                            }
+                        }
+                    }
+
+                    if !languages.isEmpty {
+                        group("语言（可多选）") {
+                            chip("全部", selected: store.cinemaLanguages.isEmpty) {
+                                store.cinemaLanguages = []
+                            }
+                            ForEach(capped(languages, selected: store.cinemaLanguages, limit: 12),
+                                    id: \.self) { code in
+                                chip(CinemaLanguageCatalog.title(code),
+                                     selected: store.cinemaLanguages.contains(code)) {
+                                    var next = store.cinemaLanguages
+                                    if next.contains(code) { next.remove(code) } else { next.insert(code) }
+                                    store.cinemaLanguages = next
+                                }
+                            }
+                        }
+                    }
+
+                    if !resolutions.isEmpty {
+                        group("分辨率（可多选）") {
+                            chip("全部", selected: store.cinemaResolutions.isEmpty) {
+                                store.cinemaResolutions = []
+                            }
+                            ForEach(resolutions) { option in
+                                chip(option.title, selected: store.cinemaResolutions.contains(option)) {
+                                    var next = store.cinemaResolutions
+                                    if next.contains(option) { next.remove(option) } else { next.insert(option) }
+                                    store.cinemaResolutions = next
+                                }
+                            }
+                        }
+                    }
+
+                    if !specs.isEmpty {
+                        group("规格（可多选）") {
+                            chip("全部", selected: store.cinemaSpecFilters.isEmpty) {
+                                store.cinemaSpecFilters = []
+                            }
+                            ForEach(specs) { option in
+                                chip(option.title, selected: store.cinemaSpecFilters.contains(option)) {
+                                    var next = store.cinemaSpecFilters
+                                    if next.contains(option) { next.remove(option) } else { next.insert(option) }
+                                    store.cinemaSpecFilters = next
+                                }
+                            }
+                        }
+                    }
+
+                    if !runtimes.isEmpty {
+                        group("片长（可多选）") {
+                            chip("全部", selected: store.cinemaRuntimeFilters.isEmpty) {
+                                store.cinemaRuntimeFilters = []
+                            }
+                            ForEach(runtimes) { option in
+                                chip(option.title, selected: store.cinemaRuntimeFilters.contains(option)) {
+                                    var next = store.cinemaRuntimeFilters
+                                    if next.contains(option) { next.remove(option) } else { next.insert(option) }
+                                    store.cinemaRuntimeFilters = next
+                                }
+                            }
+                        }
+                    }
+
+                    if !ratings.isEmpty {
+                        group("评分（可多选）") {
+                            chip("全部", selected: store.cinemaRatingFilters.isEmpty) {
+                                store.cinemaRatingFilters = []
+                            }
+                            ForEach(ratings) { option in
+                                chip(option.title, selected: store.cinemaRatingFilters.contains(option)) {
+                                    var next = store.cinemaRatingFilters
+                                    if next.contains(option) { next.remove(option) } else { next.insert(option) }
+                                    store.cinemaRatingFilters = next
+                                }
+                            }
+                        }
+                    }
+
+                    if !watchStates.isEmpty {
+                        group("观看状态（可多选）") {
+                            chip("全部", selected: store.cinemaWatchFilters.isEmpty) {
+                                store.cinemaWatchFilters = []
+                            }
+                            ForEach(watchStates) { option in
+                                chip(option.title, selected: store.cinemaWatchFilters.contains(option)) {
+                                    var next = store.cinemaWatchFilters
+                                    if next.contains(option) { next.remove(option) } else { next.insert(option) }
+                                    store.cinemaWatchFilters = next
+                                }
+                            }
+                        }
+                    }
+
+                    group("智能") {
+                        chip("最近 30 天", selected: store.cinemaSmartRecent) {
+                            store.cinemaSmartRecent.toggle()
+                        }
+                    }
+
+                    group("我的") {
+                        chip("仅看收藏", selected: store.cinemaFavoritesOnly) {
+                            store.cinemaFavoritesOnly.toggle()
+                        }
+                        ForEach(store.cinemaLists) { list in
+                            chip("\(list.name) \(list.count)",
+                                 selected: store.cinemaActiveListID == list.id) {
+                                store.cinemaActiveListID = store.cinemaActiveListID == list.id ? nil : list.id
+                            }
+                        }
                     }
                 }
+                .padding(.trailing, 2)
             }
-
-            group("类型（可多选）") {
-                chip("全部", selected: store.cinemaGenres.isEmpty) {
-                    store.cinemaGenres = []
-                }
-                ForEach(genres, id: \.self) { genre in
-                    chip(genre, selected: store.cinemaGenres.contains(genre)) {
-                        var next = store.cinemaGenres
-                        if next.contains(genre) { next.remove(genre) } else { next.insert(genre) }
-                        store.cinemaGenres = next
-                    }
-                }
-            }
-
-            group("分辨率（可多选）") {
-                chip("全部", selected: store.cinemaResolutions.isEmpty) {
-                    store.cinemaResolutions = []
-                }
-                ForEach(CinemaResolutionFilter.allCases) { option in
-                    chip(option.title, selected: store.cinemaResolutions.contains(option)) {
-                        var next = store.cinemaResolutions
-                        if next.contains(option) { next.remove(option) } else { next.insert(option) }
-                        store.cinemaResolutions = next
-                    }
-                }
-            }
-
-            group("规格（可多选）") {
-                chip("全部", selected: store.cinemaSpecFilters.isEmpty) {
-                    store.cinemaSpecFilters = []
-                }
-                ForEach(CinemaSpecFilter.allCases) { option in
-                    chip(option.title, selected: store.cinemaSpecFilters.contains(option)) {
-                        var next = store.cinemaSpecFilters
-                        if next.contains(option) { next.remove(option) } else { next.insert(option) }
-                        store.cinemaSpecFilters = next
-                    }
-                }
-            }
-
-            group("观看状态（可多选）") {
-                chip("全部", selected: store.cinemaWatchFilters.isEmpty) {
-                    store.cinemaWatchFilters = []
-                }
-                ForEach(CinemaWatchFilter.allCases) { option in
-                    chip(option.title, selected: store.cinemaWatchFilters.contains(option)) {
-                        var next = store.cinemaWatchFilters
-                        if next.contains(option) { next.remove(option) } else { next.insert(option) }
-                        store.cinemaWatchFilters = next
-                    }
-                }
-            }
-
-            group("智能") {
-                chip("高分 8+", selected: store.cinemaSmartHighRated) {
-                    store.cinemaSmartHighRated.toggle()
-                }
-                chip("最近 30 天", selected: store.cinemaSmartRecent) {
-                    store.cinemaSmartRecent.toggle()
-                }
-            }
-
-            group("我的") {
-                chip("仅看收藏", selected: store.cinemaFavoritesOnly) {
-                    store.cinemaFavoritesOnly.toggle()
-                }
-                ForEach(store.cinemaLists) { list in
-                    chip("\(list.name) \(list.count)",
-                         selected: store.cinemaActiveListID == list.id) {
-                        store.cinemaActiveListID = store.cinemaActiveListID == list.id ? nil : list.id
-                    }
-                }
-            }
+            .frame(maxHeight: 480)
 
             Divider()
 
@@ -1224,7 +1526,14 @@ private struct CinemaFilterPanel: View {
             }
         }
         .padding(14)
-        .frame(width: 380)
+        .frame(width: 400)
+    }
+
+    /// 地区 / 语言按出现次数排序，只展示前 N 个；已选项即使排在后面也始终保留。
+    private func capped(_ values: [String], selected: Set<String>, limit: Int) -> [String] {
+        let head = Array(values.prefix(limit))
+        let extra = values.filter { selected.contains($0) && !head.contains($0) }
+        return head + extra
     }
 
     private func group<Content: View>(_ title: String,
@@ -1233,9 +1542,7 @@ private struct CinemaFilterPanel: View {
             Text(title)
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 6, alignment: .leading)],
-                      alignment: .leading,
-                      spacing: 6) {
+            CinemaFilterFlow(spacing: 6, lineSpacing: 6) {
                 content()
             }
         }
@@ -1246,9 +1553,9 @@ private struct CinemaFilterPanel: View {
             Text(title)
                 .font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .lineLimit(1)
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .frame(maxWidth: .infinity)
+                .fixedSize(horizontal: true, vertical: false)
                 .background(selected ? LumaBrand.amber.opacity(0.18)
                                      : Color.primary.opacity(0.055),
                             in: Capsule())
@@ -1264,6 +1571,108 @@ private struct CinemaFilterPanel: View {
 
     private func reset() {
         store.resetCinemaFilters()
+    }
+}
+
+// MARK: - 类型弹层
+
+/// 「类型」弹层：列出当前影院聚合出的全部类型，点选即筛选、再点取消。
+/// 类型再多也只占顶栏一个占位，不再需要「固定 / 折叠」的概念。
+private struct CinemaTypePanel: View {
+    let scope: CinemaScope
+    let onClose: () -> Void
+
+    @EnvironmentObject private var store: LibraryStore
+
+    private var buckets: [CinemaTypeBucket] {
+        store.cinemaAggregate(for: scope).types
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("按类型浏览")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+                Text("\(buckets.count) 个类型")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            if buckets.isEmpty {
+                Text("刮削完成后，会按 TMDB 的类型标签自动归类。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                CinemaFilterFlow(spacing: 6, lineSpacing: 6) {
+                    chip("全部",
+                         icon: "square.grid.2x2",
+                         count: nil,
+                         selected: store.cinemaTypeFilterID == nil) {
+                        store.cinemaTypeFilterID = nil
+                    }
+                    ForEach(buckets) { bucket in
+                        chip(bucket.type.title,
+                             icon: bucket.type.icon,
+                             count: bucket.count,
+                             selected: store.cinemaTypeFilterID == bucket.id) {
+                            if store.cinemaTypeFilterID == bucket.id {
+                                store.cinemaTypeFilterID = nil
+                            } else {
+                                store.cinemaTypeFilterID = bucket.id
+                                store.cinemaTab = .all
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                Button("完成") { onClose() }
+                    .keyboardShortcut(.defaultAction)
+                    .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .frame(width: 360)
+    }
+
+    private func chip(_ title: String,
+                      icon: String,
+                      count: Int?,
+                      selected: Bool,
+                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
+                if let count {
+                    Text("\(count)")
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .opacity(0.65)
+                }
+            }
+            .foregroundStyle(selected ? LumaBrand.amber : Color.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .fixedSize(horizontal: true, vertical: false)
+            .background(selected ? LumaBrand.amber.opacity(0.18) : Color.primary.opacity(0.055),
+                        in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(selected ? LumaBrand.amber.opacity(0.5) : Color.clear,
+                                  lineWidth: 0.8)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

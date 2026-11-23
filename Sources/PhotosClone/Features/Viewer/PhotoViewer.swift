@@ -726,13 +726,28 @@ struct PhotoViewerView: View {
                     .help(viewer.videoImmersiveFullScreen ? "退出全屏 (Esc)" : "返回图库 (Esc)")
 
                     if showsVideoToolbarControls {
+                        let episodeMode = store.usesEpisodeTransport(for: photo)
                         VideoToolbarTransport(model: videoModel,
-                                              hasPrev: store.hasAdjacentVideo(from: photo.id, delta: -1),
-                                              hasNext: store.hasAdjacentVideo(from: photo.id, delta: 1),
-                                              onPrev: { store.viewerStepVideo(-1) },
-                                              onNext: { store.viewerStepVideo(1) },
+                                              hasPrev: episodeMode
+                                                  ? store.hasAdjacentVideo(from: photo.id, delta: -1) : true,
+                                              hasNext: episodeMode
+                                                  ? store.hasAdjacentVideo(from: photo.id, delta: 1) : true,
+                                              onPrev: {
+                            if episodeMode {
+                                store.viewerStepVideo(-1)
+                            } else {
+                                store.viewerStep(-1)
+                            }
+                        },
+                                              onNext: {
+                            if episodeMode {
+                                store.viewerStepVideo(1)
+                            } else {
+                                store.viewerStep(1)
+                            }
+                        },
                                               seekStep: settings.videoSeekStep,
-                                              episodeMode: store.usesEpisodeTransport(for: photo))
+                                              episodeMode: episodeMode)
                     }
                 }
                 .padding(.horizontal, showsVideoToolbarControls ? 3 : 0)
@@ -812,6 +827,7 @@ struct PhotoViewerView: View {
                     // 播放选项 / 全屏排在信息、胶片条等照片操作之前，顺序与参考图一致。
                     if showsVideoToolbarControls {
                         VideoToolbarOptions(model: videoModel,
+                                            settings: settings,
                                             quarterTurns: viewer.videoQuarterTurns,
                                             onRotate: rotateVideoPlayer,
                                             onCapture: captureVideoFrame)

@@ -10,8 +10,8 @@ struct CloudMountDetailView: View {
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
 
-    /// 与图库一致：媒体类型与场景默认收起，更多项目与相簿默认展开。
-    @State private var collapsed: Set<String> = ["media", "scenes"]
+    /// 网盘里只常用「影院」：媒体类型 / 更多项目 / 场景 / 相簿全部默认收起。
+    @State private var collapsed: Set<String> = ["media", "more", "scenes", "albums"]
     @State private var hoveredSection: String?
     @State private var hoveredScope: String?
     @State private var expandedFolders: Set<String> = []
@@ -75,11 +75,11 @@ struct CloudMountDetailView: View {
             }
         }
         // 分类的收起状态按网盘分别保存，下次打开同一网盘时恢复。
-        // 没有保存过时按默认：媒体类型与场景收起，更多项目与相簿展开。
+        // 没有保存过时按默认：四个分类分区全部收起，只露出「影院」入口。
         .onAppear {
             collapsed = SidebarStateStorage.hasValue(collapsedKey)
                 ? SidebarStateStorage.stringSet(collapsedKey)
-                : ["media", "scenes"]
+                : ["media", "more", "scenes", "albums"]
         }
         .onChange(of: collapsed) { _, value in
             SidebarStateStorage.save(collapsedKey, value)
@@ -172,6 +172,15 @@ struct CloudMountDetailView: View {
             Button("打开影院") {
                 store.activateCinemaScope(scope)
                 store.navigate(to: .cloudCinema(mountID))
+            }
+            Divider()
+            // 网盘目录扫描与影院是两件事：这里也要能扫，否则相簿分区收起时找不到入口。
+            Button(store.isCloudScanning ? "停止扫描网盘" : "重新扫描网盘") {
+                if store.isCloudScanning {
+                    store.stopCloudAlbumScan()
+                } else {
+                    store.beginCloudAlbumScan(mountID: mountID, forceFull: true)
+                }
             }
             Divider()
             Button("刮削新视频") {

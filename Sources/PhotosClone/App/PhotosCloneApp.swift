@@ -706,27 +706,38 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 已经手动调整过的小窗口会被状态恢复带回来，这里只在明显偏小时放大。
+    /// 只允许变大：窗口本来比目标大（换过显示器 / 状态恢复带回大尺寸）时原样保留，
+    /// 否则启动时的这次校正会把窗口莫名缩小。
     static func enlargeMainWindowIfNeeded() {
         guard let window = NSApp.windows.first(where: {
             $0.isVisible && $0.styleMask.contains(.titled)
                 && !($0 is NSPanel) && $0.sheetParent == nil
         }) else { return }
-        let target = preferredWindowSize
+        guard let screen = window.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        // 目标尺寸按窗口所在屏幕计算，不能拿 NSScreen.main 去套另一块屏幕。
+        let target = CGSize(width: min(1800, max(1360, visible.width - 48)),
+                            height: min(1160, max(880, visible.height - 48)))
         let current = window.contentLayoutRect.size
         guard current.width < target.width - 80 || current.height < target.height - 80 else {
             return
         }
-        guard let screen = window.screen ?? NSScreen.main else { return }
-        let visible = screen.visibleFrame
-        window.setContentSize(NSSize(width: min(target.width, visible.width - 32),
-                                     height: min(target.height, visible.height - 56)))
+        let width = max(current.width, min(target.width, visible.width - 32))
+        let height = max(current.height, min(target.height, visible.height - 56))
+        guard width > current.width + 1 || height > current.height + 1 else { return }
+        window.setContentSize(NSSize(width: width, height: height))
         let frame = window.frame
         window.setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2,
                                       y: visible.midY - frame.height / 2))
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // 智能助手可能正在跑长任务（刮削 / 批量整理 / 多轮工具调用）：
+        // 这时关掉窗口只收起界面，后台继续执行；完成后从 Dock 重新打开就能看到结果。
+        let aiBusy = MainActor.assumeIsolated {
+            LibraryStore.current?.aiIsResponding == true
+        }
+        return !aiBusy
     }
 
     /// 重复启动（如再次 `open Luma.app`）时激活已有实例并退出，不产生第二份进程。

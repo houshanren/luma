@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import LumaContentCore
 
 struct PhotoMosaicView: View {
     let photos: [PhotoItem]
@@ -1661,6 +1662,8 @@ struct CloudStoragesOverviewView: View {
     @State private var hoveredID: UUID?
     @State private var renamingMount: CloudMount?
     @State private var renameText = ""
+    /// 每个挂载的索引概况：卡片上直接显示媒体 / 目录体量，不必先点进去。
+    @State private var indexStates: [UUID: MetadataStore.CloudIndexState] = [:]
 
     var body: some View {
         ScrollView {
@@ -1685,6 +1688,15 @@ struct CloudStoragesOverviewView: View {
             .padding(.bottom, 48)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .task {
+            indexStates = store.cloudIndexStates()
+            autoCheckMounts()
+        }
+        .onChange(of: cloud.mounts.count) { _, _ in
+            indexStates = store.cloudIndexStates()
+            let ids = Set(cloud.mounts.map(\.id))
+            cloud.mountHealth = cloud.mountHealth.filter { ids.contains($0.key) }
+        }
         .alert("重命名网络存储", isPresented: renamePresented) {
             TextField("名称", text: $renameText)
             Button("取消", role: .cancel) { renamingMount = nil }
@@ -1705,31 +1717,144 @@ struct CloudStoragesOverviewView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("网络存储")
-                    .font(.system(size: 27, weight: .bold))
-                Text("\(cloud.mounts.count) 个已接入存储 · 点击卡片进入浏览")
-                    .font(.system(size: 12))
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("网络存储")
+                        .font(.system(size: 27, weight: .bold))
+                    Text("\(cloud.mounts.count) 个已接入存储 · 点击卡片进入浏览")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Button {
+                    checkAllMounts()
+                } label: {
+                    HStack(spacing: 5) {
+                        if isChecking {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "waveform.path.ecg")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        Text(isChecking ? "检测中" : "检测状态")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
                     .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            Button {
-                store.presentCloudWizard()
-            } label: {
-                Label("接入存储", systemImage: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(.ultraThinMaterial, in: Capsule())
                     .overlay {
-                        Capsule().strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 0.8)
+                        Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8)
                     }
                     .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(cloud.mounts.isEmpty || isChecking)
+                .help("逐个拉取存储的根目录，确认凭据与网络是否正常")
+                Button {
+                    store.presentCloudWizard()
+                } label: {
+                    Label("接入存储", systemImage: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay {
+                            Capsule().strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 0.8)
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("通过向导接入 WebDAV、SMB 共享或网盘")
             }
-            .buttonStyle(.plain)
-            .help("通过向导接入 WebDAV、SMB 共享或网盘")
+
+            if !cloud.mounts.isEmpty {
+                capabilityStrip
+            }
+        }
+    }
+
+    /// 接入能力的横向读数：只统计协议本身支持的能力，不做主观评级。
+    private var capabilityStrip: some View {
+        let writable = cloud.mounts.filter { $0.kind.supportsWrite }.count
+        let scoped = cloud.mounts.filter {
+            !$0.scopeRoots.isEmpty || !$0.excludedRoots.isEmpty
+        }.count
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 122), spacing: 8)],
+                         alignment: .leading,
+                         spacing: 8) {
+            CloudHubStatPod(title: "已接入",
+                            value: "\(cloud.mounts.count)",
+                            unit: "个",
+                            detail: onlineSummary ?? "网盘与共享",
+                            symbol: "externaldrive.connected.to.line.below",
+                            tint: Color.accentColor)
+            CloudHubStatPod(title: "可写",
+                            value: "\(writable)",
+                            unit: "个",
+                            detail: "WebDAV 才支持写入",
+                            symbol: "pencil",
+                            tint: LumaBrand.mint)
+            CloudHubStatPod(title: "只读",
+                            value: "\(cloud.mounts.count - writable)",
+                            unit: "个",
+                            detail: "SMB 与官方网盘",
+                            symbol: "lock.fill",
+                            tint: LumaBrand.violet)
+            CloudHubStatPod(title: "限定范围",
+                            value: "\(scoped)",
+                            unit: "个",
+                            detail: "选中或排除了目录",
+                            symbol: "scope",
+                            tint: LumaBrand.amber)
+        }
+    }
+
+    // MARK: - 连通性
+
+    /// 还有存储正在检测：顶部按钮与徽章共用同一份状态。
+    private var isChecking: Bool {
+        cloud.mountHealth.values.contains { $0.state == .checking }
+    }
+
+    /// 顶部汇总：只统计真正检测过的存储，未检测的不会算成在线。
+    private var onlineSummary: String? {
+        let checked = cloud.mountHealth.values.filter { $0.state != .checking && $0.checkedAt != nil }
+        guard !checked.isEmpty else { return nil }
+        let online = checked.filter { $0.state == .healthy }.count
+        return "\(online)/\(checked.count) 在线"
+    }
+
+    private func checkAllMounts() {
+        for mount in cloud.mounts {
+            probe(mount)
+        }
+    }
+
+    /// 重新进入页面时只补测「没测过 / 超过 5 分钟 / 上次失败」的存储。
+    private func autoCheckMounts() {
+        let now = Date()
+        for mount in cloud.mounts {
+            guard let health = cloud.mountHealth[mount.id] else {
+                probe(mount)
+                continue
+            }
+            if health.state == .checking || health.state == .healthy,
+               let checkedAt = health.checkedAt,
+               now.timeIntervalSince(checkedAt) < 300 {
+                continue
+            }
+            probe(mount)
+        }
+    }
+
+    /// 检测单个存储：登记到统一任务中心，只拉一次根目录，不改当前浏览目录或索引。
+    private func probe(_ mount: CloudMount) {
+        guard cloud.mountHealth[mount.id]?.state != .checking else { return }
+        Task { @MainActor in
+            _ = await store.runCloudHealthCheck(mount)
         }
     }
 
@@ -1787,9 +1912,21 @@ struct CloudStoragesOverviewView: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if let state = indexStates[mount.id], state.mediaCount > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.stack.3d.up")
+                                .font(.system(size: 8.5, weight: .medium))
+                            Text("\(state.mediaCount.formatted()) 项")
+                            Text("·")
+                            Text("\(state.folderCount.formatted()) 目录")
+                        }
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 4)
-                statusBadge(isCurrent: isCurrent)
+                statusBadge(mount, isCurrent: isCurrent)
             }
 
             Spacer(minLength: 16)
@@ -1848,6 +1985,7 @@ struct CloudStoragesOverviewView: View {
                     store.navigate(to: .cloudMount(mount.id))
                 }
             }
+            Button("检测状态") { probe(mount) }
             if mount.kind.supportsAccessScope {
                 Button("编辑接入范围…") {
                     store.presentCloudWizard(editing: mount)
@@ -1900,7 +2038,7 @@ struct CloudStoragesOverviewView: View {
     }
 
     @ViewBuilder
-    private func statusBadge(isCurrent: Bool) -> some View {
+    private func statusBadge(_ mount: CloudMount, isCurrent: Bool) -> some View {
         if isCurrent {
             HStack(spacing: 4) {
                 if cloud.loading {
@@ -1921,13 +2059,71 @@ struct CloudStoragesOverviewView: View {
                 Capsule().strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.6)
             }
         } else {
-            Text("已接入")
-                .font(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.06), in: Capsule())
+            healthBadge(mount)
         }
+    }
+
+    /// 连通性徽章：与资源页的「在线 / 需验证 / 离线」语义保持一致。
+    private func healthBadge(_ mount: CloudMount) -> some View {
+        let health = cloud.mountHealth[mount.id]
+        let state = health?.state ?? .unknown
+        let tint: Color
+        let text: String
+        var showsSpinner = false
+        switch state {
+        case .checking:
+            tint = .secondary
+            text = "检测中"
+            showsSpinner = true
+        case .healthy:
+            tint = .green
+            text = "在线"
+        case .authRequired:
+            tint = .orange
+            text = "需验证"
+        case .offline:
+            tint = .red
+            text = "离线"
+        case .degraded:
+            tint = .orange
+            text = "受限"
+        case .unknown:
+            tint = .secondary
+            text = "已接入"
+        }
+        return HStack(spacing: 4) {
+            if showsSpinner {
+                ProgressView().controlSize(.mini)
+            } else {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 5, height: 5)
+            }
+            Text(text)
+                .font(.system(size: 9.5, weight: .medium))
+                .monospacedDigit()
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(tint.opacity(0.10), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(tint.opacity(0.18), lineWidth: 0.5)
+        }
+        .help(healthHelp(health))
+    }
+
+    private func healthHelp(_ health: SourceHealth?) -> String {
+        guard let health, health.state != .checking else { return "正在检测连接…" }
+        var parts: [String] = []
+        if health.state == .healthy {
+            parts.append("连通正常")
+            if let ms = health.latencyMilliseconds { parts.append("\(ms) ms") }
+        } else if health.checkedAt != nil {
+            parts.append("检测未通过")
+        }
+        if let message = health.message, !message.isEmpty { parts.append(message) }
+        return parts.isEmpty ? "右键可重新检测" : parts.joined(separator: " · ")
     }
 
     private func borderColor(isCurrent: Bool, hovering: Bool) -> Color {

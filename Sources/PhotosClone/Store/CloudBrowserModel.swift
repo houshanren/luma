@@ -1,9 +1,26 @@
 import Foundation
+import LumaContentCore
 
 /// 网盘浏览状态：挂载列表、当前目录、加载与弹窗状态。
 /// 由 `LibraryStore` 持有并转发变更，后续可按需让网盘视图单独订阅。
 final class CloudBrowserModel: ObservableObject {
+    /// 网络存储总览的分页：总览 / 存储 / 影院 / 续播 / 管理。
+    /// 与「网络资源」一致，切换入口在窗口工具栏里；选择结果跨会话保留。
+    @Published var storagesTab: CloudStoragesHubTab = CloudStoragesHubTab.persisted
+
     @Published var mounts: [CloudMount] = []
+
+    /// 每个挂载最近一次连通性检测结果：只存在内存，重启后重新检测。
+    /// 总览卡片徽章与侧边栏「后台任务」共用这份状态。
+    @Published var mountHealth: [UUID: SourceHealth] = [:]
+
+    /// 切换总览分页并记住选择：下次打开仍停在上次看的那一页。
+    func setStoragesTab(_ tab: CloudStoragesHubTab) {
+        guard storagesTab != tab else { return }
+        storagesTab = tab
+        UserDefaults.standard.set(tab.rawValue, forKey: CloudStoragesHubTab.storageKey)
+    }
+
     @Published var folders: [CloudEntry] = []
     @Published var photos: [PhotoItem] = [] {
         didSet { revision &+= 1 }
@@ -50,6 +67,8 @@ final class CloudBrowserModel: ObservableObject {
     var scanFolderPaths: Set<String> = []
     var scanMountID: UUID?
     var scanTask: Task<Void, Never>?
+    /// 统一任务中心里的扫描任务 ID；用于进度上报与取消。
+    var scanJobID: UUID?
     /// 节流发布：扫描期间每 0.6 秒最多合并一次网格 / 计数更新。
     var scanPublishTask: Task<Void, Never>?
     /// 扫描结束后延迟读取 EXIF：先让网格与侧边栏稳定下来。

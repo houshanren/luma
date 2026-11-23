@@ -198,7 +198,7 @@ enum CloudWizardFlow: String, CaseIterable, Identifiable {
 
     var steps: [String] {
         switch self {
-        case .baidu: return ["应用凭据", "授权登录", "完成"]
+        case .baidu: return ["应用凭据", "授权登录", "接入范围", "完成"]
         case .aliyunCookie, .quark, .pan115: return ["粘贴 Cookie", "确认添加"]
         case .smb, .webdav: return ["填写连接", "确认添加"]
         case .alist: return ["选择网盘", "连接 AList", "在 AList 中添加", "确认"]

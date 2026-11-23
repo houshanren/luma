@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
+import LumaContentCore
 
 extension LibraryStore {
     // MARK: - Network storage (WebDAV)
@@ -49,6 +50,51 @@ extension LibraryStore {
     /// 根目录标识：百度用 "/"，其余用 ""。
     func cloudRootPath(for mount: CloudMount) -> String {
         mount.kind == .baidu ? "/" : ""
+    }
+
+    /// 探测一个存储是否可连通：与打开网盘走同一条 `CloudService.list`，只读根目录，
+    /// 不写索引、不改当前浏览目录，因此可以在总览页对多个存储并发检测。
+    func probeCloudMount(_ mount: CloudMount) async -> SourceHealth {
+        let started = Date()
+        do {
+            _ = try await CloudService.list(mount: mount, containerID: cloudRootPath(for: mount))
+            return SourceHealth(state: .healthy,
+                                checkedAt: Date(),
+                                latencyMilliseconds: Int(Date().timeIntervalSince(started) * 1000))
+        } catch {
+            let message = error.localizedDescription
+            if let oauth = error as? CloudOAuthError, oauth.requiresReauth {
+                return SourceHealth(state: .authRequired, checkedAt: Date(), message: message)
+            }
+            return SourceHealth(state: .offline, checkedAt: Date(), message: message)
+        }
+    }
+
+    /// 连通性检测 + 任务中心登记：总览页的「检测状态」与单卡右键都走这里，
+    /// 侧边栏「后台任务」能看到「健康检测 · 网盘名」的进行中状态与结果。
+    func runCloudHealthCheck(_ mount: CloudMount) async -> SourceHealth {
+        if let running = cloudModel.mountHealth[mount.id], running.state == .checking {
+            return running
+        }
+        cloudModel.mountHealth[mount.id] = SourceHealth(state: .checking, checkedAt: Date())
+        let job = SourceJob(sourceID: .cloud(mount.id),
+                            kind: .connectivity,
+                            title: "检测「\(mount.name)」",
+                            isCancellable: false)
+        let jobID = beginSourceJob(job)
+        updateSourceJob(jobID, message: "正在连接…")
+        let health = await probeCloudMount(mount)
+        cloudModel.mountHealth[mount.id] = health
+        switch health.state {
+        case .healthy:
+            let latency = health.latencyMilliseconds.map { " · \($0) ms" } ?? ""
+            finishSourceJob(jobID, message: "在线" + latency)
+        case .authRequired:
+            failSourceJob(jobID, message: health.message ?? "需要重新授权")
+        default:
+            failSourceJob(jobID, message: health.message ?? "连接失败")
+        }
+        return health
     }
 
     /// 当前选中文件夹的面包屑链（第一项是整个网盘）。
@@ -271,6 +317,9 @@ extension LibraryStore {
         let viewedAt = cloudModel.viewedAt
         cloudModel.isRestoringScan = true
         cloudModel.scanPhase = .idle
+        let restoreJobID = beginSourceJob(
+            SourceJob(sourceID: .cloud(mount.id), kind: .index, title: "恢复网盘索引", isCancellable: false)
+        )
         Task { [weak self] in
             guard let self else { return }
             let restored = await Task.detached(priority: .userInitiated) {
@@ -283,15 +332,21 @@ extension LibraryStore {
                                                      viewedAt: viewedAt)
             }.value
             guard token == self.cloudModel.scanLoadToken,
-                  self.cloudModel.scanMountID == mount.id else { return }
+                  self.cloudModel.scanMountID == mount.id else {
+                self.cancelSourceJob(restoreJobID)
+                return
+            }
             self.cloudModel.isRestoringScan = false
             if let (snapshot, photos) = restored {
                 self.applyCloudAlbumSnapshot(snapshot, photos: photos, mount: mount)
+                self.finishSourceJob(restoreJobID,
+                                     message: "已恢复 \(photos.count.formatted()) 项媒体 · \(snapshot.folderCount.formatted()) 个目录")
             } else {
                 self.cloudPhotos = []
                 self.cloudVisibleCacheKey = nil
                 self.cloudScopeCountsCacheKey = nil
                 self.cloudModel.scanPhase = .idle
+                self.finishSourceJob(restoreJobID, message: "没有可恢复的索引")
             }
             self.finishCloudAlbumOpen(mountID: mount.id)
         }
@@ -469,6 +524,17 @@ extension LibraryStore {
         cloudModel.metadataScanDelayTask?.cancel()
         cloudModel.metadataScanDelayTask = nil
         cloudModel.scanMountID = mountID
+        if let oldJob = cloudModel.scanJobID {
+            cancelSourceJob(oldJob)
+        }
+        let scanJob = SourceJob(sourceID: .cloud(mountID), kind: .scan, title: "扫描 \(mount.name)")
+        cloudModel.scanJobID = beginSourceJob(scanJob, cancel: { [weak self] in
+            Task { @MainActor in
+                // 只有这个任务仍是当前扫描时才停：重启扫描时旧任务的取消不应打断新扫描。
+                guard let self, self.cloudModel.scanJobID == scanJob.id else { return }
+                self.stopCloudAlbumScan()
+            }
+        })
         cloudModel.scanPhase = .scanning
         cloudModel.scanTruncated = false
         cloudModel.isRestoringScan = false
@@ -637,6 +703,10 @@ extension LibraryStore {
     func cancelCloudAlbumScan() {
         cloudModel.scanTask?.cancel()
         cloudModel.scanTask = nil
+        if let jobID = cloudModel.scanJobID {
+            cancelSourceJob(jobID)
+            cloudModel.scanJobID = nil
+        }
     }
 
     /// 更新接入范围与排除目录；返回 true 表示有变化（需要重扫）。nil 表示该项保持不变。
@@ -868,6 +938,15 @@ extension LibraryStore {
         cloudModel.scanMediaCount = cloudModel.scanPhotos.count
         cloudModel.scanTruncated = result.truncated
         cloudModel.scanPhase = .finished(Date())
+        if let jobID = cloudModel.scanJobID {
+            if let error = result.firstErrorDescription, result.mediaCount == 0 {
+                failSourceJob(jobID, message: error)
+            } else {
+                finishSourceJob(jobID,
+                                message: "扫描完成 · \(result.folderCount) 个目录 · \(cloudModel.scanPhotos.count) 项媒体")
+            }
+            cloudModel.scanJobID = nil
+        }
         cloudModel.scanTask = nil
         cloudModel.scanSnapshot = nil
         // 扫描期间不再每批全量排序；结束时排一次，快照顺序稳定，省下每批 O(n log n)。
@@ -935,6 +1014,11 @@ extension LibraryStore {
         cloudModel.lastPublishedScanMediaCount = mediaCount
         cloudModel.scanFolderCount = folderCount
         cloudModel.scanMediaCount = mediaCount
+        if let jobID = cloudModel.scanJobID {
+            updateSourceJob(jobID,
+                            completed: folderCount,
+                            message: "已扫描 \(folderCount) 个目录 · \(mediaCount) 项媒体")
+        }
         cloudPhotos = cloudPhotosForSelection()
         cloudVisibleCacheKey = nil
         cloudScopeCountsCacheKey = nil
@@ -1065,6 +1149,28 @@ extension LibraryStore {
         loadCloudAlbumSnapshot(mountID: mountID)
     }
 
+    // MARK: 总览用的轻量索引概况
+
+    /// 每个挂载的索引状态：目录数 / 媒体数 / 是否完整 / 最近扫描时间。
+    /// 只查状态行，不加载索引里的媒体清单，网盘总览的「索引」页可以放心一次读完。
+    func cloudIndexStates() -> [UUID: MetadataStore.CloudIndexState] {
+        guard let store = metadataStore else { return [:] }
+        var result: [UUID: MetadataStore.CloudIndexState] = [:]
+        for mount in cloudMounts {
+            if let state = store.loadCloudIndexState(mountID: mount.id) {
+                result[mount.id] = state
+            }
+        }
+        return result
+    }
+
+    /// 上一次「深度扫描」的时间：增量扫描不会刷新它，只有完整重扫成功后才更新。
+    func cloudDeepScanDate(_ mountID: UUID) -> Date? {
+        guard let raw = metadataStore?.setting(Self.cloudDeepScanSettingKey(mountID)),
+              let seconds = Double(raw) else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
     func cloudAlbumPhoto(record: CloudScanRecord, mount: CloudMount) -> PhotoItem {
         albumPhoto(record: record, mount: mount)
     }
@@ -1183,6 +1289,16 @@ extension LibraryStore {
               let data = try? JSONEncoder().encode(cloudMounts),
               let json = String(data: data, encoding: .utf8) else { return }
         metadataStore.setSetting("cloud_mounts", json)
+    }
+
+    /// 调整网盘在侧边栏里的顺序：注册表按 `cloudMounts` 的顺序生成，
+    /// 排序结果同样作用于网盘总览与影院入口。
+    func moveCloudMount(_ id: UUID, by offset: Int) {
+        guard let index = cloudMounts.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + offset
+        guard cloudMounts.indices.contains(target) else { return }
+        cloudMounts.swapAt(index, target)
+        saveCloudMounts()
     }
 
     /// 网盘密码由 `CloudCredentials` 在进程内缓存：目录滚动不会反复读钥匙串，
@@ -1884,7 +2000,7 @@ extension LibraryStore {
                 if mount.kind == .quark {
                     headers = QuarkDrive.headers(cookie: cloudPassword(for: mount.id))
                 } else if mount.kind == .pan115 {
-                    headers = Pan115Drive.headers(cookie: cloudPassword(for: mount.id))
+                    headers = Pan115Drive.thumbnailHeaders(cookie: cloudPassword(for: mount.id))
                 }
             }
             if let image = await CloudImageFetcher.thumbnail(for: photo,
@@ -2056,16 +2172,21 @@ extension LibraryStore {
     /// 授权完成后注册一个官方网盘挂载点。
     @discardableResult
     func registerOAuthMount(kind: CloudKind, name: String,
-                            driveID: String?, token: CloudToken) -> String? {
+                            driveID: String?, token: CloudToken,
+                            scopes: [CloudScopeRoot]? = nil,
+                            excludes: [CloudScopeRoot]? = nil) -> String? {
         guard kind.usesOAuth else { return "不支持的接入方式" }
         if let existing = cloudMounts.first(where: { $0.kind == kind && $0.remoteDriveID == driveID }) {
             CloudOAuthStore.saveToken(token, mountID: existing.id)
             cloudDirectoryCache = cloudDirectoryCache.filter { !$0.key.hasPrefix(existing.id.uuidString) }
+            updateCloudMountAccess(existing.id, scopes: scopes, excludes: excludes)
             navigate(to: .cloudMount(existing.id))
             showToast("已更新「\(existing.name)」的授权")
             return nil
         }
-        let mount = CloudMount(kind: kind, name: name, remoteDriveID: driveID)
+        let mount = CloudMount(kind: kind, name: name, remoteDriveID: driveID,
+                               scopeRoots: scopes ?? [],
+                               excludedRoots: excludes ?? [])
         CloudOAuthStore.saveToken(token, mountID: mount.id)
         cloudMounts.append(mount)
         saveCloudMounts()

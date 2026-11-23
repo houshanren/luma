@@ -279,3 +279,305 @@ struct CatalogContentRepository: ContentRepository {
         return result
     }
 }
+
+/// 影院只读内容仓库：直接读已刮削的索引，不发网络请求。
+/// 扫库 / 刮削仍由 `SourceJobCenter` 驱动，仓库只负责“看”。
+@MainActor
+struct CinemaContentRepository: ContentRepository {
+    let store: LibraryStore
+    let scope: CinemaScope
+
+    private var sourceID: SourceID {
+        switch scope {
+        case .local: return .localCinema
+        case .mount(let id): return .mountCinema(id)
+        }
+    }
+
+    func containers(_ query: ContentQuery) async throws -> [ContentContainer] { [] }
+
+    func page(_ query: ContentQuery) async throws -> ContentPage {
+        var entries = Array(store.cinemaEntries(for: scope).values)
+        if let search = query.search?.trimmingCharacters(in: .whitespacesAndNewlines), !search.isEmpty {
+            entries = entries.filter {
+                $0.title.localizedCaseInsensitiveContains(search)
+                    || ($0.originalTitle?.localizedCaseInsensitiveContains(search) ?? false)
+            }
+        }
+        entries.sort { lhs, rhs in
+            if lhs.matched != rhs.matched { return lhs.matched }
+            switch query.sort?.key ?? .latest {
+            case .title:
+                return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            case .oldest:
+                return lhs.scrapedAt < rhs.scrapedAt
+            default:
+                return lhs.scrapedAt > rhs.scrapedAt
+            }
+        }
+        let limit = max(1, query.limit)
+        let page = max(1, query.cursor?.page ?? 1)
+        let start = min(entries.count, (page - 1) * limit)
+        let end = min(entries.count, start + limit)
+        let slice = start < end ? Array(entries[start..<end]) : []
+        return ContentPage(items: slice.map(card),
+                           next: end < entries.count ? PageCursor(page: page + 1) : nil,
+                           totalHint: entries.count)
+    }
+
+    func detail(_ ref: ContentRef) async throws -> ContentDetail {
+        guard let id = UUID(uuidString: ref.itemID),
+              let entry = store.cinemaEntries(for: scope)[id] else {
+            throw SourceError.unavailable("找不到该影院条目，可能已被移动或删除。")
+        }
+        return ContentDetail(card: card(entry),
+                             overview: entry.overview,
+                             facts: facts(entry),
+                             playbackOptions: [
+                                ContentPlaybackOption(id: entry.id.uuidString,
+                                                      title: "影院原片",
+                                                      target: target(entry))
+                             ])
+    }
+
+    func search(_ query: ContentQuery) async throws -> ContentPage {
+        try await page(query)
+    }
+
+    // MARK: - 映射
+
+    private func card(_ entry: CinemaEntry) -> ContentCard {
+        var badges: [String] = []
+        if let year = entry.year { badges.append(String(year)) }
+        if entry.matched { badges.append(entry.kind.title) }
+        return ContentCard(ref: ContentRef(sourceID: sourceID, itemID: entry.id.uuidString),
+                           title: entry.title,
+                           subtitle: entry.originalTitle,
+                           artworkURL: entry.gridArtworkURL,
+                           badges: badges,
+                           progress: store.cinemaProgress[entry.id]?.fraction,
+                           isPlayable: true)
+    }
+
+    private func facts(_ entry: CinemaEntry) -> [ContentFact] {
+        var facts: [ContentFact?] = []
+        facts.append(entry.year.map { ContentFact(label: "年份", value: String($0)) })
+        facts.append(ContentFact(label: "类型", value: entry.kind.title))
+        facts.append(entry.rating.map { ContentFact(label: "评分", value: String(format: "%.1f", $0)) })
+        facts.append(entry.runtime.map { ContentFact(label: "片长", value: "\($0) 分钟") })
+        if let genres = entry.genres, !genres.isEmpty {
+            facts.append(ContentFact(label: "题材", value: genres.joined(separator: " / ")))
+        }
+        return facts.compactMap { $0 }
+    }
+
+    private func target(_ entry: CinemaEntry) -> PlaybackTarget {
+        PlaybackTarget(storage: .provider(sourceID: sourceID,
+                                          itemID: entry.id.uuidString,
+                                          episodeID: nil),
+                       mode: .vod,
+                       title: entry.title,
+                       artworkURL: entry.gridArtworkURL)
+    }
+}
+
+/// 图库只读内容仓库：把现有内存索引映射成统一内容模型，供统一搜索 / 跨源列表消费。
+/// 不替换照片网格的查询路径，也不触发扫描、缩略图生成或额外 IO。
+@MainActor
+struct LibraryContentRepository: ContentRepository {
+    let store: LibraryStore
+    let sourceID: SourceID
+
+    func containers(_ query: ContentQuery) async throws -> [ContentContainer] {
+        if let folderID = Self.folderID(from: query.containerID) {
+            return containerList(folders: store.folders.filter { $0.parentID == folderID },
+                                 albums: store.albums.filter { $0.folderID == folderID })
+        }
+        guard query.containerID == nil else { return [] }
+        return containerList(folders: store.folders.filter { $0.parentID == nil },
+                             albums: store.albums.filter { $0.folderID == nil })
+    }
+
+    func page(_ query: ContentQuery) async throws -> ContentPage {
+        var photos = photos(in: query.containerID)
+        if let search = query.search?.trimmingCharacters(in: .whitespacesAndNewlines), !search.isEmpty {
+            photos = photos.filter {
+                $0.displayTitle.localizedCaseInsensitiveContains(search)
+                    || $0.filename.localizedCaseInsensitiveContains(search)
+                    || $0.originalName.localizedCaseInsensitiveContains(search)
+            }
+        }
+        photos = sorted(photos, by: query.sort)
+
+        let limit = max(1, query.limit)
+        let page = max(1, query.cursor?.page ?? 1)
+        let start = min(photos.count, (page - 1) * limit)
+        let end = min(photos.count, start + limit)
+        let slice = start < end ? Array(photos[start..<end]) : []
+        // 容器只在根列表首屏返回，翻页与搜索结果里不重复给。
+        let showsContainers = query.containerID == nil
+            && (query.search?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && page == 1
+        return ContentPage(items: slice.map(card),
+                           containers: showsContainers
+                               ? containerList(folders: store.folders.filter { $0.parentID == nil },
+                                               albums: store.albums.filter { $0.folderID == nil })
+                               : [],
+                           next: end < photos.count ? PageCursor(page: page + 1) : nil,
+                           totalHint: photos.count)
+    }
+
+    func detail(_ ref: ContentRef) async throws -> ContentDetail {
+        guard let id = UUID(uuidString: ref.itemID),
+              let photo = store.photo(id: id) ?? store.photos(for: .library).first(where: { $0.id == id }) else {
+            throw SourceError.unavailable("找不到这个图库条目，可能已被删除。")
+        }
+        var options: [ContentPlaybackOption] = []
+        if photo.isVideo {
+            options.append(ContentPlaybackOption(id: photo.id.uuidString,
+                                                 title: "图库原片",
+                                                 target: playbackTarget(photo)))
+        }
+        return ContentDetail(card: card(photo), facts: facts(photo), playbackOptions: options)
+    }
+
+    func search(_ query: ContentQuery) async throws -> ContentPage {
+        var scoped = query
+        scoped.containerID = nil
+        scoped.cursor = nil
+        return try await page(scoped)
+    }
+
+    // MARK: - 数据来源
+
+    /// 相簿 / 文件夹都复用现有 `photos(for:)` 范围，不新建索引。
+    private func photos(in containerID: String?) -> [PhotoItem] {
+        if let albumID = Self.albumID(from: containerID) {
+            return store.photos(for: .album(albumID))
+        }
+        if let folderID = Self.folderID(from: containerID) {
+            return store.photos(for: .folder(folderID))
+        }
+        return store.photos(for: .library)
+    }
+
+    private func sorted(_ photos: [PhotoItem], by sort: ContentSort?) -> [PhotoItem] {
+        switch sort?.key ?? .latest {
+        case .title:
+            return photos.sorted { $0.displayTitle.localizedStandardCompare($1.displayTitle) == .orderedAscending }
+        case .oldest:
+            return photos.sorted { $0.capturedAt < $1.capturedAt }
+        default:
+            return photos.sorted { $0.capturedAt > $1.capturedAt }
+        }
+    }
+
+    private func containerList(folders: [AlbumFolder], albums: [Album]) -> [ContentContainer] {
+        let folderItems = folders.map { folder in
+            ContentContainer(id: "folder:\(folder.id.uuidString)",
+                             title: folder.name,
+                             kind: .folder,
+                             childCountHint: albums.filter { $0.folderID == folder.id }.count)
+        }
+        let albumItems = albums.map { album in
+            ContentContainer(id: "album:\(album.id.uuidString)",
+                             title: album.name,
+                             kind: .album,
+                             childCountHint: album.photoIDs.count)
+        }
+        return folderItems + albumItems
+    }
+
+    // MARK: - 映射
+
+    private func card(_ photo: PhotoItem) -> ContentCard {
+        var badges: [String] = []
+        if photo.isVideo { badges.append("视频") }
+        if photo.isFavorite { badges.append("收藏") }
+        return ContentCard(ref: ContentRef(sourceID: sourceID, itemID: photo.id.uuidString),
+                           title: photo.displayTitle,
+                           subtitle: Self.dateText(photo.capturedAt),
+                           artworkURL: artworkURL(photo),
+                           badges: badges,
+                           aspectRatio: aspectRatio(photo),
+                           isPlayable: true)
+    }
+
+    private func facts(_ photo: PhotoItem) -> [ContentFact] {
+        var facts: [ContentFact] = [ContentFact(label: "拍摄时间", value: Self.dateText(photo.capturedAt))]
+        if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+            facts.append(ContentFact(label: "尺寸", value: "\(photo.pixelWidth) × \(photo.pixelHeight)"))
+        }
+        if photo.fileSize > 0 {
+            facts.append(ContentFact(label: "大小",
+                                     value: ByteCountFormatter.string(fromByteCount: photo.fileSize,
+                                                                      countStyle: .file)))
+        }
+        let camera = [photo.make, photo.model]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !camera.isEmpty {
+            facts.append(ContentFact(label: "相机", value: camera))
+        }
+        if let duration = photo.duration, duration > 0 {
+            facts.append(ContentFact(label: "时长", value: Self.durationText(duration)))
+        }
+        if photo.hasLocation {
+            let place = [photo.placeCountry, photo.placeProvince, photo.placeCity, photo.placeDistrict]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if !place.isEmpty { facts.append(ContentFact(label: "地点", value: place)) }
+        }
+        return facts
+    }
+
+    private func playbackTarget(_ photo: PhotoItem) -> PlaybackTarget {
+        PlaybackTarget(storage: .provider(sourceID: sourceID,
+                                          itemID: photo.id.uuidString,
+                                          episodeID: nil),
+                       mode: .vod,
+                       title: photo.displayTitle)
+    }
+
+    private func artworkURL(_ photo: PhotoItem) -> String? {
+        let url = LibraryPaths.thumbnailURL(for: photo)
+        return FileManager.default.fileExists(atPath: url.path) ? url.absoluteString : nil
+    }
+
+    private func aspectRatio(_ photo: PhotoItem) -> Double? {
+        guard photo.pixelWidth > 0, photo.pixelHeight > 0 else { return nil }
+        return Double(photo.pixelWidth) / Double(photo.pixelHeight)
+    }
+
+    // MARK: - 容器 ID
+
+    private static func albumID(from containerID: String?) -> UUID? {
+        guard let containerID, containerID.hasPrefix("album:") else { return nil }
+        return UUID(uuidString: String(containerID.dropFirst("album:".count)))
+    }
+
+    private static func folderID(from containerID: String?) -> UUID? {
+        guard let containerID, containerID.hasPrefix("folder:") else { return nil }
+        return UUID(uuidString: String(containerID.dropFirst("folder:".count)))
+    }
+
+    private static func dateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func durationText(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%d:%02d", minutes, secs)
+    }
+}

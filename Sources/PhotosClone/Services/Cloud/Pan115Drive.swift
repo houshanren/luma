@@ -26,17 +26,110 @@ enum Pan115Drive {
     /// 网页接口用普通浏览器 UA 即可。
     static let browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-    /// 直链接口与 CDN 认 115Browser 的 UA：浏览器 UA 取不到地址，或 CDN 直接 403。
-    static let downloadUserAgent = "Mozilla/5.0 115Browser/27.0.5.7"
+    /// 直链接口与 CDN 认 115Browser 的 UA：版本过旧会被 115 侧拒绝，启动时从官方接口刷新。
+    static let fallbackAppVersion = "36.0.1"
     static let referer = "https://115.com/"
     /// 115 的根目录 ID。
     static let rootID = "0"
 
-    /// 直链与缩略图请求共用的头。
-    static func headers(cookie: String) -> [String: String] {
+    private static let versionLock = NSLock()
+    private static var appVersion = fallbackAppVersion
+    private static var appVersionFetchedAt: Date?
+    private static var versionTask: Task<String, Never>?
+
+    /// 当前 115Browser UA（下载接口与 CDN 必须与申请直链时一致）。
+    static var downloadUserAgent: String {
+        versionLock.lock()
+        defer { versionLock.unlock() }
+        return "Mozilla/5.0 115Browser/\(appVersion)"
+    }
+
+    /// 从官方接口取当前客户端版本；失败时沿用内置版本。
+    @discardableResult
+    static func refreshAppVersion() async -> String {
+        versionLock.lock()
+        if let fetchedAt = appVersionFetchedAt,
+           Date().timeIntervalSince(fetchedAt) < 6 * 3600 {
+            let value = appVersion
+            versionLock.unlock()
+            return value
+        }
+        if let task = versionTask {
+            versionLock.unlock()
+            return await task.value
+        }
+        let task = Task { await fetchAppVersion() }
+        versionTask = task
+        versionLock.unlock()
+
+        let value = await task.value
+        versionLock.lock()
+        appVersion = value
+        appVersionFetchedAt = Date()
+        versionTask = nil
+        versionLock.unlock()
+        return value
+    }
+
+    private static func fetchAppVersion() async -> String {
+        guard let url = URL(string: "https://appversion.115.com/1/web/1.0/api/chrome") else {
+            return fallbackAppVersion
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.setValue(browserUserAgent, forHTTPHeaderField: "User-Agent")
+        guard let (data, _) = try? await session.data(for: request),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let versions = object["data"] as? [String: Any] else {
+            return fallbackAppVersion
+        }
+        for key in ["win", "mac", "mac_arc", "android"] {
+            if let item = versions[key] as? [String: Any],
+               let value = item["version_code"] as? String, !value.isEmpty {
+                return value
+            }
+        }
+        return fallbackAppVersion
+    }
+
+    /// 直链请求头：与申请直链时保持一致（同 UA + Cookie），不要额外加 Referer。
+    static func downloadHeaders(cookie: String, userAgent: String? = nil) -> [String: String] {
         [
             "Cookie": normalizedCookie(cookie),
-            "User-Agent": downloadUserAgent,
+            "User-Agent": userAgent ?? downloadUserAgent,
+            "Accept": "*/*",
+            "Accept-Encoding": "identity"
+        ]
+    }
+
+    /// 直链是否真的能取到数据：115 CDN 会按 UA / 风控拒绝部分链接，
+    /// 先探一次 HEAD（失败再试 2 字节 Range），避免播放器拿到 403 才开始报错。
+    static func isReachable(url: URL, headers: [String: String]) async -> Bool {
+        if await probe(url: url, headers: headers, method: "HEAD", range: nil) {
+            return true
+        }
+        return await probe(url: url, headers: headers, method: "GET", range: "bytes=0-1")
+    }
+
+    private static func probe(url: URL, headers: [String: String],
+                              method: String, range: String?) async -> Bool {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
+        request.httpMethod = method
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        if let range {
+            request.setValue(range, forHTTPHeaderField: "Range")
+        }
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return false }
+        return (200...299).contains(http.statusCode)
+    }
+
+    /// 网页接口 / 缩略图请求头。
+    static func thumbnailHeaders(cookie: String) -> [String: String] {
+        [
+            "Cookie": normalizedCookie(cookie),
+            "User-Agent": browserUserAgent,
             "Referer": referer
         ]
     }
@@ -98,9 +191,14 @@ enum Pan115Drive {
 
     // MARK: 直链
 
-    static func downloadURL(pickCode: String, cookie: String) async throws -> URL {
+    static func downloadURL(pickCode: String, cookie: String,
+                            userAgent overrideUA: String? = nil) async throws -> URL {
         guard !pickCode.isEmpty else {
             throw CloudOAuthError.api("缺少 115 文件标识（pickcode），请刷新该目录后重试")
+        }
+        if overrideUA == nil {
+            // 直链与会话 UA 绑定：先用当前客户端版本，避免过旧版本被 CDN 拒绝。
+            await refreshAppVersion()
         }
         let key = Pan115Crypto.randomKey()
         let payload = (try? JSONSerialization.data(withJSONObject: ["pickcode": pickCode])) ?? Data()
@@ -113,7 +211,10 @@ enum Pan115Drive {
             URLQueryItem(name: "t", value: "\(Int(Date().timeIntervalSince1970 * 1000))")
         ]
         guard let url = components?.url else { throw CloudOAuthError.api("地址无效") }
-        let object = try await sendForm(url: url, form: ["data": encoded], cookie: cookie)
+        let object = try await sendForm(url: url,
+                                        form: ["data": encoded],
+                                        cookie: cookie,
+                                        userAgent: overrideUA ?? downloadUserAgent)
         guard let dataString = object["data"] as? String,
               let decoded = Pan115Crypto.decode(dataString, key: key),
               let json = (try? JSONSerialization.jsonObject(with: decoded)) as? [String: Any] else {
@@ -232,14 +333,18 @@ enum Pan115Drive {
         return try await send(request)
     }
 
-    private static func sendForm(url: URL, form: [String: String], cookie: String) async throws -> [String: Any] {
+    private static func sendForm(url: URL,
+                                 form: [String: String],
+                                 cookie: String,
+                                 userAgent: String = browserUserAgent,
+                                 contentType: String = "application/x-www-form-urlencoded") async throws -> [String: Any] {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue(normalizedCookie(cookie), forHTTPHeaderField: "Cookie")
-        request.setValue(downloadUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(referer, forHTTPHeaderField: "Referer")
         request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.httpBody = form
             .map { "\(escape($0.key))=\(escape($0.value))" }
             .joined(separator: "&")

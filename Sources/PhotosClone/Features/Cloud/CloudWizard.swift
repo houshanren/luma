@@ -37,6 +37,8 @@ struct CloudSetupWizardView: View {
     @State var isAuthorizing = false
     @State var showManualCode = false
     @State var manualCode = ""
+    /// 百度授权成功后暂存令牌：等用户在「接入范围」里选完目录再注册挂载。
+    @State var baiduToken: CloudToken?
 
     // SMB / WebDAV
     @State var address = ""
@@ -332,6 +334,14 @@ struct CloudSetupWizardView: View {
                         }
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canContinue)
+                    } else if step == 2 {
+                        // 百度：授权完成后先在「接入范围」里选目录，再进完成页。
+                        Button("下一步") {
+                            step = 3
+                            status = nil
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canContinue || isBusy)
                     }
                 } else {
                     Button("下一步") {
@@ -362,7 +372,7 @@ struct CloudSetupWizardView: View {
     private func primaryAction(_ flow: CloudWizardFlow) {
         switch flow {
         case .baidu:
-            close()
+            finishBaiduSetup()
         case .smb:
             addSMB()
         case .webdav:

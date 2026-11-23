@@ -156,6 +156,11 @@ struct GalleryView: View {
         store.sidebarItem == .catalogSources
     }
 
+    /// 网络存储总览：存储 / 索引 / 影院 / 续播 / 维护的分页切换同样放在工具栏中区。
+    private var isCloudStoragesHubScope: Bool {
+        store.sidebarItem == .cloudStorages
+    }
+
     /// 网络资源区里最上层的二级页：工具栏最左的返回按钮据此显示。
     /// 层级顺序：频道详情 > 关注档案 > 片单详情。
     private var catalogBackAction: (title: String, action: () -> Void)? {
@@ -314,6 +319,9 @@ struct GalleryView: View {
                     if isCatalogHubScope {
                         // 网络资源总览：浏览 / 片单 / 更新日历并入工具栏同一行。
                         CatalogHubTabs()
+                    } else if isCloudStoragesHubScope {
+                        // 网络存储总览：总览 / 存储 / 影院 / 续播 / 管理并入工具栏同一行。
+                        CloudStoragesHubTabs()
                     } else if isCatalogScope {
                         // 网络资源：中区是「分类 + 站点 + 刷新」舱体，分类菜单与左侧菜单同源。
                         CatalogToolbarConsole()
@@ -830,9 +838,9 @@ struct GalleryView: View {
             // 收藏汇总维度页也要保留这一组：切维度时右侧工具栏不能突然少两块。
             galleryLayoutPill
         }
-        // 网络资源总览（资源 / 资料库 / 榜单 …）没有单张照片动作：助手、⋯、信息、分享、
+        // 网络资源 / 网络存储总览（资源 / 索引 / 影院 …）没有单张照片动作：助手、⋯、信息、分享、
         // 收藏在这里都无意义，只保留搜索。
-        if !isCatalogHubScope {
+        if !isCatalogHubScope && !isCloudStoragesHubScope {
             galleryActionPill
         }
         if !isPlacesScope && !isRevisitScope && !isMapScope {
@@ -1398,7 +1406,7 @@ struct GalleryView: View {
             case .systemLibraries:
                 SystemLibrariesOverviewView()
             case .cloudStorages:
-                CloudStoragesOverviewView()
+                CloudStoragesHubView()
             case .catalogSources:
                 CatalogHubView()
             case .people, .systemPeople:

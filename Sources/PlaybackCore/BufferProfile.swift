@@ -54,24 +54,6 @@ public enum BufferProfile: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 已生成内容领先播放位置超过该秒数时挂起 ffmpeg，避免后台把整片转完。
-    public var leadPauseSeconds: Double {
-        switch self {
-        case .thrifty: return 180
-        case .balanced: return 600
-        case .smooth: return 1200
-        }
-    }
-
-    /// 领先量回落到该秒数以下时恢复生成。
-    public var leadResumeSeconds: Double {
-        switch self {
-        case .thrifty: return 60
-        case .balanced: return 180
-        case .smooth: return 300
-        }
-    }
-
     /// 远端 Range 代理的并行预取窗口。
     public var prefetchWindow: Int {
         switch self {

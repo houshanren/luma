@@ -71,6 +71,13 @@ enum SettingsKeys {
     static let audioDownmix = "settings.video.audioDownmix"
     /// 重编码目标编码：兼容 H.264 / 高效 HEVC / 低功耗 HEVC。
     static let videoTranscodeMode = "settings.video.transcodeMode"
+    /// 画面显示方式：适应 / 填充 / 拉伸 / 原始像素。
+    static let videoFramingMode = "settings.video.framingMode"
+    /// 显示层比例预设：源比例 / 16:9 / 4:3 / 2.35:1 / 1:1。
+    static let videoAspectPreset = "settings.video.aspectPreset"
+    /// 比例裁剪后的平移（-1...1）。
+    static let videoPanX = "settings.video.panX"
+    static let videoPanY = "settings.video.panY"
     /// 每部影片记住的手动字幕选择。
     static func rememberedSubtitle(_ photoID: String) -> String {
         "settings.video.subtitleMemory.\(photoID)"
@@ -111,6 +118,8 @@ enum SettingsKeys {
     static let cinemaProvider = "settings.cinema.provider"
     /// 刮削源尝试顺序（rawValue 数组），第一位即首选源。
     static let cinemaSourceOrder = "settings.cinema.sourceOrder"
+    // 以下 5 个敏感键只用于把旧版 `UserDefaults` 明文迁移进统一凭据保险库；
+    // 新代码通过 `CinemaKeychain` 读写，不再访问这些键。
     static let cinemaAPIKey = "settings.cinema.apiKey"
     static let cinemaLanguage = "settings.cinema.language"
     static let cinemaAPIBase = "settings.cinema.apiBase"
@@ -125,6 +134,8 @@ enum SettingsKeys {
     static let subtitleProviderOpenSubtitles = "settings.subtitle.provider.openSubtitles"
     static let subtitleProviderAssrt = "settings.subtitle.provider.assrt"
     static let cinemaParentalLevel = "settings.cinema.parentalLevel"
+    /// 刮削并发数：同时处理多少个视频，默认 3。
+    static let cinemaScrapeConcurrency = "settings.cinema.scrapeConcurrency"
 
     /// 单个本地能力是否启用。模型文件存放在本机 Application Support，开关只表示用不用。
     static func modelEnabled(_ id: String) -> String {

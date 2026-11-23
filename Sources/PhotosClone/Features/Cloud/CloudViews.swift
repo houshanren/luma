@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import LumaContentCore
 
 // MARK: - 连接 / 编辑网络存储
 
@@ -687,39 +689,39 @@ struct CloudGridEmptyState: View {
     }
 
     private func errorView(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(message)
-                    .font(.system(size: 12))
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Button("重试") {
-                        store.refreshCloudDirectory()
-                    }
-                    .controlSize(.small)
-
-                    if cloud.needsCloudReauth, let kind = mountKind, kind == .baidu {
-                        Button("重新登录…") {
-                            store.presentCloudWizard(flow: .baidu)
-                        }
-                        .controlSize(.small)
-                        .help("重新走一遍官方授权，写入一份当前 App 可读取的令牌")
-                    } else if cloud.needsCloudReauth, let kind = mountKind,
-                              kind == .quark || kind == .aliyun || kind == .pan115 {
-                        Button("更新 Cookie…") {
-                            store.presentCloudWizard(flow: kind.wizardFlow)
-                        }
-                        .controlSize(.small)
-                        .help("登录凭据已过期：重新登录网页后复制一段新的 Cookie / refresh_token")
-                    }
-                }
-            }
-            Spacer()
+        SourceErrorView(error: cloudSourceError(message)) { action in
+            handleCloudRecovery(action)
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
+    }
+
+    /// 网盘错误目前是字符串 + `needsCloudReauth` 标记；统一收敛成 `SourceError` 后交给错误卡。
+    private func cloudSourceError(_ message: String) -> SourceError {
+        cloud.needsCloudReauth
+            ? SourceError(kind: .unauthorized,
+                          message: message,
+                          recovery: [.reauthorize, .retry])
+            : SourceError(kind: .unavailable,
+                          message: message,
+                          recovery: [.retry])
+    }
+
+    private func handleCloudRecovery(_ action: RecoveryAction) {
+        switch action {
+        case .retry:
+            store.refreshCloudDirectory()
+        case .reauthorize, .reconfigureSource:
+            guard let kind = mountKind else { return }
+            store.presentCloudWizard(flow: kind.wizardFlow)
+        case .openInBrowser(let address):
+            if let url = URL(string: address) { NSWorkspace.shared.open(url) }
+        case .openSystemSettings:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                NSWorkspace.shared.open(url)
+            }
+        case .allowInsecureTLS:
+            // 网盘连接不做自签证书例外，保留动作给影院 / 资源源使用。
+            break
+        }
     }
 
     private var filteredEmptyView: some View {

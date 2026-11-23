@@ -63,6 +63,20 @@ enum AssrtSubtitleClient {
         }
     }
 
+    /// 设置页「测试连接」：用一次轻量搜索验证访问令牌。
+    static func testConnection(token: String) async -> CinemaConnectionResult {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return CinemaConnectionResult(ok: false, message: "请先填写 Assrt 访问令牌")
+        }
+        do {
+            _ = try await search(query: "test", token: trimmed)
+            return CinemaConnectionResult(ok: true, message: "访问令牌可用")
+        } catch {
+            return CinemaConnectionResult(ok: false, message: error.localizedDescription)
+        }
+    }
+
     static func download(_ match: CinemaSubtitleMatch, token: String) async throws -> URL {
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedToken.isEmpty else { throw AssrtError.missingToken }

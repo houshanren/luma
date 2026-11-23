@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 /// 片单页里打开的详情（nil 表示停留在片单列表）。
 enum CatalogPlaylistPage: Equatable {
@@ -25,6 +26,12 @@ final class CatalogBrowserModel: ObservableObject {
     @Published var isLoadingMore = false
     @Published var hasMore = false
     @Published var error: String?
+    /// 结构化错误：界面优先用它统一展示恢复动作。
+    @Published var sourceError: SourceError?
+    /// 统一任务中心：健康检测、更新日历补录等跨源任务上报到这里。
+    var jobCenter: SourceJobCenter?
+    /// 任务进度变化回调；由 LibraryStore 接到 `sourceJobRevision`，触发界面刷新。
+    var onJobChange: (() -> Void)?
     /// 列表当前展示的是缓存快照而不是最新请求结果时，记录快照时间（离线视图提示用）。
     @Published var listSnapshotAt: Date?
     /// 本次刷新相对上次快照新出现的条目（key = "源 UUID|条目 id"）：
@@ -199,6 +206,8 @@ final class CatalogBrowserModel: ObservableObject {
     private var detailToken = 0
     /// 更新日历的后台扫描任务：手动刷新时可以取消重来，不会卡在「正在补录」。
     var calendarTask: Task<Void, Never>?
+    /// 更新日历在统一任务中心的登记 id。
+    var calendarJobID: UUID?
     /// 操作提示的自增标记：旧的自动消失任务不能清掉新提示。
     private var noticeToken = 0
     /// 二级标签的请求标记：切换分类时迟到的结果不能覆盖新上下文。
@@ -282,6 +291,7 @@ final class CatalogBrowserModel: ObservableObject {
         openPlaylistPage = nil
         pendingInlineItem = nil
         error = nil
+        sourceError = nil
         isLoading = false
         listSnapshotAt = nil
         freshItemKeys = []
@@ -711,6 +721,7 @@ final class CatalogBrowserModel: ObservableObject {
         items = []
         hasMore = false
         error = nil
+        sourceError = nil
         isLoading = false
         isLoadingMore = false
     }
@@ -771,6 +782,7 @@ final class CatalogBrowserModel: ObservableObject {
             items = []
             hasMore = false
             error = nil
+            sourceError = nil
             isLoading = false
             inFlightKey = nil
             return
@@ -778,6 +790,7 @@ final class CatalogBrowserModel: ObservableObject {
 
         page = 1
         error = nil
+        sourceError = nil
         freshItemKeys = []
         let key = cacheKey(source: source, page: 1)
         // 注意：这里不能「同 key 在途就直接 return」。
@@ -832,6 +845,7 @@ final class CatalogBrowserModel: ObservableObject {
         }
         guard let provider = CatalogProviders.provider(for: source.kind) else {
             error = CatalogError.unsupportedProvider.localizedDescription
+            sourceError = .unsupported(error ?? "当前来源不支持这个操作")
             return
         }
         do {
@@ -891,6 +905,7 @@ final class CatalogBrowserModel: ObservableObject {
             hasMore = result.hasMore
             self.page = page
             error = nil
+            sourceError = nil
             if page == 1 { listSnapshotAt = nil }
             applyLocalSortIfNeeded()
             let key = cacheKey(source: source, page: page)
@@ -903,6 +918,7 @@ final class CatalogBrowserModel: ObservableObject {
             // 有快照就继续显示快照（页面顶部会提示离线视图），没有才退回空态。
             if page == 1, listSnapshotAt == nil { items = [] }
             self.error = error.localizedDescription
+            self.sourceError = SourceErrorMapper.map(error)
             Diagnostics.record("影视源加载失败 \(source.name) \(sectionTitle)：\(error.localizedDescription)")
         }
     }
@@ -1090,19 +1106,9 @@ final class CatalogBrowserModel: ObservableObject {
                     startEpisode: episode.index, startSeconds: record.seconds))
             } catch {
                 self.error = error.localizedDescription
+                self.sourceError = SourceErrorMapper.map(error)
             }
         }
-    }
-
-    func updateProgress(source: CatalogSource, item: CatalogItem,
-                        episode: Int, seconds: Double, duration: Double) {
-        guard seconds > 3 else { return }
-        let record = CatalogProgress(sourceID: source.id, itemID: item.id, episode: episode,
-                                     seconds: seconds, duration: duration,
-                                     title: item.title, coverURL: item.coverURL,
-                                     updatedAt: Date())
-        progress[record.key] = record
-        persistProgress(record)
     }
 
     /// 从头播放：忽略已保存的秒数，仍按记录的集数起播。
@@ -1401,7 +1407,8 @@ final class CatalogBrowserModel: ObservableObject {
     }
 
     /// 播放中每次进度变化只写一行；超出上限时再按更新时间清掉最旧的行。
-    private func persistProgress(_ record: CatalogProgress) {
+    /// 写入方只有 `SourcePlaybackProgressStore`，这里负责落盘与容量兜底。
+    func persistProgress(_ record: CatalogProgress) {
         CatalogStore.saveProgress(record)
         guard progress.count > 200 else { return }
         let kept = progress.values.sorted { $0.updatedAt > $1.updatedAt }.prefix(200)

@@ -11,6 +11,13 @@ public struct SourceID: Hashable, Codable, Sendable, CustomStringConvertible {
 
     public var description: String { rawValue }
 
+    /// 源 ID 末尾的 UUID：`cloud:` / `catalog:` / `cinema:mount:` 共用。
+    /// 聚合源（如 `catalog:hub`）没有 UUID，返回 nil。
+    public var uuidValue: UUID? {
+        guard let separator = rawValue.lastIndex(of: ":") else { return nil }
+        return UUID(uuidString: String(rawValue[rawValue.index(after: separator)...]))
+    }
+
     public static func library(_ path: String) -> SourceID {
         SourceID("library:\(path)")
     }
@@ -38,6 +45,9 @@ public struct SourceID: Hashable, Codable, Sendable, CustomStringConvertible {
     public static func catalog(_ id: UUID) -> SourceID {
         SourceID("catalog:\(id.uuidString)")
     }
+
+    /// 跨源任务（今日总榜补录、全源健康检测）使用的聚合源。
+    public static let catalogHub = SourceID("catalog:hub")
 
     public static func television(_ id: UUID) -> SourceID {
         SourceID("tv:\(id.uuidString)")

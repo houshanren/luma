@@ -358,8 +358,6 @@ final class VideoPlaybackUI: ObservableObject {
     /// 当前配置的字幕来源：OpenSubtitles 与伪射手各自独立开关。
     private var providerConfiguration: SubtitleProviderService.Configuration {
         let settings = AppSettings.shared
-        // 第一次真正搜索在线字幕时才读钥匙串。
-        settings.loadSubtitleCredentialsIfNeeded()
         return SubtitleProviderService.Configuration(
             openSubtitles: OpenSubtitlesClient.Credentials(apiKey: settings.cinemaSubtitleAPIKey,
                                                            username: settings.cinemaSubtitleUsername,

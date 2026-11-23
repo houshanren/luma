@@ -5,6 +5,7 @@ import Combine
 import CoreLocation
 import UniformTypeIdentifiers
 import LumaCore
+import LumaContentCore
 
 struct LibraryData: Codable {
     var photos: [PhotoItem] = []
@@ -49,6 +50,8 @@ enum SearchScope: String, CaseIterable {
 
 @MainActor
 final class LibraryStore: ObservableObject {
+    /// 单窗口应用里唯一的主图库：AppDelegate 关窗时用它判断智能助手是否还在后台执行。
+    static weak var current: LibraryStore?
     @Published var photos: [PhotoItem] = [] {
         didSet { contentRevision &+= 1 }
     }
@@ -612,10 +615,23 @@ final class LibraryStore: ObservableObject {
         return CinemaViewMode(rawValue: raw ?? "") ?? .wall
     }
 
-    /// 影院的年代筛选（如 2020 表示 2020 年代），空集合表示全部；可多选。
-    @Published var cinemaDecades: Set<Int> = []
+    /// 影院的年份筛选（具体年份，如 2024），空集合表示全部；可多选。
+    @Published var cinemaYears: Set<Int> = []
     /// 影院的类型筛选（剧情 / 科幻 / 悬疑……），空集合表示全部；可多选。
     @Published var cinemaGenres: Set<String> = []
+    /// 顶栏内容类型（动漫 / 综艺 / 演唱会 / 纪录片 / 其它 TMDB 类型）；nil 表示全部。
+    /// 与「类型」多选筛选不同：它是影院的一级入口，单选。
+    @Published var cinemaTypeFilterID: String? = nil
+    /// 内容形态筛选（电影 / 电视剧），空集合表示全部；可多选。
+    @Published var cinemaKindFilters: Set<CinemaMediaKind> = []
+    /// 地区（出品国家）筛选，空集合表示全部；可多选。
+    @Published var cinemaCountries: Set<String> = []
+    /// 语言筛选：存 ISO 代码，界面翻译成中文；空集合表示全部；可多选。
+    @Published var cinemaLanguages: Set<String> = []
+    /// 片长分档，空集合表示全部；可多选。
+    @Published var cinemaRuntimeFilters: Set<CinemaRuntimeFilter> = []
+    /// 评分分档，空集合表示全部；可多选。
+    @Published var cinemaRatingFilters: Set<CinemaRatingFilter> = []
     /// 分辨率筛选；空集合表示全部；可多选。
     @Published var cinemaResolutions: Set<CinemaResolutionFilter> = []
     /// 观看状态筛选；空集合表示全部；可多选。
@@ -641,6 +657,8 @@ final class LibraryStore: ObservableObject {
     @Published var cinemaScrapeDone = 0
     @Published var cinemaScrapeTotal = 0
     @Published var cinemaScrapeMessage: String?
+    /// 影院刮削的结构化错误：统一错误卡据此展示重试 / 改配置。
+    @Published var cinemaSourceError: SourceError?
     /// 设置面板里「测试连接」的运行状态与结果。
     @Published var cinemaConnectionTesting = false
     @Published var cinemaConnectionResult: CinemaConnectionResult?
@@ -650,6 +668,13 @@ final class LibraryStore: ObservableObject {
     @Published var cinemaProgress: [UUID: CinemaProgressRecord] = [:] {
         didSet { cinemaDataRevision &+= 1 }
     }
+    /// 影院索引是否完成首次读取：首屏用它决定显示骨架屏还是空态。
+    @Published var cinemaIndexLoaded = false
+    /// 影院播放队列：从海报墙 / 剧集详情开播时带上当前上下文。
+    /// 播完或按「下一集」时在这里前进，不再依赖查看器的照片列表。
+    @Published var cinemaQueue: [CinemaEntry] = []
+    /// 详情页返回记忆：每部剧记住上次看的季与选中集，不写 UserDefaults。
+    var cinemaSeriesMemory: [String: CinemaSeriesMemory] = [:]
     /// 影院本地用户状态：收藏 / 想看 / 个人评分。
     @Published var cinemaUserStates: [UUID: CinemaUserState] = [:] {
         didSet { cinemaDataRevision &+= 1 }
@@ -681,8 +706,7 @@ final class LibraryStore: ObservableObject {
     @Published var cinemaFolderCloseTick = 0
     /// 顶栏「新建清单…」请求。
     @Published var cinemaNewListVisible = false
-    /// 任务中心（刮削与维护记录）。
-    @Published var cinemaTasksVisible = false
+    /// 影院刮削与维护记录：任务历史并入侧边栏底部任务浮层展示。
     @Published var cinemaTasks: [CinemaTaskRecord] = []
     /// 通知中心：任务结果归档（今天 / 本周分组，保留 30 天）。
     @Published var cinemaNotificationsVisible = false
@@ -719,6 +743,23 @@ final class LibraryStore: ObservableObject {
     let cloudModel = CloudBrowserModel()
     /// 网络资源（影视源）状态：与网盘并列，但不参与图库索引与扫描。
     let catalogModel = CatalogBrowserModel()
+    /// 统一后台任务中心：云盘扫描、资源健康 / 日历、影院刮削共用。
+    let sourceJobCenter = SourceJobCenter()
+    /// 任务进度变化时自增，界面据此刷新任务条。
+    @Published var sourceJobRevision = 0
+    /// 统一续播存储：影院与网络资源共用一套读写接口（只适配，不迁移数据）。
+    lazy var playbackProgressStore = SourcePlaybackProgressStore(library: self,
+                                                                 catalog: catalogModel)
+    /// 源运行时：注册表 + 统一激活入口 + 源会话。
+    lazy var sourceHub = SourceHubModel(store: self)
+    /// 播放协调器：解析 target → 会话；现有 PhotoItem 流程也经它补模式与能力。
+    lazy var playbackCoordinator = PlaybackCoordinator(resolver: LibraryPlaybackProvider(store: self))
+    /// 源内容快照：电视 / 本地磁盘等新源先铺上次内容，再后台刷新。
+    lazy var contentSnapshots = FileContentSnapshotStore(
+        directory: LibraryPaths.root.appendingPathComponent("source-snapshots", isDirectory: true)
+    )
+    /// 源修订号：内容变化时自增，界面与快照据此判断是否重读。
+    let sourceRevisions = SourceRevisionTracker()
     /// 网络资源播放：每集一个虚拟视频，交给查看器翻页与播放。
     var catalogPlaybackPhotos: [PhotoItem] = []
     var catalogPlaybackContexts: [UUID: CatalogPlaybackContext] = [:]
@@ -1064,6 +1105,14 @@ final class LibraryStore: ObservableObject {
     var tripCacheKey = -1
     var tripCacheValue: [TripStory] = []
     var faceClusterTask: Task<Void, Never>?
+    /// 启动分片大小：一片几千条，够填满首屏，又不会把启动主线程卡住。
+    static let libraryIndexShardSize = 5000
+    /// 启动分片是否补完：未完成时 `photos` 不完整，禁止整库落盘。
+    var libraryIndexComplete = true
+    /// 后台补分片的任务；切换图库时取消，避免旧库条目被追加进新库。
+    var libraryIndexTask: Task<Void, Never>?
+    /// 分片未完成期间收到的保存请求：补齐后再补写一次。
+    var pendingSaveWhileIndexing = false
     var scannedFaceIDs: Set<UUID> = []
     var faceDataLoaded = false
     /// 人脸聚类的运行标识：重新识别时换新标识，旧任务的收尾写回会被丢弃。
@@ -1088,10 +1137,18 @@ final class LibraryStore: ObservableObject {
         if !needsLibrarySetup || LibraryPaths.hasLocalLibraryData {
             if let store = try? MetadataStore(url: LibraryPaths.metadataFile) {
                 metadataStore = store
-                let data = store.loadLibrary()
-                photos = data.photos
-                albums = data.albums
-                folders = data.folders
+                // 启动分片：相簿 / 文件夹很小一次读完；资产先同步读第一片让窗口立刻有内容，
+                // 剩下的在后台按页补齐，避免几万条记录卡在启动主线程上。
+                let shell = store.loadLibraryShell()
+                albums = shell.albums
+                folders = shell.folders
+                let shard = Self.libraryIndexShardSize
+                let total = store.assetCount()
+                photos = store.loadAssets(limit: shard, offset: 0)
+                if photos.count < total {
+                    libraryIndexComplete = false
+                    loadRemainingAssets(total: total, shard: shard)
+                }
                 systemLibraryPath = store.setting("system_library_path")
                 // 后台枚举一次本地缩略图目录：网格滚动时不用逐格 stat（本机盘，给足预算）。
                 ThumbnailFileIndex.shared.warm(root: LibraryPaths.derivatives, timeBudget: 3)
@@ -1161,6 +1218,10 @@ final class LibraryStore: ObservableObject {
         showLibraryPicker = startsWithLibraryPicker
 
         // 网络资源的源、片单、日历都跟着图库：按当前图库读取一次。
+        catalogModel.jobCenter = sourceJobCenter
+        catalogModel.onJobChange = { [weak self] in
+            self?.sourceJobRevision &+= 1
+        }
         catalogModel.loadForCurrentLibrary()
 
         // 网络资源的播放统一交给查看器：用虚拟分集铺满上下文，左右翻页即切集。
@@ -1193,10 +1254,13 @@ final class LibraryStore: ObservableObject {
                 self?.refreshCurrentCloudIndexIfNeeded()
             }
         }
+
+        LibraryStore.current = self
     }
 
     deinit {
         localCinemaWatcher?.stop()
+        libraryIndexTask?.cancel()
         cinemaPrewarmTask?.cancel()
         cinemaPrewarmedStream?.session.stop()
         if let terminateObserver {
@@ -1227,9 +1291,45 @@ final class LibraryStore: ObservableObject {
         // 元数据只能写进当前图库的 SQLite；没有 MetadataStore（没有图库）时不落盘，
         // 避免在 Application Support 里写出会被下一个打开的图库误迁入的 Library.json。
         guard let metadataStore else { return }
+        // 分片还没读完时 photos 不完整：整库重写会把未加载的行删掉，先记一笔等补齐。
+        guard libraryIndexComplete else {
+            pendingSaveWhileIndexing = true
+            return
+        }
         LibraryPaths.prepare()
         let data = LibraryData(photos: photos, albums: albums, folders: folders)
         metadataStore.save(data)
+    }
+
+    /// 后台补齐剩余资产：每片回到主线程一次性追加，避免逐条触发视图重算。
+    private func loadRemainingAssets(total: Int, shard: Int) {
+        guard let store = metadataStore else {
+            libraryIndexComplete = true
+            return
+        }
+        libraryIndexTask = Task { [weak self] in
+            // 先让首屏渲染出来，再开始补剩余分片；启动阶段不再被 SQLite 读抢占。
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            if Task.isCancelled { return }
+            var offset = shard
+            while offset < total {
+                if Task.isCancelled { return }
+                let page = await Task.detached(priority: .utility) {
+                    store.loadAssets(limit: shard, offset: offset)
+                }.value
+                if page.isEmpty { break }
+                guard let self else { return }
+                self.photos.append(contentsOf: page)
+                offset += shard
+                await Task.yield()
+            }
+            guard let self else { return }
+            self.libraryIndexComplete = true
+            if self.pendingSaveWhileIndexing {
+                self.pendingSaveWhileIndexing = false
+                self.save()
+            }
+        }
     }
 
     /// 导入过程中增量写入新照片，避免每批都全量重写 assets；没有 SQLite 时退回整体保存。

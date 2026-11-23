@@ -28,9 +28,9 @@ enum CloudKind: String, Codable {
     /// 只有 WebDAV 允许写入；SMB 与官方网盘均为只读。
     var supportsWrite: Bool { self == .webdav }
 
-    /// 是否支持在向导里选择接入范围与排除目录（Cookie 模式与 SMB）。
+    /// 是否支持在向导里选择接入范围与排除目录（Cookie 模式、SMB 与百度 OAuth）。
     var supportsAccessScope: Bool {
-        self == .smb || self == .aliyun || self == .quark || self == .pan115
+        self == .smb || self == .aliyun || self == .quark || self == .pan115 || self == .baidu
     }
 
     /// 需要 OAuth 令牌的官方网盘（夸克使用浏览器 Cookie）。

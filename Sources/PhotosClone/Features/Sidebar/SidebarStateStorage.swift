@@ -11,9 +11,9 @@ enum SidebarStateStorage {
         static let collapsedSystemLibraries = "sidebar.state.collapsedSystemLibraries"
         static let expandedCloudMounts = "sidebar.state.expandedCloudMounts"
         /// 每个网盘的「媒体类型 / 更多项目 / 场景 / 相簿」折叠状态按网盘 ID 分开保存。
-        /// v2：网盘改为与图库一致「媒体类型 / 场景默认收起」，旧版本保存的展开态不再沿用。
+        /// v3：网盘里默认只露出「影院」，四个分类分区全部收起，旧版本保存的展开态不再沿用。
         static func cloudDetailSections(_ mountID: UUID?) -> String {
-            "sidebar.state.cloudDetail.v2.\(mountID?.uuidString ?? "none")"
+            "sidebar.state.cloudDetail.v3.\(mountID?.uuidString ?? "none")"
         }
     }
 

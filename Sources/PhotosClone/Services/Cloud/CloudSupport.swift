@@ -54,7 +54,7 @@ enum CloudCredentials {
 
     static func setPassword(_ password: String, for mountID: UUID) {
         let account = "password.\(mountID.uuidString)"
-        CloudSecretStore.mark("legacy-password.\(mountID.uuidString)")
+        LumaKeychainVault.suppressLegacy(vaultKey: vaultKey(account))
         CloudSecretStore.set(Data(password.utf8), for: account)
         cacheLock.lock()
         cache[mountID] = password
@@ -63,7 +63,7 @@ enum CloudCredentials {
 
     static func delete(for mountID: UUID) {
         let account = "password.\(mountID.uuidString)"
-        CloudSecretStore.mark("legacy-password.\(mountID.uuidString)")
+        LumaKeychainVault.suppressLegacy(vaultKey: vaultKey(account))
         CloudSecretStore.remove(account)
         cacheLock.lock()
         cache[mountID] = nil
@@ -76,64 +76,22 @@ enum CloudCredentials {
            let value = String(data: data, encoding: .utf8) {
             return value
         }
-        // 旧版本存在钥匙串里：只尝试迁移一次，之后不再访问钥匙串。
-        let flag = "legacy-password.\(mountID.uuidString)"
-        guard !CloudSecretStore.isMarked(flag) else { return "" }
-
-        switch readLegacyValue(service: service, account: mountID.uuidString) {
-        case .retry:
-            return ""
-        case .value(let value):
-            CloudSecretStore.mark(flag)
-            CloudSecretStore.set(Data(value.utf8), for: account)
-            return value
-        case .denied:
-            CloudSecretStore.mark(flag)
+        // 旧版本存在钥匙串里：只读取一次，结果由统一保险库记录，之后不再访问钥匙串。
+        switch LumaKeychainVault.migrateLegacy(vaultKey: vaultKey(account),
+                                               services: [service, legacyService],
+                                               account: mountID.uuidString) {
+        case .data(let data):
+            return String(data: data, encoding: .utf8) ?? ""
+        case .denied(let status):
+            Diagnostics.record("网盘密码旧条目读取被拒绝 status=\(status)")
             return ""
         case .missing:
-            break
-        }
-
-        switch readLegacyValue(service: legacyService, account: mountID.uuidString) {
-        case .retry:
-            return ""
-        case .value(let value):
-            CloudSecretStore.mark(flag)
-            CloudSecretStore.set(Data(value.utf8), for: account)
-            return value
-        case .missing, .denied:
-            CloudSecretStore.mark(flag)
             return ""
         }
     }
 
-    private enum LegacyRead {
-        case value(String)
-        case missing
-        case denied
-        /// 屏幕锁定等临时不可交互状态：不写迁移标记，下次还能再试。
-        case retry
-    }
-
-    private static func readLegacyValue(service: String, account: String) -> LegacyRead {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return .missing }
-        if status == errSecInteractionNotAllowed { return .retry }
-        guard status == errSecSuccess else {
-            NSLog("LumaKeychain: 读取网盘密码 %@ 失败 status=%d", account, status)
-            return .denied
-        }
-        guard let data = item as? Data,
-              let value = String(data: data, encoding: .utf8) else { return .missing }
-        return .value(value)
+    private static func vaultKey(_ account: String) -> String {
+        "cloud.\(account)"
     }
 }
 

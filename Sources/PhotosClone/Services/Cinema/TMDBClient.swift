@@ -279,6 +279,84 @@ struct TMDBClient: CinemaMetadataSource {
                                     parts: parts)
     }
 
+    /// 相似推荐：TMDB 的 recommendations，用同一套条目解析，最多取 20 条。
+    func recommendations(id: Int, isTV: Bool) async throws -> [CinemaRecommendation] {
+        let path = isTV ? "/tv/\(id)/recommendations" : "/movie/\(id)/recommendations"
+        let object = try await request(path: path, items: [
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "page", value: "1")
+        ])
+        let results = object["results"] as? [[String: Any]] ?? []
+        return results.prefix(20).compactMap { item in
+            guard let match = parse(item, isTV: isTV), let tmdbID = Int(match.id) else { return nil }
+            return CinemaRecommendation(tmdbID: tmdbID,
+                                        kind: isTV ? .tv : .movie,
+                                        title: match.title,
+                                        year: match.year,
+                                        posterURL: match.posterURL,
+                                        rating: match.rating)
+        }
+    }
+
+    /// 按姓名找人物 ID：导演只存了名字，用它补出 ID 再拉作品。
+    func searchPersonID(name: String) async throws -> Int? {
+        let object = try await request(path: "/search/person", items: [
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "query", value: name),
+            URLQueryItem(name: "page", value: "1")
+        ])
+        let results = object["results"] as? [[String: Any]] ?? []
+        return results.first.flatMap { ($0["id"] as? NSNumber)?.intValue }
+    }
+
+    /// 同系列：合集里除当前这部以外的其它影片（带海报）。
+    func collectionRecommendations(id: Int, excluding tmdbID: Int) async throws -> [CinemaRecommendation] {
+        let object = try await request(path: "/collection/\(id)", items: [
+            URLQueryItem(name: "language", value: language)
+        ])
+        let parts = object["parts"] as? [[String: Any]] ?? []
+        return parts.compactMap { item -> CinemaRecommendation? in
+            guard let partID = (item["id"] as? NSNumber)?.intValue, partID != tmdbID,
+                  let title = item["title"] as? String, !title.isEmpty else { return nil }
+            let date = (item["release_date"] as? String) ?? ""
+            return CinemaRecommendation(tmdbID: partID,
+                                        kind: .movie,
+                                        title: title,
+                                        year: Int(date.prefix(4)),
+                                        posterURL: imageURL(path: item["poster_path"] as? String,
+                                                            size: "w342"),
+                                        rating: (item["vote_average"] as? NSNumber)?.doubleValue)
+        }
+    }
+
+    /// 海报 / 背景候选：中文优先、其次无语言，再按社区评分排序。
+    func artworkCandidates(id: Int, isTV: Bool) async throws
+        -> (posters: [CinemaArtworkCandidate], backdrops: [CinemaArtworkCandidate]) {
+        let path = isTV ? "/tv/\(id)/images" : "/movie/\(id)/images"
+        let object = try await request(path: path, items: [
+            URLQueryItem(name: "include_image_language", value: "zh,en,null")
+        ])
+
+        func parse(_ key: String, size: String) -> [CinemaArtworkCandidate] {
+            let items = object[key] as? [[String: Any]] ?? []
+            return items.compactMap { item in
+                guard let path = item["file_path"] as? String,
+                      let url = imageURL(path: path, size: size) else { return nil }
+                return CinemaArtworkCandidate(url: url,
+                                              width: (item["width"] as? NSNumber)?.intValue ?? 0,
+                                              height: (item["height"] as? NSNumber)?.intValue ?? 0,
+                                              language: item["iso_639_1"] as? String,
+                                              rating: (item["vote_average"] as? NSNumber)?.doubleValue)
+            }
+            .sorted { lhs, rhs in
+                if lhs.languageRank != rhs.languageRank { return lhs.languageRank < rhs.languageRank }
+                return (lhs.rating ?? 0) > (rhs.rating ?? 0)
+            }
+        }
+
+        return (parse("posters", size: "w500"), parse("backdrops", size: "w1280"))
+    }
+
     /// 统一构造请求并返回 JSON 对象。
     private func request(path: String, items: [URLQueryItem]) async throws -> [String: Any] {
         guard !trimmedKey.isEmpty else { throw TMDBError.missingKey }

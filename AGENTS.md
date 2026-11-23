@@ -93,7 +93,9 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Services/AI/AIImageEncoder.swift` | 发送前把照片压成长边 1024 的 JPEG data URL | 保存图片、修改图库 |
 | `Services/AI/AILibraryTools.swift` | 工具定义（搜索/相簿/收藏/关键词/选中）与参数解析 | 直接改图库、弹窗确认 |
 | `Services/AI/AILibraryCinemaTools.swift` | 影院工具定义（浏览/播放/个人状态/清单/维护）与确认文案 | 直接改图库、弹窗确认 |
-| `Services/AI/AIKeychain.swift` | 智能助手 API Key 的钥匙串读写 | 把 Key 写入数据库或日志 |
+| `Services/AI/AIKeychain.swift` | 智能助手 API Key 的读写（转调统一凭据保险库，旧条目一次性迁移） | 直接调用 `SecItem*`、把 Key 写入数据库或日志 |
+| `Services/Shared/KeychainAccess.swift` | 全应用唯一直接调用 Security.framework 的入口（读取 / 写入 / ACL） | 在业务代码里拼钥匙串查询 |
+| `Services/Shared/LumaKeychainVault.swift` | 统一凭据保险库：所有业务凭据存一个钥匙串条目，进程内缓存 + 旧条目一次性迁移 | 每次启动重复读旧条目、逐功能弹授权 |
 | `Store/LibraryStore+AIAgent.swift` | 智能助手状态、请求编排、对话持久化、检索建议应用 | 直接拼接 HTTP 请求（放 `AIProviderClient`） |
 | `Store/LibraryStore+AITools.swift` | 工具执行与写操作确认；只调用现有 Store 方法 | 绕过 `save()`、直接写 SQLite |
 | `Store/LibraryStore+AICinemaTools.swift` | 影院工具执行：检索、播放、收藏 / 想看 / 评分、清单、忽略、元数据刷新、跳过片头、观看记录 | 绕过 `LibraryStore` 直接写文件或数据库 |
@@ -187,7 +189,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 ### 智能助手（AI）
 
-- 配置写当前图库的 `settings`（`ai_config`），对话写 `ai_conversation`；两者都是 **per-library** 数据，切换图库时由 `loadAIState()` 重新读取。API Key 只允许写 Keychain（service `com.baymax.luma.ai`），禁止写入数据库、`UserDefaults`、日志或对话内容。
+- 配置写当前图库的 `settings`（`ai_config`），对话写 `ai_conversation`；两者都是 **per-library** 数据，切换图库时由 `loadAIState()` 重新读取。API Key 只能经 `AIKeychain` / `LumaKeychainVault` 写统一凭据保险库（旧版 service `com.baymax.luma.ai` 的条目只读取一次后迁入），禁止写入数据库、`UserDefaults`、日志或对话内容。
 - 请求只能经 `AIProviderClient`（OpenAI 兼容 `chat/completions`）发出，不引入第三方 SDK；新增提供商只增加 `AIProvider` 的默认 Base URL / 模型与设置项。
 - 提示词只能由 `AIContextBuilder` 组装：当前范围摘要 + 最多 40 张候选照片的元数据/本地 Vision 标签/OCR；禁止把整个 `photos` 数组或文件路径序列化给模型。
 - 图片默认不发送。开启「图片理解」后，只能经 `AIImageEncoder` 压成长边约 1024 的 JPEG（单次最多 6 张），跳过 RAW、视频与云端照片；不得上传原图。
@@ -331,7 +333,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 新增一个用户可调项必须**全部**完成：
 
-1. 先判断归属：视图状态、导入选项、最近删除保留期、系统图库载入上限、网格元数据显示、网盘收藏、智能助手配置与对话属于**图库级设置**（写当前图库的 SQLite）；外观、强调色、动效、查看器与视频播放等属于 **App 级偏好**（写 `UserDefaults`）。API Key 属于凭据，只能写 Keychain。
+1. 先判断归属：视图状态、导入选项、最近删除保留期、系统图库载入上限、网格元数据显示、网盘收藏、智能助手配置与对话属于**图库级设置**（写当前图库的 SQLite）；外观、强调色、动效、查看器与视频播放等属于 **App 级偏好**（写 `UserDefaults`）。API Key、Cookie、账号密码、PIN 一律属于凭据，只能写统一凭据保险库 `LumaKeychainVault`。
 2. `SettingsKeys` 增加键名（`settings.xxx`）；
 3. `AppSettings` 增加 `@Published` 属性：图库级用 `persistLibraryFlag` / `persistLibraryInt` / `persistLibraryJSON`，App 级继续写 `UserDefaults`；
 4. 图库级属性必须在 `AppSettings.reloadLibraryScopedValues()` 中读取（缺少键时给默认值），并在 `SettingsView` 对应的图库 Tab 或说明中标注「随图库保存」；
@@ -349,8 +351,10 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 新增网盘类型：`CloudKind` 增加 case → 更新 `title`/`supportsWrite` → 在 `CloudService.list/stream` 分派 → 在 `CloudWizard` 增加向导 flow 与凭据步骤 → `CloudMountInfoView` 补充说明。
 - Cookie 模式与 SMB 的接入范围存在 `CloudMount.scopeRoots` / `excludedRoots`：为空扫描全部（整个网盘 / 整个共享），非空只扫描选中目录并始终跳过排除目录（SMB 按路径前缀覆盖子树）。向导确认页读取目录并支持多选、下钻与「接入 / 排除」切换；侧边栏与存储卡片可「编辑接入范围…」直接回到该页。扫描器把选中的目录挂成顶层相簿；范围变化时清空目录树，并用 `CloudScanSnapshot.scopeSignature`（包含目录 + 排除目录）让旧快照失效。
 - WebDAV 请求统一走 `WebDAVClient`（已处理百分号编码、Basic Auth、PROPFIND/MKCOL/PUT/MOVE/DELETE、Range）。
-- OAuth：`CloudOAuthStore` 负责钥匙串（service `com.baymax.photosclone.oauth`，旧版 `com.lijialong.photosclone.oauth` 会自动迁移），回调固定 `127.0.0.1:53682`，必须校验 `state`；token 过期由 `CloudService.accessToken(for:)` 自动刷新并回写。
+- OAuth：`CloudOAuthStore` 的凭据统一存入 `LumaKeychainVault`（旧版 service `com.baymax.photosclone.oauth` / `com.lijialong.photosclone.oauth` 只读取一次后迁移），回调固定 `127.0.0.1:53682`，必须校验 `state`；token 过期由 `CloudService.accessToken(for:)` 自动刷新并回写。
+- 钥匙串调用必须收口在 `KeychainAccess`：业务代码只允许通过 `LumaKeychainVault`（或其封装 `AIKeychain` / `CinemaKeychain` / `CloudSecretStore`）读写，禁止自己拼 `SecItemCopyMatching` / `SecItemAdd` / `SecItemUpdate`，避免同一凭据在不同地方重复弹授权框。旧条目迁移结果会记在保险库元数据里，同一台机器上每项最多只读一次。
 - 网盘凭据禁止写入 `UserDefaults`、日志或 `CloudMount`。
+- 影院刮削源（TMDB / TheTVDB / 豆瓣 Cookie）、OpenSubtitles API Key、字幕账号与家长 PIN 同样属于凭据：统一由 `CinemaKeychain` 写入 `LumaKeychainVault`（`cinema.*` 前缀），禁止写 `UserDefaults`。旧版明文键由 `AppSettings.loadSecretsFromVault()` 在启动时迁移一次，确认写入保险库后立即从 `UserDefaults` 删除。
 - 网络请求失败必须转为用户可读中文错误（`WebDAVError` / `CloudOAuthError`），不要直接抛英文 `NSError` 文案。
 - 网盘目录缓存以 `mountID + path` 为键；退出网盘或切换目录时不要泄漏 `Task`。
 - 网盘侧边栏的「媒体类型 / 更多项目」分区标题与拾光、系统图库一致，点标题打开卡片总览（`CloudOverviewSection`，状态在 `CloudBrowserModel.overview`）；选中具体范围、进入子目录、切换挂载或换库时必须清空总览，否则会停留在旧目录的卡片墙。总览卡片复用 `AlbumCoverImage` 与同一套布局，封面取当前目录里属于该范围的第一张。
@@ -416,7 +420,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - ❌ 硬编码 `/Users/...`、`~/Pictures/...` 等绝对路径（测试脚本除外）。
 - ❌ 只做“装饰性设置项”（开关没有任何行为）。
 - ❌ 提交含密钥、token、临时调试代码的改动。
-- ❌ 把 API Key、OAuth token 写入图库数据库、`UserDefaults`、日志或智能助手对话记录。
+- ❌ 把 API Key、Cookie、账号密码、PIN 或 OAuth token 写入图库数据库、`UserDefaults`、日志或智能助手对话记录。
 - ❌ 让智能助手绕过工具确认直接修改图库，或绕过 `LibraryStore` 写文件与数据库。
 
 ---

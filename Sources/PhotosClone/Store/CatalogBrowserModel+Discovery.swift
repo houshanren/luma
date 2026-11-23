@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 // MARK: - 网络资源 2.0：置顶 / 关注 / 健康度 / 跨源发现
 
@@ -118,37 +119,99 @@ extension CatalogBrowserModel {
         }
         guard !targets.isEmpty else { return }
         for source in targets { health[source.id] = .checking }
-        Task { [weak self] in
+
+        healthTask?.cancel()
+        let jobID = jobCenter?.begin(
+            SourceJob(sourceID: .catalogHub,
+                      kind: .healthCheck,
+                      title: "检测 \(targets.count) 个资源站"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.healthTask?.cancel() }
+            }
+        )
+        onJobChange?()
+
+        healthTask = Task { [weak self] in
+            var online = 0
+            var limited = 0
+            var offline = 0
             await CatalogRequestScope.$isBackground.withValue(true) {
-                for source in targets {
-                    guard let self else { return }
-                    guard let provider = CatalogProviders.provider(for: source.kind) else {
-                        self.health[source.id] = .offline
-                        self.healthCheckedAt[source.id] = Date()
-                        continue
+                for (index, source) in targets.enumerated() {
+                    guard let self, !Task.isCancelled else { return }
+                    if let jobID {
+                        self.jobCenter?.update(jobID,
+                                               completed: index,
+                                               total: targets.count,
+                                               message: source.name)
+                        self.onJobChange?()
                     }
                     let started = Date()
-                    let state = await Self.probe(provider: provider, source: source)
+                    let state = await Self.probe(source: source)
                     self.health[source.id] = state
                     self.healthLatency[source.id] = Int(Date().timeIntervalSince(started) * 1000)
                     self.healthCheckedAt[source.id] = Date()
+                    switch state {
+                    case .online: online += 1
+                    case .limited: limited += 1
+                    case .offline: offline += 1
+                    default: break
+                    }
                 }
             }
+            guard let self else { return }
+            guard let jobID else { return }
+            if Task.isCancelled {
+                self.jobCenter?.cancel(jobID)
+            } else {
+                self.jobCenter?.finish(jobID,
+                                       message: "在线 \(online) · 需验证 \(limited) · 离线 \(offline)")
+            }
+            self.onJobChange?()
         }
     }
 
-    private static func probe(provider: CatalogProvider,
-                              source: CatalogSource) async -> CatalogSourceHealth {
+    /// 供 `SourceSession` 使用的单源健康探测：结果与总览页的健康徽章同源。
+    func probeHealth(_ source: CatalogSource) async -> SourceHealth {
+        let started = Date()
+        let result = await Self.probe(source: source)
+        let latency = Int(Date().timeIntervalSince(started) * 1000)
+        switch result {
+        case .online:
+            return SourceHealth(state: .healthy, checkedAt: Date(), latencyMilliseconds: latency)
+        case .limited:
+            return SourceHealth(state: .degraded, checkedAt: Date(),
+                                latencyMilliseconds: latency, message: "站点要求先完成验证")
+        case .offline:
+            return SourceHealth(state: .offline, checkedAt: Date(),
+                                latencyMilliseconds: latency, message: "站点暂时连不上")
+        case .checking, .unknown:
+            return SourceHealth(state: .unknown, checkedAt: Date())
+        }
+    }
+
+    /// 健康探测统一走 `ContentRepository`：站点适配器怎么换都不影响这里，
+    /// 电视 / 本地磁盘接入后也能复用同一份探测逻辑。
+    private static func probe(source: CatalogSource) async -> CatalogSourceHealth {
         await withTaskGroup(of: CatalogSourceHealth?.self) { group in
             group.addTask {
                 do {
-                    let page = try await provider.home(source: source, page: 1)
+                    let repository = CatalogContentRepository(source: source)
+                    let page = try await repository.page(ContentQuery(cursor: PageCursor(page: 1),
+                                                                      limit: 1))
                     return page.items.isEmpty ? .limited : .online
-                } catch {
-                    if case CatalogError.http(let code) = error, code == 492 || code == 403 {
+                } catch let error as SourceError {
+                    switch error.kind {
+                    case .unsupported:
+                        return .offline
+                    case .http:
+                        if let code = error.statusCode, code == 492 || code == 403 { return .limited }
+                        return .offline
+                    case .parse, .blocked:
                         return .limited
+                    default:
+                        return .offline
                     }
-                    if case CatalogError.parse = error { return .limited }
+                } catch {
                     return .offline
                 }
             }
@@ -731,6 +794,7 @@ extension CatalogBrowserModel {
             guard force else { return }
             calendarTask?.cancel()
             calendarTask = nil
+            if let calendarJobID { jobCenter?.cancel(calendarJobID) }
             isCalendarRefreshing = false
         }
         if !force,
@@ -744,10 +808,30 @@ extension CatalogBrowserModel {
         calendarNewIDs = []
         persistCalendarNewIDs()
         isCalendarRefreshing = true
+        let targets = enabledSources
+        let jobID = jobCenter?.begin(
+            SourceJob(sourceID: .catalogHub,
+                      kind: .sync,
+                      title: "补录更新日历"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.calendarTask?.cancel() }
+            }
+        )
+        calendarJobID = jobID
+        onJobChange?()
         calendarTask = Task { [weak self] in
+            var recorded = 0
             await CatalogRequestScope.$isBackground.withValue(true) {
-                for source in (self?.enabledSources ?? []) {
-                    guard let self, !Task.isCancelled, !self.isUserBusy,
+                for (index, source) in targets.enumerated() {
+                    guard let self, !Task.isCancelled else { return }
+                    if let jobID {
+                        self.jobCenter?.update(jobID,
+                                               completed: index,
+                                               total: targets.count,
+                                               message: source.name)
+                        self.onJobChange?()
+                    }
+                    guard !self.isUserBusy,
                           let provider = CatalogProviders.provider(for: source.kind) else { continue }
                     // 每个源记住翻到第几页：下次接着往下翻，慢慢把历史补满。
                     let cursorKey = Self.calendarCursorKey + "." + source.id.uuidString
@@ -758,7 +842,9 @@ extension CatalogBrowserModel {
                         continue
                     }
                     guard !Task.isCancelled else { return }
-                    self.recordCalendar(items: Array(page.items.prefix(24)), sourceID: source.id)
+                    let fresh = Array(page.items.prefix(24))
+                    self.recordCalendar(items: fresh, sourceID: source.id)
+                    recorded += fresh.count
                     CatalogStore.string(forKey: cursorKey,
                                         value: String(page.hasMore ? pageNumber + 1 : 1))
                     // 源与源之间留一点间隔，别和用户的操作抢连接。
@@ -767,6 +853,14 @@ extension CatalogBrowserModel {
             }
             guard let self else { return }
             self.isCalendarRefreshing = false
+            if let jobID {
+                if Task.isCancelled {
+                    self.jobCenter?.cancel(jobID)
+                } else {
+                    self.jobCenter?.finish(jobID, message: "补录 \(recorded) 条")
+                }
+                self.onJobChange?()
+            }
             guard !Task.isCancelled else { return }
             CatalogStore.string(forKey: Self.calendarScanAtKey,
                                 value: String(Date().timeIntervalSince1970))

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import LumaContentCore
 
 /// 「固定」分区拖拽排序用的自定义类型，避免和照片拖拽（纯文本）互相干扰。
 let pinnedSidebarDragType = UTType(exportedAs: "com.luma.sidebar-pinned-item")
@@ -44,6 +45,9 @@ struct SidebarView: View {
     @State private var showRestartSystemAnalysisConfirm = false
     /// 网络资源拖拽排序时的目标行：用来画一条落点提示线。
     @State private var catalogDropTargetID: UUID?
+    /// 网络存储同一时间只展开一个接入：点别的接入（或它的影院）时自动收起上一个。
+    @State private var expandedCloudMountID: UUID? =
+        SidebarStateStorage.uuidSet(SidebarStateStorage.Key.expandedCloudMounts).first
 
     var body: some View {
         ScrollView {
@@ -187,16 +191,20 @@ struct SidebarView: View {
                 .allowsHitTesting(false)
         }
         .safeAreaInset(edge: .bottom) {
-            // 官方「照片」图库只做增强层：不往 Apple 的图库里导入文件，因此不显示导入入口。
-            if !store.isNativeContainer {
-                importFooter
-                    .background {
-                        ZStack {
-                            Rectangle().fill(.ultraThinMaterial)
-                            LinearGradient(colors: [Color.primary.opacity(0.05), .clear],
-                                           startPoint: .top, endPoint: .bottom)
+            VStack(spacing: 0) {
+                // 后台任务统一露出：网盘扫描 / 影院刮削 / 健康检测 / 日历补录。
+                SourceJobStatusBar()
+                // 官方「照片」图库只做增强层：不往 Apple 的图库里导入文件，因此不显示导入入口。
+                if !store.isNativeContainer {
+                    importFooter
+                        .background {
+                            ZStack {
+                                Rectangle().fill(.ultraThinMaterial)
+                                LinearGradient(colors: [Color.primary.opacity(0.05), .clear],
+                                               startPoint: .top, endPoint: .bottom)
+                            }
                         }
-                    }
+                }
             }
         }
         // 允许拖拽到更窄（收起封面更紧凑）或更宽（长相簿名少截断）。
@@ -1058,7 +1066,7 @@ struct SidebarView: View {
                     }
                 } else {
                     collapsedSystemLibraries.remove(ref.path)
-                    store.activateSystemLibrary(ref)
+                    store.sourceHub.activate(.linkedLibrary(ref.path))
                 }
                 persistExpansionState()
             } label: {
@@ -1075,7 +1083,7 @@ struct SidebarView: View {
 
             Button {
                 collapsedSystemLibraries.remove(ref.path)
-                store.activateSystemLibrary(ref)
+                store.sourceHub.activate(.linkedLibrary(ref.path))
                 persistExpansionState()
             } label: {
                 HStack(spacing: LumaMetrics.sidebarRowSpacing) {
@@ -1308,6 +1316,15 @@ struct SidebarView: View {
 
     // MARK: - Network storage
 
+    /// 侧边栏的源行统一由注册表驱动：新增 kind 只加注册表条目，不再在这里铺数组。
+    private var cloudSourceDescriptors: [SourceDescriptor] {
+        store.sourceRegistryState.sources(of: .cloudMount)
+    }
+
+    private var catalogSourceDescriptors: [SourceDescriptor] {
+        store.sourceRegistryState.sources(of: .catalogSite)
+    }
+
     @ViewBuilder
     private var cloudSection: some View {
         sectionHeader("网络存储", key: "cloud", navigateTo: .cloudStorages) {
@@ -1317,7 +1334,7 @@ struct SidebarView: View {
         }
 
         if !isCollapsed("cloud") {
-            if cloud.mounts.isEmpty {
+            if cloudSourceDescriptors.isEmpty {
                 Button {
                     store.presentCloudWizard()
                 } label: {
@@ -1337,8 +1354,12 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                ForEach(cloud.mounts) { mount in
-                    CloudMountSidebarRow(mount: mount)
+                ForEach(cloudSourceDescriptors) { descriptor in
+                    if let mountID = descriptor.id.uuidValue,
+                       let mount = cloud.mounts.first(where: { $0.id == mountID }) {
+                        CloudMountSidebarRow(mount: mount,
+                                             expandedMountID: $expandedCloudMountID)
+                    }
                 }
             }
         }
@@ -1358,7 +1379,7 @@ struct SidebarView: View {
         }
 
         if !isCollapsed("catalog") {
-            if catalog.sources.isEmpty {
+            if catalogSourceDescriptors.isEmpty {
                 Button {
                     store.presentCatalogWizard()
                 } label: {
@@ -1422,20 +1443,23 @@ struct SidebarView: View {
                         hoveredItem = nil
                     }
                 }
-                ForEach(catalog.sources) { source in
-                    CatalogSidebarRow(source: source,
-                                      isDropTarget: catalogDropTargetID == source.id)
-                        .onDrop(of: [catalogSourceDragType],
-                                delegate: CatalogSourceReorderDropDelegate(
-                                    target: source.id,
-                                    catalog: catalog,
-                                    onTargeted: { targeted in
-                                        if targeted {
-                                            catalogDropTargetID = source.id
-                                        } else if catalogDropTargetID == source.id {
-                                            catalogDropTargetID = nil
-                                        }
-                                    }))
+                ForEach(catalogSourceDescriptors) { descriptor in
+                    if let sourceID = descriptor.id.uuidValue,
+                       let source = catalog.sources.first(where: { $0.id == sourceID }) {
+                        CatalogSidebarRow(source: source,
+                                          isDropTarget: catalogDropTargetID == source.id)
+                            .onDrop(of: [catalogSourceDragType],
+                                    delegate: CatalogSourceReorderDropDelegate(
+                                        target: source.id,
+                                        catalog: catalog,
+                                        onTargeted: { targeted in
+                                            if targeted {
+                                                catalogDropTargetID = source.id
+                                            } else if catalogDropTargetID == source.id {
+                                                catalogDropTargetID = nil
+                                            }
+                                        }))
+                    }
                 }
                 // 拖到列表末尾 → 排到最后，顺序同样作用于跨源搜索与聚合。
                 Color.clear

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import LumaContentCore
 
 /// 设置 › 模型 › 本地能力：逐个开关本机模型，默认全部关闭。
 struct LocalModelsSettingsSection: View {
@@ -12,6 +13,10 @@ struct LocalModelsSettingsSection: View {
     @State private var selectedModels: [String: String] = [:]
     @State private var scanningRuntime = false
     @State private var runtimeMessage: String?
+    /// 模型下载在统一任务中心里的登记 id：下载期间切走设置页也能看到进度。
+    @State private var installJobID: UUID?
+    @State private var installJobModel: ModelComponentID?
+    @State private var installJobSawBusy = false
 
     var body: some View {
         Group {
@@ -108,6 +113,65 @@ struct LocalModelsSettingsSection: View {
         } message: {
             Text("会删除本机文件，之后需要重新下载；随 App 内置的模型只会停用，不会被删除。")
         }
+        .onChange(of: installer.states) { _, _ in
+            syncInstallJob()
+        }
+    }
+
+    // MARK: - 模型下载任务
+
+    /// 把模型安装进度映射到统一任务中心：开始下载时登记，结束 / 失败时收尾。
+    private func syncInstallJob() {
+        guard let jobID = installJobID, let modelID = installJobModel else { return }
+        let state = installer.state(for: modelID)
+        switch state.phase {
+        case .preparing, .downloading, .verifying, .installing:
+            installJobSawBusy = true
+            store.updateSourceJob(jobID,
+                                  message: "\(phaseText(state.phase)) \(Int((state.progress * 100).rounded()))%",
+                                  fraction: state.progress)
+        case .failed(let message):
+            store.failSourceJob(jobID, message: message)
+            resetInstallJob()
+        case .idle:
+            // 刚开始安装时 installer 还没进入 busy 阶段，不能立刻判定为结束。
+            guard installJobSawBusy else { return }
+            if ModelRegistry.isInstalled(modelID) {
+                store.finishSourceJob(jobID, message: "已安装")
+            } else {
+                store.cancelSourceJob(jobID)
+            }
+            resetInstallJob()
+        }
+    }
+
+    private func startInstall(_ descriptor: ModelComponentDescriptor) {
+        installJobID = store.beginSourceJob(
+            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+                .standardizedFileURL.path),
+                      kind: .download,
+                      title: "下载模型 \(descriptor.title)"),
+            cancel: { ModelInstaller.shared.cancel(descriptor.id) }
+        )
+        installJobModel = descriptor.id
+        installJobSawBusy = false
+        installer.install(descriptor.id)
+    }
+
+    private func resetInstallJob() {
+        installJobID = nil
+        installJobModel = nil
+        installJobSawBusy = false
+    }
+
+    private func phaseText(_ phase: ModelInstaller.Phase) -> String {
+        switch phase {
+        case .preparing: return "准备中"
+        case .downloading: return "下载中"
+        case .verifying: return "校验中"
+        case .installing: return "安装中"
+        case .idle, .failed: return "下载"
+        }
     }
 
     // MARK: - 行
@@ -189,7 +253,7 @@ struct LocalModelsSettingsSection: View {
                     if ModelRegistry.isInstalled(descriptor.id) {
                         ModelRegistry.setEnabled(true, for: descriptor.id)
                     } else {
-                        installer.install(descriptor.id)
+                        startInstall(descriptor)
                     }
                 } else {
                     if installer.isBusy(descriptor.id) {

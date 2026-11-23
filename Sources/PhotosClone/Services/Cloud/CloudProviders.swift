@@ -110,7 +110,6 @@ enum CloudOAuthStore {
         case .denied(let status):
             return .denied(status)
         case .data(let data):
-            CloudSecretStore.set(data, for: account)
             guard let credentials = try? JSONDecoder().decode(CloudClientCredentials.self, from: data) else {
                 return .missing
             }
@@ -121,7 +120,7 @@ enum CloudOAuthStore {
     static func saveCredentials(_ credentials: CloudClientCredentials, for kind: CloudKind) {
         guard let data = try? JSONEncoder().encode(credentials) else { return }
         let account = "client.\(kind.rawValue)"
-        CloudSecretStore.mark("legacy-oauth.\(account)")
+        LumaKeychainVault.suppressLegacy(vaultKey: vaultKey(account))
         CloudSecretStore.set(data, for: account)
     }
 
@@ -149,14 +148,13 @@ enum CloudOAuthStore {
             return .token(token)
         }
 
-        // 旧版本的令牌在钥匙串里：迁入加密文件后就不再访问钥匙串。
+        // 旧版本的令牌在钥匙串里：迁入统一保险库后就不再访问钥匙串。
         switch migrateLegacy(account: account) {
         case .missing:
             return .missing
         case .denied(let status):
             return .denied(status)
         case .data(let data):
-            CloudSecretStore.set(data, for: account)
             guard let token = try? JSONDecoder().decode(CloudToken.self, from: data) else {
                 return .missing
             }
@@ -170,7 +168,7 @@ enum CloudOAuthStore {
     static func saveToken(_ token: CloudToken, mountID: UUID) {
         guard let data = try? JSONEncoder().encode(token) else { return }
         let account = "token.\(mountID.uuidString)"
-        CloudSecretStore.mark("legacy-oauth.\(account)")
+        LumaKeychainVault.suppressLegacy(vaultKey: vaultKey(account))
         CloudSecretStore.set(data, for: account)
         cacheLock.lock()
         tokenCache[mountID] = token
@@ -179,54 +177,30 @@ enum CloudOAuthStore {
 
     static func deleteToken(mountID: UUID) {
         let account = "token.\(mountID.uuidString)"
-        CloudSecretStore.mark("legacy-oauth.\(account)")
+        LumaKeychainVault.suppressLegacy(vaultKey: vaultKey(account))
         CloudSecretStore.remove(account)
         cacheLock.lock()
         tokenCache[mountID] = nil
         cacheLock.unlock()
     }
 
-    /// 旧钥匙串条目只尝试迁移一次：标记后无论成功与否都不再读取，避免每次启动弹授权框。
-    private static func migrateLegacy(account: String) -> ReadOutcome {
-        let flag = "legacy-oauth.\(account)"
-        guard !CloudSecretStore.isMarked(flag) else { return .missing }
-        let outcome = readLegacyKeychain(account: account)
-        // 屏幕锁定之类导致的临时不可交互不算用户拒绝，下次还能再试。
-        if case .denied(let status) = outcome, status == errSecInteractionNotAllowed {
-            return outcome
-        }
-        CloudSecretStore.mark(flag)
-        return outcome
+    private static func vaultKey(_ account: String) -> String {
+        "cloud.\(account)"
     }
 
-    private static func readLegacyKeychain(account: String) -> ReadOutcome {
-        switch readLegacy(service: service, account: account) {
+    /// 旧钥匙串条目只读取一次：结果由统一保险库记录，之后不再访问旧条目，也不会重复弹授权框。
+    private static func migrateLegacy(account: String) -> ReadOutcome {
+        switch LumaKeychainVault.migrateLegacy(vaultKey: vaultKey(account),
+                                               services: [service, legacyService],
+                                               account: account) {
         case .data(let data):
             return .data(data)
         case .denied(let status):
+            Diagnostics.record("网盘凭据旧条目读取被拒绝 status=\(status)")
             return .denied(status)
         case .missing:
-            return readLegacy(service: legacyService, account: account)
+            return .missing
         }
-    }
-
-    private static func readLegacy(service: String, account: String) -> ReadOutcome {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return .missing }
-        guard status == errSecSuccess else {
-            NSLog("LumaKeychain: 读取 %@/%@ 失败 status=%d", service, account, status)
-            return .denied(status)
-        }
-        guard let data = item as? Data else { return .missing }
-        return .data(data)
     }
 }
 
@@ -1128,8 +1102,29 @@ enum CloudService {
                 throw CloudOAuthError.api("缺少文件标识（pickcode），请刷新该目录后重试")
             }
             let cookie = try pan115Cookie(for: mount)
-            let url = try await Pan115Drive.downloadURL(pickCode: pickCode, cookie: cookie)
-            return CloudStreamResource(url: url, headers: Pan115Drive.headers(cookie: cookie))
+            let primaryURL = try await Pan115Drive.downloadURL(pickCode: pickCode, cookie: cookie)
+            let primaryHeaders = Pan115Drive.downloadHeaders(cookie: cookie)
+            guard photo.isVideo else {
+                return CloudStreamResource(url: primaryURL, headers: primaryHeaders)
+            }
+            Diagnostics.record("115 直链 host=\(primaryURL.host ?? "-") "
+                               + "ua=\(primaryHeaders["User-Agent"] ?? "-") cookie=\(cookie.count)字符")
+            if await Pan115Drive.isReachable(url: primaryURL, headers: primaryHeaders) {
+                return CloudStreamResource(url: primaryURL, headers: primaryHeaders)
+            }
+            // 115 网页端用浏览器 UA 播放；客户端 UA 被 CDN 拒绝时再申请一次并换头。
+            let browserUA = Pan115Drive.browserUserAgent
+            Diagnostics.record("115 直链被 CDN 拒绝，改用浏览器 UA 重试 host=\(primaryURL.host ?? "-")")
+            if let alternateURL = try? await Pan115Drive.downloadURL(pickCode: pickCode,
+                                                                     cookie: cookie,
+                                                                     userAgent: browserUA) {
+                let alternateHeaders = Pan115Drive.downloadHeaders(cookie: cookie, userAgent: browserUA)
+                if await Pan115Drive.isReachable(url: alternateURL, headers: alternateHeaders) {
+                    return CloudStreamResource(url: alternateURL, headers: alternateHeaders)
+                }
+            }
+            Diagnostics.record("115 直链两种 UA 均无法读取 host=\(primaryURL.host ?? "-")")
+            return CloudStreamResource(url: primaryURL, headers: primaryHeaders)
         }
     }
 
@@ -1231,6 +1226,7 @@ enum CloudService {
 // MARK: - 向导阶段的目录浏览
 
 /// 挂载还没创建时，按当前接入方式直接读网盘目录，供向导里选择接入范围。
+/// `cookie` 对 Cookie 模式是浏览器 Cookie，对百度是 OAuth access_token。
 enum CloudSetupBrowser {
     static func folders(flow: CloudWizardFlow, cookie: String, containerID: String) async throws -> [CloudEntry] {
         switch flow {
@@ -1240,6 +1236,9 @@ enum CloudSetupBrowser {
         case .pan115:
             return try await Pan115Drive.list(cookie: Pan115Drive.normalizedCookie(cookie),
                                               folderID: containerID)
+        case .baidu:
+            return try await BaiduOAuth.list(dir: containerID.isEmpty ? "/" : containerID,
+                                             accessToken: cookie)
         case .aliyunCookie:
             let token = try await AliyunCookieAuth.token(from: cookie)
             if containerID.isEmpty {
@@ -1259,7 +1258,7 @@ enum CloudSetupBrowser {
             return try await AliyunOAuth.list(driveID: target.drive,
                                               parentID: target.fileID,
                                               accessToken: token.accessToken)
-        case .baidu, .smb, .webdav, .alist:
+        case .smb, .webdav, .alist:
             throw CloudOAuthError.unsupportedProvider
         }
     }

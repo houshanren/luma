@@ -116,6 +116,31 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// 画面显示方式：适应 / 填充 / 拉伸 / 原始像素。
+    @Published var videoFramingMode: VideoFramingMode {
+        didSet {
+            UserDefaults.standard.set(videoFramingMode.rawValue,
+                                      forKey: SettingsKeys.videoFramingMode)
+        }
+    }
+
+    /// 显示层比例预设：源比例 / 16:9 / 4:3 / 2.35:1 / 1:1。
+    @Published var videoAspectPreset: VideoAspectPreset {
+        didSet {
+            UserDefaults.standard.set(videoAspectPreset.rawValue,
+                                      forKey: SettingsKeys.videoAspectPreset)
+        }
+    }
+
+    /// 比例裁剪后的平移：-1...1，0 为居中。
+    @Published var videoPanX: Double {
+        didSet { UserDefaults.standard.set(videoPanX, forKey: SettingsKeys.videoPanX) }
+    }
+
+    @Published var videoPanY: Double {
+        didSet { UserDefaults.standard.set(videoPanY, forKey: SettingsKeys.videoPanY) }
+    }
+
     /// 本地 / SMB 视频打开时自动挂载中文字幕轨。
     @Published var autoEmbeddedSubtitles: Bool {
         didSet { UserDefaults.standard.set(autoEmbeddedSubtitles, forKey: SettingsKeys.videoAutoEmbeddedSubtitles) }
@@ -266,9 +291,9 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// TMDB API Key（v3）或 Read Access Token（v4，以 eyJ 开头）。
+    /// TMDB API Key（v3）或 Read Access Token（v4，以 eyJ 开头）。只写统一凭据保险库。
     @Published var cinemaAPIKey: String {
-        didSet { UserDefaults.standard.set(cinemaAPIKey, forKey: SettingsKeys.cinemaAPIKey) }
+        didSet { persistSecret(cinemaAPIKey, for: .tmdbAPIKey) }
     }
 
     /// 刮削语言，如 zh-CN / en-US / ja-JP。
@@ -291,54 +316,52 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(cinemaAutoScrape, forKey: SettingsKeys.cinemaAutoScrape) }
     }
 
+    /// 刮削并发数：同时请求多个视频，默认 3；网络或片源较弱时可调低。
+    @Published var cinemaScrapeConcurrency: Int {
+        didSet {
+            let clamped = min(6, max(1, cinemaScrapeConcurrency))
+            UserDefaults.standard.set(clamped, forKey: SettingsKeys.cinemaScrapeConcurrency)
+            if clamped != cinemaScrapeConcurrency { cinemaScrapeConcurrency = clamped }
+        }
+    }
+
     /// 豆瓣接口地址，可换成镜像 / 反代前缀。
     @Published var cinemaDoubanBase: String {
         didSet { UserDefaults.standard.set(cinemaDoubanBase, forKey: SettingsKeys.cinemaDoubanBase) }
     }
 
-    /// 可选的豆瓣登录 Cookie，用于降低被限流的概率。
+    /// 可选的豆瓣登录 Cookie，用于降低被限流的概率。只写统一凭据保险库。
     @Published var cinemaDoubanCookie: String {
-        didSet { UserDefaults.standard.set(cinemaDoubanCookie, forKey: SettingsKeys.cinemaDoubanCookie) }
+        didSet { persistSecret(cinemaDoubanCookie, for: .doubanCookie) }
     }
 
-    /// TheTVDB API Key（v4）：作为第三顺位刮削源。
+    /// TheTVDB API Key（v4）：作为第三顺位刮削源。只写统一凭据保险库。
     @Published var cinemaTVDBKey: String {
-        didSet { UserDefaults.standard.set(cinemaTVDBKey, forKey: SettingsKeys.cinemaTVDBKey) }
+        didSet { persistSecret(cinemaTVDBKey, for: .tvdbKey) }
     }
 
-    /// TheTVDB 订阅者 PIN，可选；普通 Key 留空即可。
+    /// TheTVDB 订阅者 PIN，可选；普通 Key 留空即可。只写统一凭据保险库。
     @Published var cinemaTVDBPin: String {
-        didSet { UserDefaults.standard.set(cinemaTVDBPin, forKey: SettingsKeys.cinemaTVDBPin) }
+        didSet { persistSecret(cinemaTVDBPin, for: .tvdbPIN) }
     }
 
-    /// OpenSubtitles API Key：在线字幕搜索与下载。
+    /// OpenSubtitles API Key：在线字幕搜索与下载。只写统一凭据保险库。
     @Published var cinemaSubtitleAPIKey: String {
-        didSet { UserDefaults.standard.set(cinemaSubtitleAPIKey, forKey: SettingsKeys.cinemaSubtitleAPIKey) }
+        didSet { persistSecret(cinemaSubtitleAPIKey, for: .subtitleAPIKey) }
     }
 
-    /// OpenSubtitles 账号（下载配额用）；账号与密码只写钥匙串。
-    /// 启动阶段不读钥匙串：等用户打开设置里的在线字幕，或真正搜索字幕时再读，
-    /// 避免一启动就弹系统钥匙串授权框。
+    /// OpenSubtitles 账号（下载配额用）；账号与密码只写统一凭据保险库。
     @Published var cinemaSubtitleUsername: String {
-        didSet {
-            guard !isRestoringSubtitleCredentials else { return }
-            CinemaKeychain.set(cinemaSubtitleUsername, for: .subtitleUsername)
-        }
+        didSet { persistSecret(cinemaSubtitleUsername, for: .subtitleUsername) }
     }
 
     @Published var cinemaSubtitlePassword: String {
-        didSet {
-            guard !isRestoringSubtitleCredentials else { return }
-            CinemaKeychain.set(cinemaSubtitlePassword, for: .subtitlePassword)
-        }
+        didSet { persistSecret(cinemaSubtitlePassword, for: .subtitlePassword) }
     }
 
-    /// Assrt（伪射手）访问令牌：国内字幕源，只写钥匙串。
+    /// Assrt（伪射手）访问令牌：国内字幕源，只写统一凭据保险库。
     @Published var assrtSubtitleToken: String {
-        didSet {
-            guard !isRestoringSubtitleCredentials else { return }
-            CinemaKeychain.set(assrtSubtitleToken, for: .subtitleAssrtToken)
-        }
+        didSet { persistSecret(assrtSubtitleToken, for: .subtitleAssrtToken) }
     }
 
     /// 在线字幕来源开关：关掉后不再参与搜索与自动匹配。
@@ -356,20 +379,55 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// 字幕账号是否已经从钥匙串取过一次（只在需要时）。
-    private var subtitleCredentialsLoaded = false
-    /// 恢复期间屏蔽 didSet 回写，避免「读钥匙串」紧接着又「写钥匙串」。
-    private var isRestoringSubtitleCredentials = false
+    /// 读取保险库期间屏蔽 didSet 回写，避免「刚读出来又写回去」。
+    private var isRestoringSecrets = false
 
-    /// 按需读取字幕账号：设置页打开、或第一次使用在线字幕时调用。
-    func loadSubtitleCredentialsIfNeeded() {
-        guard !subtitleCredentialsLoaded else { return }
-        subtitleCredentialsLoaded = true
-        isRestoringSubtitleCredentials = true
+    /// 写入敏感设置：统一进凭据保险库，值没变化时不重复写钥匙串。
+    private func persistSecret(_ value: String, for account: CinemaKeychain.Account) {
+        guard !isRestoringSecrets else { return }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != CinemaKeychain.value(for: account) else { return }
+        CinemaKeychain.set(trimmed, for: account)
+    }
+
+    /// 启动时一次性把钥匙串里的敏感设置读进内存。之后设置页、字幕搜索、刮削都只读内存，
+    /// 同一进程不会再重复访问钥匙串，系统授权框因此最多只出现一次。
+    private func loadSecretsFromVault() {
+        migrateLegacySecretsFromUserDefaults()
+        isRestoringSecrets = true
+        cinemaAPIKey = CinemaKeychain.value(for: .tmdbAPIKey)
+        cinemaDoubanCookie = CinemaKeychain.value(for: .doubanCookie)
+        cinemaTVDBKey = CinemaKeychain.value(for: .tvdbKey)
+        cinemaTVDBPin = CinemaKeychain.value(for: .tvdbPIN)
+        cinemaSubtitleAPIKey = CinemaKeychain.value(for: .subtitleAPIKey)
         cinemaSubtitleUsername = CinemaKeychain.value(for: .subtitleUsername)
         cinemaSubtitlePassword = CinemaKeychain.value(for: .subtitlePassword)
         assrtSubtitleToken = CinemaKeychain.value(for: .subtitleAssrtToken)
-        isRestoringSubtitleCredentials = false
+        isRestoringSecrets = false
+    }
+
+    /// 旧版把这些密钥明文存在 UserDefaults：只搬一次，确认写进保险库后再删除明文。
+    private func migrateLegacySecretsFromUserDefaults() {
+        let defaults = UserDefaults.standard
+        let pairs: [(String, CinemaKeychain.Account)] = [
+            (SettingsKeys.cinemaAPIKey, .tmdbAPIKey),
+            (SettingsKeys.cinemaDoubanCookie, .doubanCookie),
+            (SettingsKeys.cinemaTVDBKey, .tvdbKey),
+            (SettingsKeys.cinemaTVDBPin, .tvdbPIN),
+            (SettingsKeys.cinemaSubtitleAPIKey, .subtitleAPIKey)
+        ]
+        for (key, account) in pairs {
+            let legacy = (defaults.string(forKey: key) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !legacy.isEmpty, !CinemaKeychain.has(account) else {
+                defaults.removeObject(forKey: key)
+                continue
+            }
+            // 只有确认写进钥匙串才删除明文，避免钥匙串不可用时把用户已有配置弄丢。
+            if CinemaKeychain.set(legacy, for: account) {
+                defaults.removeObject(forKey: key)
+            }
+        }
     }
 
     /// 家长控制档位：按分级限制影院可见内容。
@@ -379,7 +437,8 @@ final class AppSettings: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
-        appearance = AppAppearance(rawValue: defaults.string(forKey: SettingsKeys.appearance) ?? "") ?? .system
+        // 默认深色：影院 / 海报墙与品牌视觉都以深色为基准，跟随系统在浅色下会突兀。
+        appearance = AppAppearance(rawValue: defaults.string(forKey: SettingsKeys.appearance) ?? "") ?? .dark
         accent = AppAccent(rawValue: defaults.string(forKey: SettingsKeys.accent) ?? "") ?? .system
         photoOpenMode = PhotoOpenMode(rawValue: defaults.string(forKey: SettingsKeys.photoOpenMode) ?? "") ?? .viewer
         viewerLayout = ViewerLayout(rawValue: defaults.string(forKey: SettingsKeys.viewerLayout) ?? "") ?? .window
@@ -403,6 +462,12 @@ final class AppSettings: ObservableObject {
             ?? .source
         videoTranscodeMode = VideoTranscodeMode(
             rawValue: defaults.string(forKey: SettingsKeys.videoTranscodeMode) ?? "") ?? .compatibility
+        videoFramingMode = VideoFramingMode(
+            rawValue: defaults.string(forKey: SettingsKeys.videoFramingMode) ?? "") ?? .fit
+        videoAspectPreset = VideoAspectPreset(
+            rawValue: defaults.string(forKey: SettingsKeys.videoAspectPreset) ?? "") ?? .source
+        videoPanX = defaults.object(forKey: SettingsKeys.videoPanX) as? Double ?? 0
+        videoPanY = defaults.object(forKey: SettingsKeys.videoPanY) as? Double ?? 0
         autoEmbeddedSubtitles = defaults.object(forKey: SettingsKeys.videoAutoEmbeddedSubtitles) as? Bool ?? false
         // 自动挂载一律默认关闭：用户主动到「字幕」里打开才生效。
         autoSiblingSubtitles = defaults.object(forKey: SettingsKeys.videoAutoSiblingSubtitles) as? Bool ?? false
@@ -450,17 +515,18 @@ final class AppSettings: ObservableObject {
         }
         cinemaSourceOrder = sourceOrder
         if let first = sourceOrder.first { cinemaProvider = first }
-        cinemaAPIKey = defaults.string(forKey: SettingsKeys.cinemaAPIKey) ?? ""
+        // 敏感项一律不回退到 UserDefaults：由 loadSecretsFromVault() 统一从保险库灌入。
+        cinemaAPIKey = ""
         cinemaLanguage = defaults.string(forKey: SettingsKeys.cinemaLanguage) ?? "zh-CN"
         cinemaAPIBase = defaults.string(forKey: SettingsKeys.cinemaAPIBase) ?? "https://api.themoviedb.org/3"
         cinemaImageBase = defaults.string(forKey: SettingsKeys.cinemaImageBase) ?? "https://image.tmdb.org/t/p"
         cinemaAutoScrape = defaults.object(forKey: SettingsKeys.cinemaAutoScrape) as? Bool ?? true
+        cinemaScrapeConcurrency = min(6, max(1, defaults.object(forKey: SettingsKeys.cinemaScrapeConcurrency) as? Int ?? 3))
         cinemaDoubanBase = defaults.string(forKey: SettingsKeys.cinemaDoubanBase) ?? "https://movie.douban.com"
-        cinemaDoubanCookie = defaults.string(forKey: SettingsKeys.cinemaDoubanCookie) ?? ""
-        cinemaTVDBKey = defaults.string(forKey: SettingsKeys.cinemaTVDBKey) ?? ""
-        cinemaTVDBPin = defaults.string(forKey: SettingsKeys.cinemaTVDBPin) ?? ""
-        cinemaSubtitleAPIKey = defaults.string(forKey: SettingsKeys.cinemaSubtitleAPIKey) ?? ""
-        // 账号密码 / Assrt 令牌留在钥匙串里，等设置页或字幕搜索真正需要时再读。
+        cinemaDoubanCookie = ""
+        cinemaTVDBKey = ""
+        cinemaTVDBPin = ""
+        cinemaSubtitleAPIKey = ""
         cinemaSubtitleUsername = ""
         cinemaSubtitlePassword = ""
         assrtSubtitleToken = ""
@@ -490,6 +556,8 @@ final class AppSettings: ObservableObject {
         } else {
             metadata = MetadataOptions()
         }
+        // 所有敏感项只在这里访问一次钥匙串。
+        loadSecretsFromVault()
     }
 
     /// 从当前图库读取图库级设置；缺少的键使用默认值，避免把上一个图库的值带过来。

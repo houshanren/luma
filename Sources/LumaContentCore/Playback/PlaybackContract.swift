@@ -115,6 +115,8 @@ public struct PlaybackProgress: Identifiable, Hashable, Codable, Sendable {
 }
 
 /// 播放进度存储：影院、资源、云盘、未来电视共用一个接口。
+/// 现有实现都在主线程模型上读写，因此协议固定为 `@MainActor`，避免跨线程改 UI 状态。
+@MainActor
 public protocol PlaybackProgressStore: AnyObject {
     func progress(sourceID: SourceID, itemID: String, episodeID: String?) -> PlaybackProgress?
     func save(_ progress: PlaybackProgress)

@@ -6,7 +6,6 @@ private enum CinemaSettingsTab: String, CaseIterable, Identifiable {
     case subtitle
     case display
     case playback
-    case sources
     case parental
     case advanced
 
@@ -18,7 +17,6 @@ private enum CinemaSettingsTab: String, CaseIterable, Identifiable {
         case .subtitle: return "字幕"
         case .display: return "显示"
         case .playback: return "播放"
-        case .sources: return "来源"
         case .parental: return "家长"
         case .advanced: return "高级"
         }
@@ -68,11 +66,15 @@ struct CinemaSettingsSection: View {
     /// 每个源单独的连通性结果，互不影响。
     @State private var providerChecks: [CinemaProvider: CinemaConnectionResult] = [:]
     @State private var testingProviders: Set<CinemaProvider> = []
+    /// 在线字幕来源的连通性结果，与刮削源分开存。
+    @State private var subtitleChecks: [SubtitleProviderKind: CinemaConnectionResult] = [:]
+    @State private var testingSubtitleProviders: Set<SubtitleProviderKind> = []
 
     @AppStorage("cinema_show_rating_badge") private var showRatingBadge = true
     @AppStorage("cinema_show_format_badge") private var showFormatBadge = true
     @AppStorage("cinema_open_detail_on_click") private var openDetailOnClick = true
     @AppStorage("cinema_resume_playback") private var resumePlayback = true
+    @AppStorage("cinema_wall_density") private var wallDensity: CinemaWallDensity = .normal
 
     private let languages: [(id: String, title: String)] = [
         ("zh-CN", "简体中文"),
@@ -105,8 +107,6 @@ struct CinemaSettingsSection: View {
                         displayContent
                     case .playback:
                         playbackContent
-                    case .sources:
-                        sourcesContent
                     case .parental:
                         parentalContent
                     case .advanced:
@@ -116,7 +116,7 @@ struct CinemaSettingsSection: View {
                 .padding(18)
             }
         }
-        // 字幕账号 / PIN 只在真正打开对应页面时读一次；CinemaKeychain 内部还有进程内缓存。
+        // 敏感项在 AppSettings 初始化时已从统一保险库取过一次；这里只读内存。
         .task(id: tab) {
             switch tab {
             case .scrape:
@@ -124,8 +124,6 @@ struct CinemaSettingsSection: View {
                 if expandedProvider == nil {
                     expandedProvider = settings.cinemaSourceOrder.first { !isProviderConfigured($0) }
                 }
-            case .subtitle:
-                settings.loadSubtitleCredentialsIfNeeded()
             case .parental:
                 pinConfigured = CinemaKeychain.has(.parentalPIN)
             default:
@@ -537,6 +535,57 @@ struct CinemaSettingsSection: View {
         }
     }
 
+    // MARK: 在线字幕源连通性
+
+    /// 标题右侧状态：测试结果优先，其次是「已配置 / 未配置」。
+    private func subtitleStatus(_ kind: SubtitleProviderKind,
+                                configured: Bool) -> (text: String, ok: Bool) {
+        if testingSubtitleProviders.contains(kind) { return ("测试中", true) }
+        if let check = subtitleChecks[kind] { return (check.ok ? "连通" : "不通", check.ok) }
+        return configured ? ("已配置", true) : ("未配置", false)
+    }
+
+    @ViewBuilder
+    private func subtitleCheckLine(_ kind: SubtitleProviderKind) -> some View {
+        if let check = subtitleChecks[kind] {
+            HStack(spacing: 5) {
+                Image(systemName: check.ok
+                      ? "checkmark.circle.fill"
+                      : "exclamationmark.triangle.fill")
+                    .font(.system(size: 9.5))
+                Text(check.message)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(check.ok ? Color.green : Color.orange)
+            .padding(.top, 2)
+        }
+    }
+
+    private func testSubtitleProvider(_ kind: SubtitleProviderKind) {
+        guard !testingSubtitleProviders.contains(kind) else { return }
+        testingSubtitleProviders.insert(kind)
+        subtitleChecks[kind] = nil
+        let credentials = OpenSubtitlesClient.Credentials(
+            apiKey: settings.cinemaSubtitleAPIKey,
+            username: settings.cinemaSubtitleUsername,
+            password: settings.cinemaSubtitlePassword
+        )
+        let assrtToken = settings.assrtSubtitleToken
+        Task { @MainActor in
+            let result: CinemaConnectionResult
+            switch kind {
+            case .openSubtitles:
+                result = await OpenSubtitlesClient.testConnection(credentials: credentials)
+            case .assrt:
+                result = await AssrtSubtitleClient.testConnection(token: assrtToken)
+            }
+            subtitleChecks[kind] = result
+            testingSubtitleProviders.remove(kind)
+        }
+    }
+
     /// 拖动到某一行上：插到它前面。
     private func moveProvider(_ dragged: CinemaProvider, before target: CinemaProvider) {
         var order = settings.cinemaSourceOrder
@@ -581,6 +630,16 @@ struct CinemaSettingsSection: View {
                     .labelsHidden()
                     .frame(width: 150)
                 }
+                settingRow("海报墙密度",
+                           detail: "紧凑模式同屏更多海报，大图模式看得更清") {
+                    Picker("", selection: $wallDensity) {
+                        ForEach(CinemaWallDensity.allCases) { density in
+                            Text(density.title).tag(density)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 150)
+                }
                 settingToggle("显示评分角标",
                               detail: "卡片右上角的星级与分数",
                               isOn: $showRatingBadge)
@@ -593,6 +652,7 @@ struct CinemaSettingsSection: View {
                               divider: false)
                 settingNote("海报墙固定 2:3，书架固定 16:9；卡片只放关键规格，完整资料在详情页。")
             }
+
         }
     }
 
@@ -616,7 +676,9 @@ struct CinemaSettingsSection: View {
 
             settingsGroup("字幕来源 · OpenSubtitles",
                           icon: "captions.bubble.fill",
-                          status: settings.cinemaSubtitleAPIKey.isEmpty ? ("未配置", false) : ("已配置", true)) {
+                          status: subtitleStatus(.openSubtitles,
+                                                 configured: !settings.cinemaSubtitleAPIKey
+                                                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) {
                 settingToggle("启用",
                               detail: "国际字幕库；未填 API Key 时不参与搜索",
                               isOn: $settings.subtitleProviderOpenSubtitlesEnabled)
@@ -637,6 +699,12 @@ struct CinemaSettingsSection: View {
                              secure: true,
                              divider: false)
                 settingActions {
+                    Button("测试连接") {
+                        testSubtitleProvider(.openSubtitles)
+                    }
+                    .disabled(testingSubtitleProviders.contains(.openSubtitles)
+                              || settings.cinemaSubtitleAPIKey
+                                  .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("注册账号") {
                         open("https://www.opensubtitles.com/en/users/sign_up")
                     }
@@ -645,12 +713,15 @@ struct CinemaSettingsSection: View {
                     }
                 }
                 .controlSize(.small)
+                subtitleCheckLine(.openSubtitles)
                 settingNote("下载需要填账号与密码；搜索与下载结果都会缓存到本机。")
             }
 
             settingsGroup("字幕来源 · 伪射手（Assrt）",
                           icon: "character.book.closed.fill",
-                          status: settings.assrtSubtitleToken.isEmpty ? ("未配置", false) : ("已配置", true)) {
+                          status: subtitleStatus(.assrt,
+                                                 configured: !settings.assrtSubtitleToken
+                                                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) {
                 settingToggle("启用",
                               detail: "国内中文字幕为主；搜索免费，下载需要访问令牌",
                               isOn: $settings.subtitleProviderAssrtEnabled)
@@ -662,6 +733,12 @@ struct CinemaSettingsSection: View {
                              reveal: $revealAssrt,
                              divider: false)
                 settingActions {
+                    Button("测试连接") {
+                        testSubtitleProvider(.assrt)
+                    }
+                    .disabled(testingSubtitleProviders.contains(.assrt)
+                              || settings.assrtSubtitleToken
+                                  .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("获取 Token") {
                         open("https://assrt.net/user/api")
                     }
@@ -670,6 +747,7 @@ struct CinemaSettingsSection: View {
                     }
                 }
                 .controlSize(.small)
+                subtitleCheckLine(.assrt)
                 settingNote("多个来源会并发搜索，结果按「中文优先、下载量」排序；压缩包只自动解压 zip。")
             }
 
@@ -833,75 +911,6 @@ struct CinemaSettingsSection: View {
                 }
                 settingNote("云盘边下边播与拖拽产生的临时分片，只影响本机磁盘占用。")
             }
-        }
-    }
-
-    // MARK: 来源
-
-    private var sourcesContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            settingsGroup("来源状态", icon: "externaldrive.connected.to.line.below", note: "各自独立刮削") {
-                sourceRow(icon: "internaldrive",
-                          name: "本地图库",
-                          detail: "\(store.cinemaEntries(for: .local).count) 个影院条目",
-                          active: store.cinemaActiveScope == .local,
-                          divider: !store.cloudMounts.isEmpty)
-                ForEach(store.cloudMounts) { mount in
-                    sourceRow(icon: "externaldrive.connected.to.line.below",
-                              name: mount.name,
-                              detail: "\(mount.kind.title) · \(store.cinemaEntries(for: .mount(mount.id)).count) 个影院条目",
-                              active: store.cinemaActiveScope == .mount(mount.id),
-                              divider: mount.id != store.cloudMounts.last?.id)
-                }
-                if store.cloudMounts.isEmpty {
-                    settingNote("还没有网络存储；添加后每个来源都会拥有独立的影院与刮削结果。")
-                }
-            }
-
-            settingsGroup("添加来源", icon: "plus.circle.fill") {
-                settingRow("网络存储", detail: "SMB / WebDAV / 阿里云盘 / 百度网盘 / 夸克") {
-                    Button {
-                        store.presentCloudWizard()
-                    } label: {
-                        Label("添加…", systemImage: "plus")
-                    }
-                    .controlSize(.small)
-                }
-                settingNote("添加向导会检查协议、地址与凭据并做一次连接测试；影院索引按来源分别保存，移除来源不会删除它。")
-            }
-        }
-    }
-
-    private func sourceRow(icon: String,
-                           name: String,
-                           detail: String,
-                           active: Bool,
-                           divider: Bool = true) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 11))
-                    .foregroundStyle(active ? LumaBrand.violet : Color.secondary)
-                    .frame(width: 16)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(.system(size: 11.5, weight: .medium))
-                    Text(detail)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if active {
-                    Text("当前")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(LumaBrand.violet)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
-                        .background(Capsule().fill(LumaBrand.violet.opacity(0.12)))
-                }
-            }
-            .padding(.vertical, 7)
-            if divider { rowDivider }
         }
     }
 
@@ -1149,8 +1158,17 @@ struct CinemaSettingsSection: View {
         settingsGroup("行为", icon: "bolt.fill") {
             settingToggle("扫描完自动刮削",
                           detail: "网盘扫描结束后自动处理这个网盘的新视频",
-                          isOn: $settings.cinemaAutoScrape,
-                          divider: false)
+                          isOn: $settings.cinemaAutoScrape)
+            settingRow("刮削并发",
+                       detail: "同时请求多个视频；网络较差时调低更稳") {
+                Picker("", selection: $settings.cinemaScrapeConcurrency) {
+                    ForEach(1...6, id: \.self) { value in
+                        Text("\(value)").tag(value)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 90)
+            }
             settingNote("刮削与播放入口在每个网盘的侧边栏「影院」里；结果和海报只属于那个网盘，互不影响。")
         }
     }

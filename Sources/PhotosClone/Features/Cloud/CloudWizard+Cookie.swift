@@ -427,6 +427,16 @@ extension CloudSetupWizardView {
         loadAccessScopeFolders()
     }
 
+    /// 百度范围浏览用的 access_token：新接入用向导里的临时令牌，编辑已有挂载走钥匙串并自动续期。
+    private func baiduScopeAccessToken() async throws -> String {
+        if let token = baiduToken?.accessToken { return token }
+        guard let id = editingMountID,
+              let mount = store.cloudMounts.first(where: { $0.id == id }) else {
+            throw CloudOAuthError.notAuthorized
+        }
+        return try await CloudService.accessToken(for: mount)
+    }
+
     /// SMB 地址若已指到某个子目录，把它转成一个「接入目录」，共享根仍作为挂载地址。
     private func normalizeSMBScopeAddress() {
         guard let pieces = SMBClient.pieces(smbAddress), !pieces.share.isEmpty else { return }
@@ -465,6 +475,27 @@ extension CloudSetupWizardView {
             Task {
                 do {
                     let entries = try await client.list(path: container)
+                    guard token == scopeBrowseToken else { return }
+                    isLoadingScopeFolders = false
+                    applyScopeFolders(entries)
+                } catch {
+                    guard token == scopeBrowseToken else { return }
+                    isLoadingScopeFolders = false
+                    scopeBrowseFolders = []
+                    scopeBrowseError = (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
+            }
+            return
+        }
+
+        if flow == .baidu {
+            Task {
+                do {
+                    let accessToken = try await baiduScopeAccessToken()
+                    let entries = try await CloudSetupBrowser.folders(flow: flow,
+                                                                      cookie: accessToken,
+                                                                      containerID: container)
                     guard token == scopeBrowseToken else { return }
                     isLoadingScopeFolders = false
                     applyScopeFolders(entries)
@@ -612,8 +643,12 @@ extension CloudSetupWizardView {
                 step = 1
                 prepareAccessScopeStep()
             }
-        case .baidu, .webdav:
-            // 这两种接入的范围不在本页维护，保留流程选择页避免误改。
+        case .baidu:
+            // 百度：直接用钥匙串里的令牌浏览目录，停在「接入范围」页。
+            step = 2
+            prepareAccessScopeStep()
+        case .webdav:
+            // WebDAV 的范围在填写连接页维护，保留流程选择页避免误改。
             break
         }
     }

@@ -48,7 +48,7 @@ public enum SourceSessionState: Hashable, Sendable {
     }
 }
 
-/// 源会话：当前图库、云盘、资源、影院、电视、本地磁盘都实现它。
+/// 源会话：当前图库、云盘、资源、影院、电视都实现它。
 /// library 的会话额外持有写入能力，其他 kind 只读。
 @MainActor
 public protocol SourceSession: AnyObject {
@@ -76,6 +76,11 @@ public protocol SourceLifecycle: AnyObject {
 public protocol SourceBrowsing: AnyObject {
     var repository: any ContentRepository { get }
 }
+
+/// 浏览会话：云盘 / 影院 / 资源 / 电视统一用它表达「当前在浏览哪个源」。
+/// 只读、没有写入能力；图库会话仍是 `SourceSession` + `LibraryWriting`。
+@MainActor
+public protocol BrowseSession: SourceSession, SourceBrowsing {}
 
 /// 当前写入会话：只有 library 实现。
 /// 单库方案里的 LibrarySession 应实现这个协议，而不是另造一套会话。

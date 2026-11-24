@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import LumaContentCore
 
 extension LibraryStore {
     /// 网络资源（影视源）的浏览状态。
@@ -39,37 +40,29 @@ extension LibraryStore {
         }
     }
 
-    /// 把网络视频拉流成 MP4 后导入图库：
-    /// HLS 由内置 ffmpeg 直接读取（带站点要求的 Referer / 认证头），再走正常导入流程生成缩略图。
+    /// 把网络视频收进图库：转封装与导入交给统一入库服务。
     func saveCatalogVideoToLibrary(source: CatalogSource, item: CatalogItem) {
         guard catalogModel.savingItemID == nil,
               let provider = CatalogProviders.provider(for: source.kind) else { return }
         catalogModel.savingItemID = item.id
         Task { [weak self] in
             guard let self else { return }
-            let temp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("luma-catalog-\(UUID().uuidString).mp4")
-            defer {
-                try? FileManager.default.removeItem(at: temp)
-                catalogModel.savingItemID = nil
-            }
+            defer { catalogModel.savingItemID = nil }
             do {
                 let detail = try await provider.detail(source: source, itemID: item.id)
                 guard let episode = detail.episodes.first else {
                     throw CatalogError.parse("该条目没有可播放的视频")
                 }
                 let stream = try await provider.stream(source: source, episode: episode)
-                try await VideoSupport.transcodeRemote(
-                    source: stream.url,
-                    headers: stream.headers,
-                    trustSelfSigned: source.trustsInsecureCertificate,
-                    destination: temp)
-                var photo = try ImportService.importFile(temp)
-                if !item.title.isEmpty { photo.title = item.title }
-                photos.append(photo)
-                persistImported([photo])
-                save()
-                catalogModel.showNotice("已保存到图库：\(item.title)")
+                let result = try await ingestService.ingest(
+                    IngestRequest(
+                        payload: .remoteVideo(RemoteMedia(url: stream.url,
+                                                          headers: stream.headers,
+                                                          trustSelfSigned: source.trustsInsecureCertificate)),
+                        title: item.title.isEmpty ? nil : item.title
+                    )
+                )
+                catalogModel.showNotice("已保存到图库：\(result.title)")
             } catch {
                 Diagnostics.record("保存网络视频失败 \(item.title)：\(error.localizedDescription)")
                 catalogModel.showNotice("保存失败：\(error.localizedDescription)")

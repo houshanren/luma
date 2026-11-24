@@ -12,40 +12,13 @@ struct AIToolExecution {
 extension LibraryStore {
     func executeAITool(_ call: AIToolCall) async -> AIToolExecution {
         let args = AILibraryTools.arguments(call.arguments)
+        // 先问按源注册的 provider：影院等模块自己处理，中央 switch 保持精简。
+        if let result = await aiToolRegistry.execute(call, args: args) { return result }
         switch call.name {
         case "search_photos": return searchPhotosTool(args)
         case "list_albums": return listAlbumsTool()
         case "list_folders": return listFoldersTool()
         case "list_videos": return listVideosTool(args)
-        case "list_catalog_sources": return listCatalogSourcesTool()
-        case "search_catalog": return await searchCatalogTool(args)
-        case "list_catalog_following": return listCatalogFollowingTool()
-        case "list_catalog_watchlist": return listCatalogWatchlistTool(args)
-        case "catalog_new_today": return catalogNewTodayTool(args)
-        case "browse_catalog": return browseCatalogTool(args)
-        case "play_catalog_item": return playCatalogItemTool(args)
-        case "set_catalog_watchlist": return setCatalogWatchlistTool(args)
-        case "follow_catalog_person": return followCatalogPersonTool(args)
-        case "list_cinema_items": return listCinemaItemsTool(args)
-        case "list_cinema_scopes": return listCinemaScopesTool()
-        case "cinema_tree": return cinemaTreeTool(args)
-        case "search_cinema_candidates": return await searchCinemaCandidatesTool(args)
-        case "apply_cinema_match": return applyCinemaMatchTool(args)
-        case "scrape_cinema": return scrapeCinemaTool(args)
-        case "match_cinema": return await matchCinemaTool(args)
-        case "search_cinema_library": return searchCinemaLibraryTool(args)
-        case "list_cinema_series": return listCinemaSeriesTool(args)
-        case "list_cinema_activity": return listCinemaActivityTool(args)
-        case "list_cinema_lists": return listCinemaListsTool(args)
-        case "navigate_cinema": return navigateCinemaTool(args)
-        case "play_cinema": return playCinemaTool(args)
-        case "update_cinema_state": return updateCinemaStateTool(args)
-        case "manage_cinema_list": return manageCinemaListTool(args)
-        case "ignore_cinema": return ignoreCinemaTool(args)
-        case "restore_cinema_ignored": return restoreCinemaIgnoredTool(args)
-        case "refresh_cinema_metadata": return await refreshCinemaMetadataTool(args)
-        case "set_cinema_intro_skip": return setCinemaIntroSkipTool(args)
-        case "manage_cinema_progress": return manageCinemaProgressTool(args)
         case "navigate": return navigateTool(args)
         case "select_photos": return selectPhotosTool(args)
         case "open_photo": return openPhotoTool(args)
@@ -200,7 +173,7 @@ extension LibraryStore {
 
     // MARK: - 网络资源
 
-    private func listCatalogSourcesTool() -> AIToolExecution {
+    func listCatalogSourcesTool() -> AIToolExecution {
         var items: [[String: Any]] = []
         for source in catalogModel.sources {
             let health = catalogModel.health[source.id] ?? .unknown
@@ -219,7 +192,7 @@ extension LibraryStore {
     }
 
     /// 跨源搜索：按侧边栏顺序逐源请求，结果放进 `aiCatalogCandidates`，供后续 ref 引用。
-    private func searchCatalogTool(_ args: [String: Any]) async -> AIToolExecution {
+    func searchCatalogTool(_ args: [String: Any]) async -> AIToolExecution {
         guard let query = AILibraryTools.string(args["query"]) else {
             return failure("请提供要搜索的番号、标题或女优名")
         }
@@ -283,7 +256,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func listCatalogFollowingTool() -> AIToolExecution {
+    func listCatalogFollowingTool() -> AIToolExecution {
         let names = Dictionary(uniqueKeysWithValues: catalogModel.sources.map { ($0.id, $0.name) })
         let people = catalogModel.followedPeople.map { person -> [String: Any] in
             [
@@ -304,7 +277,7 @@ extension LibraryStore {
         return success(["people": people, "categories": categories], summary: nil, photoIDs: [])
     }
 
-    private func listCatalogWatchlistTool(_ args: [String: Any]) -> AIToolExecution {
+    func listCatalogWatchlistTool(_ args: [String: Any]) -> AIToolExecution {
         let limit = min(100, max(1, AILibraryTools.integer(args["limit"], fallback: 40)))
         let favorites = Array(catalogModel.allFavorites.prefix(limit))
         guard !favorites.isEmpty else {
@@ -333,7 +306,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func catalogNewTodayTool(_ args: [String: Any]) -> AIToolExecution {
+    func catalogNewTodayTool(_ args: [String: Any]) -> AIToolExecution {
         let limit = min(100, max(1, AILibraryTools.integer(args["limit"], fallback: 40)))
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: Date())
@@ -364,7 +337,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func browseCatalogTool(_ args: [String: Any]) -> AIToolExecution {
+    func browseCatalogTool(_ args: [String: Any]) -> AIToolExecution {
         let source: CatalogSource
         if let raw = AILibraryTools.string(args["source"]) {
             guard let resolved = aiResolveCatalogSource(raw) else {
@@ -407,7 +380,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func playCatalogItemTool(_ args: [String: Any]) -> AIToolExecution {
+    func playCatalogItemTool(_ args: [String: Any]) -> AIToolExecution {
         guard let target = aiResolveCatalogCandidate(args) else {
             return failure("找不到要播放的条目，请先调用 search_catalog 或 catalog_new_today 获取 ref")
         }
@@ -423,7 +396,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func setCatalogWatchlistTool(_ args: [String: Any]) -> AIToolExecution {
+    func setCatalogWatchlistTool(_ args: [String: Any]) -> AIToolExecution {
         let favorite = AILibraryTools.bool(args["favorite"], fallback: true)
         var resolved: [(UUID, CatalogItem)] = []
         for raw in AILibraryTools.stringArray(args["refs"]) {
@@ -460,7 +433,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func followCatalogPersonTool(_ args: [String: Any]) -> AIToolExecution {
+    func followCatalogPersonTool(_ args: [String: Any]) -> AIToolExecution {
         guard let name = AILibraryTools.string(args["name"]) else {
             return failure("请提供要关注的人物或片商名称")
         }
@@ -489,7 +462,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func aiResolveCatalogSource(_ raw: String) -> CatalogSource? {
+    func aiResolveCatalogSource(_ raw: String) -> CatalogSource? {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         if let id = UUID(uuidString: text),
@@ -528,7 +501,7 @@ extension LibraryStore {
     }
 
     /// 解析播放 / 稍后看的参数：优先用 ref，其次用 source_id + item_id。
-    private func aiResolveCatalogCandidate(_ args: [String: Any]) -> (sourceID: UUID, item: CatalogItem)? {
+    func aiResolveCatalogCandidate(_ args: [String: Any]) -> (sourceID: UUID, item: CatalogItem)? {
         if let raw = AILibraryTools.string(args["ref"]) {
             let key = raw.hasPrefix("#") ? raw : "#\(raw)"
             if let hit = aiCatalogCandidates[key] { return hit }
@@ -627,7 +600,7 @@ extension LibraryStore {
         return folders.first(where: { aiCinemaFolderMatches($0, query: query) })
     }
 
-    private func listCinemaScopesTool() -> AIToolExecution {
+    func listCinemaScopesTool() -> AIToolExecution {
         var items: [[String: Any]] = []
         func append(_ scope: CinemaScope, name: String) {
             let total = cinemaCandidates(for: scope).count
@@ -650,7 +623,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func cinemaTreeTool(_ args: [String: Any]) -> AIToolExecution {
+    func cinemaTreeTool(_ args: [String: Any]) -> AIToolExecution {
         guard let scope = aiResolvedCinemaScope(AILibraryTools.string(args["scope"])) else {
             return failure("没有找到这个影院，请先调用 list_cinema_scopes 确认 scope")
         }
@@ -772,7 +745,7 @@ extension LibraryStore {
         return item
     }
 
-    private func searchCinemaCandidatesTool(_ args: [String: Any]) async -> AIToolExecution {
+    func searchCinemaCandidatesTool(_ args: [String: Any]) async -> AIToolExecution {
         guard let query = AILibraryTools.string(args["query"]) else {
             return failure("缺少 query")
         }
@@ -819,7 +792,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func applyCinemaMatchTool(_ args: [String: Any]) -> AIToolExecution {
+    func applyCinemaMatchTool(_ args: [String: Any]) -> AIToolExecution {
         guard let candidateID = AILibraryTools.string(args["candidate_id"]) else {
             return failure("缺少 candidate_id；请先调用 search_cinema_candidates 拿到候选")
         }
@@ -916,7 +889,7 @@ extension LibraryStore {
                        photoIDs: photos.map(\.id))
     }
 
-    private func listCinemaItemsTool(_ args: [String: Any]) -> AIToolExecution {
+    func listCinemaItemsTool(_ args: [String: Any]) -> AIToolExecution {
         let scope = aiCinemaScope
         let allEntries = Array(cinemaEntries(for: scope).values)
         let folderQuery = AILibraryTools.string(args["folder"])
@@ -967,7 +940,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func scrapeCinemaTool(_ args: [String: Any]) -> AIToolExecution {
+    func scrapeCinemaTool(_ args: [String: Any]) -> AIToolExecution {
         guard !cinemaScrapeRunning else {
             return failure("已有刮削任务在进行中，等它结束再试")
         }
@@ -1002,7 +975,7 @@ extension LibraryStore {
                        photoIDs: [])
     }
 
-    private func matchCinemaTool(_ args: [String: Any]) async -> AIToolExecution {
+    func matchCinemaTool(_ args: [String: Any]) async -> AIToolExecution {
         let scope = aiCinemaScope
         let allEntries = Array(cinemaEntries(for: scope).values)
         let unmatched = allEntries.filter { !$0.matched }
@@ -1814,7 +1787,7 @@ extension LibraryStore {
         return String(format: "%d:%02d", minutes, rest)
     }
 
-    private static let aiDateFormatter: DateFormatter = {
+    static let aiDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"

@@ -372,7 +372,8 @@ struct TMDBClient: CinemaMetadataSource {
         components.queryItems = queryItems
         guard let url = components.url else { throw TMDBError.invalidBase }
 
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: AppSettings.shared.cinemaRequestTimeout)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if usesBearer {
             request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")

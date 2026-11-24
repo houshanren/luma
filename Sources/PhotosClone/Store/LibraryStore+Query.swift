@@ -54,9 +54,10 @@ extension LibraryStore {
         case .systemMoreItems: return "更多项目"
         case .systemKeywords:
             return selectedKeyword.map { "关键词：#\($0)" } ?? "关键词"
-        case .systemLibraries: return "系统图库"
+        case .systemLibraries: return "图库"
         case .cloudStorages: return "网络存储"
         case .catalogSources: return "网络资源"
+        case .networkCinema: return "网络影院"
         case .systemAlbum(let id): return systemAlbums.first(where: { $0.id == id })?.name ?? "系统相簿"
         case .systemFolder(let id): return systemFolders.first(where: { $0.id == id })?.name ?? "系统文件夹"
         case .systemFavorites: return "个人收藏"
@@ -106,6 +107,7 @@ extension LibraryStore {
         case .catalogSource(let id):
             // 分类信息由顶栏舱体承担，窗口标题只保留资源名，避免两处重复。
             return catalogModel.sources.first(where: { $0.id == id })?.name ?? "网络资源"
+        case .iptv: return "网络电视"
         }
     }
 
@@ -500,8 +502,8 @@ extension LibraryStore {
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
         case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .catalogSources,
-             .systemHealth, .cinema, .cloudCinema, .catalogSource:
+             .catalogSources, .networkCinema,
+             .systemHealth, .cinema, .cloudCinema, .catalogSource, .iptv:
             // 总览页只展示分类卡片，不返回照片。
             return []
         case .systemFavorites:
@@ -1087,6 +1089,10 @@ extension LibraryStore {
 
     /// 切换排序字段：同时按该字段的默认方向调整升/降序。
     func applySort(_ key: SortKey) {
+        // 用户在系统相簿里显式选了排序方式：退出拖拽产生的手动顺序。
+        if case .systemAlbum(let id) = sidebarItem, isSystemAlbumManualOrder(id) {
+            clearSystemAlbumManualOrder(id)
+        }
         if sortKey == key {
             sortAscending.toggle()
         } else {
@@ -1141,6 +1147,7 @@ extension LibraryStore {
     var sections: [PhotoSection] {
         // 分段需要遍历全部可见项，按指纹缓存，避免翻页/选中时反复分组。
         let key = visibleStateKey + "\u{1E}" + grouping.rawValue
+            + "\u{1E}" + stackMode.rawValue + "#\(stackRevision)"
         if sectionsCacheKey == key { return sectionsCacheValue }
         let value = computeSections()
         sectionsCacheKey = key
@@ -1149,7 +1156,10 @@ extension LibraryStore {
     }
 
     func computeSections() -> [PhotoSection] {
-        let items = visiblePhotos
+        // 堆叠形态只在分段这一步收起：查看器 / 选区 / 计数仍然拿完整列表。
+        // 年 / 月总览是按真实数量的卡片页，不做堆叠（堆叠只在照片网格里生效）。
+        let stackable = !(isTimelineScope && grouping != .all)
+        let items = (stackable && isStackingEnabled) ? stackedPhotos(visiblePhotos) : visiblePhotos
         guard !items.isEmpty else { return [] }
         // 「导入项目」按导入批次分段；系统图库没有批次号，按导入（加入库）日期分组，展示与拾光一致。
         if sidebarItem == .imports || sidebarItem == .systemImports {
@@ -1283,6 +1293,10 @@ extension LibraryStore {
         // 网络资源的虚拟分集同样不在图库里，按播放上下文直接取。
         if let catalogPhoto = catalogPlaybackPhoto(for: viewerID) {
             return catalogPhoto
+        }
+        // 网络电视的虚拟频道同样按播放上下文直接取。
+        if let tvPhoto = tvPlaybackPhoto(for: viewerID) {
+            return tvPhoto
         }
         // 查看器 body 会多次读取当前照片，缓存一次避免重复线性查找。
         if let cache = viewerPhotoCache, cache.id == viewerID, cache.revision == contentRevision {

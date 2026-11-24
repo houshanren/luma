@@ -71,6 +71,9 @@ struct DeleteConfirmOverlay: View {
     private var detail: String {
         switch request.kind {
         case .trash:
+            if store.isSystemScope, store.canEditNativeOverlay {
+                return "会移到「照片」的最近删除，30 天内可在「照片」中恢复；拾光的收藏、关键词等补充信息会一并清理。"
+            }
             let days = settings.trashRetentionDays
             return days > 0
                 ? "项目会离开相簿、收藏与搜索；\(days) 天内可在「最近删除」中恢复，也可以按 ⌘Z 撤销。"

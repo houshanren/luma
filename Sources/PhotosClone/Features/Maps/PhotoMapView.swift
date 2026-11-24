@@ -131,43 +131,68 @@ struct PhotoMapView: View {
     /// 地图缩放 / 平移后重算「视野内」的地点与照片数量，并记录这一片照片供网格使用。
     private func updateViewport(_ region: MKCoordinateRegion) {
         viewport = region
+        let allPhotos = photos
+        let placeClusters = clusters
+        // 聚类与图钉必须来自同一批照片：切库 / 切范围后聚类缓存还没跟上时退回逐张扫描，
+        // 否则会出现「地图上有图钉、徽标却显示 0」。
+        let clustered = Self.photoCount(of: placeClusters) == allPhotos.count
 
         // 视野已经覆盖全部地点（默认的整库视角）：直接用整库口径，不必逐张扫描。
-        if Self.region(region, coversAllOf: clusters) {
-            viewportPlaceCount = clusters.count
-            viewportPhotoCount = photos.count
-            viewportPhotos = photos
+        if clustered, Self.region(region, coversAllOf: placeClusters) {
+            viewportPlaceCount = placeClusters.count
+            viewportPhotoCount = allPhotos.count
+            viewportPhotos = allPhotos
             return
         }
 
         var places = 0
         var visible: [PhotoItem] = []
-        visible.reserveCapacity(min(photos.count, 2_048))
-        for cluster in clusters {
-            // 先用簇的包围盒剔除整片不在视野内的地点，放大后只扫视野附近的照片。
-            guard Self.region(region, intersects: cluster) else { continue }
-            var inside = 0
-            for photo in cluster.photos {
+        visible.reserveCapacity(min(allPhotos.count, 2_048))
+        if clustered {
+            for cluster in placeClusters {
+                // 先用簇的包围盒剔除整片不在视野内的地点，放大后只扫视野附近的照片。
+                guard Self.region(region, intersects: cluster) else { continue }
+                var inside = 0
+                for photo in cluster.photos {
+                    guard let latitude = photo.latitude, let longitude = photo.longitude else { continue }
+                    if Self.region(region, contains: latitude, longitude: longitude) {
+                        inside += 1
+                        visible.append(photo)
+                    }
+                }
+                if inside > 0 {
+                    places += 1
+                }
+            }
+        } else {
+            for photo in allPhotos {
                 guard let latitude = photo.latitude, let longitude = photo.longitude else { continue }
                 if Self.region(region, contains: latitude, longitude: longitude) {
-                    inside += 1
                     visible.append(photo)
                 }
             }
-            if inside > 0 {
-                places += 1
+            if !visible.isEmpty {
+                places = PlaceClusterBuilder.clusters(from: visible,
+                                                      granularity: store.placeGranularity).count
             }
         }
         // 视口覆盖整库时回到总量口径，避免边界浮点误差让数字来回抖。
-        if visible.count >= photos.count {
-            viewportPlaceCount = clusters.count
-            viewportPhotoCount = photos.count
-            viewportPhotos = photos
+        if visible.count >= allPhotos.count {
+            viewportPlaceCount = clustered ? placeClusters.count : places
+            viewportPhotoCount = allPhotos.count
+            viewportPhotos = allPhotos
         } else {
             viewportPlaceCount = places
             viewportPhotoCount = visible.count
             viewportPhotos = visible
         }
+    }
+
+    /// 聚类累计的照片数：与图钉口径不一致说明聚类缓存属于另一个数据源 / 版本。
+    private static func photoCount(of clusters: [PlaceCluster]) -> Int {
+        var total = 0
+        for cluster in clusters { total += cluster.photos.count }
+        return total
     }
 
     /// 视野是否覆盖全部地点的包围盒（快速判断，避免大图库在整库视角下逐张扫描）。

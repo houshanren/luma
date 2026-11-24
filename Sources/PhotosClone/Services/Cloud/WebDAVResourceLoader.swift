@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import LumaContentCore
 
 /// 让 AVFoundation 通过 App 自己的网络会话读取云端资源。
 ///
@@ -36,17 +37,14 @@ final class CloudAssetResourceLoader: NSObject, AVAssetResourceLoaderDelegate,
 
     private lazy var session: URLSession = {
         sessionCreated = true
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 60
-        configuration.timeoutIntervalForResource = 300
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.httpMaximumConnectionsPerHost = 4
         // 与资源读取器共用同一条串行队列，状态无需再加锁。
         let delegateQueue = OperationQueue()
         delegateQueue.name = "luma.webdav.asset.session"
         delegateQueue.underlyingQueue = queue
         delegateQueue.maxConcurrentOperationCount = 1
-        return URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
+        return URLSession(configuration: HTTPSessionProfile.stream.configuration(),
+                          delegate: self,
+                          delegateQueue: delegateQueue)
     }()
 
     init(upstreamURL: URL, headers: [String: String], trustSelfSigned: Bool,

@@ -50,6 +50,8 @@ struct SquarePhotoGrid: View {
     let availableWidth: CGFloat
     /// 非图库网格（人物详情等）打开查看器时的顺序基准。
     var viewerContext: [PhotoItem]?
+    /// 堆叠网格：显示堆叠角标并支持双击展开。
+    var stacked: Bool = false
 
     private let spacing: CGFloat = 2
 
@@ -59,13 +61,16 @@ struct SquarePhotoGrid: View {
         let target = CGFloat(store.thumbSize)
         let columns = GridLayout.columns(contentWidth: contentWidth, targetSize: target, spacing: spacing)
         let cell = GridLayout.squareCellWidth(contentWidth: contentWidth, columns: columns, spacing: spacing)
+        let stacks = stacked ? store.stackBadges() : [:]
         LazyVGrid(
             columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
             spacing: spacing
         ) {
             ForEach(photos) { photo in
                 PhotoCell(photo: photo, width: cell, height: cell, cornerRadius: 0,
-                          viewerContext: viewerContext)
+                          viewerContext: viewerContext,
+                          stackCount: stacks[photo.id]?.count ?? 1,
+                          stackIsBurst: stacks[photo.id]?.isBurst ?? false)
                     .id(photo.id)
                     .background(
                         GeometryReader { geo in
@@ -88,9 +93,12 @@ struct JustifiedRowEntry: Identifiable {
 }
 
 struct JustifiedPhotoGrid: View {
+    @EnvironmentObject private var store: LibraryStore
     let photos: [PhotoItem]
     let availableWidth: CGFloat
     let targetHeight: CGFloat
+    /// 堆叠网格：显示堆叠角标并支持双击展开。
+    var stacked: Bool = false
 
     private let spacing: CGFloat = 2
 
@@ -98,6 +106,7 @@ struct JustifiedPhotoGrid: View {
         let contentWidth = max(120, availableWidth)
         let rows = Self.buildRows(photos: photos, width: contentWidth,
                                   targetHeight: max(60, targetHeight), spacing: spacing)
+        let stacks = stacked ? store.stackBadges() : [:]
         // 完整宽高比模式：每张缩略图保持原始比例、同一行的顶边与底边对齐。
         // 文件名不再常驻在图下方（会让行高参差、整页显得杂乱），改为悬停提示里查看。
         LazyVStack(alignment: .leading, spacing: spacing) {
@@ -105,7 +114,9 @@ struct JustifiedPhotoGrid: View {
                 HStack(alignment: .top, spacing: spacing) {
                     ForEach(rows[index]) { entry in
                         PhotoCell(photo: entry.photo, width: entry.width, height: entry.height,
-                                  cornerRadius: 0)
+                                  cornerRadius: 0,
+                                  stackCount: stacks[entry.photo.id]?.count ?? 1,
+                                  stackIsBurst: stacks[entry.photo.id]?.isBurst ?? false)
                             .background(
                                 GeometryReader { geo in
                                     Color.clear.preference(
@@ -141,11 +152,14 @@ struct JustifiedPhotoGrid: View {
 /// 瀑布流：等宽多列、每列高度自适应，保留原始宽高比，竖图横图混排也不留空洞。
 /// 卡片比其它网格更大，并常驻投影，让照片从背景里浮出来。
 struct MasonryPhotoGrid: View {
+    @EnvironmentObject private var store: LibraryStore
     let photos: [PhotoItem]
     let availableWidth: CGFloat
     let targetWidth: CGFloat
     /// 非图库网格（地点详情等）打开查看器时的顺序基准。
     var viewerContext: [PhotoItem]?
+    /// 堆叠网格：显示堆叠角标并支持双击展开。
+    var stacked: Bool = false
 
     private let spacing: CGFloat = 8
     private let maxColumns = 6
@@ -164,6 +178,7 @@ struct MasonryPhotoGrid: View {
                                                      spacing: spacing)
         let buckets = GridLayout.masonryColumns(aspects: photos.map(\.aspectRatio),
                                                 columns: columns)
+        let stacks = stacked ? store.stackBadges() : [:]
         HStack(alignment: .top, spacing: spacing) {
             ForEach(buckets.indices, id: \.self) { column in
                 LazyVStack(spacing: spacing) {
@@ -174,7 +189,9 @@ struct MasonryPhotoGrid: View {
                                   height: Self.cellHeight(for: photo, width: columnWidth),
                                   cornerRadius: 0,
                                   elevated: true,
-                                  viewerContext: viewerContext)
+                                  viewerContext: viewerContext,
+                                  stackCount: stacks[photo.id]?.count ?? 1,
+                                  stackIsBurst: stacks[photo.id]?.isBurst ?? false)
                             .id(photo.id)
                             .background(
                                 GeometryReader { geo in
@@ -204,6 +221,8 @@ struct PhotoListView: View {
     @EnvironmentObject private var store: LibraryStore
     let photos: [PhotoItem]
     let availableWidth: CGFloat
+    /// 堆叠网格：列表里标注整组张数。
+    var stacked: Bool = false
 
     /// 列表缩略图跟随工具栏缩放（56…360 → 28…96）。
     private var thumbSide: CGFloat { min(96, max(28, CGFloat(store.thumbSize) * 0.34)) }
@@ -211,13 +230,16 @@ struct PhotoListView: View {
     private var showsFileSize: Bool { availableWidth >= 700 }
 
     var body: some View {
+        let stacks = stacked ? store.stackBadges() : [:]
         LazyVStack(spacing: 0) {
             header
             ForEach(photos) { photo in
                 PhotoListRow(photo: photo,
                              thumbSide: thumbSide,
                              showsResolution: showsResolution,
-                             showsFileSize: showsFileSize)
+                             showsFileSize: showsFileSize,
+                             stackCount: stacks[photo.id]?.count ?? 1,
+                             stackIsBurst: stacks[photo.id]?.isBurst ?? false)
                 Rectangle()
                     .fill(Color.primary.opacity(0.06))
                     .frame(height: 0.5)
@@ -259,6 +281,10 @@ private struct PhotoListRow: View {
     let thumbSide: CGFloat
     let showsResolution: Bool
     let showsFileSize: Bool
+    /// 堆叠张数：≥2 时在列表里标注整组张数。
+    var stackCount: Int = 1
+    /// 这摞照片是否来自连拍组。
+    var stackIsBurst: Bool = false
 
     @State private var isHovering = false
 
@@ -269,13 +295,20 @@ private struct PhotoListRow: View {
     }
 
     private var kindText: String {
+        var parts: [String] = []
         if photo.isVideo {
             if let duration = photo.duration, duration > 0 {
-                return "视频 · \(formatDuration(duration))"
+                parts.append("视频 · \(formatDuration(duration))")
+            } else {
+                parts.append("视频")
             }
-            return "视频"
+        } else {
+            parts.append(photo.isLivePhoto ? "实况照片" : "照片")
         }
-        return photo.isLivePhoto ? "实况照片" : "照片"
+        if stackCount > 1 {
+            parts.append("堆叠 \(stackCount) 张")
+        }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
@@ -360,7 +393,13 @@ private struct PhotoListRow: View {
                 }
             },
             double: {
-                store.openPhoto(photo.id, by: settings.photoOpenMode)
+                if stackCount > 1, !stackIsBurst {
+                    withAnimation(settings.motion.layout) {
+                        store.toggleStackExpansion(photo.id)
+                    }
+                } else {
+                    store.openPhoto(photo.id, by: settings.photoOpenMode)
+                }
             }
         )
         .contextMenu {

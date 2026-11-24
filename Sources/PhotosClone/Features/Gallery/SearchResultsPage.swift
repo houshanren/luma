@@ -1,513 +1,380 @@
 import SwiftUI
 import AppKit
 
-/// 搜索结果分类：全局搜索时先按类型归类，再进入对应列表。
-enum SearchResultCategory: String, CaseIterable, Identifiable {
-    case photos
-    case albums
-    case folders
-    case people
-    case places
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .photos: return "图片"
-        case .albums: return "相簿"
-        case .folders: return "文件夹"
-        case .people: return "人物"
-        case .places: return "地点"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .photos: return "photo.on.rectangle"
-        case .albums: return "rectangle.stack"
-        case .folders: return "folder"
-        case .people: return "person.2"
-        case .places: return "mappin.and.ellipse"
-        }
-    }
-}
-
-/// 相簿 / 文件夹的命中项。
-private struct SearchAssetHit: Identifiable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let count: Int?
-    let cover: PhotoItem?
-    let placeholder: AlbumPlaceholderStyle
-    let action: () -> Void
-}
-
-/// 人物命中项。
-private struct SearchPersonHit: Identifiable {
-    let id: String
-    let name: String
-    let count: Int
-    let isPet: Bool
-    let avatarData: Data?
-    let action: () -> Void
-}
-
-/// 全局搜索结果页：顶部按「图片 / 相簿 / 文件夹 / 人物 / 地点」分类，
-/// 图片沿用原来的照片网格（分页、选择、查看器都不变），其余类型各自给出卡片列表。
+/// 全局搜索结果页：只负责「标题 + 数据绑定 + 点击动作」，
+/// 检索调度与结果面板都在独立搜索模块里（SearchCenter / SearchScopeBar / SearchContent）。
 struct SearchResultsPage<PhotoContent: View>: View {
     @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var catalog: CatalogBrowserModel
 
     let query: String
     @ViewBuilder var photoContent: () -> PhotoContent
 
-    @State private var category: SearchResultCategory = .photos
+    /// 模块关闭后，来源胶囊与结果一起消失，跨模块兜底入口也不再出现。
+    @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
+    @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
+    @AppStorage(SettingsKeys.showTelevision) private var televisionModule = true
+
+    @StateObject private var center: SearchCenter
+    /// 从详情页「返回搜索」带回来的筛选：等本轮检索排完再套上去，
+    /// 否则会被 `setQuery` 的清筛选逻辑覆盖掉。
+    @State private var restoredFilters: SearchReturnSnapshot?
+
+    init(query: String,
+         store: LibraryStore,
+         catalog: CatalogBrowserModel,
+         tv: IPTVBrowserModel,
+         @ViewBuilder photoContent: @escaping () -> PhotoContent) {
+        self.query = query
+        self.photoContent = photoContent
+        // 只调度已开启的模块：关闭的模块不参与搜索，连来源胶囊都不显示。
+        // 检索本身登记成后台任务：底部任务条能看到进度，结束后进「任务记录」并可一键重搜。
+        _center = StateObject(wrappedValue: SearchCenter(
+            scopes: AppModules.enabledSearchScopes,
+            providers: SearchProviders.makeAll(store: store, catalog: catalog, tv: tv),
+            store: store
+        ))
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
-        let buckets = makeBuckets()
-        let photos = photoCount
-        let available = availableCategories(buckets, photoCount: photos)
-
         VStack(spacing: 0) {
-            if available.count > 1 {
-                categoryBar(available, buckets: buckets, photoCount: photos)
-            }
-
-            if category == .photos || !available.contains(category) {
-                photoContent()
-            } else {
-                categoryContent(category, buckets: buckets)
-            }
+            hero
+            SearchScopeBar(center: center)
+            SearchContent(center: center,
+                          photoGrid: photoContent,
+                          onOpen: open,
+                          emptyView: AnyView(emptyState))
+                .environmentObject(store)
+                .environmentObject(catalog)
         }
-        .onAppear { selectDefaultIfNeeded(available) }
-        .onChange(of: query) { _, _ in
-            category = .photos
-            selectDefaultIfNeeded(availableCategories(makeBuckets(), photoCount: photoCount))
+        .task(id: query) {
+            center.setQuery(query)
+            applyRestoredFilters()
         }
+        .onAppear {
+            applyPendingScope()
+            takePendingRestore()
+        }
+        .onChange(of: store.pendingSearchScope) { _, _ in applyPendingScope() }
+        .onChange(of: store.pendingSearchRestore) { _, _ in
+            takePendingRestore()
+            applyRestoredFilters()
+        }
+        .onDisappear { center.cancel() }
     }
 
-    private var photoCount: Int { store.visibleCount }
-
-    // MARK: - 分类条
-
-    private func categoryBar(_ categories: [SearchResultCategory],
-                             buckets: SearchBuckets,
-                             photoCount: Int) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(categories) { item in
-                    let count = count(for: item, buckets: buckets, photoCount: photoCount)
-                    Button {
-                        withAnimation(.snappy(duration: 0.18)) { category = item }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: item.icon)
-                                .font(.system(size: 10.5, weight: .semibold))
-                            Text(item.title)
-                                .font(.system(size: 11.5, weight: .semibold))
-                            Text(count.formatted())
-                                .font(.system(size: 10, weight: .medium))
-                                .monospacedDigit()
-                                .foregroundStyle(category == item ? Color.primary.opacity(0.7) : Color.secondary)
-                        }
-                        .foregroundStyle(category == item ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background {
-                            if category == item {
-                                Capsule()
-                                    .fill(.regularMaterial)
-                                    .overlay {
-                                        Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.6)
-                                    }
-                            }
-                        }
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help("只看\(item.title)")
-                    .accessibilityAddTraits(category == item ? .isSelected : [])
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 26)
-            .padding(.vertical, 10)
-        }
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.07))
-                .frame(height: 0.5)
-        }
+    /// 模块内搜索只预选来源，其余筛选 / 展示仍由统一搜索组件负责。
+    private func applyPendingScope() {
+        guard let scope = store.pendingSearchScope else { return }
+        center.setActiveSource(scope)
+        store.pendingSearchScope = nil
     }
 
-    private func availableCategories(_ buckets: SearchBuckets,
-                                     photoCount: Int) -> [SearchResultCategory] {
-        var result: [SearchResultCategory] = [.photos]
-        if buckets.albums.isEmpty == false { result.append(.albums) }
-        if buckets.folders.isEmpty == false { result.append(.folders) }
-        if buckets.people.isEmpty == false { result.append(.people) }
-        if buckets.places.isEmpty == false { result.append(.places) }
-        return result
+    /// 从详情页「返回搜索」回来：把当时选的来源 / 类型 / 源 / 分类一起恢复。
+    private func takePendingRestore() {
+        guard let restore = store.pendingSearchRestore else { return }
+        store.pendingSearchRestore = nil
+        restoredFilters = restore
     }
 
-    private func count(for category: SearchResultCategory,
-                       buckets: SearchBuckets,
-                       photoCount: Int) -> Int {
-        switch category {
-        case .photos: return photoCount
-        case .albums: return buckets.albums.count
-        case .folders: return buckets.folders.count
-        case .people: return buckets.people.count
-        case .places: return buckets.places.count
-        }
+    private func applyRestoredFilters() {
+        guard let restore = restoredFilters else { return }
+        center.activeSource = restore.source
+        center.activeKind = restore.kind
+        center.activeOrigin = restore.origin
+        center.activeCategory = restore.category
     }
 
-    /// 没有图片命中但相簿 / 文件夹等命中时，直接把默认分类切到第一个有结果的类型，
-    /// 否则用户会停在一个空的「图片」页上。
-    private func selectDefaultIfNeeded(_ available: [SearchResultCategory]) {
-        if category != .photos, !available.contains(category) {
-            category = .photos
-        }
-        guard category == .photos, photoCount == 0 else { return }
-        if let first = available.first(where: { $0 != .photos }) {
-            category = first
-        }
-    }
+    // MARK: - 顶部
 
-    // MARK: - 分类内容
-
-    @ViewBuilder
-    private func categoryContent(_ category: SearchResultCategory, buckets: SearchBuckets) -> some View {
-        ScrollView {
-            Group {
-                switch category {
-                case .albums:
-                    assetGrid(buckets.albums)
-                case .folders:
-                    assetGrid(buckets.folders)
-                case .people:
-                    peopleGrid(buckets.people)
-                case .places:
-                    placesGrid(buckets.places)
-                case .photos:
-                    EmptyView()
-                }
-            }
-            .padding(.horizontal, 26)
-            .padding(.top, 18)
-            .padding(.bottom, 44)
-        }
-    }
-
-    private func assetGrid(_ hits: [SearchAssetHit]) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 168, maximum: 220),
-                                     spacing: 18, alignment: .top)],
-                  alignment: .leading,
-                  spacing: 22) {
-            ForEach(hits) { hit in
-                SearchAssetCard(hit: hit)
-            }
-        }
-    }
-
-    private func peopleGrid(_ hits: [SearchPersonHit]) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 108, maximum: 140),
-                                     spacing: 16, alignment: .top)],
-                  alignment: .leading,
-                  spacing: 20) {
-            ForEach(hits) { hit in
-                SearchPersonCard(hit: hit)
-            }
-        }
-    }
-
-    private func placesGrid(_ clusters: [PlaceCluster]) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280, maximum: 420),
-                                     spacing: 14, alignment: .top)],
-                  alignment: .leading,
-                  spacing: 14) {
-            ForEach(clusters) { cluster in
-                SearchPlaceRow(cluster: cluster)
-            }
-        }
-    }
-
-    // MARK: - 数据
-
-    private struct SearchBuckets {
-        var albums: [SearchAssetHit] = []
-        var folders: [SearchAssetHit] = []
-        var people: [SearchPersonHit] = []
-        var places: [PlaceCluster] = []
-    }
-
-    private func makeBuckets() -> SearchBuckets {
-        var buckets = SearchBuckets()
-        // 网盘范围没有相簿 / 人物的分类概念，只保留图片结果。
-        guard !store.isCloudScope else { return buckets }
-
-        if store.isSystemScope {
-            buckets.albums = store.systemAlbums
-                .filter { $0.name.localizedCaseInsensitiveContains(query) }
-                .map { album in
-                    SearchAssetHit(id: "system-album-\(album.id)",
-                                   title: album.name,
-                                   subtitle: systemFolderPath(album.parentFolder),
-                                   count: store.systemAlbumPhotoCount(album.id),
-                                   cover: store.systemAlbumPreviewPhotos(album.id, limit: 1).first,
-                                   placeholder: .album,
-                                   action: { store.navigate(to: .systemAlbum(album.id)) })
-                }
-            buckets.folders = store.systemFolders
-                .filter { $0.name.localizedCaseInsensitiveContains(query) }
-                .map { folder in
-                    SearchAssetHit(id: "system-folder-\(folder.id)",
-                                   title: folder.name,
-                                   subtitle: systemFolderPath(folder.parent),
-                                   count: nil,
-                                   cover: nil,
-                                   placeholder: .folder,
-                                   action: { store.navigate(to: .systemFolder(folder.id)) })
-                }
-            buckets.people = store.systemPeople
-                .filter { !$0.isUnnamed && $0.name.localizedCaseInsensitiveContains(query) }
-                .map { person in
-                    SearchPersonHit(id: "system-person-\(person.id)",
-                                    name: person.name,
-                                    count: person.assetIDs.isEmpty ? person.faceCount : person.assetIDs.count,
-                                    isPet: person.isPet,
-                                    avatarData: person.cropData,
-                                    action: {
-                                        store.navigate(to: .systemPeople)
-                                        store.openPerson(person)
-                                    })
-                }
-        } else {
-            buckets.albums = store.albums
-                .filter { $0.name.localizedCaseInsensitiveContains(query) }
-                .map { album in
-                    SearchAssetHit(id: "album-\(album.id.uuidString)",
-                                   title: album.name,
-                                   subtitle: store.folderPath(album.folderID),
-                                   count: album.photoIDs.count,
-                                   cover: (album.coverPhotoID ?? album.photoIDs.first).flatMap { store.anyPhoto(id: $0) },
-                                   placeholder: .album,
-                                   action: { store.navigate(to: .album(album.id)) })
-                }
-            buckets.folders = store.folders
-                .filter { $0.name.localizedCaseInsensitiveContains(query) }
-                .map { folder in
-                    SearchAssetHit(id: "folder-\(folder.id.uuidString)",
-                                   title: folder.name,
-                                   subtitle: store.folderPath(folder.parentID),
-                                   count: nil,
-                                   cover: nil,
-                                   placeholder: .folder,
-                                   action: { store.navigate(to: .folder(folder.id)) })
-                }
-            buckets.people = store.localPeople
-                .filter { !$0.isUnnamed && $0.name.localizedCaseInsensitiveContains(query) }
-                .map { person in
-                    SearchPersonHit(id: "person-\(person.id.uuidString)",
-                                    name: person.name,
-                                    count: person.assetIDs.count,
-                                    isPet: false,
-                                    avatarData: person.coverImageData,
-                                    action: {
-                                        store.navigate(to: .people)
-                                        store.selectedLocalPersonID = person.id
-                                    })
-                }
-        }
-
-        buckets.places = placeMatches()
-        return buckets
-    }
-
-    /// 地点命中：系统图库索引模式下，聚类需要先读全量带定位照片。
-    /// 地图 / 地点页已经算过时直接复用缓存；还没算过就先不参与搜索，
-    /// 避免用户每敲一个字都同步扫一遍整库。
-    private func placeMatches() -> [PlaceCluster] {
-        if store.isSystemScope, store.systemIndex != nil,
-           store.placeClustersCacheKey != store.contentRevision {
-            return []
-        }
-        return store.placeClusters.filter { cluster in
-            cluster.title.localizedCaseInsensitiveContains(query)
-                || (cluster.subtitle?.localizedCaseInsensitiveContains(query) ?? false)
-                || cluster.group.localizedCaseInsensitiveContains(query)
-        }
-    }
-
-    /// 系统图库的文件夹路径：沿 `parent` 向上拼，最多 8 层防止异常数据成环。
-    private func systemFolderPath(_ id: Int64?) -> String {
-        var parts: [String] = []
-        var current = id
-        var depth = 0
-        while let folderID = current, depth < 8,
-              let folder = store.systemFolders.first(where: { $0.id == folderID }) {
-            parts.insert(folder.name, at: 0)
-            current = folder.parent
-            depth += 1
-        }
-        return parts.joined(separator: " / ")
-    }
-}
-
-// MARK: - 结果卡片
-
-/// 相簿 / 文件夹卡片：悬停状态放在卡片内部，避免鼠标移动触发整页重算。
-private struct SearchAssetCard: View {
-    @EnvironmentObject private var settings: AppSettings
-
-    let hit: SearchAssetHit
-    @State private var hovering = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AlbumCoverImage(photo: hit.cover, side: 220, style: hit.placeholder)
-                .frame(height: 128)
-                .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(hovering ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.08),
-                                      lineWidth: hovering ? 1 : 0.5)
-                }
-                .shadow(color: .black.opacity(hovering ? 0.20 : 0.05), radius: 12, y: 5)
-                .scaleEffect(hovering && settings.hoverLift ? settings.motion.hoverScale : 1)
-                .animation(settings.motion.hover, value: hovering)
-
-            HStack(spacing: 5) {
-                Text(hit.title)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let count = hit.count {
-                    Text(count.formatted())
-                        .font(.system(size: 10, design: .monospaced))
+    private var hero: some View {
+        HStack(alignment: .bottom, spacing: 18) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text("统一搜索")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .tracking(2.4)
+                        .foregroundStyle(.secondary)
+                    Text("图库 · 网盘 · 影院 · 网络影院 · 电视 · 资源")
+                        .font(.system(size: 9.5))
                         .foregroundStyle(.tertiary)
                 }
-            }
-            .padding(.horizontal, 2)
 
-            if !hit.subtitle.isEmpty {
-                Text(hit.subtitle)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                Text("「\(trimmedQuery)」")
+                    .font(.system(size: 29, weight: .bold, design: .rounded))
                     .lineLimit(1)
-                    .padding(.horizontal, 2)
-            }
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .onTapGesture(perform: hit.action)
-        .help(hit.subtitle.isEmpty ? hit.title : "\(hit.title) · \(hit.subtitle)")
-    }
-}
+                    .truncationMode(.middle)
 
-private struct SearchPersonCard: View {
-    @EnvironmentObject private var settings: AppSettings
-
-    let hit: SearchPersonHit
-    @State private var hovering = false
-
-    var body: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [Color.accentColor.opacity(0.55),
-                                                  Color.accentColor.opacity(0.22)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                if let data = hit.avatarData, let image = NSImage(data: data) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Image(systemName: hit.isPet ? "pawprint.fill" : "person.fill")
-                        .font(.system(size: 28, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.9))
+                HStack(spacing: 6) {
+                    Text("共 \(center.totalCount.formatted()) 项")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    if center.isSearching || catalog.isGlobalSearching {
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.mini)
+                            Text("正在联网检索…")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                 }
             }
-            .frame(width: 78, height: 78)
-            .clipShape(Circle())
-            .overlay {
-                Circle().strokeBorder(hovering ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.18),
-                                      lineWidth: hovering ? 1.6 : 1)
-            }
-            .shadow(color: .black.opacity(hovering ? 0.22 : 0.08), radius: 10, y: 4)
-            .scaleEffect(hovering && settings.hoverLift ? settings.motion.hoverScale : 1)
-            .animation(settings.motion.hover, value: hovering)
 
-            Text(hit.name)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1)
-            Text("\(hit.count.formatted()) 张")
-                .font(.system(size: 10))
+            Spacer(minLength: 8)
+
+            Button {
+                store.searchText = ""
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("清除")
+                        .font(.system(size: 11, weight: .medium))
+                }
                 .foregroundStyle(.secondary)
+                .padding(.horizontal, 11)
+                .frame(height: 26)
+                .background(.quaternary, in: Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("清除搜索（Esc）")
+        }
+        .padding(.horizontal, 26)
+        .padding(.top, 20)
+        .padding(.bottom, 14)
+        .background {
+            ZStack(alignment: .topTrailing) {
+                LinearGradient(colors: [Color.accentColor.opacity(0.10), .clear],
+                               startPoint: .topLeading, endPoint: .bottom)
+                RadialGradient(colors: [Color.accentColor.opacity(0.10), .clear],
+                               center: .topTrailing, startRadius: 4, endRadius: 320)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 0.5)
+        }
+    }
+
+    // MARK: - 点击路由
+
+    /// 全部来源都没有命中：保留跨模块兜底入口。
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("没有找到「\(trimmedQuery)」")
+                .font(.system(size: 14, weight: .semibold))
+            Text("可以换个更短的关键词，或直接到各个模块里搜索。")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("在影院搜") {
+                    store.cinemaSearchSeed = trimmedQuery
+                    store.cinemaSearchVisible = true
+                    store.navigate(to: .cinema)
+                }
+                if catalogModule {
+                    Button("在网络资源搜") {
+                        catalog.globalQuery = trimmedQuery
+                        store.navigate(to: .catalogSources)
+                    }
+                }
+                if cinemaModule {
+                    Button("在网络影院搜") {
+                        store.networkCinemaSearchSeed = trimmedQuery
+                        store.navigate(to: .networkCinema)
+                    }
+                }
+                if televisionModule {
+                    Button("在网络电视搜") {
+                        tvModel.searchText = trimmedQuery
+                        store.navigate(to: .iptv)
+                    }
+                }
+            }
+            .controlSize(.small)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .onTapGesture(perform: hit.action)
-        .help(hit.name)
+        .padding(.vertical, 60)
     }
-}
 
-private struct SearchPlaceRow: View {
-    @EnvironmentObject private var store: LibraryStore
-
-    let cluster: PlaceCluster
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
-            .frame(width: 38, height: 38)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(cluster.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Text(cluster.subtitle ?? cluster.group)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 6)
-
-            Text("\(cluster.count.formatted()) 张")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.tertiary)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.quaternary)
+    private func open(_ hit: SearchHit) {
+        // 照片在当前图库就地打开查看器：关掉查看器仍停在搜索页，不需要返回入口；
+        // 其它命中会离开搜索页，先记下搜索现场，详情页顶栏据此一步回到搜索结果。
+        if !opensInPlace(hit) {
+            rememberSearch(landing: landingItem(for: hit.payload))
         }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(hovering ? 0.075 : 0.045))
+        // 跨图库命中：先切 / 连到它所属的图库，等内容就绪后再打开条目。
+        if let path = hit.libraryPath, !isCurrentLibrary(path),
+           let pending = Self.pendingOpen(for: hit.payload) {
+            store.openSearchResultInLibrary(path: path, pending: pending)
+            return
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(hovering ? Color.accentColor.opacity(0.30) : Color.primary.opacity(0.07),
-                              lineWidth: 0.8)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onHover { hovering = $0 }
-        .onTapGesture {
+        switch hit.payload {
+        case .photo(let id):
+            store.openViewer(id)
+
+        case .localAlbum(let id):
+            store.navigate(to: .album(id))
+
+        case .localFolder(let id):
+            store.navigate(to: .folder(id))
+
+        case .systemAlbum(let id):
+            store.navigate(to: .systemAlbum(id))
+
+        case .systemFolder(let id):
+            store.navigate(to: .systemFolder(id))
+
+        case .localPerson(let id):
+            store.navigate(to: .people)
+            store.selectedLocalPersonID = id
+
+        case .systemPerson(let person):
+            store.navigate(to: .systemPeople)
+            store.openPerson(person)
+
+        case .place(let cluster):
             store.navigate(to: store.isSystemScope ? .systemPlaces : .places)
             store.openPlace(cluster)
+
+        case .scene(let id):
+            // 场景分类直达：系统图库有自己的场景入口。
+            store.navigate(to: store.isSystemScope ? .systemScene(id) : .scene(id))
+
+        case .cloudFile(let mountID, let folderPath, let path):
+            // 直达文件本身：打开挂载与所在目录后，直接把这一项送进查看器。
+            store.openCloudFile(mountID: mountID, folderPath: folderPath, path: path)
+
+        case .cloudFolder(let mountID, let path):
+            store.openCloudMount(mountID)
+            store.selectCloudFolder(path: path)
+
+        case .cinema(let scopeKey, let queueTitle, let entry):
+            openCinema(scopeKey: scopeKey, queueTitle: queueTitle, entry: entry)
+
+        case .channel(let channel):
+            tvModel.focusPlaylist(channel.playlistID)
+            tvModel.searchText = trimmedQuery
+            tvModel.setHubTab(.channels)
+            store.navigate(to: .iptv)
+            store.openTVChannel(channel)
+
+        case .catalogItem(let sourceID, let item):
+            // 进入频道页时它会先复位内联详情：必须走「待打开条目」，
+            // 由频道页自己的 task 消费，才能一进来就停在详情页。
+            catalog.pendingInlineItem = item
+            catalog.focus(sourceID)
+            store.navigate(to: .catalogSource(sourceID))
+
+        case .networkCinemaItem(let sourceID, let item, let isTV):
+            // 与网络资源同样的思路：网络影院页出现时消费「待打开条目」，直接进详情。
+            store.networkCinemaSourceID = sourceID
+            store.networkCinemaTab = isTV ? .shows : .movies
+            if let source = catalog.sources.first(where: { $0.id == sourceID }) {
+                store.networkCinemaPendingItem = NetworkCinemaItem(source: source,
+                                                                   item: item,
+                                                                   isTV: isTV)
+            }
+            store.navigate(to: .networkCinema)
         }
-        .help("查看 \(cluster.title) 的影像足迹")
+    }
+
+    private var tvModel: IPTVBrowserModel { store.tvModel }
+
+    /// 记下搜索现场。
+    private func rememberSearch(landing: SidebarItem?) {
+        store.beginSearchReturn(SearchReturnSnapshot(
+            query: trimmedQuery,
+            scope: store.searchScope,
+            source: center.activeSource,
+            kind: center.activeKind,
+            origin: center.activeOrigin,
+            category: center.activeCategory,
+            originItem: store.sidebarItem,
+            landingItem: landing))
+    }
+
+    /// 在搜索页即可完成、不需要离开页面的命中。
+    private func opensInPlace(_ hit: SearchHit) -> Bool {
+        guard case .photo = hit.payload else { return false }
+        if let path = hit.libraryPath, !isCurrentLibrary(path) { return false }
+        return true
+    }
+
+    /// 命中跳转后停留的页面：顶栏「返回搜索」只在这个页面上出现。
+    /// 影院控制台自带详情层级，返回入口另有一套，这里不留搜索返回。
+    private func landingItem(for payload: SearchPayload) -> SidebarItem? {
+        switch payload {
+        case .photo: return nil
+        case .localAlbum(let id): return .album(id)
+        case .localFolder(let id): return .folder(id)
+        case .systemAlbum(let id): return .systemAlbum(id)
+        case .systemFolder(let id): return .systemFolder(id)
+        case .localPerson: return .people
+        case .systemPerson: return .systemPeople
+        case .place: return store.isSystemScope ? .systemPlaces : .places
+        case .scene(let id): return store.isSystemScope ? .systemScene(id) : .scene(id)
+        case .cloudFile(let mountID, _, _), .cloudFolder(let mountID, _): return .cloudMount(mountID)
+        case .cinema: return nil
+        case .channel: return .iptv
+        case .catalogItem(let sourceID, _): return .catalogSource(sourceID)
+        case .networkCinemaItem: return .networkCinema
+        }
+    }
+
+    /// 命中所在图库是否就是当前浏览的图库。
+    private func isCurrentLibrary(_ path: String) -> Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if let container = LibraryPaths.containerLibraryURL?.standardizedFileURL.path,
+           container == standardized { return true }
+        if let active = store.systemLibraryPath.map({
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        }), active == standardized { return true }
+        return false
+    }
+
+    /// 搜索结果负载 → 切库后要打开的目标。
+    private static func pendingOpen(for payload: SearchPayload) -> LibraryPendingOpen? {
+        switch payload {
+        case .photo(let id): return .photo(id)
+        case .localAlbum(let id): return .album(id)
+        case .localFolder(let id): return .folder(id)
+        case .localPerson(let id): return .person(id)
+        case .systemAlbum(let id): return .systemAlbum(id)
+        case .systemFolder(let id): return .systemFolder(id)
+        case .systemPerson(let person): return .systemPerson(person)
+        default: return nil
+        }
+    }
+
+    private func openCinema(scopeKey: String, queueTitle: String, entry: CinemaEntry) {
+        let mountID = Self.mountID(from: scopeKey)
+        if let mountID {
+            store.navigate(to: .cloudCinema(mountID))
+        } else {
+            store.navigate(to: .cinema)
+        }
+        let scope: CinemaScope = mountID.map { CinemaScope.mount($0) } ?? .local
+        let queue = (store.cinemaIndexes[scope] ?? [:])
+            .values
+            .filter { $0.title == queueTitle }
+            .sorted { ($0.season ?? 0, $0.episode ?? 0) < ($1.season ?? 0, $1.episode ?? 0) }
+        store.openCinema(entry, queue: queue.isEmpty ? nil : queue)
+    }
+
+    private static func mountID(from scopeKey: String) -> UUID? {
+        let prefix = "mount-"
+        guard scopeKey.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(scopeKey.dropFirst(prefix.count)))
     }
 }

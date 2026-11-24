@@ -5,9 +5,18 @@ import SwiftUI
 struct CatalogRankingView: View {
     @EnvironmentObject private var catalog: CatalogBrowserModel
 
+    /// 可选的来源范围：网络影院只统计影视源；网络资源总览不传，等于全部来源。
+    var sourceScope: Set<UUID>? = nil
+    /// 紧凑头部：网络影院里工具栏分页已经是标题，不再写一段页面说明。
+    var compact: Bool = false
+    /// 可选的自定义打开方式：网络影院用它进影院详情页；不传则按网络资源的方式直接起播。
+    var onOpen: ((UUID, CatalogItem) -> Void)? = nil
+
     @State private var sourceFilter: UUID?
 
-    private var entries: [CatalogSpotlightItem] { catalog.currentSpotlight }
+    private var entries: [CatalogSpotlightItem] {
+        catalog.currentSpotlight.filter { inScope($0.sourceID) }
+    }
 
     private var isLoading: Bool {
         switch catalog.spotlightMode {
@@ -20,12 +29,26 @@ struct CatalogRankingView: View {
     private var sourceCount: Int { Set(entries.map(\.sourceID)).count }
 
     /// 今天与近 7 天的记录量：直接从本机更新日历算，不发请求。
-    private var todayCount: Int { catalog.todaySpotlight.count }
+    private var todayCount: Int {
+        catalog.todaySpotlight.filter { inScope($0.sourceID) }.count
+    }
     private var weekCount: Int {
         let calendar = Calendar.current
         let start = calendar.date(byAdding: .day, value: -6,
                                   to: calendar.startOfDay(for: Date())) ?? Date()
-        return catalog.calendarItems.filter { $0.firstSeen >= start }.count
+        return catalog.calendarItems.filter { inScope($0.sourceID) && $0.firstSeen >= start }.count
+    }
+
+    private func inScope(_ sourceID: UUID) -> Bool {
+        sourceScope?.contains(sourceID) ?? true
+    }
+
+    private func open(_ sourceID: UUID, _ item: CatalogItem) {
+        if let onOpen {
+            onOpen(sourceID, item)
+        } else {
+            catalog.playRemote(sourceID: sourceID, item: item)
+        }
     }
 
     var body: some View {
@@ -51,73 +74,94 @@ struct CatalogRankingView: View {
 
     // MARK: - 头部
 
+    @ViewBuilder
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        if compact {
+            // 读数已经在窗口标题栏里，内容区只留维度与操作。
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(catalog.spotlightMode.subtitle)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                    Text(catalog.spotlightMode == .todayNew
-                         ? "本机今天第一次看到的条目，不需要请求站点"
-                         : "按源轮转混排，同一屏里能看到各平台的内容")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-
                 Spacer(minLength: 12)
-
                 modePicker
-
-                Button {
-                    catalog.loadSpotlight(force: true)
-                } label: {
-                    if isLoading {
-                        ProgressView().controlSize(.mini).frame(width: 26, height: 26)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 26, height: 26)
-                            .background(Color.primary.opacity(0.06), in: Circle())
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("重新汇总各源")
-
-                Button {
-                    guard let pick = catalog.randomSpotlightItem() else { return }
-                    catalog.playRemote(sourceID: pick.sourceID, item: pick.item)
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "dice.fill")
-                            .font(.system(size: 10.5, weight: .semibold))
-                        Text("随便看看")
-                            .font(.system(size: 11.5, weight: .semibold))
-                    }
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 12)
-                    .frame(height: 28)
-                    .background(Color.accentColor.opacity(0.13),
-                                in: Capsule(style: .continuous))
-                    .overlay {
-                        Capsule(style: .continuous)
-                            .strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.7)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(entries.isEmpty)
-                .help("从当前维度随机播放一部")
+                refreshButton
+                randomButton
             }
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(catalog.spotlightMode.subtitle)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                        Text(catalog.spotlightMode == .todayNew
+                             ? "本机今天第一次看到的条目，不需要请求站点"
+                             : "按源轮转混排，同一屏里能看到各平台的内容")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
 
-            HStack(spacing: 8) {
-                statChip("\(entries.count)", "条")
-                statChip("\(sourceCount)", "个源")
-                statChip("\(todayCount)", "今天新增")
-                statChip("\(weekCount)", "近 7 天")
-                Spacer(minLength: 0)
+                    Spacer(minLength: 12)
+
+                    modePicker
+                    refreshButton
+                    randomButton
+                }
+
+                statChips
             }
         }
+    }
+
+    private var statChips: some View {
+        HStack(spacing: 8) {
+            statChip("\(entries.count)", "条")
+            statChip("\(sourceCount)", "个源")
+            statChip("\(todayCount)", "今天新增")
+            statChip("\(weekCount)", "近 7 天")
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var refreshButton: some View {
+        Button {
+            catalog.loadSpotlight(force: true)
+        } label: {
+            if isLoading {
+                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+            } else {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26, height: 26)
+                    .background(Color.primary.opacity(0.06), in: Circle())
+            }
+        }
+        .buttonStyle(.plain)
+        .help("重新汇总各源")
+    }
+
+    private var randomButton: some View {
+        Button {
+            guard let pick = entries.randomElement() else { return }
+            open(pick.sourceID, pick.item)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "dice.fill")
+                    .font(.system(size: 10.5, weight: .semibold))
+                Text("随便看看")
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(Color.accentColor.opacity(0.13),
+                        in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.7)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(entries.isEmpty)
+        .help("从当前维度随机播放一部")
     }
 
     private func statChip(_ value: String, _ caption: String) -> some View {
@@ -194,7 +238,7 @@ struct CatalogRankingView: View {
         let tint = source.kind.sidebarTint
         let rating = ratingText(entry.item.remark)
         return Button {
-            catalog.playRemote(sourceID: entry.sourceID, item: entry.item)
+            open(entry.sourceID, entry.item)
         } label: {
             ZStack(alignment: .topLeading) {
                 CatalogArtworkImage(source: source, urlString: entry.item.coverURL, cornerRadius: 0)
@@ -294,7 +338,7 @@ struct CatalogRankingView: View {
                               source: CatalogSource) -> some View {
         let tint = source.kind.sidebarTint
         return Button {
-            catalog.playRemote(sourceID: entry.sourceID, item: entry.item)
+            open(entry.sourceID, entry.item)
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 Color.clear
@@ -358,8 +402,7 @@ struct CatalogRankingView: View {
                                        remark: item.element.item.remark,
                                        rating: ratingText(item.element.item.remark),
                                        rank: item.offset + 1) {
-                            catalog.playRemote(sourceID: item.element.sourceID,
-                                               item: item.element.item)
+                            open(item.element.sourceID, item.element.item)
                         }
                     }
                 }
@@ -509,7 +552,7 @@ struct CatalogRankingView: View {
     private var weekBars: [RankingWeekBar] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let grouped = Dictionary(grouping: catalog.calendarItems) {
+        let grouped = Dictionary(grouping: catalog.calendarItems.filter { inScope($0.sourceID) }) {
             calendar.startOfDay(for: $0.firstSeen)
         }
         let formatter = DateFormatter()

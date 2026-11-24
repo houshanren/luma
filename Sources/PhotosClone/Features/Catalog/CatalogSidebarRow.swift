@@ -17,6 +17,18 @@ struct CatalogSidebarRow: View {
     private var item: SidebarItem { .catalogSource(source.id) }
     private var isCurrent: Bool { store.sidebarItem == item }
 
+    /// 资源行的健康：站点自检结果优先，其次才是会话快照，界面只认一套状态点。
+    private var liveHealth: SourceHealth? {
+        switch catalog.health[source.id] {
+        case .offline:
+            return SourceHealth(state: .offline, checkedAt: Date(), message: "站点暂时连不上")
+        case .limited:
+            return SourceHealth(state: .authRequired, checkedAt: Date(), message: "需要完成站点验证")
+        default:
+            return store.sourceHub.health(for: .catalog(source.id))
+        }
+    }
+
     var body: some View {
         row
             .alert("重命名网络资源", isPresented: $showRename) {
@@ -40,18 +52,21 @@ struct CatalogSidebarRow: View {
                 isCurrent: isCurrent,
                 isEnabled: source.isEnabled,
                 isLoading: catalog.isLoading && isCurrent,
-                showsNewBadge: catalog.hasNewContent(source.id)
+                showsNewBadge: catalog.hasNewContent(source.id),
+                health: liveHealth
             ),
             isDropTarget: isDropTarget,
             onOpen: {
                 // 点资源本身 = 切到这个源并打开它的首页。
                 open { $0.openHome() }
             },
+            onRetry: { catalog.refresh() },
+            onReauthorize: { store.openCatalogSourceInBrowser(source) },
             dragProvider: {
                 catalogSourceDragProvider(source.id)
             }
         ) { hovered in
-            cover(hovered: hovered)
+            CatalogSourceCover(source: source, hovered: hovered)
         } menu: {
             Button("打开") { open { $0.openHome() } }
             Button("刷新") {
@@ -84,7 +99,20 @@ struct CatalogSidebarRow: View {
         }
     }
 
-    private func cover(hovered: Bool) -> some View {
+    private func open(_ action: (CatalogBrowserModel) -> Void) {
+        // 统一走 sourceHub：先切到本源，再执行调用方要的加载动作；
+        // 否则在另一个资源页里点本源的入口，会拿旧源的 selectedSource 去请求新源。
+        store.sourceHub.activate(.catalog(source.id))
+        action(catalog)
+    }
+}
+
+/// 源图标色块：网络资源与网络影院的侧边栏共用。
+struct CatalogSourceCover: View {
+    let source: CatalogSource
+    var hovered: Bool = false
+
+    var body: some View {
         // 每个源一个专属色块与图标：一排源扫过去能立刻分辨，而不是同一个橙色方块。
         ZStack {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -112,13 +140,6 @@ struct CatalogSidebarRow: View {
         .animation(.easeOut(duration: 0.16), value: hovered)
         .opacity(source.isEnabled ? 1 : 0.5)
     }
-
-    private func open(_ action: (CatalogBrowserModel) -> Void) {
-        // 统一走 sourceHub：先切到本源，再执行调用方要的加载动作；
-        // 否则在另一个资源页里点本源的入口，会拿旧源的 selectedSource 去请求新源。
-        store.sourceHub.activate(.catalog(source.id))
-        action(catalog)
-    }
 }
 
 /// 网络资源的图标与配色：侧边栏、总览卡片共用。
@@ -138,6 +159,10 @@ extension CatalogProviderKind {
         case .javcl: return "play.rectangle.on.rectangle.fill"
         case .madou: return "house.fill"
         case .javgg: return "rectangle.stack.fill"
+        case .maccms: return "popcorn.fill"
+        case .fofo: return "film.circle.fill"
+        case .ikanpp: return "play.tv.fill"
+        case .iyf: return "sparkles.tv.fill"
         }
     }
 
@@ -156,6 +181,10 @@ extension CatalogProviderKind {
         case .javcl: return .green
         case .madou: return .orange
         case .javgg: return .yellow
+        case .maccms: return .indigo
+        case .fofo: return .orange
+        case .ikanpp: return .purple
+        case .iyf: return .mint
         }
     }
 }

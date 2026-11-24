@@ -592,16 +592,16 @@ extension LibraryStore {
         query.ascending = sortAscending
         // 官方相簿沿用图库自己保存的排序（ZGENERICALBUM.ZCUSTOMSORTKEY）：
         // 1 = 显式按日期、2 = 按标题、4 = 手动拖拽顺序；0 表示跟随默认（拍摄日期降序）。
-        // 只在该相簿里生效，其它页面仍使用全局排序。
-        if case .album(let id) = scope, sortKey == .capturedAt, let album = systemAlbum(id: id) {
+        // 拾光里拖拽过的相簿同样按手动顺序展示，只在该相簿里生效。
+        if case .album(let id) = scope, let album = systemAlbum(id: id) {
             let stored = album.customSortKey ?? 0
-            if stored & 4 != 0 {
+            if isSystemAlbumManualOrder(id) || stored & 4 != 0 {
                 query.manualOrder = true
                 query.ascending = true
-            } else if stored & 2 != 0 {
+            } else if sortKey == .capturedAt, stored & 2 != 0 {
                 query.sortKey = .title
                 query.ascending = album.customSortAscending ?? true
-            } else if stored & 1 != 0 {
+            } else if sortKey == .capturedAt, stored & 1 != 0 {
                 query.sortKey = .capturedAt
                 query.ascending = album.customSortAscending ?? true
             }

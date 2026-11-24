@@ -47,7 +47,7 @@ public final class PlaybackCoordinator: Sendable {
 }
 
 /// 不需要业务查找的解析器：本地文件、已知远端地址直接播放。
-/// 电视直播、在线影院与本地磁盘先走它；需要源适配器的 `.provider` 由各自模块注册。
+/// 电视直播与在线影院先走它；需要源适配器的 `.provider` 由各自模块注册。
 public struct DirectPlaybackResolver: PlaybackResolving {
     public init() {}
 

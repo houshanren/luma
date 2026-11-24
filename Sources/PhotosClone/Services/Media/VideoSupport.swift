@@ -364,7 +364,9 @@ enum VideoSupport {
         }
         // `isPlayable` 对 hev1 的 HEVC 会误报 false：按容器 + 编码放宽，避免白走 remux。
         // 但视频轨被系统明确判定不可解码时不能放宽：直连会黑屏有声音，必须重编码。
-        probe.isPlayable = probe.isVideoDecodable && VideoProbe.allowsNativePlayback(
+        // 关闭「优先系统硬解」时不再直读，统一走转封装 / 软解路径。
+        probe.isPlayable = AppSettings.shared.videoPreferHardwareDecoding
+            && probe.isVideoDecodable && VideoProbe.allowsNativePlayback(
             assetIsPlayable: playable,
             hasVideoTrack: probe.hasVideoTrack,
             codec: probe.codec,
@@ -458,7 +460,8 @@ enum VideoSupport {
     private static func applyingNativePlayability(_ probe: VideoProbe, for url: URL) -> VideoProbe {
         guard url.isFileURL, probe.hasVideoTrack else { return probe }
         var result = probe
-        result.isPlayable = VideoProbe.allowsNativePlayback(
+        result.isPlayable = AppSettings.shared.videoPreferHardwareDecoding
+            && VideoProbe.allowsNativePlayback(
             assetIsPlayable: false,
             hasVideoTrack: true,
             codec: probe.codec,
@@ -967,6 +970,28 @@ enum VideoSupport {
     /// 只有在构建时没能打包（例如开发机没装 ffmpeg-full）才会走到这里。
     static let dolbyVisionInstallHint =
         "brew install ffmpeg-full molten-vk（需原生 arm64 Homebrew，keg-only 无需配置）"
+
+    /// 从远端直播流录制一段固定时长（复制封装，不重编码）：电视「30 秒片段」走这里，
+    /// 录完由统一的入库服务收进图库，不再各自写一套 ffmpeg 参数与落盘位置。
+    static func recordRemoteClip(source: URL,
+                                 headers: [String: String],
+                                 trustSelfSigned: Bool = false,
+                                 seconds: Int,
+                                 destination: URL) async throws {
+        guard let ffmpeg = FFmpeg.executable else { throw VideoError.transcodeUnavailable }
+        try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        var arguments = ["-y", "-v", "error"]
+        if trustSelfSigned { arguments += ["-tls_verify", "0"] }
+        arguments += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+        arguments += inputArguments(url: source, headers: headers)
+        arguments += ["-t", "\(seconds)", "-c", "copy",
+                      "-movflags", "+faststart", destination.path]
+        let status = try await run(ffmpeg, arguments)
+        guard status == 0, FileManager.default.fileExists(atPath: destination.path) else {
+            throw VideoError.transcodeFailed
+        }
+    }
 
     /// 云端视频转码：ffmpeg 直接从远端读取（带认证头）。
     /// 先尝试把视频流无损封装进 MP4（仅音频转 AAC），系统仍无法播放时再全量转 H.264。

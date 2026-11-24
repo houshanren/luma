@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Network
 import ImageIO
+import LumaContentCore
 
 // MARK: - 错误
 
@@ -636,14 +637,7 @@ enum AliyunOAuth {
         return nil
     }
 
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 180
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    static let session = HTTPSessionPool.shared.session(.cloud)
 }
 
 // MARK: - 百度网盘开放平台
@@ -873,14 +867,7 @@ enum BaiduOAuth {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }
 
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 180
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    static let session = HTTPSessionPool.shared.session(.cloud)
 }
 
 // MARK: - 统一调度
@@ -1380,11 +1367,5 @@ enum CloudImageFetcher {
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 20
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    private static let session = HTTPSessionPool.shared.session(.artwork)
 }

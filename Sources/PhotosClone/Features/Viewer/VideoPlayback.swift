@@ -573,6 +573,11 @@ struct VideoPlayerStage: View {
     @State private var selectedAngle = 1
     /// I 键播放信息叠加。
     @State private var showPlaybackInfo = false
+    /// ⌘⇧I：在播放信息里展开完整 ffprobe 字段。
+    @State private var showFullProbe = false
+    /// 电视 OSD：频道号输入缓冲。
+    @State private var tvChannelNumberBuffer = ""
+    @State private var tvChannelNumberTask: Task<Void, Never>?
     /// 内嵌字幕只自动尝试挂载一次，避免用户主动关掉后又弹回来。
     @State private var autoEmbeddedTried = false
     /// 完整缓存起播时真实直链还在后台解析：技术探测等直链回来再做，先不探测占位地址。
@@ -640,6 +645,137 @@ struct VideoPlayerStage: View {
         // 这属于中间态，真正的失败由 failureMessage 表达，不能把瞬时错误弹成错误卡片。
         if isPreparing || playbackSession.isRestartingStream { return failureMessage }
         return failureMessage ?? model.errorMessage
+    }
+
+    /// 当前画面是不是电视频道（直播或回看）。
+    private var tvPlaybackChannel: TVChannel? {
+        store.tvPlaybackChannel(for: photo.id)
+    }
+
+    /// 只有直播才启用遥控语义（换台 / 频道带）；回看走点播的进度条。
+    private var tvLiveChannel: TVChannel? {
+        guard playbackMode == .live, let channel = tvPlaybackChannel, !channel.isCatchUp else {
+            return nil
+        }
+        return channel
+    }
+
+    /// 电视 OSD 的独立子视图：把大段类型推断从 `body` 里拆出去。
+    @ViewBuilder
+    private var tvOverlay: some View {
+        // 失败态也保留频道信息条，和概念图「状态 C」一致：先知道是哪个台，再看卡片。
+        if let channel = tvPlaybackChannel {
+            TVPlaybackOverlay(channel: channel,
+                              photoID: photo.id,
+                              isLive: playbackMode == .live && !channel.isCatchUp,
+                              controlsVisible: activeFailure == nil ? controlsVisible : true,
+                              timeshiftActive: $viewer.tvTimeshiftActive,
+                              showGuide: $viewer.tvGuideShown,
+                              model: model,
+                              failureMode: activeFailure != nil,
+                              usesWindowToolbarActions: transparentBackground
+                                  && !viewer.videoImmersiveFullScreen
+                                  && settings.videoControlPlacement == .topIntegrated,
+                              onCaptureFrame: onCaptureFrame)
+        }
+    }
+
+    private func resetTVInput() {
+        // 换台后收起节目单抽屉，清掉未提交的频道号输入。
+        viewer.tvGuideShown = false
+        viewer.tvTimeshiftActive = false
+        tvChannelNumberTask?.cancel()
+        tvChannelNumberTask = nil
+        tvChannelNumberBuffer = ""
+    }
+
+    /// 时移步进：限制在真实可 seek 的窗口内，避免越过河床两端。
+    private func seekTimeshift(by delta: Double) {
+        let lower = model.seekableStartTime
+        let upper = max(lower, model.bufferedEndTime - 0.4)
+        let target = min(upper, max(lower, model.currentTime + delta))
+        model.requestSeek(to: target)
+    }
+
+    /// 电视线路失败自动顺延：成功返回 true，重新装片；全部失败时保留错误卡片。
+    private func attemptTVLineFallback(reason: String? = nil) -> Bool {
+        guard store.advanceTVLineAfterFailure(for: photo.id, reason: reason) else {
+            // 只有多线路频道才提示「全部线路失败」，单线路直接交给错误卡片。
+            if store.tvLineCount(for: photo.id) > 1 {
+                store.showToast("这个频道的全部线路都失败了")
+            }
+            return false
+        }
+        failureMessage = nil
+        streamFailure = nil
+        return true
+    }
+
+    /// 把播放错误翻译成失败卡片上的一行原因。
+    private func lineFailureReason(_ failure: PlaybackFailure?) -> String {
+        guard let failure else { return "无响应" }
+        if let status = failure.httpStatus { return "返回 \(status)" }
+        switch failure.code {
+        case -1001: return "超时"
+        case -1004, -1005, -1009: return "无法连接"
+        case -11800, -11828, -12927: return "编码不兼容"
+        default: break
+        }
+        return failure.domain == NSURLErrorDomain ? "网络错误" : "无响应"
+    }
+
+    /// 打开 / 切换条目时启动装片，顺带恢复上次的倍速。
+    private func startPlaybackTask() async {
+        loadGeneration &+= 1
+        if settings.videoRememberSpeed, settings.videoLastSpeed > 0,
+           settings.videoLastSpeed != 1 {
+            model.setSpeed(settings.videoLastSpeed)
+        }
+        await preparePlayback(generation: loadGeneration)
+    }
+
+    /// 播放器上报失败：电视频道先尝试换到备用线路，其余情况走原有的转码兜底。
+    private func handlePlaybackFailure(_ failure: PlaybackFailure?) {
+        guard let failure else { return }
+        // 电视频道：任一线路被拒都先顺延到下一条，全部失败才交给错误卡片。
+        if tvPlaybackChannel != nil,
+           attemptTVLineFallback(reason: lineFailureReason(failure)) { return }
+        guard hasLoadedVideo else { return }
+        Diagnostics.record("装片失败 \(photo.originalName)："
+                           + "\(failure.domain ?? "-") \(failure.code.map(String.init) ?? "-") "
+                           + "incompatible=\(failure.isIncompatibleAsset) \(failure.message)")
+        guard FFmpeg.isAvailable, sourceURL != nil else { return }
+        canTranscode = true
+        // -12927 / -11828：系统播放器判定码流不兼容，重封装不会变好，直接改走兼容转码。
+        guard failure.isIncompatibleAsset, !didAutoTranscodeFallback else { return }
+        didAutoTranscodeFallback = true
+        autoFallbackToTranscode(after: failure)
+    }
+
+    /// 流地址层面失败（403 / 超时 / 直链失效）：电视频道再顺延一次备用线路。
+    private func handleStreamFailureChange(_ value: String?) {
+        guard let value, tvPlaybackChannel != nil else { return }
+        _ = attemptTVLineFallback(reason: value.lowercased().contains("403") ? "返回 403" : "无响应")
+    }
+
+    /// 离开播放层：停流、撤销画中画与窗口显示模式，全部集中在这里，避免 `body` 里的闭包过大。
+    private func handleStageDisappear() {
+        FullScreenDiagnostics.log("video stage disappear \(photo.originalName)")
+        if settings.videoRememberSpeed { settings.videoLastSpeed = model.speed }
+        NowPlayingCenter.shared.deactivate()
+        VideoScrubPreviewCenter.shared.fallbackProvider = nil
+        VideoScrubPreviewCenter.shared.end()
+        loadGeneration &+= 1
+        hideControlsTask?.cancel()
+        model.seekRouter = nil
+        model.scrubGuard = nil
+        playbackSession.onHardStall = nil
+        playbackSession.onNativeStall = nil
+        model.stop()
+        DisplayModeMatcher.restore()
+        cloudResourceLoader?.invalidate()
+        cloudResourceLoader = nil
+        playbackSession.stop()
     }
 
     /// 读取本地缩略图做起播底图；网络 / 云盘视频没有对应文件时返回 nil。
@@ -774,23 +910,100 @@ struct VideoPlayerStage: View {
                 .fill(Color.white.opacity(0.08))
                 .frame(height: 0.7)
 
-            infoLine("画面", playbackResolutionText)
-            infoLine("编码", playbackCodecText)
-            infoLine("码率", playbackBitrateText)
-            infoLine("帧率", playbackFrameRateText)
-            infoLine("HDR", playbackProbe.hdrLabel ?? (playbackProbe.isHDR ? "HDR" : "SDR"))
-            infoLine("音轨", playbackAudioText)
-            if angleCount > 1 {
-                infoLine("角度", "\(selectedAngle)/\(angleCount)")
+            // 四列固定顺序：视频 / 音频 / 字幕 / 播放，扫一眼就能读完。
+            HStack(alignment: .top, spacing: 16) {
+                infoColumn("视频") {
+                    infoRow("画面", playbackResolutionText)
+                    infoRow("编码", playbackCodecText)
+                    infoRow("容器", playbackContainerText)
+                    infoRow("码率", playbackBitrateText)
+                    infoRow("帧率", playbackFrameRateText)
+                    infoRow("HDR", playbackProbe.hdrLabel ?? (playbackProbe.isHDR ? "HDR" : "SDR"))
+                    infoRow("色彩", playbackColorText)
+                }
+                infoColumn("音频") {
+                    infoRow("主音轨", playbackPrimaryAudioText)
+                    infoRow("编码", playbackAudioCodecText)
+                    infoRow("声道", playbackAudioChannelsText)
+                    infoRow("语言", playbackAudioLanguageText)
+                    infoRow("轨道数", playbackAudioTrackCountText)
+                    infoRow("输出", "系统默认输出")
+                }
+                infoColumn("字幕") {
+                    infoRow("当前", playbackSubtitleCurrentText)
+                    infoRow("来源", playbackSubtitleSourceText)
+                    infoRow("轨道", playbackSubtitleTracksText)
+                    infoRow("时间轴", playbackSubtitleOffsetText)
+                    infoRow("字号", playbackSubtitleSizeText)
+                    infoRow("位置", playbackSubtitlePositionText)
+                }
+                infoColumn("播放") {
+                    infoRow("章节", playbackChapterText)
+                    if angleCount > 1 {
+                        infoRow("角度", "\(selectedAngle)/\(angleCount)")
+                    }
+                    infoRow("大小", playbackFileSizeText)
+                    infoRow("已播", playbackPlayedText)
+                    infoRow("实时码率", playbackLiveBitrateText)
+                    infoRow("丢帧", playbackDroppedFramesText)
+                    infoRow("解码", playbackDecodeText)
+                }
             }
-            infoLine("章节", playbackChapterText)
-            if let burn = ui.burnSubtitleName {
-                infoLine("烧录", burn)
+
+            Divider().overlay(Color.white.opacity(0.10))
+
+            Button {
+                showFullProbe.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showFullProbe ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(showFullProbe ? "收起完整探测信息" : "更多探测信息")
+                        .font(.system(size: 10, weight: .medium))
+                    Spacer(minLength: 0)
+                    Text("⇧⌘I")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+                .foregroundStyle(.white.opacity(0.62))
             }
-            infoLine("输出", "系统默认输出")
+            .buttonStyle(.plain)
+
+            if showFullProbe {
+                ScrollView {
+                    Text(fullProbeText)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(playbackPathText, forType: .string)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("路径")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.42))
+                    Text(playbackPathText)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            }
+            .buttonStyle(.plain)
+            .help("复制路径")
         }
         .padding(14)
-        .frame(width: 266)
+        .frame(width: 520)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -806,18 +1019,36 @@ struct VideoPlayerStage: View {
         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
     }
 
-    private func infoLine(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+    /// 一列信息：小标题 + 若干行，四列宽度自适应。
+    private func infoColumn<Content: View>(_ title: String,
+                                           @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(LumaBrand.amber.opacity(0.9))
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
             Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(.white.opacity(0.42))
-                .frame(width: 30, alignment: .leading)
+                .font(.system(size: 9))
+                .foregroundStyle(.white.opacity(0.38))
             Text(value)
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.88))
                 .lineLimit(2)
-            Spacer(minLength: 0)
+                .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// 播放信息里的路径：网盘用云端路径，本地用源文件路径。
+    private var playbackPathText: String {
+        if let path = photo.cloudPath, !path.isEmpty { return path }
+        if let sourceURL { return sourceURL.path }
+        return LibraryPaths.sourceURL(for: photo).path
     }
 
     private var playbackResolutionText: String {
@@ -853,10 +1084,154 @@ struct VideoPlayerStage: View {
     }
 
     private var playbackAudioText: String {
-        let tracks = playbackProbe.audioTracks.isEmpty ? probeAudioTracks : playbackProbe.audioTracks
+        let tracks = playbackAudioTracks
         guard let first = tracks.first else { return "—" }
         let base = first.displayName.isEmpty ? "音轨 1" : first.displayName
         return tracks.count > 1 ? "\(base) · 共 \(tracks.count) 轨" : base
+    }
+
+    /// 音频列的细分字段：全部来自 ffprobe，缺数据时明确显示「—」。
+    private var playbackAudioTracks: [AudioTrackInfo] {
+        playbackProbe.audioTracks.isEmpty ? probeAudioTracks : playbackProbe.audioTracks
+    }
+
+    private var playbackPrimaryAudioText: String {
+        guard let first = playbackAudioTracks.first else { return "—" }
+        return first.displayName.isEmpty ? "音轨 1" : first.displayName
+    }
+
+    private var playbackAudioCodecText: String {
+        guard let codec = playbackAudioTracks.first?.codec, !codec.isEmpty else { return "—" }
+        return codec.uppercased()
+    }
+
+    private var playbackAudioChannelsText: String {
+        guard let channels = playbackAudioTracks.first?.channels, channels > 0 else { return "—" }
+        switch channels {
+        case 1: return "单声道"
+        case 2: return "立体声"
+        case 6: return "5.1"
+        case 8: return "7.1"
+        default: return "\(channels) 声道"
+        }
+    }
+
+    private var playbackAudioLanguageText: String {
+        guard let language = playbackAudioTracks.first?.language,
+              !language.isEmpty, language.lowercased() != "und" else { return "—" }
+        return language.uppercased()
+    }
+
+    private var playbackAudioTrackCountText: String {
+        "\(playbackAudioTracks.count) 条"
+    }
+
+    private var playbackContainerText: String {
+        guard let container = playbackProbe.containerName, !container.isEmpty else { return "—" }
+        return container
+    }
+
+    /// 色彩：原色域 / 传输函数 / 量化范围 / codec tag，HDR 片源一眼能看出 BT.2020 + PQ。
+    private var playbackColorText: String {
+        let color = playbackProbe.color
+        var parts: [String] = []
+        if let primaries = color.primaries, !primaries.isEmpty { parts.append(primaries.uppercased()) }
+        if let transfer = color.transfer, !transfer.isEmpty { parts.append(transfer.uppercased()) }
+        if let range = color.range, !range.isEmpty { parts.append(range.uppercased()) }
+        if let tag = color.codecTag, !tag.isEmpty { parts.append(tag) }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    private var playbackFileSizeText: String {
+        guard photo.fileSize > 0 else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: photo.fileSize, countStyle: .file)
+    }
+
+    private var playbackPlayedText: String {
+        let total = model.duration > 0 ? model.duration : (playbackProbe.duration > 0 ? playbackProbe.duration : 0)
+        guard total > 0 else { return "—" }
+        return "\(formatPlayerTime(model.currentTime)) / \(formatPlayerTime(total))"
+    }
+
+    /// 运行时码率 / 丢帧：从 AVPlayerItem 的访问日志取，起播几秒后才有值。
+    private var playbackAccessLogEvent: AVPlayerItemAccessLogEvent? {
+        model.player.currentItem?.accessLog()?.events.last
+    }
+
+    private var playbackLiveBitrateText: String {
+        guard let bitrate = playbackAccessLogEvent?.observedBitrate, bitrate > 0 else { return "—" }
+        return String(format: "%.1f Mbps", bitrate / 1_000_000)
+    }
+
+    private var playbackDroppedFramesText: String {
+        guard let log = playbackAccessLogEvent else { return "—" }
+        return "\(log.numberOfDroppedVideoFrames) 帧"
+    }
+
+    private var playbackDecodeText: String {
+        if !playbackProbe.isVideoDecodable { return "软件转码" }
+        return playbackProbe.isHEVC ? "硬解 · HEVC" : "系统硬解"
+    }
+
+    private var playbackSubtitleCurrentText: String {
+        if let burn = ui.burnSubtitleName { return burn }
+        if let ordinal = ui.embeddedTrackOrdinal,
+           let track = ui.embeddedTracks.first(where: { $0.ordinal == ordinal }) {
+            return track.displayName
+        }
+        if let name = ui.subtitleName, !name.isEmpty { return name }
+        return "关"
+    }
+
+    private var playbackSubtitleSourceText: String {
+        if ui.burnSubtitleName != nil || ui.burnSubtitleStream != nil { return "烧录" }
+        if ui.embeddedTrackOrdinal != nil { return "内嵌" }
+        if ui.subtitleName != nil { return "外挂" }
+        return "—"
+    }
+
+    private var playbackSubtitleTracksText: String {
+        let embedded = playbackProbe.subtitleTracks.count
+        return embedded > 0 ? "内嵌 \(embedded) 轨" : "无内嵌轨"
+    }
+
+    private var playbackSubtitleOffsetText: String {
+        String(format: "%+.1fs", ui.subtitleOffset)
+    }
+
+    private var playbackSubtitleSizeText: String {
+        String(format: "%.0f pt", settings.subtitleFontSize)
+    }
+
+    private var playbackSubtitlePositionText: String {
+        switch settings.subtitlePosition {
+        case "middle": return "居中"
+        case "lower": return "偏低"
+        default: return "底部"
+        }
+    }
+
+    /// ⌘⇧I 的完整探测信息：直接按字段列出，方便排查 HDR / 音轨 / 字幕轨问题。
+    private var fullProbeText: String {
+        let probe = playbackProbe
+        var lines: [String] = []
+        lines.append("path        \(playbackPathText)")
+        lines.append("container   \(probe.containerName ?? "—")")
+        lines.append("codec       \(probe.codec ?? photo.videoCodec ?? "—")  hevc=\(probe.isHEVC)")
+        lines.append("size        \(Int(probe.size.width))×\(Int(probe.size.height))")
+        lines.append("bitrate     \(probe.bitrate) bps")
+        lines.append("frameRate   \(String(format: "%.3f", probe.frameRate))  interlaced=\(probe.isInterlaced)")
+        lines.append("hdr         \(probe.hdrLabel ?? "—")  dv=\(probe.isDolbyVision)  profile=\(probe.color.dvProfile.map(String.init) ?? "—")")
+        lines.append("color       primaries=\(probe.color.primaries ?? "—") transfer=\(probe.color.transfer ?? "—") matrix=\(probe.color.matrix ?? "—") range=\(probe.color.range ?? "—")")
+        lines.append("decodable   \(probe.isVideoDecodable)  angles=\(probe.angleCount)")
+        lines.append("chapters    \(probe.chapters.count)")
+        for (index, track) in playbackAudioTracks.enumerated() {
+            lines.append("audio[\(index)]    \(track.displayName)  codec=\(track.codec) channels=\(track.channels)")
+        }
+        for (index, track) in probe.subtitleTracks.enumerated() {
+            lines.append("subtitle[\(index)] \(track.displayName)  image=\(track.isImage) forced=\(track.isForced)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// 当前所在章节（信息叠加用）：章节标题来自蓝光播放列表 / Matroska。
@@ -970,12 +1345,20 @@ struct VideoPlayerStage: View {
             if activeFailure == nil {
                 centerPlayButton
                 // 顶栏融合由窗口工具栏渲染控件；视频真全屏时工具栏被隐藏，改用画面内控制条。
-                if settings.videoControlPlacement == .floating || !transparentBackground
+                // 电视直播全屏已经用频道 OSD（顶部频道条 + 底部动作胶囊）承载操作，
+                // 再叠一条通用播放栏会重复，这里直接不显示。
+                let hidesPlaybackControls = tvLiveChannel != nil && viewer.videoImmersiveFullScreen
+                if !hidesPlaybackControls,
+                   settings.videoControlPlacement == .floating || !transparentBackground
                     || viewer.videoImmersiveFullScreen {
                     controls(stage: proxy.size)
                 }
                 // 顶栏融合模式下音轨 / 字幕入口在窗口工具栏的播放舱里。
             }
+
+            // 电视 OSD：频道号 / Now & Next / 节目单抽屉 / 底部频道带。
+            // 只在播放器已经就绪时出现，避免和失败卡片、起播海报叠在一起。
+            tvOverlay
 
             if showPlaybackInfo, activeFailure == nil {
                 VStack {
@@ -1009,6 +1392,9 @@ struct VideoPlayerStage: View {
                 controlsShown = true
             }
         }
+        .onChange(of: photo.id) { _, _ in
+            resetTVInput()
+        }
         // 只在「开始 / 继续播放」时恢复生成，**暂停时不挂起 ffmpeg**：
         // EVENT 列表停更超过 1.5 × TARGETDURATION，AVPlayer 会报 -12888 并判定流已结束，
         // 之后不再拉新分片，恢复播放时直接卡死。暂停期间继续生成也顺带把后面缓冲做好。
@@ -1018,16 +1404,7 @@ struct VideoPlayerStage: View {
         // 转封装后的 HLS 也可能在解码阶段失败：这时必须把「转换为兼容格式」入口放出来，
         // 否则用户只能停在错误页。真正的兼容性判断由 ffmpeg 转码兜底。
         .onChange(of: model.playbackFailure) { _, failure in
-            guard let failure, hasLoadedVideo else { return }
-            Diagnostics.record("装片失败 \(photo.originalName)："
-                               + "\(failure.domain ?? "-") \(failure.code.map(String.init) ?? "-") "
-                               + "incompatible=\(failure.isIncompatibleAsset) \(failure.message)")
-            guard FFmpeg.isAvailable, sourceURL != nil else { return }
-            canTranscode = true
-            // -12927 / -11828：系统播放器判定码流不兼容，重封装不会变好，直接改走兼容转码。
-            guard failure.isIncompatibleAsset, !didAutoTranscodeFallback else { return }
-            didAutoTranscodeFallback = true
-            autoFallbackToTranscode(after: failure)
+            handlePlaybackFailure(failure)
         }
         .onChange(of: settings.preservePitchAtSpeed) { _, enabled in
             model.preservesPitch = enabled
@@ -1042,31 +1419,20 @@ struct VideoPlayerStage: View {
         }
         .onChange(of: model.isBuffering) { _, buffering in
             guard buffering, hasLoadedVideo else { return }
-            Diagnostics.record("播放缓冲 \(photo.originalName) at \(Int(model.currentTime))s")
+            Diagnostics.record("播放缓冲 \(photo.originalName) at \(Int(model.currentTime))s", level: .verbose)
+        }
+        // 流地址层面失败（403 / 超时 / 直链失效）不会走 playbackFailure，单独顺延一次。
+        .onChange(of: streamFailure) { _, value in
+            handleStreamFailureChange(value)
         }
         // 原生容器的音轨组就绪 / 切换后，把选项同步给顶栏与画面内菜单。
         .onChange(of: model.audioOptions.count) { _, _ in refreshAudioChoices() }
         .onChange(of: model.selectedAudio) { _, _ in refreshAudioChoices() }
         .task(id: photo.id) {
-            loadGeneration &+= 1
-            await preparePlayback(generation: loadGeneration)
+            await startPlaybackTask()
         }
         .onDisappear {
-            FullScreenDiagnostics.log("video stage disappear \(photo.originalName)")
-            NowPlayingCenter.shared.deactivate()
-            VideoScrubPreviewCenter.shared.fallbackProvider = nil
-            VideoScrubPreviewCenter.shared.end()
-            loadGeneration &+= 1
-            hideControlsTask?.cancel()
-            model.seekRouter = nil
-            model.scrubGuard = nil
-            playbackSession.onHardStall = nil
-            playbackSession.onNativeStall = nil
-            model.stop()
-            DisplayModeMatcher.restore()
-            cloudResourceLoader?.invalidate()
-            cloudResourceLoader = nil
-            playbackSession.stop()
+            handleStageDisappear()
         }
         .background(
             KeyEventMonitor { event in
@@ -1092,34 +1458,56 @@ struct VideoPlayerStage: View {
         playbackSession.prefersMultiAudio = settings.instantAudioSwitch
         // 起播底图：本地视频的缩略图先垫一层模糊背景，网络源没有就退回渐变。
         loadingThumbnail = fileExistsThumbnail()
-        // 网络资源：用当前剧集的封面做起播底图，海报已缓存时几乎瞬间就有。
+        // 网络资源：用当前这一集的封面做起播底图；单集没有封面时才退回条目封面。
         if loadingThumbnail == nil,
-           let context = store.catalogPlaybackContexts[photo.id],
-           !context.item.coverURL.isEmpty {
-            let source = context.source
-            let cover = context.item.coverURL
-            let targetID = photo.id
-            Task { @MainActor in
-                let artwork = await CatalogArtworkCache.shared.image(source: source,
-                                                                     urlString: cover,
-                                                                     quick: true)
-                guard photo.id == targetID else { return }
-                if let artwork {
-                    loadingThumbnail = artwork
+           let context = store.catalogPlaybackContexts[photo.id] {
+            let cover = context.episode.coverURL.isEmpty ? context.item.coverURL : context.episode.coverURL
+            if !cover.isEmpty {
+                let source = context.source
+                let targetID = photo.id
+                Task { @MainActor in
+                    let artwork = await CatalogArtworkCache.shared.image(source: source,
+                                                                         urlString: cover,
+                                                                         quick: true)
+                    guard photo.id == targetID else { return }
+                    if let artwork {
+                        loadingThumbnail = artwork
+                    }
                 }
             }
         }
         // 影院匹配过的本地 / SMB 视频：用刮削背景图做起播底图，
         // 大文件探测 / 首段生成期间不会只剩一块黑底。
+        // 剧集优先取「本集剧照」，没有剧照（或电影）才回退整部作品的背景。
         if loadingThumbnail == nil,
+           let entry = store.cinemaPlaybackEntry,
+           entry.file.photoID == photo.id,
            let artwork = store.cinemaGridArtwork(for: photo) {
             let targetID = photo.id
+            let tvID = entry.tmdbID
+            let season = entry.season
+            let episode = entry.episode
+            let isEpisode = entry.kind == .tv && tvID != nil && season != nil && episode != nil
             Task { @MainActor in
-                let image = await CinemaArtworkCache.shared.image(for: artwork)
-                guard photo.id == targetID else { return }
-                if let image, loadingThumbnail == nil {
-                    loadingThumbnail = image
+                if isEpisode, let tvID, let season, let episode {
+                    var still = store.cachedCinemaEpisodeInfos(tvID: tvID,
+                                                               season: season)?.infos[episode]?.stillURL
+                    if still == nil {
+                        // 本集剧照还没缓存：补拉一次（12 小时内只请求一次）。
+                        still = await store.refreshCinemaEpisodeInfos(tvID: tvID,
+                                                                      season: season)?[episode]?.stillURL
+                    }
+                    if let still,
+                       let image = await CinemaArtworkCache.shared.image(for: still) {
+                        guard photo.id == targetID else { return }
+                        if loadingThumbnail == nil { loadingThumbnail = image }
+                        return
+                    }
+                    guard photo.id == targetID, loadingThumbnail == nil else { return }
                 }
+                let image = await CinemaArtworkCache.shared.image(for: artwork)
+                guard photo.id == targetID, loadingThumbnail == nil else { return }
+                if let image { loadingThumbnail = image }
             }
         }
         // 先停掉上一个视频：新视频的 URL / 探测还是要等一会，
@@ -1385,6 +1773,8 @@ struct VideoPlayerStage: View {
     /// 内嵌字幕轨探测到后自动挂载一条：按默认中文偏好排序（简体 > 繁体 > 中文 > 原文）。
     /// 只对本地 / SMB 源自动提取，云端交给用户手动选，避免和起流抢网盘带宽。
     private func autoLoadEmbeddedSubtitleIfNeeded() {
+        // 默认字幕设为「不自动挂载」时，连内嵌轨也不主动提取。
+        guard settings.videoPreferredSubtitle != "off" else { return }
         guard settings.autoEmbeddedSubtitles else { return }
         guard let sourceURL, sourceURL.isFileURL else { return }
         guard !autoEmbeddedTried,
@@ -1523,20 +1913,111 @@ struct VideoPlayerStage: View {
         // 可自定义快捷键允许 ⌥ / ⌃ / ⇧ 组合，先于固定键位匹配。
         if !hasCommand, handleCustomShortcut(event) { return true }
 
-        // ⌥← / ⌥→：上一章 / 下一章；I：播放信息叠加。
+        // 电视遥控语义：↑↓ 换台、数字键输入频道号、E 节目单、S 收藏。
+        if let channel = tvPlaybackChannel, !hasCommand, flags.isEmpty {
+            // Esc 逐层退出：先回直播 / 收节目单抽屉，再收 OSD，最后交给查看器退出播放。
+            if event.keyCode == 53 {
+                if viewer.tvTimeshiftActive {
+                    viewer.tvTimeshiftActive = false
+                    model.requestSeek(to: max(0, model.bufferedEndTime - 0.5))
+                    model.play()
+                    return true
+                }
+                if viewer.tvGuideShown {
+                    withAnimation(.easeOut(duration: 0.2)) { viewer.tvGuideShown = false }
+                    return true
+                }
+                if controlsShown, model.isPlaying {
+                    withAnimation(.easeInOut(duration: 0.25)) { controlsShown = false }
+                    return true
+                }
+            }
+            if tvLiveChannel != nil {
+                if event.keyCode == 126 {
+                    switchTVChannel(step: -1)
+                    return true
+                }
+                if event.keyCode == 125 {
+                    switchTVChannel(step: 1)
+                    return true
+                }
+                // 时移模式里 ← / → 变成 10 秒步进；否则仍按直播语义切线路。
+                if viewer.tvTimeshiftActive {
+                    if event.keyCode == 123 {
+                        seekTimeshift(by: -10)
+                        return true
+                    }
+                    if event.keyCode == 124 {
+                        seekTimeshift(by: 10)
+                        return true
+                    }
+                }
+                if let live = tvLiveChannel, live.streamLines.count > 1 {
+                    if event.keyCode == 123 {
+                        store.switchTVLine(for: photo.id, delta: -1)
+                        return true
+                    }
+                    if event.keyCode == 124 {
+                        store.switchTVLine(for: photo.id, delta: 1)
+                        return true
+                    }
+                }
+                // L：从时移 / 落后处跳回直播边缘。
+                if event.keyCode == 37 {
+                    viewer.tvTimeshiftActive = false
+                    model.requestSeek(to: max(0, model.bufferedEndTime - 0.5))
+                    model.play()
+                    store.showToast("已回到直播")
+                    return true
+                }
+                if let digit = channelDigit(event.keyCode) {
+                    appendChannelDigit(digit)
+                    return true
+                }
+            }
+            if event.keyCode == 14 {
+                viewer.tvGuideShown.toggle()
+                return true
+            }
+            if event.keyCode == 1 {
+                store.tvModel.toggleFavorite(channel)
+                store.showToast(store.tvModel.isFavorite(channel)
+                                ? "已收藏 \(channel.name)"
+                                : "已取消收藏 \(channel.name)")
+                return true
+            }
+        }
+
+        // ⌥← / ⌥→：上一章 / 下一章；I：播放信息叠加；⇧⌘I：完整探测信息。
         if flags == .option, event.keyCode == 123, seekChapter(step: -1) { return true }
         if flags == .option, event.keyCode == 124, seekChapter(step: 1) { return true }
+        if hasCommand, flags.contains(.shift), event.keyCode == 34 {
+            showPlaybackInfo = true
+            showFullProbe.toggle()
+            return true
+        }
         if event.keyCode == 34, flags.isEmpty {
             showPlaybackInfo.toggle()
+            return true
+        }
+        // S / A：快速切换字幕 / 音轨，切换结果用 Toast 回报当前轨道。
+        if event.keyCode == 1, flags.isEmpty {
+            cycleSubtitleTrack()
+            return true
+        }
+        if event.keyCode == 0, flags.isEmpty {
+            cycleAudioTrack()
             return true
         }
 
         guard !flags.contains(.control), !flags.contains(.option) else { return false }
 
         let episodeTransport = isEpisodeTransport
+        // 回看是一档节目的点播：← / → 用来快退 / 快进，不翻上一条 / 下一条。
+        let seeksWithArrows = episodeTransport || (tvPlaybackChannel?.isCatchUp == true)
         switch event.keyCode {
         case 123:
-            if episodeTransport {
+            if seeksWithArrows {
                 model.seekStep(-1, base: settings.videoSeekStep, isRepeat: event.isARepeat)
             } else if hasCommand {
                 store.viewerStepVideo(-1)
@@ -1545,7 +2026,7 @@ struct VideoPlayerStage: View {
             }
             return true
         case 124:
-            if episodeTransport {
+            if seeksWithArrows {
                 model.seekStep(1, base: settings.videoSeekStep, isRepeat: event.isARepeat)
             } else if hasCommand {
                 store.viewerStepVideo(1)
@@ -1586,6 +2067,101 @@ struct VideoPlayerStage: View {
         default:
             return false
         }
+    }
+
+    /// ↑↓ 换台：沿用查看器里的频道上下文，并在顶部提示目标频道。
+    private func switchTVChannel(step: Int) {
+        let photos = store.tvPlaybackPhotos
+        guard photos.count > 1,
+              let index = photos.firstIndex(where: { $0.id == photo.id }) else { return }
+        let target = photos[(index + step + photos.count) % photos.count]
+        if let next = store.tvPlaybackChannel(for: target.id) {
+            store.showToast("\(String(format: "%02d", store.tvModel.channelNumber(for: next))) · \(next.name)")
+        }
+        store.viewerStep(step)
+    }
+
+    /// 主键盘数字 0–9 的 keyCode。
+    private func channelDigit(_ keyCode: UInt16) -> Int? {
+        switch keyCode {
+        case 29: return 0
+        case 18: return 1
+        case 19: return 2
+        case 20: return 3
+        case 21: return 4
+        case 23: return 5
+        case 22: return 6
+        case 26: return 7
+        case 28: return 8
+        case 25: return 9
+        default: return nil
+        }
+    }
+
+    /// 数字键 1.5 秒缓冲：期间继续输入就拼成多位频道号，超时后直接跳转。
+    private func appendChannelDigit(_ digit: Int) {
+        guard tvChannelNumberBuffer.count < 3 else { return }
+        tvChannelNumberBuffer.append(String(digit))
+        store.showToast("频道号 \(tvChannelNumberBuffer)")
+        tvChannelNumberTask?.cancel()
+        tvChannelNumberTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            commitChannelNumber()
+        }
+    }
+
+    private func commitChannelNumber() {
+        let value = Int(tvChannelNumberBuffer) ?? 0
+        tvChannelNumberBuffer = ""
+        tvChannelNumberTask = nil
+        guard value > 0 else { return }
+        let list = store.tvModel.channelsForFocusedSource
+        guard let target = list.first(where: { store.tvModel.channelNumber(for: $0) == value }) else {
+            store.showToast("没有 \(value) 号频道")
+            return
+        }
+        store.showToast("\(String(format: "%02d", value)) · \(target.name)")
+        store.switchTVChannel(target)
+    }
+
+    /// S 键：在内嵌文本字幕之间轮换，最后一轨之后关闭字幕。
+    private func cycleSubtitleTrack() {
+        let tracks = playbackProbe.subtitleTracks.filter { !$0.isImage }
+        guard !tracks.isEmpty else {
+            store.showToast("这个视频没有可切换的内嵌字幕")
+            return
+        }
+        if let current = ui.embeddedTrackOrdinal,
+           let index = tracks.firstIndex(where: { $0.ordinal == current }) {
+            let next = tracks.index(after: index)
+            if next < tracks.endIndex {
+                ui.selectEmbeddedTrack(tracks[next])
+                store.showToast("字幕 · \(tracks[next].displayName)")
+            } else {
+                ui.clearEmbeddedSubtitle()
+                store.showToast("已关闭字幕")
+            }
+        } else {
+            ui.selectEmbeddedTrack(tracks[0])
+            store.showToast("字幕 · \(tracks[0].displayName)")
+        }
+    }
+
+    /// A 键：在音轨之间轮换。
+    private func cycleAudioTrack() {
+        let choices = ui.audioChoices
+        guard choices.count > 1 else {
+            store.showToast("这个视频只有一条音轨")
+            return
+        }
+        guard let index = choices.firstIndex(where: { $0.index == ui.selectedAudioIndex }) else {
+            ui.selectAudio(choices[0].index)
+            return
+        }
+        let next = choices[(index + 1) % choices.count]
+        ui.selectAudio(next.index)
+        store.showToast("音轨 · \(next.title.isEmpty ? "音轨 \(next.index + 1)" : next.title)")
     }
 
     /// 设置 › 快捷键里可自定义的播放器动作。
@@ -1825,10 +2401,12 @@ struct VideoPlayerStage: View {
                     VideoControlButton(icon: "rotate.right", active: quarterTurns != 0, help: "旋转 90° (R)") {
                         rotatePlayer()
                     }
-                    VideoControlButton(icon: "pip", active: model.isPipActive, help: "画中画") {
-                        model.togglePip()
+                    if settings.videoPiPEnabled {
+                        VideoControlButton(icon: "pip", active: model.isPipActive, help: "画中画") {
+                            model.togglePip()
+                        }
+                        .disabled(!model.isPipAvailable)
                     }
-                    .disabled(!model.isPipAvailable)
                     VideoControlButton(icon: "camera", help: "保存当前帧") {
                         onCaptureFrame()
                     }
@@ -2115,14 +2693,17 @@ struct VideoPlayerStage: View {
                     : option.displayName
                 return VideoPlaybackUI.AudioChoice(index: offset, title: title)
             }
-            ui.updateAudio(choices: choices, selected: model.currentAudioIndex)
+            ui.updateAudio(choices: choices,
+                           selected: preferredAudioPosition(in: probeAudioTracks)
+                               ?? model.currentAudioIndex)
             return
         }
         if streamSession != nil {
             if !probeAudioTracks.isEmpty {
                 ui.updateAudio(choices: probeAudioTracks.map {
                     VideoPlaybackUI.AudioChoice(index: $0.ordinal, title: $0.displayName)
-                }, selected: streamAudioIndex)
+                }, selected: preferredAudioPosition(in: probeAudioTracks)
+                    .map { probeAudioTracks[$0].ordinal } ?? streamAudioIndex)
             } else {
                 let count = max(0, probeAudioCount)
                 ui.updateAudio(choices: (0..<count).map {
@@ -2135,6 +2716,23 @@ struct VideoPlayerStage: View {
             }
             let selected = model.selectedAudio.flatMap { model.audioOptions.firstIndex(of: $0) } ?? 0
             ui.updateAudio(choices: choices, selected: selected)
+        }
+    }
+
+    /// 默认音轨偏好：按语言 / 标题挑一条，命不中时回落到原逻辑。
+    private func preferredAudioPosition(in tracks: [AudioTrackInfo]) -> Int? {
+        let preference = settings.videoPreferredAudio
+        guard preference != "original", !tracks.isEmpty else { return nil }
+        let wanted = preference == "zh"
+            ? ["zh", "chi", "cmn", "cn", "yue"]
+            : ["en", "eng"]
+        return tracks.firstIndex { track in
+            let code = (track.language ?? "").lowercased()
+            if wanted.contains(where: { code.hasPrefix($0) }) { return true }
+            let title = (track.title ?? "").lowercased()
+            return preference == "zh"
+                ? (title.contains("国") || title.contains("中") || title.contains("粤"))
+                : (title.contains("english") || title.contains("英语"))
         }
     }
 
@@ -2269,13 +2867,15 @@ struct VideoPlayerStage: View {
     private func startStreaming(generation: Int, autoplay: Bool, offset: Double,
                                 resumeAt: Double? = nil,
                                 mode initialMode: VideoStreamSession.Mode,
-                                audioIndex: Int) async -> Bool {
+                                audioIndex: Int,
+                                isLive: Bool = false) async -> Bool {
         guard let context = makeStreamContext(generation: generation,
                                               offset: offset,
                                               resumeAt: resumeAt,
                                               mode: initialMode,
                                               audioIndex: audioIndex,
-                                              autoplay: autoplay) else { return false }
+                                              autoplay: autoplay,
+                                              isLive: isLive) else { return false }
         let outcome = await playbackSession.start(context)
         switch outcome {
         case .started:
@@ -2301,7 +2901,8 @@ struct VideoPlayerStage: View {
                                    resumeAt: Double?,
                                    mode: VideoStreamSession.Mode,
                                    audioIndex: Int,
-                                   autoplay: Bool) -> PlaybackStreamContext? {
+                                   autoplay: Bool,
+                                   isLive: Bool = false) -> PlaybackStreamContext? {
         guard let sourceURL else { return nil }
         let token = generation
         return PlaybackStreamContext(
@@ -2334,12 +2935,92 @@ struct VideoPlayerStage: View {
             offset: offset,
             resumeAt: resumeAt,
             preferredMode: mode,
+            isLive: isLive,
             generation: token,
             isCurrent: { token == loadGeneration })
     }
 
+    /// 失败卡片：电视频道用「逐条线路原因 + 可操作按钮」，其他片源沿用原卡片。
+    @ViewBuilder
     private func failureView(_ message: String) -> some View {
-        VStack(spacing: 14) {
+        if let channel = store.tvPlaybackChannel(for: photo.id) {
+            tvFailureCard(channel: channel, fallbackMessage: message)
+        } else {
+            defaultFailureView(message)
+        }
+    }
+
+    /// 概念「状态 C · 失败与换线」：全部线路失败后升级为居中卡片。
+    private func tvFailureCard(channel: TVChannel, fallbackMessage: String) -> some View {
+        let summary = store.tvLineFailureSummary(for: photo.id)
+        let total = store.tvLineCount(for: photo.id)
+        let reasonText = summary.isEmpty
+            ? fallbackMessage
+            : "\(total) 条线路都失败了：\(summary)。"
+        return VStack(spacing: 12) {
+            Text("这个频道暂时看不了")
+                .font(.system(size: 14.5, weight: .semibold))
+                .foregroundStyle(.white)
+            Text(reasonText)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.white.opacity(0.66))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 430)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                tvFailureButton("重试", prominent: true) {
+                    failureMessage = nil
+                    Task { await load(generation: loadGeneration) }
+                }
+                tvFailureButton("换一条线路", prominent: false) {
+                    _ = store.switchTVLine(for: photo.id, delta: 1)
+                }
+                .disabled(total < 2)
+                tvFailureButton("打开信号页", prominent: false) {
+                    store.closeViewer()
+                    store.tvModel.setHubTab(.status)
+                }
+                tvFailureButton("复制流地址", prominent: false) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(channel.streamURL, forType: .string)
+                    store.showToast("已复制流地址")
+                }
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
+        .background {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.8)
+                }
+        }
+        .shadow(color: .black.opacity(0.4), radius: 24, y: 12)
+        .padding(24)
+    }
+
+    private func tvFailureButton(_ title: String,
+                                 prominent: Bool,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(prominent ? Color.black.opacity(0.88) : Color.white.opacity(0.86))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5.5)
+                .background(prominent ? TVBrand.wave : Color.white.opacity(0.12),
+                            in: Capsule(style: .continuous))
+                .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func defaultFailureView(_ message: String) -> some View {
+        let httpStatus = model.playbackFailure?.httpStatus
+        return VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(.white.opacity(0.75))
@@ -2358,7 +3039,8 @@ struct VideoPlayerStage: View {
                     .frame(maxWidth: 360)
             }
             HStack(spacing: 10) {
-                if canTranscode {
+                // HTTP 4xx / 5xx 是线路本身拒绝，转码解决不了，不展示这个入口。
+                if canTranscode, (httpStatus ?? 0) < 400 {
                     Button {
                         transcodeAndPlay()
                     } label: {
@@ -2529,6 +3211,28 @@ struct VideoPlayerStage: View {
         let source = await resolveSource()
         guard generation == loadGeneration, !Task.isCancelled else { return }
         var failedProbe: VideoProbe?
+
+        // 电视直播的非 HLS 源（http-flv / http-ts）：系统播放器不支持，
+        // 直接交给 ffmpeg 转封装成滑动窗口 HLS，跳过 AVFoundation 探测与缓存查找。
+        if let source, playbackMode == .live, !source.isHLS, FFmpeg.isAvailable {
+            sourceURL = source.url
+            sourceHeaders = source.headers
+            assetOptions = [CloudPlayback.headerFieldsKey: source.headers]
+            failureMessage = nil
+            isPreparing = true
+            playbackSession.playbackMode = .live
+            // 直播没有完整时长：进度条不参与，尺寸用列表元数据兜底。
+            probeDuration = 0
+            if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+                videoSize = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
+            }
+            if await startStreaming(generation: generation, autoplay: autoplay,
+                                    offset: 0, resumeAt: nil, mode: .remux,
+                                    audioIndex: 0, isLive: true) {
+                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
+            }
+            return
+        }
 
         // 百度直链：URL 没有扩展名、AVPlayer 跳转后不会继续带 UA；
         // WebDAV：必须带 Basic 认证头，AVPlayer 直连不会发送；
@@ -3255,16 +3959,42 @@ struct VideoInlineVolume: View {
 /// 工具栏右侧的播放选项：把倍速、循环、填充、旋转、画中画、音量与截图收进一个菜单，
 /// 顶栏只留一枚入口，避免按钮挤在一起。
 struct VideoToolbarOptions: View {
-    @ObservedObject var model: VideoPlayerModel
+    /// 只保留几份快照，不直接观察播放器：播放器每 250ms 发布一次播放时间，
+    /// 直接观察会让工具栏菜单跟着 250ms 重建，展开的子菜单会被收起、点不中。
+    let model: VideoPlayerModel
     @ObservedObject var settings: AppSettings
     let quarterTurns: Int
     let onRotate: () -> Void
     let onCapture: () -> Void
 
-    private var pipActive: Binding<Bool> {
-        Binding(get: { model.isPipActive },
+    @State private var speed: Double
+    @State private var looping: Bool
+    @State private var muted: Bool
+    @State private var pipActive: Bool
+    @State private var pipAvailable: Bool
+
+    init(model: VideoPlayerModel,
+         settings: AppSettings,
+         quarterTurns: Int,
+         onRotate: @escaping () -> Void,
+         onCapture: @escaping () -> Void) {
+        self.model = model
+        _settings = ObservedObject(wrappedValue: settings)
+        self.quarterTurns = quarterTurns
+        self.onRotate = onRotate
+        self.onCapture = onCapture
+        _speed = State(initialValue: model.speed)
+        _looping = State(initialValue: model.isLooping)
+        _muted = State(initialValue: model.isMuted)
+        _pipActive = State(initialValue: model.isPipActive)
+        _pipAvailable = State(initialValue: model.isPipAvailable)
+    }
+
+    private var pipActiveBinding: Binding<Bool> {
+        Binding(get: { pipActive },
                 set: { active in
-                    guard active != model.isPipActive else { return }
+                    guard active != pipActive else { return }
+                    pipActive = active
                     model.togglePip()
                 })
     }
@@ -3274,9 +4004,10 @@ struct VideoToolbarOptions: View {
             Section("播放速度") {
                 ForEach([0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0], id: \.self) { value in
                     Button {
+                        speed = value
                         model.setSpeed(value)
                     } label: {
-                        if model.speed == value {
+                        if speed == value {
                             Label(speedLabel(value), systemImage: "checkmark")
                         } else {
                             Text(speedLabel(value))
@@ -3286,7 +4017,8 @@ struct VideoToolbarOptions: View {
             }
 
             Section("画面") {
-                Toggle("循环播放", isOn: $model.isLooping)
+                Toggle("循环播放", isOn: Binding(get: { looping },
+                                                 set: { looping = $0; model.isLooping = $0 }))
                 Menu("显示方式") {
                     ForEach(VideoFramingMode.allCases) { mode in
                         Toggle(isOn: Binding(
@@ -3325,15 +4057,16 @@ struct VideoToolbarOptions: View {
                     }
                 }
                 Button("旋转 90°") { onRotate() }
-                Toggle("画中画", isOn: pipActive)
-                    .disabled(!model.isPipAvailable)
+                Toggle("画中画", isOn: pipActiveBinding)
+                    .disabled(!pipAvailable)
             }
 
             Section("声音") {
-                Toggle("静音", isOn: $model.isMuted)
-                Button("音量 25%") { model.volume = 0.25; model.isMuted = false }
-                Button("音量 50%") { model.volume = 0.5; model.isMuted = false }
-                Button("音量 100%") { model.volume = 1; model.isMuted = false }
+                Toggle("静音", isOn: Binding(get: { muted },
+                                             set: { muted = $0; model.isMuted = $0 }))
+                Button("音量 25%") { setVolume(0.25) }
+                Button("音量 50%") { setVolume(0.5) }
+                Button("音量 100%") { setVolume(1) }
             }
 
             Divider()
@@ -3350,6 +4083,18 @@ struct VideoToolbarOptions: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help(quarterTurns == 0 ? "播放选项" : "播放选项（画面已旋转）")
+        // 只在这几个值真的变化时同步快照；播放时间推进不会触发重绘。
+        .onReceive(model.$speed) { speed = $0 }
+        .onReceive(model.$isLooping) { looping = $0 }
+        .onReceive(model.$isMuted) { muted = $0 }
+        .onReceive(model.$isPipActive) { pipActive = $0 }
+        .onReceive(model.$isPipAvailable) { pipAvailable = $0 }
+    }
+
+    private func setVolume(_ value: Double) {
+        model.volume = value
+        model.isMuted = false
+        muted = false
     }
 
     private func nudgePan(dx: Double, dy: Double) {

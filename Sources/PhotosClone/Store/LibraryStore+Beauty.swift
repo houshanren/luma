@@ -489,7 +489,7 @@ extension LibraryStore {
                 .appendingPathComponent("luma-system-beauty-\(UUID().uuidString).jpg")
             do {
                 try render.data.write(to: temp, options: .atomic)
-                var item = try ImportService.importFile(temp)
+                var item = try ingestService.importLocalFile(temp)
                 try? FileManager.default.removeItem(at: temp)
                 item.capturedAt = photo.capturedAt
                 item.make = photo.make
@@ -579,7 +579,7 @@ extension LibraryStore {
                 .appendingPathComponent("luma-cloud-beauty-\(UUID().uuidString).jpg")
             do {
                 try render.data.write(to: temp, options: .atomic)
-                var item = try ImportService.importFile(temp)
+                var item = try ingestService.importLocalFile(temp)
                 try? FileManager.default.removeItem(at: temp)
                 // 继承拍摄时间与 EXIF，便于在拾光里按日期 / 地点浏览美化副本。
                 item.capturedAt = photo.capturedAt

@@ -18,6 +18,43 @@ struct CinemaNFO {
     var posterURL: String?
     var backdropURL: String?
 
+    /// 导出 Kodi / Jellyfin 可读的 NFO：电影写 movie，剧集写 episodedetails。
+    static func export(entry: CinemaEntry) -> String {
+        func escape(_ value: String) -> String {
+            value.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        var lines: [String] = ["<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"]
+        lines.append(entry.kind == .movie ? "<movie>" : "<episodedetails>")
+        lines.append("  <title>\(escape(entry.title))</title>")
+        if let original = entry.originalTitle, !original.isEmpty {
+            lines.append("  <originaltitle>\(escape(original))</originaltitle>")
+        }
+        if let year = entry.year { lines.append("  <year>\(year)</year>") }
+        if let season = entry.season { lines.append("  <season>\(season)</season>") }
+        if let episode = entry.episode { lines.append("  <episode>\(episode)</episode>") }
+        if let overview = entry.overview, !overview.isEmpty {
+            lines.append("  <plot>\(escape(overview))</plot>")
+        }
+        if let rating = entry.rating { lines.append("  <rating>\(String(format: "%.1f", rating))</rating>") }
+        if let runtime = entry.runtime { lines.append("  <runtime>\(runtime)</runtime>") }
+        let genres = entry.genres ?? []
+        for genre in genres { lines.append("  <genre>\(escape(genre))</genre>") }
+        if let poster = entry.posterURL { lines.append("  <thumb aspect=\"poster\">\(escape(poster))</thumb>") }
+        if let backdrop = entry.backdropURL { lines.append("  <fanart><thumb>\(escape(backdrop))</thumb></fanart>") }
+        if let tmdb = entry.tmdbID {
+            lines.append("  <uniqueid type=\"tmdb\" default=\"true\">\(tmdb)</uniqueid>")
+        }
+        lines.append("  <fileinfo><streamdetails><video>")
+        lines.append("    <codec>\(escape(entry.file.videoCodec ?? ""))</codec>")
+        lines.append("    <width>\(entry.file.pixelWidth)</width>")
+        lines.append("    <height>\(entry.file.pixelHeight)</height>")
+        lines.append("  </video></streamdetails></fileinfo>")
+        lines.append(entry.kind == .movie ? "</movie>" : "</episodedetails>")
+        return lines.joined(separator: "\n")
+    }
+
     static func parse(data: Data) -> CinemaNFO? {
         guard let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1),

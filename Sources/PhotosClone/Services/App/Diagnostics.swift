@@ -5,6 +5,29 @@ import AppKit
 /// 不接入第三方崩溃平台；只把启动信息、未捕获异常与用户主动导出的环境信息写到本机日志，
 /// 方便用户反馈问题时附上，不包含照片内容或 API Key。
 enum Diagnostics {
+    /// 日志详细程度：设置页 › 影院 › 高级可调。
+    enum Level: Int, CaseIterable {
+        case important = 0
+        case standard = 1
+        case verbose = 2
+
+        var title: String {
+            switch self {
+            case .important: return "精简（只记关键事件）"
+            case .standard: return "标准"
+            case .verbose: return "详细（含逐帧诊断）"
+            }
+        }
+
+        static var current: Level {
+            switch UserDefaults.standard.string(forKey: SettingsKeys.cinemaLogLevel) ?? "standard" {
+            case "important": return .important
+            case "verbose": return .verbose
+            default: return .standard
+            }
+        }
+    }
+
     private static let lock = NSLock()
     private static let logDirectory: URL = {
         let base = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
@@ -21,7 +44,8 @@ enum Diagnostics {
         record("App launched: \(appVersion) · macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
     }
 
-    static func record(_ message: String) {
+    static func record(_ message: String, level: Level = .important) {
+        guard level.rawValue <= Level.current.rawValue else { return }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let line = "[\(formatter.string(from: Date()))] \(message)\n"

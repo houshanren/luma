@@ -48,6 +48,42 @@ public struct ContentContainer: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+/// 卡片携带的源侧事实：只用于需要把 `ContentCard` 还原成源条目的场景
+/// （网盘文件、本地文件）。普通海报墙 / 频道墙不读它。
+public struct ContentAssetFacts: Hashable, Codable, Sendable {
+    /// 文件修改时间：网盘按它排序，也是云照片的「最近保存」依据。
+    public var updatedAt: Date?
+    public var byteCount: Int64?
+    /// 视频时长（秒）。
+    public var duration: Double?
+    public var pixelWidth: Int?
+    public var pixelHeight: Int?
+    /// 源内稳定 ID（如百度 fs_id），还原后取直链需要它。
+    public var remoteID: String?
+    /// 视频编码（如 hevc），转封装需要据此写 hvc1 标签。
+    public var videoCodec: String?
+    /// 源标记的受限内容：可展示，但不能播放 / 下载。
+    public var isRestricted: Bool
+
+    public init(updatedAt: Date? = nil,
+                byteCount: Int64? = nil,
+                duration: Double? = nil,
+                pixelWidth: Int? = nil,
+                pixelHeight: Int? = nil,
+                remoteID: String? = nil,
+                videoCodec: String? = nil,
+                isRestricted: Bool = false) {
+        self.updatedAt = updatedAt
+        self.byteCount = byteCount
+        self.duration = duration
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.remoteID = remoteID
+        self.videoCodec = videoCodec
+        self.isRestricted = isRestricted
+    }
+}
+
 /// 列表卡片：海报墙 / 照片网格 / 频道行 / 文件行都消费这一层。
 public struct ContentCard: Identifiable, Hashable, Codable, Sendable {
     public var ref: ContentRef
@@ -63,6 +99,8 @@ public struct ContentCard: Identifiable, Hashable, Codable, Sendable {
     public var isLive: Bool
     /// 是否可播放；不可播放的条目（例如仅元数据）仍可展示详情。
     public var isPlayable: Bool
+    /// 需要还原源条目时携带的文件事实；纯展示场景留 nil。
+    public var asset: ContentAssetFacts?
 
     public var id: String { ref.id }
 
@@ -74,7 +112,8 @@ public struct ContentCard: Identifiable, Hashable, Codable, Sendable {
                 aspectRatio: Double? = nil,
                 progress: Double? = nil,
                 isLive: Bool = false,
-                isPlayable: Bool = true) {
+                isPlayable: Bool = true,
+                asset: ContentAssetFacts? = nil) {
         self.ref = ref
         self.title = title
         self.subtitle = subtitle
@@ -84,6 +123,7 @@ public struct ContentCard: Identifiable, Hashable, Codable, Sendable {
         self.progress = progress
         self.isLive = isLive
         self.isPlayable = isPlayable
+        self.asset = asset
     }
 }
 
@@ -257,7 +297,7 @@ public struct ContentQuery: Hashable, Codable, Sendable {
     }
 }
 
-/// 只读内容仓库：云盘 / 资源 / 影院 / 电视 / 本地磁盘实现它；
+/// 只读内容仓库：云盘 / 资源 / 影院 / 电视实现它；
 /// library 的写模型是 LibraryRepository，另有一套能力。
 @MainActor
 public protocol ContentRepository {
@@ -265,6 +305,8 @@ public protocol ContentRepository {
     func page(_ query: ContentQuery) async throws -> ContentPage
     func detail(_ ref: ContentRef) async throws -> ContentDetail
     func search(_ query: ContentQuery) async throws -> ContentPage
+    /// 首屏快照：源未变化时可直接铺上次内容；不支持快照的源返回 nil。
+    func cachedPage(_ query: ContentQuery) -> ContentPage?
 }
 
 public extension ContentRepository {
@@ -272,6 +314,7 @@ public extension ContentRepository {
     func search(_ query: ContentQuery) async throws -> ContentPage {
         try await page(query)
     }
+    func cachedPage(_ query: ContentQuery) -> ContentPage? { nil }
 }
 
 /// 占位仓库：源还没有实现只读仓库时使用，调用即返回 `unsupported`，

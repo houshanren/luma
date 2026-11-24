@@ -20,6 +20,14 @@ enum CatalogProviderKind: String, Codable, Hashable {
     case javcl
     case madou
     case javgg
+    /// 苹果CMS（MacCMS V10）通用 JSON 接口：国内大量影视站共用同一套协议。
+    case maccms
+    /// FoFo 影院：自建 PHP 模板站，列表是 HTML，播放地址由 `/source/` 按 sid 换取。
+    case fofo
+    /// 爱看片片：Next.js 站点，数据在 RSC 负载里，播放走站内的 `/api/lines`。
+    case ikanpp
+    /// 爱壹帆：Angular 站点，页面内联数据 + 带签名的 JSON 接口。
+    case iyf
 
     var title: String {
         switch self {
@@ -36,6 +44,18 @@ enum CatalogProviderKind: String, Codable, Hashable {
         case .javcl: return "JavCl（网页源）"
         case .madou: return "麻豆社（国产原创）"
         case .javgg: return "JavGG（网页源）"
+        case .maccms: return "苹果CMS 影视源"
+        case .fofo: return "FoFo 影院"
+        case .ikanpp: return "爱看片片"
+        case .iyf: return "爱壹帆"
+        }
+    }
+
+    /// 会聚合进「网络影院」的通用影视源：成人向站点不在此列。
+    var supportsNetworkCinema: Bool {
+        switch self {
+        case .maccms, .fofo, .ikanpp, .iyf: return true
+        default: return false
         }
     }
 
@@ -43,6 +63,12 @@ enum CatalogProviderKind: String, Codable, Hashable {
     /// 以后新增的网页源默认也走这套版式。
     var isWebSite: Bool {
         if case .huangguo = self { return false }
+        // 苹果CMS 是海报型影视站：2:3 竖图，走海报列数。
+        if case .maccms = self { return false }
+        // FoFo / 爱看片片同样是海报型影视站。
+        if case .fofo = self { return false }
+        if case .ikanpp = self { return false }
+        if case .iyf = self { return false }
         return true
     }
 }
@@ -101,6 +127,9 @@ struct CatalogSource: Identifiable, Codable, Hashable {
     var baseURL: String
     /// 导入时使用的配置地址，仅作记录，便于重新拉取。
     var configURL: String?
+    /// 苹果CMS 的 JSON 接口地址（例如 `https://example.com/api.php/provide/vod/`）。
+    /// 其它源为 nil；站点根地址仍放在 `baseURL`，封面与 Referer 用它。
+    var apiBase: String? = nil
     var userAgent: String
     var referer: String
     /// 封面解密参数，随源配置保存；导入时从脚本读取，可在编辑中覆盖。
@@ -291,7 +320,7 @@ enum CatalogError: LocalizedError {
     case parse(String)
     case decryption
     case tls(String)
-    case unavailable
+    case unavailable(String?)
 
     var errorDescription: String? {
         switch self {
@@ -308,8 +337,8 @@ enum CatalogError: LocalizedError {
         case .tls(let host):
             return "与 \(host) 的 HTTPS 证书校验失败（可能是自签名、已过期或域名不匹配）。"
                 + "确认站点可信后，可在导入页开启「允许不受信任的证书」再试。"
-        case .unavailable:
-            return "资源暂时不可用"
+        case .unavailable(let detail):
+            return detail ?? "资源暂时不可用"
         }
     }
 }

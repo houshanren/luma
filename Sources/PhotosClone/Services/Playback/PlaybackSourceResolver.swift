@@ -20,6 +20,7 @@ extension LibraryStore {
     /// 按 photoID 找回用于播放的条目：图库 / 云盘 / 影院 / 网络资源虚拟分集统一入口。
     func playbackPhoto(id: UUID) -> PhotoItem? {
         if let photo = catalogPlaybackPhoto(for: id) { return photo }
+        if let photo = tvPlaybackPhoto(for: id) { return photo }
         if let entry = cinemaPlaybackEntry, entry.file.photoID == id { return entry.file.photoItem }
         if let photo = anyPhoto(id: id) { return photo }
         if let photo = cloudPhotos.first(where: { $0.id == id }) { return photo }
@@ -31,6 +32,17 @@ extension LibraryStore {
 
     /// 把一个照片 / 虚拟分集映射成统一播放目标：用于模式、能力与后续进度定位。
     func playbackTarget(for photo: PhotoItem) -> PlaybackTarget {
+        if let channel = tvPlaybackChannel(for: photo.id) {
+            // 回看是「过去某一段时间」：必须按点播处理，有真实时长、可拖动、可续播；
+            // 只有直播才用 .live（不写续播、可回到直播沿）。
+            // 以前这里一律 .live，回看会被当成直播流，画面边播边追流，就会出现跳着播。
+            return PlaybackTarget(storage: .provider(sourceID: .television(channel.playlistID),
+                                                     itemID: photo.id.uuidString,
+                                                     episodeID: nil),
+                                  mode: channel.isCatchUp ? .vod : .live,
+                                  title: channel.name,
+                                  artworkURL: channel.logoURL)
+        }
         if let context = catalogPlaybackContext(for: photo.id) {
             return PlaybackTarget(storage: .provider(sourceID: .catalog(context.source.id),
                                                      itemID: context.item.id,
@@ -64,6 +76,8 @@ extension LibraryStore {
     }
 
     func resolvePlaybackStream(for photo: PhotoItem) async throws -> ResolvedStream {
+        // 网络电视：直播流不走续播与转码，直接把频道地址交给播放器。
+        if let stream = resolveTVStream(for: photo.id) { return stream }
         // 网络资源：按虚拟分集取当前集的播放直链。
         if let context = catalogPlaybackContext(for: photo.id) {
             let stream = try await catalog.stream(source: context.source, episode: context.episode)

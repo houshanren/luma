@@ -13,6 +13,16 @@ final class SourceHubModel: ObservableObject {
 
     /// 最近一次激活的源会话；后续状态条 / 侧边栏角标直接读它。
     @Published private(set) var activeSession: (any SourceSession)?
+    /// 各源最近一次已知的健康状态：侧边栏行尾的状态点读它（会话内部变化不会自动发通知）。
+    @Published private(set) var healthSnapshot: [String: SourceHealth] = [:]
+
+    func health(for sourceID: SourceID) -> SourceHealth? {
+        healthSnapshot[sourceID.rawValue]
+    }
+
+    private func recordHealth(_ session: any SourceSession) {
+        healthSnapshot[session.descriptor.id.rawValue] = session.health
+    }
 
     init(store: LibraryStore) {
         self.store = store
@@ -24,12 +34,32 @@ final class SourceHubModel: ObservableObject {
 
     // MARK: - 激活
 
-    /// 点击源时唯一的入口。语义由源 ID 的 kind 决定；
-    /// 影院入口不依赖注册表里是否已有条目（空影院也要能点进去扫描）。
+    /// 点击源时唯一的入口。语义由激活策略决定：
+    /// 换库策略替换当前图库会话，浏览策略只切右侧文案与浏览上下文。
     func activate(_ sourceID: SourceID) {
-        switch Self.kind(of: sourceID) {
-        case .library:
+        let policy = state.descriptor(for: sourceID)?.activation
+            ?? Self.kind(of: sourceID).defaultActivation
+        switch policy {
+        case .replaceLibrarySession:
             activateLibrary(sourceID)
+        case .browseReadOnly:
+            browse(sourceID)
+        }
+
+        if let session = session(for: sourceID) {
+            activeSession = session
+            Task {
+                await session.activate()
+                recordHealth(session)
+            }
+        } else {
+            activeSession = nil
+        }
+    }
+
+    /// 只读浏览：不改变当前图库与写入能力，只换右侧内容。
+    private func browse(_ sourceID: SourceID) {
+        switch Self.kind(of: sourceID) {
         case .cloudMount:
             guard let mountID = Self.uuid(in: sourceID, prefix: "cloud:") else { return }
             store.navigate(to: .cloudMount(mountID))
@@ -45,30 +75,36 @@ final class SourceHubModel: ObservableObject {
                 store.activateCinemaScope(.mount(mountID))
                 store.navigate(to: .cloudCinema(mountID))
             }
-        case .iptv, .localDisk:
-            // 契约已就位，功能还没接入：明确提示，避免点了没反应。
-            store.showToast("\(Self.kind(of: sourceID).title)将在后续版本接入")
-            return
-        }
-
-        if let session = session(for: sourceID) {
-            activeSession = session
-            Task { await session.activate() }
-        } else {
-            activeSession = nil
+        case .iptv:
+            store.tvModel.setEnabled(true)
+            // 电视源是独立可点条目：带上具体源，页面直接聚焦到它。
+            if let playlistID = Self.uuid(in: sourceID, prefix: "tv:") {
+                store.tvModel.focusPlaylist(playlistID)
+                store.tvModel.setHubTab(.channels)
+            }
+            store.navigate(to: .iptv)
+        case .library:
+            // 换库策略已在上面处理；走到这里说明策略与 kind 不一致，按换库兜底。
+            activateLibrary(sourceID)
         }
     }
 
     /// 链接图库：替换当前图库会话；当前图库本身只回到图库浏览。
     private func activateLibrary(_ sourceID: SourceID) {
         let path = String(sourceID.rawValue.dropFirst("library:".count))
-        if let ref = store.systemLibraries.first(where: { $0.path == path }) {
+        // 统一按归一化路径比较：尾斜杠 / 相对写法不同也算同一个库。
+        if let ref = store.systemLibraries.first(where: { store.isSameSystemLibraryPath($0.path, path) }) {
             store.activateSystemLibrary(ref)
             return
         }
         let containerPath = LibraryPaths.containerLibraryURL?.standardizedFileURL.path
-        if containerPath == URL(fileURLWithPath: path).standardizedFileURL.path {
-            store.navigate(to: .library)
+        if let containerPath, store.isSameSystemLibraryPath(containerPath, path) {
+            // 图库本身就是官方照片图库：切回它，而不是只跳页面（否则会停在外接图库的内容上）。
+            if LibraryPaths.isNativeLibrary(URL(fileURLWithPath: path)) {
+                store.connectSystemLibrary(URL(fileURLWithPath: path))
+            } else {
+                store.navigate(to: .library)
+            }
         } else {
             store.switchLibraryContainer(URL(fileURLWithPath: path))
         }
@@ -77,51 +113,85 @@ final class SourceHubModel: ObservableObject {
     // MARK: - 会话
 
     /// 源对应的只读内容仓库；云盘 / 资源已接入，图库与后续 kind 由各自模型补齐。
+    /// 统一套一层快照装饰器：取回即存，下一次先用上次内容铺首屏。
     func repository(for sourceID: SourceID) -> (any ContentRepository)? {
+        let base: (any ContentRepository)?
         switch Self.kind(of: sourceID) {
         case .cloudMount:
             guard let id = Self.uuid(in: sourceID, prefix: "cloud:"),
                   let mount = store.cloudMounts.first(where: { $0.id == id }) else { return nil }
-            return CloudContentRepository(mount: mount, rootPath: store.cloudRootPath(for: mount))
+            base = CloudContentRepository(mount: mount, rootPath: store.cloudRootPath(for: mount))
         case .catalogSite:
             guard let id = Self.uuid(in: sourceID, prefix: "catalog:"),
                   let source = store.catalogModel.sources.first(where: { $0.id == id }) else { return nil }
-            return CatalogContentRepository(source: source)
+            base = CatalogContentRepository(source: source)
         case .cinemaFeed:
             let scope: CinemaScope = sourceID == .localCinema
                 ? .local
                 : (sourceID.uuidValue.map(CinemaScope.mount) ?? .local)
-            return CinemaContentRepository(store: store, scope: scope)
+            base = CinemaContentRepository(store: store, scope: scope)
         case .library:
-            return LibraryContentRepository(store: store, sourceID: sourceID)
-        case .iptv, .localDisk:
-            // 电视 / 磁盘后续补。
-            return nil
+            base = LibraryContentRepository(store: store, sourceID: sourceID)
+        case .iptv:
+            // 电视频道由直播页承载，暂不提供分页仓库。
+            base = nil
         }
+        guard let base else { return nil }
+        // 详情先补元数据，再套快照：页面拿到的都是补全后的内容。
+        let enriched = EnrichedContentRepository(base: base,
+                                                 sourceID: sourceID,
+                                                 kind: Self.kind(of: sourceID),
+                                                 center: store.metadataEnrichers)
+        return SnapshottedContentRepository(base: enriched,
+                                            sourceID: sourceID,
+                                            cache: store.sourceContentCache)
     }
 
     func session(for sourceID: SourceID) -> (any SourceSession)? {
         if let cached = sessions[sourceID.rawValue] { return cached }
-        guard let descriptor = state.descriptor(for: sourceID) else { return nil }
         let session: (any SourceSession)?
-        switch descriptor.kind {
-        case .library:
-            session = LibrarySourceSession(store: store, descriptor: descriptor)
-        case .cloudMount:
-            session = Self.uuid(in: sourceID, prefix: "cloud:").map {
-                CloudSourceSession(store: store, mountID: $0, descriptor: descriptor)
-            }
-        case .catalogSite:
-            session = Self.uuid(in: sourceID, prefix: "catalog:").map {
-                CatalogSourceSession(store: store, sourceID: $0, descriptor: descriptor)
-            }
-        case .cinemaFeed:
-            session = CinemaSourceSession(store: store, descriptor: descriptor)
-        default:
+        if let descriptor = state.descriptor(for: sourceID) {
+            session = makeSession(for: descriptor)
+        } else if Self.kind(of: sourceID) == .iptv,
+                  let playlistID = Self.uuid(in: sourceID, prefix: "tv:"),
+                  let playlist = store.tvModel.playlists.first(where: { $0.id == playlistID }) {
+            // 电视源不在注册表里也能建会话：侧边栏直接点某个源时同样有健康状态。
+            session = TVSourceSession(
+                store: store,
+                playlistID: playlistID,
+                descriptor: SourceDescriptor(id: sourceID,
+                                             kind: .iptv,
+                                             name: playlist.name,
+                                             subtitle: playlist.region.title,
+                                             activation: .browseReadOnly,
+                                             content: .television,
+                                             sortIndex: 500)
+            )
+        } else {
             session = nil
         }
         if let session { sessions[sourceID.rawValue] = session }
         return session
+    }
+
+    private func makeSession(for descriptor: SourceDescriptor) -> (any SourceSession)? {
+        let sourceID = descriptor.id
+        switch descriptor.kind {
+        case .library:
+            return LibrarySourceSession(store: store, descriptor: descriptor)
+        case .cloudMount:
+            return Self.uuid(in: sourceID, prefix: "cloud:").map {
+                CloudSourceSession(store: store, mountID: $0, descriptor: descriptor)
+            }
+        case .catalogSite:
+            return Self.uuid(in: sourceID, prefix: "catalog:").map {
+                CatalogSourceSession(store: store, sourceID: $0, descriptor: descriptor)
+            }
+        case .cinemaFeed:
+            return CinemaSourceSession(store: store, descriptor: descriptor)
+        default:
+            return nil
+        }
     }
 
     // MARK: - SourceID 解析
@@ -133,7 +203,6 @@ final class SourceHubModel: ObservableObject {
         if raw.hasPrefix("catalog:") { return .catalogSite }
         if raw.hasPrefix("cinema:") { return .cinemaFeed }
         if raw.hasPrefix("tv:") { return .iptv }
-        if raw.hasPrefix("disk:") { return .localDisk }
         return .library
     }
 

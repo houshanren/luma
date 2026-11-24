@@ -24,6 +24,15 @@ public struct RequestProfile: Hashable, Codable, Sendable {
         if let referer, !referer.isEmpty { fields["Referer"] = referer }
         return fields
     }
+
+    /// 拾光自身抓 M3U / EPG / 台标的默认画像。
+    public static let luma = RequestProfile(userAgent: "Luma/2.0 (macOS)")
+
+    /// 站点适配器抓页面的浏览器画像：多数站点按 UA 决定返回桌面版还是拦截页。
+    public static let browser = RequestProfile(
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 }
 
 /// 播放目标：播放器唯一认识的输入。

@@ -190,7 +190,7 @@ extension CatalogBrowserModel {
     }
 
     /// 健康探测统一走 `ContentRepository`：站点适配器怎么换都不影响这里，
-    /// 电视 / 本地磁盘接入后也能复用同一份探测逻辑。
+    /// 电视接入后也能复用同一份探测逻辑。
     private static func probe(source: CatalogSource) async -> CatalogSourceHealth {
         await withTaskGroup(of: CatalogSourceHealth?.self) { group in
             group.addTask {
@@ -216,7 +216,8 @@ extension CatalogBrowserModel {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                // 首次探测可能先换一次地址（黄果这类被 DNS 拦的源），给足时间再判离线。
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
                 return nil
             }
             let first = await group.next() ?? nil
@@ -441,17 +442,55 @@ extension CatalogBrowserModel {
         }
     }
 
-    /// 跨源检索：把检索词交给各源，再按自然语言条件排序和过滤。
-    private func crossSourceSearch(keyword: String,
-                                   plan: CatalogQueryPlan) async -> [CatalogGlobalResult] {
-        var results: [CatalogGlobalResult] = []
-        for source in enabledSources {
-            if Task.isCancelled { return results }
-            guard let provider = CatalogProviders.provider(for: source.kind) else { continue }
-            guard let page = try? await provider.search(source: source,
-                                                        keyword: keyword, page: 1),
-                  !page.items.isEmpty else { continue }
-            let ranked = page.items
+    /// 统一搜索入口：一次调用完成「本地快照 + 跨站检索」，并把结果同步进频道页的搜索状态。
+    /// 与 `searchAllSources()` 的区别是不自己起后台任务，方便上层（如 SearchCenter）等待结果。
+    func searchUnified(keyword: String) async -> [CatalogGlobalResult] {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let plan = CatalogQueryPlan.parse(trimmed)
+        globalQuery = trimmed
+        globalQueryPlan = plan
+        recordRecentSearch(trimmed)
+        let siteKeyword = plan.keyword.isEmpty ? trimmed : plan.keyword
+        let local = localSearchHits(siteKeyword)
+        globalResults = local
+        globalResultsKeyword = trimmed
+        isGlobalSearching = true
+        globalSearchTask?.cancel()
+        let results = await crossSourceSearch(keyword: siteKeyword, plan: plan)
+        guard !Task.isCancelled else { return globalResults }
+        globalResults = results.isEmpty ? local : results
+        isGlobalSearching = false
+        return globalResults
+    }
+
+    /// 跨源检索：并发问所有启用的源，单个源超时 / 失败直接跳过，
+    /// 再按自然语言条件排序和过滤。
+    func crossSourceSearch(keyword: String,
+                           plan: CatalogQueryPlan) async -> [CatalogGlobalResult] {
+        let targets = enabledSources
+        guard !targets.isEmpty else { return [] }
+        var collected: [(index: Int, source: CatalogSource, items: [CatalogItem])] = []
+        await withTaskGroup(of: (Int, [CatalogItem]).self) { group in
+            for (index, source) in targets.enumerated() {
+                group.addTask {
+                    let items = await CatalogSearchSupport.search(source, keyword: keyword)
+                    return (index, items)
+                }
+            }
+            for await (index, items) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                guard !items.isEmpty else { continue }
+                collected.append((index, targets[index], items))
+            }
+        }
+        guard !Task.isCancelled else { return [] }
+        // 结果按侧边栏里源的顺序输出，排序不随请求完成顺序变化。
+        return collected.sorted { $0.index < $1.index }.compactMap { entry in
+            let ranked = entry.items
                 .map { (item: $0, score: plan.score($0)) }
                 .sorted { $0.score > $1.score }
                 .map(\.item)
@@ -459,12 +498,11 @@ extension CatalogBrowserModel {
                 ? ranked.filter { plan.score($0) >= 0 }
                 : ranked
             let items = Array((filtered.isEmpty ? ranked : filtered).prefix(12))
-            guard !items.isEmpty else { continue }
-            results.append(CatalogGlobalResult(sourceID: source.id,
-                                               sourceName: source.name,
-                                               items: items))
+            guard !items.isEmpty else { return nil }
+            return CatalogGlobalResult(sourceID: entry.source.id,
+                                       sourceName: entry.source.name,
+                                       items: items)
         }
-        return results
     }
 
     func clearGlobalSearch() {
@@ -670,8 +708,10 @@ extension CatalogBrowserModel {
     // MARK: - 更新日历
 
     /// 每次首页第一页加载时记录「第一次见到」的条目，按月汇总就是更新热度。
-    func recordCalendar(items: [CatalogItem], sourceID: UUID) {
-        guard !items.isEmpty else { return }
+    /// 返回本次真正新增的条数：后台补录用它上报任务进度。
+    @discardableResult
+    func recordCalendar(items: [CatalogItem], sourceID: UUID) -> Int {
+        guard !items.isEmpty else { return 0 }
         let existing = Set(calendarItems.map(\.id))
         var added: [CatalogCalendarItem] = []
         let now = Date()
@@ -687,7 +727,7 @@ extension CatalogBrowserModel {
                                                                           remark: item.remark)
                                                 ?? now))
         }
-        guard !added.isEmpty else { return }
+        guard !added.isEmpty else { return 0 }
         calendarItems.append(contentsOf: added)
         CatalogStore.insertCalendar(added)
         // 新补录的条目记下来：日历里排最前并高亮。
@@ -698,6 +738,7 @@ extension CatalogBrowserModel {
         }
         CatalogStore.pruneCalendar(limit: 2400)
         rebuildTodaySpotlight()
+        return added.count
     }
 
     private func markCalendarNew(_ ids: [String]) {
@@ -786,7 +827,8 @@ extension CatalogBrowserModel {
         }
     }
 
-    /// 在后台慢慢补录：每次只翻一个源的一页，走低优先通道，用户一加载就让路。
+    /// 在后台慢慢补录：每轮逐源往下翻几页，走低优先通道，用户一加载就让路。
+    /// 任务登记在统一任务中心：侧边栏任务条能看到进度、可取消，结束后进任务记录。
     /// 15 分钟内只跑一次，也可以手动强制刷新。
     func refreshCalendarToday(force: Bool = false) {
         if isCalendarRefreshing {
@@ -795,6 +837,7 @@ extension CatalogBrowserModel {
             calendarTask?.cancel()
             calendarTask = nil
             if let calendarJobID { jobCenter?.cancel(calendarJobID) }
+            if let calendarJobID { onJobFinished?(calendarJobID) }
             isCalendarRefreshing = false
         }
         if !force,
@@ -809,6 +852,9 @@ extension CatalogBrowserModel {
         persistCalendarNewIDs()
         isCalendarRefreshing = true
         let targets = enabledSources
+        // 日历要铺满历史：一轮每源最多翻 4 页（约 96 条），进度也才看得出推进。
+        let pagesPerSource = 4
+        let totalSteps = max(1, targets.count * pagesPerSource)
         let jobID = jobCenter?.begin(
             SourceJob(sourceID: .catalogHub,
                       kind: .sync,
@@ -821,32 +867,64 @@ extension CatalogBrowserModel {
         onJobChange?()
         calendarTask = Task { [weak self] in
             var recorded = 0
+            var step = 0
+            var scannedSources = 0
             await CatalogRequestScope.$isBackground.withValue(true) {
                 for (index, source) in targets.enumerated() {
                     guard let self, !Task.isCancelled else { return }
-                    if let jobID {
-                        self.jobCenter?.update(jobID,
-                                               completed: index,
-                                               total: targets.count,
-                                               message: source.name)
-                        self.onJobChange?()
-                    }
-                    guard !self.isUserBusy,
-                          let provider = CatalogProviders.provider(for: source.kind) else { continue }
-                    // 每个源记住翻到第几页：下次接着往下翻，慢慢把历史补满。
-                    let cursorKey = Self.calendarCursorKey + "." + source.id.uuidString
-                    let pageNumber = max(1, Int(CatalogStore.string(forKey: cursorKey) ?? "") ?? 1)
-                    guard let page = try? await provider.home(source: source, page: pageNumber),
-                          !page.items.isEmpty else {
-                        CatalogStore.string(forKey: cursorKey, value: "1")
+                    guard let provider = CatalogProviders.provider(for: source.kind) else {
+                        step = (index + 1) * pagesPerSource
                         continue
                     }
-                    guard !Task.isCancelled else { return }
-                    let fresh = Array(page.items.prefix(24))
-                    self.recordCalendar(items: fresh, sourceID: source.id)
-                    recorded += fresh.count
-                    CatalogStore.string(forKey: cursorKey,
-                                        value: String(page.hasMore ? pageNumber + 1 : 1))
+                    // 每个源记住翻到第几页：下次接着往下翻，慢慢把历史补满。
+                    let cursorKey = Self.calendarCursorKey + "." + source.id.uuidString
+                    var pageNumber = max(1, Int(CatalogStore.string(forKey: cursorKey) ?? "") ?? 1)
+                    var sourceAdded = 0
+                    var pagesRead = 0
+                    for _ in 0..<pagesPerSource {
+                        // 用户在等页面 / 搜索时让路：这一轮先停，下次从当前游标继续。
+                        guard !Task.isCancelled, !self.isUserBusy else { break }
+                        if let jobID {
+                            self.jobCenter?.update(jobID,
+                                                   completed: min(step, totalSteps),
+                                                   total: totalSteps,
+                                                   message: "\(source.name) · 第 \(pageNumber) 页")
+                            self.onJobChange?()
+                        }
+                        guard let page = try? await provider.home(source: source, page: pageNumber),
+                              !page.items.isEmpty else { break }
+                        let added = self.recordCalendar(items: Array(page.items.prefix(24)),
+                                                        sourceID: source.id)
+                        recorded += added
+                        sourceAdded += added
+                        pagesRead += 1
+                        step += 1
+                        guard !Task.isCancelled else { return }
+                        if page.hasMore {
+                            pageNumber += 1
+                            CatalogStore.string(forKey: cursorKey, value: String(pageNumber))
+                        } else {
+                            pageNumber = 1
+                            CatalogStore.string(forKey: cursorKey, value: "1")
+                            break
+                        }
+                        // 源内翻页留一点间隔，别和用户的操作抢连接。
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                    }
+                    if pagesRead == 0 {
+                        CatalogStore.string(forKey: cursorKey, value: "1")
+                    }
+                    scannedSources += 1
+                    step = (index + 1) * pagesPerSource
+                    if let jobID {
+                        self.jobCenter?.update(jobID,
+                                               completed: min(step, totalSteps),
+                                               total: totalSteps,
+                                               message: sourceAdded > 0
+                                                   ? "\(source.name) · 新增 \(sourceAdded) 条"
+                                                   : "\(source.name) · 无新增")
+                        self.onJobChange?()
+                    }
                     // 源与源之间留一点间隔，别和用户的操作抢连接。
                     try? await Task.sleep(nanoseconds: 300_000_000)
                 }
@@ -857,8 +935,10 @@ extension CatalogBrowserModel {
                 if Task.isCancelled {
                     self.jobCenter?.cancel(jobID)
                 } else {
-                    self.jobCenter?.finish(jobID, message: "补录 \(recorded) 条")
+                    self.jobCenter?.finish(jobID,
+                                           message: "\(scannedSources) 个源 · 补录 \(recorded) 条")
                 }
+                self.onJobFinished?(jobID)
                 self.onJobChange?()
             }
             guard !Task.isCancelled else { return }
@@ -1070,9 +1150,21 @@ extension CatalogBrowserModel {
             group.items.map { "\(group.sourceID.uuidString)|\($0.id)" }
         } ?? [])
         smartLoading.insert(id)
+        // 聚合也算一次后台检索：登记到统一任务记录，刷新时左下角能看到进度与结果。
+        let jobCenter = self.jobCenter
+        let jobID = jobCenter?.begin(
+            SourceJob(sourceID: .catalogHub,
+                      kind: .search,
+                      title: "聚合片单「\(playlist.name)」",
+                      isCancellable: false)
+        )
+        onJobChange?()
         Task { [weak self] in
             let results = await self?.crossSourceSearch(keyword: keyword, plan: plan) ?? []
-            guard let self else { return }
+            guard let self else {
+                if let jobID { jobCenter?.finish(jobID) }
+                return
+            }
             let keys = results.flatMap { group in
                 group.items.map { "\(group.sourceID.uuidString)|\($0.id)" }
             }
@@ -1082,6 +1174,11 @@ extension CatalogBrowserModel {
             self.smartLoading.remove(id)
             self.saveSmartResults()
             self.saveSmartNewIDs()
+            if let jobID {
+                jobCenter?.finish(jobID,
+                                  message: keys.isEmpty ? "没有匹配结果" : "聚合到 \(keys.count) 条")
+                self.onJobChange?()
+            }
         }
     }
 

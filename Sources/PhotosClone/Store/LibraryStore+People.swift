@@ -55,12 +55,12 @@ extension LibraryStore {
             cloudModel.placeClusterCacheValue = clusters
             return clusters
         }
-        if placeClustersCacheKey == contentRevision {
+        if placeClustersCacheKey == "\(contentRevision)" {
             return placeClustersCacheValue
         }
         let clusters = PlaceClusterBuilder.clusters(from: geoPhotos,
                                                     granularity: placeGranularity)
-        placeClustersCacheKey = contentRevision
+        placeClustersCacheKey = "\(contentRevision)"
         placeClustersCacheValue = clusters
         return clusters
     }
@@ -85,11 +85,11 @@ extension LibraryStore {
             cloudModel.placeGroupCacheValue = groups
             return groups
         }
-        if placeGroupsCacheKey == contentRevision {
+        if placeGroupsCacheKey == "\(contentRevision)" {
             return placeGroupsCacheValue
         }
         let groups = makePlaceGroups(from: placeClusters)
-        placeGroupsCacheKey = contentRevision
+        placeGroupsCacheKey = "\(contentRevision)"
         placeGroupsCacheValue = groups
         return groups
     }
@@ -121,9 +121,9 @@ extension LibraryStore {
 
     /// 只清聚类与分组缓存：切换聚合层级时带定位照片的列表不需要重算。
     func resetPlaceClusterCaches() {
-        placeClustersCacheKey = -1
+        placeClustersCacheKey = ""
         placeClustersCacheValue = []
-        placeGroupsCacheKey = -1
+        placeGroupsCacheKey = ""
         placeGroupsCacheValue = []
         cloudModel.placeClusterCacheKey = ""
         cloudModel.placeClusterCacheValue = []

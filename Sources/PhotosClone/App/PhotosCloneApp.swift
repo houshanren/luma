@@ -6,6 +6,15 @@ struct PhotosCloneApp: App {
     @NSApplicationDelegateAdaptor(LumaAppDelegate.self) private var appDelegate
     @StateObject private var store = LibraryStore()
     @StateObject private var settings = AppSettings.shared
+    /// 侧边栏可见性：菜单与工具栏按钮共用，收起后仍能重新打开。
+    @StateObject private var sidebarChrome = SidebarChrome()
+    /// 多图库聚合读数：图库总览页与窗口标题共用同一份数据。
+    @StateObject private var libraryAggregate = LibraryAggregateModel()
+    /// 模块开关：关掉的模块不再出现在「接入…」菜单里。
+    @AppStorage(SettingsKeys.moduleCloud) private var cloudModule = true
+    @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
+    @AppStorage(SettingsKeys.showTelevision) private var televisionModule = true
+    @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
 
     private var favoriteCommandTitle: String {
         store.currentIsFavorite ? "取消个人收藏" : "标记为个人收藏"
@@ -19,8 +28,9 @@ struct PhotosCloneApp: App {
 
     private var canEditCommand: Bool {
         store.commandTargetIDs.contains { id in
-            guard let photo = store.photo(id: id) else { return false }
-            return !photo.isVideo && !photo.isReadOnly
+            guard let photo = store.anyPhoto(id: id), !photo.isVideo else { return false }
+            if photo.isSystem { return store.canWriteSystemLibrary }
+            return !photo.isReadOnly
         }
     }
 
@@ -55,6 +65,9 @@ struct PhotosCloneApp: App {
                 .environmentObject(store.viewerModel)
                 .environmentObject(store.cloudModel)
                 .environmentObject(store.catalogModel)
+                .environmentObject(store.tvModel)
+                .environmentObject(sidebarChrome)
+                .environmentObject(libraryAggregate)
                 .frame(minWidth: 1080, minHeight: 660)
         }
         .defaultSize(width: LumaAppDelegate.preferredWindowSize.width,
@@ -74,7 +87,8 @@ struct PhotosCloneApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button("新建相簿") {
-                    store.showNewAlbumSheet = true
+                    // 原生「照片」图库下写回系统相簿，其它范围照旧建拾光相簿。
+                    store.presentNewAlbumCommand()
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
 
@@ -88,7 +102,6 @@ struct PhotosCloneApp: App {
                     store.presentImportPanel()
                 }
                 .keyboardShortcut("i", modifiers: [.command])
-                .disabled(store.isNativeContainer && !store.isImporting)
 
                 Button("从「照片」导入…") {
                     store.presentPhotoPicker()
@@ -102,16 +115,36 @@ struct PhotosCloneApp: App {
                 .keyboardShortcut("o", modifiers: [.command])
 
                 Button("新建照片图库…") {
-                    store.presentNewLibraryPanel()
+                    store.beginNewLibraryFlow()
                 }
                 .keyboardShortcut("n", modifiers: [.command, .option])
 
-                Button("接入网络存储…") {
-                    store.presentCloudWizard()
+                if cloudModule {
+                    Button("接入网络存储…") {
+                        store.presentCloudWizard()
+                    }
                 }
 
-                Button("接入网络资源…") {
-                    store.presentCatalogWizard()
+                if catalogModule {
+                    Button("接入网络资源…") {
+                        store.presentCatalogWizard()
+                    }
+                }
+
+                // 网络电视：先打开开关，再进源向导（内置源已就绪，也可直接加自己的 M3U）。
+                if televisionModule {
+                    Button("接入网络电视…") {
+                        store.tvModel.setEnabled(true)
+                        store.tvModel.showWizard = true
+                    }
+                }
+
+                // 网络影院：独立于「网络存储 › 影院」，打开的是聚合影视源的跨源海报墙。
+                if cinemaModule {
+                    Button("接入网络影院…") {
+                        store.navigate(to: .networkCinema)
+                        store.presentCatalogWizard()
+                    }
                 }
 
                 Button("选取图库…") {
@@ -139,13 +172,13 @@ struct PhotosCloneApp: App {
                     store.presentBatchExport()
                 }
                 .keyboardShortcut("e", modifiers: [.command])
-                .disabled(store.selection.isEmpty)
+                .disabled(!store.commandPolicy.isEnabled(.exportSelection))
 
                 Button("压缩所选…") {
                     store.presentCompression(for: store.selection)
                 }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
-                .disabled(store.selection.isEmpty || store.isReadOnlyScope)
+                .disabled(!store.commandPolicy.isEnabled(.compressSelection))
 
                 Button("选择全部") {
                     store.selectAll()
@@ -162,12 +195,48 @@ struct PhotosCloneApp: App {
 
                 Divider()
 
+                // 堆叠浏览形态：与工具栏的堆叠菜单保持同一份状态。
+                Menu("堆叠") {
+                    ForEach(StackMode.allCases) { mode in
+                        Button {
+                            store.stackMode = mode
+                        } label: {
+                            if store.stackMode == mode {
+                                Label(mode.title, systemImage: "checkmark")
+                            } else {
+                                Text(mode.title)
+                            }
+                        }
+                    }
+                    if !store.expandedStackIDs.isEmpty {
+                        Divider()
+                        Button("收起全部堆叠") {
+                            store.collapseAllStacks()
+                        }
+                    }
+                }
+
                 Button("打开所选") {
                     if let id = store.commandTargetIDs.first {
                         store.openViewer(id)
                     }
                 }
                 .disabled(store.commandTargetIDs.isEmpty)
+
+                // 内容条目：网络影院详情打开时，命令菜单与详情页共用同一份 CommandPolicy。
+                if let entry = store.networkCinemaDetail {
+                    Divider()
+                    Button(store.catalog.isFavorite(sourceID: entry.source.id, itemID: entry.item.id)
+                           ? "从稍后看移除"
+                           : "加入稍后看") {
+                        store.toggleNetworkCinemaWatchlist()
+                    }
+                    .disabled(!store.commandPolicy.isEnabled(.watchlist))
+                    Button("打开影视源站点") {
+                        store.openNetworkCinemaSourceSite()
+                    }
+                    .disabled(!store.commandPolicy.isEnabled(.openSourceSite))
+                }
 
                 Button("编辑…") {
                     store.openEditorFromCommand()
@@ -211,19 +280,19 @@ struct PhotosCloneApp: App {
                     store.duplicateCommand()
                 }
                 .keyboardShortcut("d", modifiers: [.command])
-                .disabled(store.commandTargetIDs.isEmpty || store.isReadOnlyScope)
+                .disabled(!store.commandPolicy.isEnabled(.duplicate))
 
                 Button("粘贴") {
                     store.pasteFromPasteboard()
                 }
                 .keyboardShortcut("v", modifiers: [.command])
-                .disabled(store.isReadOnlyScope)
+                .disabled(!store.commandPolicy.isEnabled(.paste))
 
                 Button("打印…") {
                     store.printCommand()
                 }
                 .keyboardShortcut("p", modifiers: [.command])
-                .disabled(store.commandTargetIDs.isEmpty)
+                .disabled(!store.commandPolicy.isEnabled(.printSelection))
 
                 Button("设为桌面背景") {
                     if let id = store.commandTargetIDs.first {
@@ -244,7 +313,7 @@ struct PhotosCloneApp: App {
                     store.toggleFavoriteCurrent()
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(store.commandTargetIDs.isEmpty || !store.canToggleFavorite)
+                .disabled(!store.commandPolicy.isEnabled(.favorite))
 
                 Button(hideCommandTitle) {
                     store.toggleHiddenCommand()
@@ -300,14 +369,14 @@ struct PhotosCloneApp: App {
                     store.presentBatchChange()
                 }
                 .keyboardShortcut("b", modifiers: [.command, .option])
-                .disabled(store.commandTargetIDs.isEmpty || store.isReadOnlyScope)
+                .disabled(!store.commandPolicy.isEnabled(.batchChange))
 
                 Divider()
 
                 Button("复制") {
                     store.copySelectionToPasteboard()
                 }
-                .disabled(store.commandTargetIDs.isEmpty)
+                .disabled(!store.commandPolicy.isEnabled(.copy))
 
                 Button("在访达中显示") {
                     store.revealCommandTargetsInFinder()
@@ -321,14 +390,12 @@ struct PhotosCloneApp: App {
                 Button("移到最近删除") {
                     store.confirmDelete(store.commandTargetIDs)
                 }
-                .disabled(store.commandTargetIDs.isEmpty
-                          || store.isReadOnlyScope
-                          || store.sidebarItem == .trash)
+                .disabled(!store.commandPolicy.isEnabled(.deleteToTrash))
 
                 Button("永久删除…") {
                     store.confirmPermanentDelete(store.commandTargetIDs)
                 }
-                .disabled(store.commandTargetIDs.isEmpty || store.isReadOnlyScope)
+                .disabled(!store.commandPolicy.isEnabled(.deletePermanently))
 
                 if store.sidebarItem == .trash {
                     Button("恢复") {
@@ -635,9 +702,8 @@ struct PhotosCloneApp: App {
                     .keyboardShortcut("t", modifiers: [.command, .option])
                     .disabled(store.viewerID == nil)
 
-                Button("显示/隐藏边栏") {
-                    NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)),
-                                     to: nil, from: nil)
+                Button(sidebarChrome.isVisible ? "隐藏边栏" : "显示边栏") {
+                    sidebarChrome.isVisible.toggle()
                 }
                 .keyboardShortcut("s", modifiers: [.control, .command])
 

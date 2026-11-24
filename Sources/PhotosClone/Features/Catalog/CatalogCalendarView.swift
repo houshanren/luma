@@ -9,6 +9,13 @@ import SwiftUI
 struct CatalogCalendarView: View {
     @EnvironmentObject private var catalog: CatalogBrowserModel
 
+    /// 可选的来源范围：网络影院只看影视源的更新；网络资源总览不传，等于全部来源。
+    var sourceScope: Set<UUID>? = nil
+    /// 紧凑头部：网络影院里工具栏分页已经是标题，不再写一段日历说明。
+    var compact: Bool = false
+    /// 可选的自定义打开方式：网络影院用它进影院详情页；不传则按网络资源的方式直接起播。
+    var onOpenItem: ((CatalogCalendarItem, CatalogSource) -> Void)? = nil
+
     @State private var month = Date()
     @State private var sourceFilter: UUID?
     @State private var snapshot = MonthSnapshot()
@@ -23,6 +30,12 @@ struct CatalogCalendarView: View {
     /// 最近一次补录新进来的条目：排最前并高亮。
     private var newIDs: Set<String> { Set(catalog.calendarNewIDs) }
 
+    /// 当前来源范围内的日历条目：网络影院只统计已启用的影视源。
+    private var scopedItems: [CatalogCalendarItem] {
+        guard let sourceScope else { return catalog.calendarItems }
+        return catalog.calendarItems.filter { sourceScope.contains($0.sourceID) }
+    }
+
     /// 聚合缓存的失效条件：任何一项变化才重新遍历日历。
     private struct SnapshotKey: Equatable {
         var monthStart: Date
@@ -36,24 +49,26 @@ struct CatalogCalendarView: View {
     }
 
     private var snapshotKey: SnapshotKey {
-        SnapshotKey(monthStart: calendar.dateInterval(of: .month, for: month)?.start ?? month,
-                    filter: sourceFilter,
-                    selectedDay: selectedDay,
-                    itemCount: catalog.calendarItems.count,
-                    firstID: catalog.calendarItems.first?.id,
-                    lastID: catalog.calendarItems.last?.id,
-                    newCount: catalog.calendarNewIDs.count,
-                    sourceCount: catalog.sources.count)
+        let items = scopedItems
+        return SnapshotKey(monthStart: calendar.dateInterval(of: .month, for: month)?.start ?? month,
+                           filter: sourceFilter,
+                           selectedDay: selectedDay,
+                           itemCount: items.count,
+                           firstID: items.first?.id,
+                           lastID: items.last?.id,
+                           newCount: catalog.calendarNewIDs.count,
+                           sourceCount: catalog.sources.count)
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: compact ? 12 : 20) {
                 header
-                if catalog.calendarItems.isEmpty {
+                if scopedItems.isEmpty {
                     emptyState
                 } else {
-                    statCards
+                    // 紧凑模式：本月 / 活跃源 / 今天已经写在窗口标题下方，内容区只留最活跃与连续更新。
+                    if !compact { statCards }
                     calendarCard
                     if let selectedDay, !snapshot.selectedItems.isEmpty {
                         daySection(selectedDay)
@@ -61,7 +76,7 @@ struct CatalogCalendarView: View {
                 }
             }
             .padding(.horizontal, 26)
-            .padding(.top, 14)
+            .padding(.top, compact ? 8 : 14)
             .padding(.bottom, 60)
         }
         .scrollIndicators(.automatic)
@@ -99,7 +114,7 @@ struct CatalogCalendarView: View {
         var selectedOld: [CatalogCalendarItem] = []
         var allDays: Set<Date> = []
 
-        for item in catalog.calendarItems {
+        for item in scopedItems {
             if let sourceFilter, item.sourceID != sourceFilter { continue }
             let day = calendar.startOfDay(for: item.firstSeen)
             allDays.insert(day)
@@ -161,32 +176,62 @@ struct CatalogCalendarView: View {
 
     // MARK: - 头部
 
+    @ViewBuilder
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 14) {
-                Text("从第一次在本机看到某条内容开始记录；格子背景是当天最早出现的几张封面。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-
-                if catalog.isCalendarRefreshing {
-                    HStack(spacing: 5) {
-                        ProgressView().controlSize(.mini)
-                        Text("正在补录各源…")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+        if compact {
+            // 网络影院：来源筛选与月份切换并成一行，统计卡片紧跟其后，不再留一整行空白。
+            HStack(alignment: .center, spacing: 12) {
+                if !snapshot.activeSources.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            sourceChip(nil, title: "全部")
+                            ForEach(snapshot.activeSources) { source in
+                                sourceChip(source.id, title: source.name)
+                            }
+                        }
+                        .padding(.vertical, 1)
                     }
+                    .scrollClipDisabled()
                 }
-
+                if catalog.isCalendarRefreshing {
+                    ProgressView().controlSize(.mini)
+                }
                 Spacer(minLength: 12)
-
+                if let top = snapshot.activeSources.first {
+                    compactStat(symbol: "flame.fill",
+                                text: "\(top.name) \(snapshot.sourceCounts[top.id] ?? 0) 条")
+                }
+                compactStat(symbol: "calendar.badge.clock",
+                            text: "连续 \(snapshot.streakDays) 天")
                 monthSwitcher
             }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 14) {
+                    Text("从第一次在本机看到某条内容开始记录；格子背景是当天最早出现的几张封面。")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
 
-            if !snapshot.activeSources.isEmpty {
-                CatalogFlowLayout(spacing: 6, lineSpacing: 6) {
-                    sourceChip(nil, title: "全部")
-                    ForEach(snapshot.activeSources) { source in
-                        sourceChip(source.id, title: source.name)
+                    if catalog.isCalendarRefreshing {
+                        HStack(spacing: 5) {
+                            ProgressView().controlSize(.mini)
+                            Text("正在补录各源…")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    Spacer(minLength: 12)
+
+                    monthSwitcher
+                }
+
+                if !snapshot.activeSources.isEmpty {
+                    CatalogFlowLayout(spacing: 6, lineSpacing: 6) {
+                        sourceChip(nil, title: "全部")
+                        ForEach(snapshot.activeSources) { source in
+                            sourceChip(source.id, title: source.name)
+                        }
                     }
                 }
             }
@@ -297,8 +342,23 @@ struct CatalogCalendarView: View {
         }
     }
 
+    /// 紧凑读数：和来源筛选、月份切换同一行，替代整块统计卡片。
+    private func compactStat(symbol: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .font(.system(size: 9))
+                .foregroundStyle(Color.accentColor)
+            Text(text)
+                .font(.system(size: 10, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .fixedSize()
+    }
+
     private func statCard(_ title: String, _ value: String, symbol: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
             HStack(spacing: 5) {
                 Image(systemName: symbol)
                     .font(.system(size: 9.5, weight: .semibold))
@@ -313,7 +373,7 @@ struct CatalogCalendarView: View {
                 .lineLimit(1)
         }
         .padding(.horizontal, 13)
-        .padding(.vertical, 11)
+        .padding(.vertical, compact ? 8 : 11)
         .frame(minWidth: 118, alignment: .leading)
         .background(Color.primary.opacity(0.035),
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -453,7 +513,11 @@ struct CatalogCalendarView: View {
     private func itemCell(_ entry: CatalogCalendarItem, source: CatalogSource,
                           isNew: Bool = false) -> some View {
         Button {
-            catalog.playRemote(sourceID: entry.sourceID, item: entry.item)
+            if let onOpenItem {
+                onOpenItem(entry, source)
+            } else {
+                catalog.playRemote(sourceID: entry.sourceID, item: entry.item)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear

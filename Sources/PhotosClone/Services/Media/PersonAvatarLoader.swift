@@ -45,11 +45,7 @@ private let faceCropExpansion: Double = 1.7
 /// 人物头像解码与缓存：同一人物按档位只解码一次，之后直接命中内存缓存。
 @MainActor
 enum PersonAvatarLoader {
-    private static let cache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.totalCostLimit = 64 * 1024 * 1024
-        return cache
-    }()
+    private static let cache = MemoryImageCache(totalCostLimit: 64 * 1024 * 1024)
 
     static func request(for person: SystemPersonInfo, size: CGFloat) -> PersonAvatarRequest {
         let geometry: (centerX: Double, centerY: Double, size: Double)?

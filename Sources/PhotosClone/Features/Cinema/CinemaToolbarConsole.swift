@@ -1959,5 +1959,11 @@ private struct TitlebarConsoleRoot: View {
             .opacity(suppressed ? 0 : 1)
             .allowsHitTesting(!suppressed)
             .accessibilityHidden(suppressed)
+            // 标题栏浮层会吞掉原生双击标题栏事件：空白处补回窗口缩放，
+            // 与双击左侧栏 / 标题栏的「占满屏幕」行为保持一致。
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                (NSApp.keyWindow ?? NSApp.mainWindow)?.performZoom(nil)
+            }
     }
 }

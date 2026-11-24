@@ -51,7 +51,7 @@ final class LibrarySourceSession: SourceSession, SourceBrowsing {
 
 /// 一个网盘挂载的只读浏览会话：导航由 hub 完成，这里只反映连接 / 刷新 / 授权状态。
 @MainActor
-final class CloudSourceSession: SourceSession, SourceBrowsing {
+final class CloudSourceSession: BrowseSession {
     private unowned let store: LibraryStore
     let mountID: UUID
     let descriptor: SourceDescriptor
@@ -115,7 +115,7 @@ final class CloudSourceSession: SourceSession, SourceBrowsing {
 
 /// 一个影院作用域的只读会话：内容来自已刮削索引，刷新只重读本地状态。
 @MainActor
-final class CinemaSourceSession: SourceSession, SourceBrowsing {
+final class CinemaSourceSession: BrowseSession {
     private unowned let store: LibraryStore
     let descriptor: SourceDescriptor
     private(set) var state: SourceSessionState = .ready
@@ -171,7 +171,7 @@ final class CinemaSourceSession: SourceSession, SourceBrowsing {
 
 /// 一个站点的只读浏览会话：健康检测走站点首页探测，与其他源共用 `SourceHealth`。
 @MainActor
-final class CatalogSourceSession: SourceSession, SourceBrowsing {
+final class CatalogSourceSession: BrowseSession {
     private unowned let store: LibraryStore
     let sourceID: UUID
     let descriptor: SourceDescriptor
@@ -218,5 +218,85 @@ final class CatalogSourceSession: SourceSession, SourceBrowsing {
             if state.error != nil { state = .ready }
         }
         return value
+    }
+}
+
+// MARK: - 网络电视会话
+
+/// 一个电视源的只读会话：健康状态直接复用该源最近一次连接检测的结果，
+/// 刷新时触发统一拉流，并等本轮拉取结束后再回报状态。
+@MainActor
+final class TVSourceSession: BrowseSession {
+    private unowned let store: LibraryStore
+    let playlistID: UUID
+    let descriptor: SourceDescriptor
+    private(set) var state: SourceSessionState = .ready
+    private(set) var health: SourceHealth = .unknown
+
+    var repository: any ContentRepository {
+        UnavailableContentRepository(message: "电视频道由直播页承载，暂不提供分页浏览")
+    }
+
+    init(store: LibraryStore, playlistID: UUID, descriptor: SourceDescriptor) {
+        self.store = store
+        self.playlistID = playlistID
+        self.descriptor = descriptor
+    }
+
+    func activate() async {
+        state = .ready
+        health = currentHealth()
+    }
+
+    func refresh() async {
+        state = .refreshing
+        store.tvModel.setEnabled(true)
+        store.tvModel.refresh()
+        // 拉流在模型里异步跑；等本轮结束再回报健康，避免刚点刷新就显示旧结果。
+        let deadline = Date().addingTimeInterval(20)
+        while store.tvModel.isLoading, Date() < deadline, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        health = currentHealth()
+        state = .ready
+    }
+
+    func deactivate() async {
+        state = .idle
+    }
+
+    func checkHealth() async -> SourceHealth {
+        let value = currentHealth()
+        health = value
+        return value
+    }
+
+    /// 最近一次连接检测的结果就是电视源的健康状态。
+    private func currentHealth() -> SourceHealth {
+        guard let playlist = store.tvModel.playlists.first(where: { $0.id == playlistID }) else {
+            return SourceHealth(state: .offline, checkedAt: Date(), message: "电视源已删除")
+        }
+        guard playlist.isEnabled else {
+            return SourceHealth(state: .unknown, checkedAt: playlist.lastCheckedAt, message: "已停用")
+        }
+        if let error = playlist.lastError {
+            return SourceHealth(state: .offline,
+                                checkedAt: playlist.lastCheckedAt,
+                                latencyMilliseconds: playlist.lastLatencyMilliseconds,
+                                message: error)
+        }
+        guard let checkedAt = playlist.lastCheckedAt else { return .unknown }
+        let latency = playlist.lastLatencyMilliseconds
+        if let latency, latency > 2500 {
+            return SourceHealth(state: .degraded,
+                                checkedAt: checkedAt,
+                                latencyMilliseconds: latency,
+                                message: "延迟偏高")
+        }
+        let channelCount = playlist.lastChannelCount.map { "\($0) 个频道" }
+        return SourceHealth(state: .healthy,
+                            checkedAt: checkedAt,
+                            latencyMilliseconds: latency,
+                            message: channelCount)
     }
 }

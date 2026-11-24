@@ -34,7 +34,8 @@ extension LibraryStore {
     func moveSelection(by delta: Int) {
         // 「相似照片」是过滤后的固定集合：选择只在屏幕上这份列表里移动。
         if similarScope != nil {
-            let items = visiblePhotos
+            // 堆叠形态下屏幕上只有代表图：方向键按屏幕顺序移动，不能跳到收起的成员上。
+            let items = isStackingEnabled ? stackedPhotos(visiblePhotos) : visiblePhotos
             guard !items.isEmpty else { return }
             guard let current = selection.first.flatMap({ id in
                 items.firstIndex(where: { $0.id == id })
@@ -101,7 +102,7 @@ extension LibraryStore {
             revealInWindow(target.id)
             return
         }
-        let items = visiblePhotos
+        let items = isStackingEnabled ? stackedPhotos(visiblePhotos) : visiblePhotos
         guard !items.isEmpty else { return }
         let currentIndex = selection.first.flatMap { id in
             items.firstIndex(where: { $0.id == id })
@@ -482,8 +483,10 @@ extension LibraryStore {
             var imported: [PhotoItem] = []
             let batchID = UUID()
             for url in inputs {
+                // 统一走 IngestService 的本地文件入口，不再直接调 ImportService。
+                let service = ingestService
                 let item = await Task.detached(priority: .userInitiated) {
-                    try? ImportService.importFile(url)
+                    try? service.importLocalFile(url)
                 }.value
                 if var item {
                     item.importBatchID = batchID
@@ -656,7 +659,12 @@ extension LibraryStore {
 
     func openEditorFromCommand() {
         for id in commandTargetIDs {
-            guard let photo = photo(id: id), !photo.isVideo, !photo.isReadOnly else { continue }
+            guard let photo = anyPhoto(id: id), !photo.isVideo else { continue }
+            if photo.isSystem {
+                guard canWriteSystemLibrary else { continue }
+            } else if photo.isReadOnly {
+                continue
+            }
             openEditor(id)
             return
         }

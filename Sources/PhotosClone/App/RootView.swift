@@ -1,12 +1,24 @@
 import SwiftUI
 import AppKit
 
+/// 侧边栏是否展开：工具栏按钮和菜单「显示/隐藏边栏」共用这一份状态。
+///
+/// 系统自带的 sidebar toggle 在侧边栏收起后会跟着侧边栏一起从工具栏消失，
+/// 这时只剩 SwiftUI 的 `columnVisibility` 绑定，用户没有任何入口能再打开。
+/// 所以自己持有可见性，按钮常驻，关闭后仍能一键展开。
+@MainActor
+final class SidebarChrome: ObservableObject {
+    @Published var isVisible = true
+}
+
 struct RootView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var catalog: CatalogBrowserModel
+    @EnvironmentObject private var tv: IPTVBrowserModel
     @EnvironmentObject private var viewer: ViewerModel
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var sidebarChrome: SidebarChrome
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     /// 主窗口与全局空格键监听：相簿 / 媒体类型 / 人物 / 地点等任意照片网格都能用空格打开查看。
@@ -15,6 +27,9 @@ struct RootView: View {
     /// 当前侧边栏可见性；视频全屏时临时切到 `.detailOnly`，退出后恢复。
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var columnVisibilityBeforeFullScreen: NavigationSplitViewVisibility = .all
+    /// 侧边栏重建信号：视频全屏 / 窗口尺寸还原后，SwiftUI 偶尔会把分栏停在
+    /// 「列还在、内容没铺开」的中间态（左侧一片空白）。换个身份强制重建侧边栏内容。
+    @State private var sidebarRelayoutToken = 0
     /// 进入视频全屏前的窗口尺寸，退出全屏后还原。
     @State private var windowFrameBeforeFullScreen: NSRect?
 
@@ -61,12 +76,33 @@ struct RootView: View {
                 .environmentObject(catalog)
                 .environmentObject(store)
         }
+        .sheet(isPresented: $tv.showWizard) {
+            TVSourceWizardView()
+                .environmentObject(tv)
+        }
         .sheet(isPresented: $store.showNewAlbumSheet) {
             NewAlbumSheet()
                 .environmentObject(store)
         }
+        // 「新建图库」复用首次启动的建库流程（能力 → 位置并创建），
+        // 不再另造一套表单；建好后立刻切到新图库。
+        .sheet(isPresented: $store.showNewLibrarySheet) {
+            LibrarySetupView(creatingAdditionalLibrary: true)
+                .environmentObject(store)
+                .environmentObject(settings)
+        }
         .sheet(isPresented: $store.showKeywordManager) {
             KeywordManagerView()
+                .environmentObject(store)
+        }
+        .sheet(item: $store.systemToolsRequest) { request in
+            SystemToolsSheet(request: request)
+                .environmentObject(store)
+        }
+        // 命名弹窗由根视图统一呈现：⌘⇧N、侧边栏右键都写同一个状态，
+        // 侧边栏收起时也要能弹出。
+        .sheet(item: $store.namePrompt) { payload in
+            NamePromptSheet(payload: payload)
                 .environmentObject(store)
         }
         .sheet(isPresented: $store.showCompressionSheet) {
@@ -147,6 +183,9 @@ struct RootView: View {
             FullScreenDiagnostics.log("didExit frame=\(window.frame)")
             endVideoImmersiveFullScreen()
             restoreWindowFrameAfterFullScreen()
+            // 全屏进出 + 窗口 frame 还原之后，分栏偶尔不再给侧边栏铺内容：
+            // 等回位动画结束再重建一次侧边栏，避免左侧留一片空白。
+            nudgeSidebarLayout(after: 0.9)
         }
         // 工具栏从隐藏切回可见时，SwiftUI 偶尔不会把自定义项重新挂回去
         // （影院控制台整条不见）：主动让 AppKit 校验一次可见项。
@@ -293,15 +332,52 @@ struct RootView: View {
         return true
     }
 
+    /// 侧边栏收起后的常驻入口。系统自带的 sidebar toggle 会随侧边栏一起消失，
+    /// 没有这个按钮就只能靠菜单快捷键了，所以做成内容区左上角一枚浮动胶囊。
+    private var sidebarRevealButton: some View {
+        Button {
+            sidebarChrome.isVisible = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("显示边栏")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8)
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("显示边栏（⌃⌘S）")
+    }
+
     @ViewBuilder
     private var mainContent: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView()
+                .id(sidebarRelayoutToken)
         } detail: {
             ZStack {
                 // 环境光垫在内容之下：磨砂侧边栏、浮动胶囊与网格间隙都能透出颜色。
                 LumaAmbientBackground()
                 GalleryView()
+                // 侧边栏收起后：系统自带的 toggle 会跟着侧边栏一起从工具栏消失，
+                // 这里补一个常驻的「显示边栏」入口，收起后随时能展开。
+                if !sidebarChrome.isVisible {
+                    sidebarRevealButton
+                        .padding(.top, 10)
+                        .padding(.leading, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .transition(.opacity)
+                        .zIndex(0.5)
+                }
                 if settings.viewerLayout == .window, store.viewerPhoto != nil {
                     PhotoViewerView(embedded: true)
                         // 视频真全屏：查看器自身伸进顶部安全区，把工具栏空出来的那一条吃掉。
@@ -315,6 +391,20 @@ struct RootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar(toolbarHidden ? .hidden : .visible, for: .windowToolbar)
+        // 两个方向同步：菜单 / 按钮改可见性 → 动分栏；系统侧收起（全屏等）→ 回写状态。
+        .onChange(of: sidebarChrome.isVisible) { _, visible in
+            let target: NavigationSplitViewVisibility = visible ? .all : .detailOnly
+            guard columnVisibility != target else { return }
+            withAnimation(.easeOut(duration: 0.18)) {
+                columnVisibility = target
+            }
+        }
+        .onChange(of: columnVisibility) { _, visibility in
+            let visible = visibility != .detailOnly
+            if sidebarChrome.isVisible != visible {
+                sidebarChrome.isVisible = visible
+            }
+        }
 
         if store.viewerPhoto != nil, settings.viewerLayout == .fullscreen {
             PhotoViewerView()
@@ -322,7 +412,7 @@ struct RootView: View {
                 .zIndex(2)
         }
 
-        if let editorID = viewer.editorID, let photo = store.photo(id: editorID) {
+        if let editorID = viewer.editorID, let photo = store.anyPhoto(id: editorID) {
             PhotoEditorView(photo: photo)
                 .transition(.opacity.combined(with: .scale(scale: settings.motion.viewerScale)))
                 .zIndex(3)
@@ -394,6 +484,13 @@ struct RootView: View {
             guard !window.styleMask.contains(.fullScreen) else { return }
             FullScreenDiagnostics.log("restore frame saved=\(frame) current=\(window.frame)")
             window.setFrame(frame, display: true)
+        }
+    }
+
+    /// 全屏 / 窗口尺寸变化后重建侧边栏内容，修复「列还在、内容空白」的分栏中间态。
+    private func nudgeSidebarLayout(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            sidebarRelayoutToken &+= 1
         }
     }
 

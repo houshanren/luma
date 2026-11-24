@@ -42,7 +42,7 @@ extension MetadataStore {
                 LIMIT ? OFFSET ?
                 """
             guard let rows = try? db.query(sql, binds + [limit, max(0, offset)]) else { return [] }
-            return rows.compactMap { photo(from: $0) }
+            return rows.compactMap { Self.photo(from: $0) }
         }
     }
 
@@ -60,7 +60,7 @@ extension MetadataStore {
             guard let row = try? db.query("SELECT * FROM assets WHERE id = ?", [id.uuidString]).first else {
                 return nil
             }
-            return photo(from: row)
+            return Self.photo(from: row)
         }
     }
 
@@ -127,7 +127,7 @@ extension MetadataStore {
                 ORDER BY \(expr) \(scanDirection), id \(scanDirection) LIMIT 1
                 """
             if let row = try? db.query(sql, binds + [value, value, id.uuidString]).first,
-               let photo = photo(from: row) {
+               let photo = Self.photo(from: row) {
                 return photo
             }
             // 到头了：环绕到另一端（与列表循环翻页一致）。
@@ -138,7 +138,7 @@ extension MetadataStore {
                 SELECT * FROM assets\(hint) WHERE \(whereSQL)
                 ORDER BY \(expr) \(wrapDirection), id \(wrapDirection) LIMIT 1
                 """
-            return (try? db.query(wrapSQL, binds).first).flatMap { photo(from: $0) }
+            return (try? db.query(wrapSQL, binds).first).flatMap { Self.photo(from: $0) }
         }
     }
 
@@ -170,7 +170,7 @@ extension MetadataStore {
             var counts: [String: Int] = [:]
             var firstDates: [String: Date] = [:]
             for row in rows {
-                guard let key = row["period_key"]?.string, let photo = photo(from: row) else { continue }
+                guard let key = row["period_key"]?.string, let photo = Self.photo(from: row) else { continue }
                 if samples[key] == nil {
                     order.append(key)
                     counts[key] = row["period_count"]?.int ?? 0
@@ -224,7 +224,7 @@ extension MetadataStore {
             for row in rows {
                 guard let monthKey = row["month_key"]?.string,
                       let dayKey = row["day_key"]?.string,
-                      let photo = photo(from: row) else { continue }
+                      let photo = Self.photo(from: row) else { continue }
                 if drafts[monthKey] == nil {
                     monthOrder.append(monthKey)
                     drafts[monthKey] = MonthDraft()

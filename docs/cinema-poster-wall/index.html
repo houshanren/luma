@@ -1202,7 +1202,7 @@
       <div class="verdict ink">
         <div class="label">Luma · 该学什么</div>
         <h4>「先把门面补齐，再谈播放」</h4>
-        <p>现有：三分类、年代/类型/分辨率/观看状态筛选、剧集聚合与季切换、继续观看、详情页、四视图、排序、手动匹配与批量季集映射、收藏/清单、影院内搜索、观看记录、合集自动归组、演职员/预告、在线字幕、跳过片头尾、来源管理、任务中心、家长控制与六页设置。<br>剩余：NFO 导入导出、跨设备同步、手机遥控、播放器级 DV/Atmos 亮标与 IntroDB 自动片头识别。</p>
+        <p>现有：三分类、年代/类型/分辨率/观看状态筛选、剧集聚合与季切换、继续观看（可展开队列）、详情页（180–220pt 多海报 + 24pt 衬线片名）、四视图（卡片胶片条放不下时改展开网格）、六种排序（含随机）、手动匹配与批量季集映射、收藏/清单、影院内搜索、观看记录、合集自动归组、演职员/预告、在线字幕、跳过片头尾、NFO 导入导出、DV/Atmos 亮标与帧率匹配、来源管理、任务中心、家长控制与七页设置。<br>剩余：网络影院在线播放、跨设备同步、手机遥控、蓝光菜单与 ISO/BDMV 原盘。</p>
       </div>
     </div>
 
@@ -1251,7 +1251,7 @@
         <ul>
           <li>形态：macOS 原生应用，鼠标/触控板/键盘</li>
           <li>来源：照片图库中的视频 + 已接入网盘（夸克/阿里/百度/WebDAV/SMB/AList）</li>
-          <li>核心：豆瓣/TMDB 双源刮削、电影/电视剧/全部、年代+类型筛选、多集聚合、未识别书架</li>
+          <li>核心：豆瓣/TMDB/TVDB 三源刮削、电影/电视剧/全部、年代+类型筛选、多集聚合、未识别书架</li>
           <li>入口：每个网盘独立影院 + 本地图库影院</li>
           <li>定位：不做第二个播放器，做「照片旁边那个能看片的房间」</li>
         </ul>
@@ -1344,7 +1344,7 @@
         <div class="imgbox"><span class="badge">ZIDOO · 卡片模式</span><img src="assets/zidoo-card-mode.png" alt="芝杜卡片模式"></div>
         <figcaption>
           <b>卡片模式：上方信息，下方胶片条</b>
-          <span>左侧海报 + 片名/评分/类型/时长/简介 + 技术角标与操作按钮，底部横向胶片条快速切换。适合「边看简介边挑片」。</span>
+          <span>左侧海报 + 片名/评分/类型/时长/简介 + 技术角标与操作按钮，底部胶片条快速切换（放不下时收成「还有 N 部」，点开原地展开网格）。适合「边看简介边挑片」。</span>
         </figcaption>
       </figure>
 
@@ -1686,29 +1686,29 @@
         <div class="sec-kicker">08 · Current State</div>
         <h2>Luma 影院现状清点</h2>
       </div>
-      <div class="sec-note">依据当前代码（2026-11-20）：CinemaLibraryView / LibraryStore+Cinema / CinemaDetailView / CinemaModels。</div>
+      <div class="sec-note">依据当前代码（2026-11-23 复核）：CinemaLibraryView / LibraryStore+Cinema / CinemaDetailView / CinemaModels。</div>
     </div>
 
     <div class="grid grid-2">
       <div class="panel">
         <h4>已经有的</h4>
         <ul>
-          <li>双数据源：TMDB 与豆瓣，默认豆瓣免 Key；接口/图片镜像、Cookie、语言、测试连接、自动刮削开关。</li>
+          <li>三数据源：TMDB、豆瓣与 TVDB，默认豆瓣免 Key；接口/图片镜像、Cookie、语言、测试连接、自动刮削开关，刮削源可拖动调整优先级。</li>
           <li>作用域：本地图库影院 + 每个网盘独立影院，互不混。</li>
           <li>浏览：全部 / 电影 / 电视剧 / 文件夹；书架 / 海报墙 / 卡片 / 列表四种视图，顶栏切换并记住选择。</li>
           <li>文件夹视图：按真实目录建树，首层是顶层目录，点卡片逐层进入并可用面包屑回退，任意深度都能一直点下去；每层只列直属视频，未刮削的也会出现，匹配后直接显示影片 / 剧集名；整目录刮削或手动匹配会连同子目录处理。</li>
-          <li>继续观看：本地记录播放位置，每 10 秒落盘、关闭查看器强制保存；首页书架 + 顶栏「继续 SxxExx」+ 详情页进度。</li>
+          <li>继续观看：本地记录播放位置，每 10 秒落盘、关闭查看器强制保存；首页书架 + 顶栏「继续 SxxExx」+ 详情页进度；首页「N 部待续播」可点击展开完整队列，不再横向硬塞。</li>
           <li>观看记录：独立面板，按最近观看排序，显示剩余时间 / 已看完，可继续播放或单条移除，也支持一次清空。</li>
-          <li>详情页：<b>直接在影院页面内铺满展示</b>（不再弹独立窗口），返回并入顶栏「返回影院」（Esc 同效），回列表且保留原滚动位置；剧照虚化底与深色影院风。影片有背景、海报、评分、分级、技术角标、观看进度、简介、文件信息，以及合集、演职员、预告片、多版本切换；剧集有 Hero、继续播放、跳过片头尾、演职员、分集网格，并通过 TMDB 季接口显示每集标题 / 简介 / 剧照。</li>
+          <li>详情页：<b>直接在影院页面内铺满展示</b>（不再弹独立窗口），返回并入顶栏「返回影院」（Esc 同效），回列表且保留原滚动位置；剧照虚化底与深色影院风。影片与剧集共用一套「档案卡」：左侧竖版海报（180–220pt、4px 香槟边 + 24px 投影、最多 5 张可左右切换）、评分牌与进度，右侧 24pt 衬线片名、简介与图标资料网格；演职员、预告片、多版本、合集与技术信息收在同一张卡或下方分区。剧集按季分组、带下一集与分集网格。</li>
           <li>影院内搜索：顶栏放大镜，按片名 / 原名 / 文件名 / 类型 / 演员 / 导演检索，可直接播放或进详情。</li>
           <li>相簿内影院操作：在相簿 / 网格里多选视频后右键，可手动匹配（一次套用到所选文件）、刮削所选、加入影院收藏 / 想看 / 清单，并跳到对应影院；多选的是剧集时进入季集映射页，先选剧再逐集确认季与集号，纯数字文件名与 4K 同名版本会自动归到同一集。</li>
-          <li>筛选与排序：年代 / 类型 / 分辨率 / 观看状态可多选（组内 OR、组间 AND），另有「高分 8+」「最近 30 天」智能筛选；排序为最近添加 / 评分 / 年份 / 片名 / 时长。</li>
+          <li>筛选与排序：年代 / 类型 / 分辨率 / 观看状态可多选（组内 OR、组间 AND），另有「高分 8+」「最近 30 天」智能筛选；排序为最近添加 / 评分 / 年份 / 片名 / 时长 / 随机，菜单项直接写出方向文案，随机在会话内稳定、进入影院时重洗。</li>
           <li>手动匹配：未识别或匹配错误的条目可输入片名，从豆瓣 / TMDB 候选中选择，只改当前一条。</li>
           <li>个人状态：收藏 / 想看 / 1–5 星评分；自定义清单支持新建、加入、按清单筛选与删除。</li>
           <li>合集与多版本：TMDB belongs_to_collection 自动归组；同 tmdbID 多文件按画质保留最佳版本，详情页可选版本播放。</li>
           <li>演职员 / 预告片：TMDB credits / videos 补全，详情页横向演职员与 YouTube 预告；刮削时按 tmdbID 去重只拉一次。</li>
           <li>在线字幕：OpenSubtitles 搜索 / 下载到本机缓存，播放器字幕菜单直接载入，同名外挂仍然优先。</li>
-          <li>设置：影院设置分「刮削 / 显示 / 播放 / 来源 / 家长 / 高级」六页；来源列表与添加向导、在线字幕凭据、分级限制与 PIN 均已接通。</li>
+          <li>设置：影院设置分「刮削 / 字幕 / 显示 / 播放 / 来源 / 家长 / 高级」七页；显示页含每行数量、海报比例、背景同人画、减弱动效、界面语言；播放页含默认音轨 / 字幕、全局跳过片头片尾、记忆倍速、优先硬解、画中画；高级页含豆瓣镜像、请求超时、日志等级、缓存清理、重建索引与导出 NFO。</li>
           <li>任务中心：每次刮削留下记录（来源、总数、识别数、耗时、结果），失败可一键重试，支持清空归档。</li>
           <li>家长控制：按 TMDB 分级过滤影院；PIN 只存 macOS 钥匙串，本次会话解锁、退出即重新上锁。</li>
           <li>剧集：多集聚合成一张卡，详情页在影院内铺满展示、按季分组，带「继续 / 下一集」入口、单集进度条与已看完标记。</li>
@@ -1718,12 +1718,12 @@
         </ul>
       </div>
       <div class="panel">
-        <h4>还没有的（观众第一眼就会注意）</h4>
+        <h4>刚补齐的与仍缺的（2026-11-23）</h4>
         <ul>
-          <li><strong>NFO 读取：</strong>已支持刮削前读取目录 NFO（本地目录与网盘同目录），命中后跳过网络；导出给 Jellyfin / Emby / tmm 仍不做。</li>
-          <li><strong>跨设备同步 / 手机遥控 / Trakt：</strong>定位不同，暂后置。</li>
-          <li><strong>播放器级能力：</strong>DV/Atmos/帧率已做角标与筛选、I 键播放信息叠加、章节跳转；帧率匹配、蓝光菜单、ISO/BDMV 原盘仍受系统与解码链路限制。</li>
-          <li><strong>片头片尾：</strong>剧级手动设置已做；本地视频可用「自动识别」跑 ffmpeg 静音检测给出建议秒数，IntroDB 在线库仍不接。</li>
+          <li><strong>✅ NFO 读取 / 导出：</strong>刮削前读目录 NFO（本机与网盘同目录），命中即跳过网络；导出已支持 Kodi / Jellyfin / Emby 可读的 <code>movie</code> / <code>episodedetails</code>，刮削后按开关自动导出，设置 › 高级也可立即导出。</li>
+          <li><strong>✅ 片头片尾：</strong>剧级 / 单集设置、ffmpeg 自动识别、IntroDB 在线时间轴与起播时补查均已接通。</li>
+          <li><strong>✅ 播放器级能力：</strong>DV / Atmos 角标与筛选、I 键播放信息、章节跳转、播放器级帧率匹配已做。</li>
+          <li><strong>○ 仍缺：</strong>跨设备同步 / 手机遥控 / Trakt；蓝光菜单与 ISO / BDMV 原盘仍受系统与解码链路限制。</li>
         </ul>
       </div>
     </div>
@@ -1734,7 +1734,7 @@
     <div class="sec-head">
       <div>
         <div class="sec-kicker">09 · Capability Matrix</div>
-        <h2>三方差能矩阵</h2>
+        <h2>三方能力矩阵</h2>
       </div>
       <div class="sec-note">● 完整支持　◐ 部分/受限　○ 无</div>
     </div>
@@ -1748,16 +1748,16 @@
           <tr><td class="cap">本地 + 网络片源</td><td><span class="pill ok">●</span> 本地/SMB/NFS/UPnP</td><td><span class="pill ok">●</span> 更全（FTP/WebDAV）</td><td><span class="pill half">◐</span> 图库视频 + 网盘挂载</td><td>Luma 没有「随便指一个影片目录」的入口。</td></tr>
           <tr><td class="cap">云盘直连</td><td><span class="pill ok">●</span> CD2 本地化</td><td><span class="pill ok">●</span> 12+ 家</td><td><span class="pill ok">●</span> 夸克/阿里/百度/WebDAV/SMB/AList</td><td>Luma 的网盘影院是独有优势：与照片库同一套挂载。</td></tr>
           <tr><td class="cap">自动刮削</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span></td><td>三者都按文件名匹配。</td></tr>
-          <tr><td class="cap">多刮削源</td><td><span class="pill ok">●</span> TMDB/豆瓣/TVDB</td><td><span class="pill half">◐</span> TMDB 为主</td><td><span class="pill ok">●</span> TMDB + 豆瓣</td><td>Luma 已对齐，且默认豆瓣更适合国内。</td></tr>
+          <tr><td class="cap">多刮削源</td><td><span class="pill ok">●</span> TMDB/豆瓣/TVDB</td><td><span class="pill half">◐</span> TMDB 为主</td><td><span class="pill ok">●</span> TMDB + 豆瓣 + TVDB</td><td>三源可拖动排序、逐源测试连通性；默认豆瓣更适合国内。<b>已完成</b></td></tr>
           <tr><td class="cap">刮削速度/国内可用</td><td><span class="pill ok">●</span> 厂商缓存</td><td><span class="pill half">◐</span> 依赖网络</td><td><span class="pill half">◐</span> 直连/镜像</td><td>芝杜优势来自服务端，不是客户端可轻易复刻。</td></tr>
           <tr><td class="cap">手动重配</td><td><span class="pill ok">●</span> 输片名选候选</td><td><span class="pill half">◐</span> 编辑元数据</td><td><span class="pill ok">●</span> 候选列表</td><td>输入片名 → 豆瓣/TMDB 候选 → 只改当前条目。<b>已完成</b></td></tr>
-          <tr><td class="cap">首页继续观看</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> Watching</td><td><span class="pill ok">●</span></td><td>首页书架 + 顶栏续播 + 详情进度，已实现。<b>P0</b></td></tr>
-          <tr><td class="cap">分类导航</td><td><span class="pill ok">●</span> 圆形分类 + 自定义</td><td><span class="pill ok">●</span> 侧栏分类</td><td><span class="pill half">◐</span> 全部/电影/电视剧</td><td>可先加「最近添加 / 合集 / 收藏」。</td></tr>
-          <tr><td class="cap">视图模式</td><td><span class="pill ok">●</span> 经典/卡片/列表</td><td><span class="pill ok">●</span> 网格/列表</td><td><span class="pill ok">●</span> 书架/海报墙/卡片/列表</td><td>顶栏切换并记住选择，已实现。<b>P0</b></td></tr>
+          <tr><td class="cap">首页继续观看</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> Watching</td><td><span class="pill ok">●</span> 首页书架 + 队列展开</td><td>首页书架 + 顶栏续播 + 详情进度；多部待续播时显示「N 部待续播」，点击展开完整队列。<b>已完成</b></td></tr>
+          <tr><td class="cap">分类导航</td><td><span class="pill ok">●</span> 圆形分类 + 自定义</td><td><span class="pill ok">●</span> 侧栏分类</td><td><span class="pill ok">●</span> 全部/电影/电视剧/文件夹</td><td>四段导航 + 书架按继续观看 / 最近添加 / 高分 / 合集 / 清单分段；自定义智能清单待补。<b>已完成</b></td></tr>
+          <tr><td class="cap">视图模式</td><td><span class="pill ok">●</span> 经典/卡片/列表</td><td><span class="pill ok">●</span> 网格/列表</td><td><span class="pill ok">●</span> 书架/海报墙/卡片/列表</td><td>顶栏切换并记住选择；卡片模式胶片条放不下时收成「还有 N 部」，点开展开网格，不再横向硬滚。<b>已完成</b></td></tr>
           <tr><td class="cap">筛选</td><td><span class="pill ok">●</span> 类型/分辨率/地区/年份/规格</td><td><span class="pill half">◐</span> 类型/年份/未看/收藏</td><td><span class="pill ok">●</span> 多选 + 智能筛选</td><td>年代 / 类型 / 分辨率 / 观看状态可多选；另有高分与最近 30 天。<b>已完成</b></td></tr>
-          <tr><td class="cap">排序</td><td><span class="pill ok">●</span> 多字段</td><td><span class="pill ok">●</span> 多字段</td><td><span class="pill ok">●</span> 5 种</td><td>最近添加/评分/年份/片名/时长，已实现。<b>P1</b></td></tr>
+          <tr><td class="cap">排序</td><td><span class="pill ok">●</span> 多字段</td><td><span class="pill ok">●</span> 多字段</td><td><span class="pill ok">●</span> 6 种（含随机）</td><td>最近添加 / 评分 / 年份 / 片名 / 时长 / 随机，菜单项直接写方向；随机在会话内稳定、进入影院时重洗。<b>已完成</b></td></tr>
           <tr><td class="cap">搜索</td><td><span class="pill ok">●</span> 片名/演员/导演</td><td><span class="pill ok">●</span> 全局</td><td><span class="pill ok">●</span> 片名/演员/导演/类型/文件名</td><td>影院内搜索面板已实现；补全演职员后演员与导演可搜。<b>已完成</b></td></tr>
-          <tr><td class="cap">详情页</td><td><span class="pill ok">●</span> 全量</td><td><span class="pill ok">●</span> 全量</td><td><span class="pill ok">●</span> 页面内铺满</td><td>背景/海报/评分/技术角标/进度/文件信息，已实现；不再弹独立窗口，左上「返回」回列表。<b>P0</b></td></tr>
+          <tr><td class="cap">详情页</td><td><span class="pill ok">●</span> 全量</td><td><span class="pill ok">●</span> 全量</td><td><span class="pill ok">●</span> 页面内铺满</td><td>背景 / 海报 / 评分 / 技术角标 / 进度 / 文件信息；海报 180–220pt、4px 香槟边 + 24px 投影，最多 5 张可左右切换；片名 24pt 衬线。不再弹独立窗口，左上「返回」回列表。<b>已完成</b></td></tr>
           <tr><td class="cap">演职员</td><td><span class="pill ok">●</span> 可进个人页</td><td><span class="pill ok">●</span> Cast &amp; Crew</td><td><span class="pill ok">●</span> 横向头像条</td><td>TMDB credits 补全，详情页展示姓名与角色。<b>已完成</b></td></tr>
           <tr><td class="cap">预告片</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> YouTube</td><td>TMDB videos 取 Trailer / Teaser。<b>已完成</b></td></tr>
           <tr><td class="cap">技术参数/角标</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> 分辨率/编码/大小/时长 + DV/HDR/Atmos/帧率</td><td>文件名派生 DV / HDR / Atmos / 60fps 角标与筛选；详情页补 HDR / 音轨 / 帧率资料项。<b>已完成</b></td></tr>
@@ -1772,7 +1772,7 @@
           <tr><td class="cap">字幕样式</td><td><span class="pill ok">●</span> 位置/字号/颜色/时间轴</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> 字号 / 颜色 / 位置 / 背景 + 烧录</td><td>字号、颜色（白/黄/青/绿）、位置（底部/偏上/中间）、背景开关；播放器字幕菜单可把 PGS/SUP/ASS 烧进画面。<b>已完成</b></td></tr>
           <tr><td class="cap">原盘 / ISO / BDMV</td><td><span class="pill ok">●</span> 蓝光菜单</td><td><span class="pill ok">●</span></td><td><span class="pill half">◐</span> 取决于解码链路</td><td>播放器能力，非影库层可解决。</td></tr>
           <tr><td class="cap">DV / Atmos 亮标</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> 角标 + 筛选</td><td>文件名里的 DV / HDR / HDR10+ / Atmos / 60fps 进入海报角标、列表规格、详情资料与筛选面板。<b>已完成</b></td></tr>
-          <tr><td class="cap">NFO 读取 / 导出</td><td><span class="pill ok">●</span></td><td><span class="pill half">◐</span></td><td><span class="pill ok">●</span> 读取</td><td>刮削前读目录 NFO（movie.nfo / tvshow.nfo / 同名 .nfo），本地与网盘都支持；导出不做。</td></tr>
+          <tr><td class="cap">NFO 读取 / 导出</td><td><span class="pill ok">●</span></td><td><span class="pill half">◐</span></td><td><span class="pill ok">●</span> 读取 + 导出</td><td>刮削前读目录 NFO（movie.nfo / tvshow.nfo / 同名 .nfo），本地与网盘都支持；导出 Kodi / Jellyfin / Emby 可读 XML，刮削后按开关自动导出，也可手动立即导出。<b>已完成</b></td></tr>
           <tr><td class="cap">实时扫描</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> 后台扫描</td><td><span class="pill ok">●</span> 本地 FSEvents + 网盘扫描</td><td>本地 originals 目录变化后刷新影院并按设置自动刮削；云盘仍靠扫描 / 刷新目录。<b>已完成</b></td></tr>
           <tr><td class="cap">家长控制</td><td><span class="pill ok">●</span> 儿童锁</td><td><span class="pill ok">●</span></td><td><span class="pill ok">●</span> 分级 + PIN</td><td>按 TMDB 分级过滤；PIN 存钥匙串。<b>已完成</b></td></tr>
           <tr><td class="cap">手机遥控</td><td><span class="pill ok">●</span></td><td><span class="pill half">◐</span> 系统遥控</td><td><span class="pill no">○</span></td><td>macOS 场景优先级低。</td></tr>
@@ -1966,7 +1966,7 @@
           <tr><td class="cap">搜索</td><td>右侧</td><td>打开影院搜索浮层；结果按电影 / 剧集 / 人物分组</td><td>⌘F</td><td>保留图标，整条横向滚动</td></tr>
           <tr><td class="cap">视图切换</td><td>左三</td><td>书架 / 海报墙 / 卡片 / 列表，记住上次选择</td><td>⌘0 循环</td><td>保留文字，整条横向滚动</td></tr>
           <tr><td class="cap">筛选</td><td>左三</td><td>展开筛选面板；已生效条件以胶囊回显</td><td>⇧⌘L</td><td>保留文字，整条横向滚动</td></tr>
-          <tr><td class="cap">排序</td><td>左三</td><td>最近添加 / 评分 / 年份 / 片名；写入偏好</td><td>—</td><td>保留文字，整条横向滚动</td></tr>
+          <tr><td class="cap">排序</td><td>左三</td><td>最近添加 / 评分 / 年份 / 片名 / 时长 / 随机；写入偏好</td><td>—</td><td>保留文字，整条横向滚动</td></tr>
           <tr><td class="cap">继续播放</td><td>右区</td><td>有进度时出现；剧集直接续播下一集；无进度时隐藏</td><td>⌘⏎</td><td>保留，整条横向滚动</td></tr>
           <tr><td class="cap">刮削 / 任务</td><td>右区</td><td>开始刮削；进行中显示百分比；点击进任务中心</td><td>⌘R</td><td>保留，整条横向滚动</td></tr>
           <tr><td class="cap">助手 / 更多</td><td>最右</td><td>只读助手；影院设置、观看记录、任务中心、通知中心都收在「更多」</td><td>—</td><td>保留，整条横向滚动</td></tr>
@@ -2324,9 +2324,16 @@
       入口与交互分别对应：详情页演职员头像、合集行「查看合集」、顶栏「更多」里的通知中心、空影院首屏、⌘F 搜索、海报墙右侧索引、列表表头。
     </div>
 
+    <div class="callout violet">
+      <b>实现对照（2026-11-23 第三轮）：</b>A2 卡片模式（胶片条按宽度铺格，溢出收「还有 N 部 · 展开全部」并在原地展开网格；主卡 16:9 + 三行简介 + 播放 / 详情 / 收藏）、
+      B2 详情海报（180–220pt、4px 香槟边 + 24px 投影、24pt 衬线片名；最多 5 张左右切换 + 分页点 + 设为封面）、
+      C1 播放信息（四列 26+ 字段 + 完整 ffprobe 折叠 + S / A / ⇧⌘I）、A1 继续观看（「N 部待续播」展开队列）、
+      A3 列表（六种排序含随机与方向文案）、E10 右键（列表 / 卡片 / 集卡 / 海报墙共用一套 CinemaEntryContextMenu）、
+      D3 设置（显示 / 播放 / 高级三页补齐，缓存清理、重建索引、导出 NFO）。
+    </div>
+
     <div class="callout">
-      <b>实现对照（第二轮）：</b>A2 卡片模式（胶片条已看整块压暗 + 打勾；← → 切换、回车播放，剧集按集切换）、
-      A3 列表（单击选中并进详情（设置可改为只选中）/ 双击详情 / 空格播放 / ⏎ 详情，悬停出现播放圆钮）、A4 搜索（↑↓ 顺序选择、⏎ 详情、⌘⏎ 播放；影院内 ⌘F 唤起）、
+      <b>实现对照（第二轮）：</b>A3 列表（单击选中并进详情（设置可改为只选中）/ 双击详情 / 空格播放 / ⏎ 详情，悬停出现播放圆钮）、A4 搜索（↑↓ 顺序选择、⏎ 详情、⌘⏎ 播放；影院内 ⌘F 唤起）、
       B2 剧集详情（当前集琥珀描边 + 「当前集」角标；跳过片头片尾只在已配置时出现）、
       C3 观看记录（全部 / 进行中 / 已看完分段，今天 / 本周 / 更早分组，单条移出二次确认）、
       D1 任务中心（全部 / 进行中 / 已完成 / 失败分段，近 7 天统计，失败可单条或一键重试）、
@@ -2408,6 +2415,7 @@
     </div>
 
     <h3>功能覆盖表</h3>
+    <div class="sec-note" style="margin-bottom:10px">表中的 P0 / P1 / P2 是路线优先级，不代表实现状态；逐项实现情况见第 14 节「实现进度」。</div>
     <div class="table-wrap">
       <table>
         <thead>
@@ -2431,8 +2439,8 @@
           <tr><td class="cap">批量匹配剧集</td><td>批量匹配页</td><td>! 未识别</td><td><span class="pill p1">P1</span></td><td>按文件夹映射集号；排不动可「交给助手」由大模型调工具回填</td></tr>
           <tr><td class="cap">右键快捷操作</td><td>右键菜单</td><td>右键任意卡片</td><td><span class="pill p1">P1</span></td><td>清单层级与侧边栏一致</td></tr>
           <tr><td class="cap">播放控制</td><td>播放器</td><td>播放后进入</td><td><span class="pill p0">P0</span></td><td>控制层自动隐藏</td></tr>
-          <tr><td class="cap">字幕 / 音轨 / 章节 / 倍速</td><td>播放器菜单 / 在线字幕</td><td>播放器内</td><td><span class="pill p1">P1</span></td><td>外挂字幕优先于在线</td></tr>
-          <tr><td class="cap">技术信息叠加</td><td>播放信息</td><td>播放器内 I</td><td><span class="pill p1">P1</span></td><td>来自 ffprobe，不阻塞播放</td></tr>
+          <tr><td class="cap">字幕 / 音轨 / 章节 / 倍速</td><td>播放器菜单 / 在线字幕</td><td>播放器内 S / A</td><td><span class="pill p1">P1</span></td><td>外挂字幕优先于在线；S 循环字幕、A 循环音轨，切换结果有 Toast 回执</td></tr>
+          <tr><td class="cap">技术信息叠加</td><td>播放信息</td><td>播放器内 I / ⇧⌘I</td><td><span class="pill p1">P1</span></td><td>四列 26+ 字段；来自 ffprobe，不阻塞播放；⇧⌘I 展开完整探测文本</td></tr>
           <tr><td class="cap">刮削与任务</td><td>任务中心</td><td>刮削 / 任务</td><td><span class="pill p1">P1</span></td><td>全部 / 进行中 / 已完成 / 失败分段；近 7 天次数与识别数；失败可单条重试，也可「重试全部失败」</td></tr>
           <tr><td class="cap">添加片源 / 扫描</td><td>来源管理 / 扫描向导</td><td>铭牌浮层</td><td><span class="pill p0">P0</span></td><td>三步完成，选项有解释</td></tr>
           <tr><td class="cap">添加来源</td><td>协议与连接表单</td><td>来源管理</td><td><span class="pill p0">P0</span></td><td>先测试连接再保存</td></tr>
@@ -2567,7 +2575,7 @@
           </div>
         </div>
         <ul class="mock-anno">
-          <li><b>一张主卡 + 一条胶片：</b>上方完整信息，下方横向快速切换；适合「边看简介边挑片」，不承担整库浏览。</li>
+          <li><b>一张主卡 + 一条胶片：</b>上方完整信息，下方快速切换；适合「边看简介边挑片」，不承担整库浏览。胶片放不下时收成一格「还有 N 部」，点开原地铺成网格，不需要横向拖拽。</li>
           <li><b>胶片条与海报墙共用顺序：</b>当前筛选与排序原样生效，← → 切换，回车播放。</li>
           <li><b>已看用整块压暗，不用文字标签：</b>与剧集集卡保持同一套观看状态语言。</li>
           <li><b>卡片高度固定：</b>简介最多三行，超出省略；没有演职员或预告时，对应按钮直接隐藏，不留空位。</li>
@@ -4823,7 +4831,7 @@
             <li><strong>详情页（影院内铺满、不弹窗）：</strong>电影与剧集共用一套「档案卡」版式——同人画虚化铺底，海报 + 评分牌 + 个人评分 + 进度列在左，右侧是「影片档案 / 剧集档案」抬头、30+ 号片名、原名、宣传语、可展开简介与图标资料网格，演职员条收在卡底；下面是继续播放条、合集、版本与文件技术信息。点卡片默认进详情，播放交给详情页按钮；返回并入顶栏。<span class="pill ok">已完成</span></li>
             <li><strong>视图模式：</strong>书架 / 整屏海报墙 / 列表，工具栏一键切换并记住选择。<span class="pill ok">已完成</span></li>
             <li><strong>手动重新匹配：</strong>未识别条目 → 输入片名 → 候选列表（复用现有豆瓣/TMDB 搜索）→ 覆盖结果。<span class="pill ok">已完成</span></li>
-            <li><strong>排序菜单：</strong>最近添加、评分、年份、片名；与现有年代/类型筛选组合生效。<span class="pill ok">已完成</span></li>
+            <li><strong>排序菜单：</strong>最近添加、评分、年份、片名、时长、随机，菜单项直接写出方向；与现有年代/类型筛选组合生效。<span class="pill ok">已完成</span></li>
             <li><strong>首页结构重排：</strong>继续观看 → 分类行 → 最近添加 → 高分 → 剧集 → 合集 → 清单；去掉重复书架。<span class="pill ok">已完成</span></li>
           </ul>
         </div>
@@ -4832,13 +4840,13 @@
         <div class="lv p1">P1</div>
         <div>
           <ul>
-            <li><strong>合集：</strong>刮削时读取 TMDB belongs_to_collection，自动把系列电影归组；合集页横向按年份排列。</li>
-            <li><strong>多版本合并：</strong>同一 tmdbID 的多条文件合成一条，详情页展示版本列表（文件名/大小/分辨率）。</li>
-            <li><strong>收藏 / 想看 / 个人评分：</strong>本地存储，支持「仅看收藏」筛选。</li>
-            <li><strong>在线字幕：</strong>OpenSubtitles 搜索与下载，缓存到本地；保留同名外挂字幕优先。</li>
-            <li><strong>演职员 + 预告片：</strong>详情页拉取 TMDB credits/videos，演员可点进相关作品。</li>
-            <li><strong>NFO 读取/导出：</strong>兼容已有 tmm 元数据；导出给 Jellyfin/Emby。</li>
-            <li><strong>剧集按季分组 + 下一集：</strong>已看集数置灰，自动定位下一集。</li>
+            <li><strong>合集：</strong>刮削时读取 TMDB belongs_to_collection，自动把系列电影归组；合集页横向按年份排列。<span class="pill ok">已完成</span></li>
+            <li><strong>多版本合并：</strong>同一 tmdbID 的多条文件合成一条，详情页展示版本列表（文件名/大小/分辨率）。<span class="pill ok">已完成</span></li>
+            <li><strong>收藏 / 想看 / 个人评分：</strong>本地存储，支持「仅看收藏」筛选。<span class="pill ok">已完成</span></li>
+            <li><strong>在线字幕：</strong>OpenSubtitles 搜索与下载，缓存到本地；保留同名外挂字幕优先。<span class="pill ok">已完成</span></li>
+            <li><strong>演职员 + 预告片：</strong>详情页拉取 TMDB credits/videos，演员可点进相关作品。<span class="pill ok">已完成</span></li>
+            <li><strong>NFO 读取/导出：</strong>兼容已有 tmm 元数据；导出给 Jellyfin/Emby。<span class="pill ok">已完成</span></li>
+            <li><strong>剧集按季分组 + 下一集：</strong>已看集数置灰，自动定位下一集。<span class="pill ok">已完成</span></li>
           </ul>
         </div>
       </div>
@@ -4846,17 +4854,20 @@
         <div class="lv p2">P2</div>
         <div>
           <ul>
-            <li><strong>自定义分类与智能清单：</strong>「未看」「最近添加」「高分」「国产剧」等。</li>
+            <li><strong>自定义分类与智能清单：</strong>「未看」「最近添加」「高分」「国产剧」等。<span class="pill half">部分</span>（书架分段与自定义清单已做，智能清单待补）</li>
             <li><strong>实时目录监听：</strong>FSEvents 监听本地 originals，本地目录变化后刷新影院并按设置自动刮削；云盘仍靠扫描 / 刷新目录。<span class="pill ok">已完成</span></li>
-            <li><strong>家长控制：</strong>按分级/类型隐藏。</li>
+            <li><strong>家长控制：</strong>按分级/类型隐藏。<span class="pill ok">已完成</span></li>
             <li><strong>跨设备同步：</strong>iCloud/自建同步播放进度与收藏；Trakt 可选。</li>
-            <li><strong>播放器能力：</strong>DV/Atmos 亮标、帧率匹配、蓝光菜单——受系统与解码链路限制，作为长期项。</li>
+            <li><strong>播放器能力：</strong>DV/Atmos 亮标、帧率匹配已做；蓝光菜单与 ISO/BDMV 原盘受系统与解码链路限制，作为长期项。<span class="pill half">部分</span></li>
           </ul>
         </div>
       </div>
     </div>
 
-    <h3 id="progress">实现进度（2026-11-22）</h3>
+    <h3 id="progress">实现进度（2026-11-23 复核）</h3>
+    <div class="callout violet">
+      <b>2026-11-23 复核：</b>本轮补齐播放信息扩列与 S / A / ⇧⌘I、列表右键统一、排序随机与方向文案、设置三页缺项、继续观看展开队列、卡片胶片条溢出改网格、详情海报规范与多海报切换、NFO 导出、诊断日志分级与缓存清理。下表里标「已完成」的条目均已在本机构建验证。
+    </div>
     <div class="table-wrap">
       <table>
         <thead>
@@ -4865,13 +4876,13 @@
         <tbody>
           <tr><td class="cap">顶栏常驻 · 标题栏托管</td><td><span class="pill ok">已完成</span></td><td><b>控制台直接托管在窗口标题栏上</b>（<code>Features/Cinema/CinemaToolbarConsole.swift</code> 独立文件）：<code>CinemaTitlebarConsoleHost</code> 把整条面板挂进窗口标题栏容器，不再注册 <code>ToolbarItem</code>，也不再占用内容区高度。宽度由标题栏给足，窗口缩放、进出全屏、开关播放器都不会让它被系统整条收进溢出菜单，退出播放后也不会再出现「返回那一栏消失」。详情 / 人物页 / 预告片都在同一条控制台下面切换，左侧铭牌换成「返回」键（文件夹钻取时「返回」与分段并存）。<b>整条只有一行</b>：所有操作排在同一行，窗口变窄时面板内部横向滚动，不缩图标、不分第二层。</td></tr>
           <tr><td class="cap">播放进度持久化</td><td><span class="pill ok">已完成</span></td><td>每 10 秒落盘，关闭查看器强制保存；记录最多 500 条。`CinemaProgressRecord` + `LibraryStore+Cinema`。</td></tr>
-          <tr><td class="cap">继续观看</td><td><span class="pill ok">已完成</span></td><td>首页横向书架、顶栏「继续 SxxExx」、详情页进度面板；打开条目自动续播，云盘起流前最多重试 5 次。<b>续播按「上次播放」定位：</b>优先进行中的那一集，其次最后看完的下一集，再退回第一集；首页 / 分类行 / 列表都走同一套逻辑。<b>列表直接显示上次播放：</b>副标题优先写成「上次看到 SxxExx · 已看 yy%」，右侧规格列给已看集数（如 <code>3/21 集</code>）。</td></tr>
-          <tr><td class="cap">四种浏览视图</td><td><span class="pill ok">已完成</span></td><td>书架 / 海报墙 / 卡片 / 列表；顶栏切换，`UserDefaults` 记住选择；卡片模式含大海报 + 底部胶片条（已看整块压暗并打勾，← → 切换、回车播放，剧集按集切换）。海报墙顶部统计条（4K / 1080P / 720P / 已看 / 未识别），条目超过 200 时右侧出现字母索引；列表表头点击片名 / 年份 / 评分可切换排序，单击选中、双击详情、空格播放，右侧时钟键回到最近添加。</td></tr>
-          <tr><td class="cap">影片 / 剧集详情页</td><td><span class="pill ok">已完成</span></td><td><b>不再弹独立窗口：直接在影院页面内铺满展示</b>，返回并入顶栏控制台（铭牌换成「返回影院」，Esc 同效），回到列表并保留原滚动位置；页面里不再有浮在封面图上的返回胶囊和右上角关闭叉。<b>剧集详情不再铺大幅剧照：</b>顶部那条 360pt 的 Hero 横幅已去掉（海报和片名在下方档案卡里，横幅只剩重复信息），页面直接从档案卡开始。内容区仍用深色影院风，只切内容不翻转整个窗口外观。剧照虚化氛围底（向下渐隐到纯深色，不再出现固定高度的硬边横带）。<b>「剧集档案」把海报、片名、简介、资料与演职员合成一张卡</b>：左侧 156×234 海报（琥珀辉光）+ 评分牌（星级 / 分数 / 投票数）+ 整剧观看进度条；右侧琥珀刻字抬头（剧集档案 — 年份 · 季数 · 集数 + 播出状态胶囊）、32pt 片名（原名不同时补一行小字）、宣传语、播放动作（开始观看 / 从第 1 集开始 / 预告片）、简介（默认 5 行可展开）、带图标的资料网格（首播 / 季数 / 集数 / 单集 / 类型 / 分级 / 语言 / 国家 / 平台 / 制作 / 合集 / TMDB，缺项不占位，国家名中文化）；卡片底部用分隔线接演职员横条（导演 + 可点人物头像；标题区已有「预告片」，横条上的重复入口已去掉）。<b>播放动作只留一行</b>：大号「开始观看 / 继续播放」按钮已经带进度文案，不再重复一条「开始观看 SxxExx」；跳过片头尾做成拟物小开关，和「预告片」同一行，点开是滑杆面板（片头 / 片尾 0–300 秒 + 整部剧 / 本集 + 自动识别 / 清除）。卡片为深色玻璃底 + 左上角琥珀光 + 琥珀渐变描边，和海报的暖色衔接。影片详情与剧集同一套档案卡：<b>不再铺 340pt Hero</b>，海报 + 评分牌 + 进度、片名 / 原名、可展开简介与图标资料网格（上映 / 片长 / 类型 / 分级 / 语言 / 国家 / 制作 / 评分 / 预算 / 票房 / 合集 / TMDB）都在卡内，缺简介时给出重新匹配提示；演职员收在卡底，下方依次是继续播放、合集、多版本与技术信息。剧集有继续播放、跳过片头尾、季切换、大号分集网格，每集通过 TMDB 季接口补上单集标题 / 剧情简介 / 剧照。</td></tr>
+          <tr><td class="cap">继续观看</td><td><span class="pill ok">已完成</span></td><td>首页横向书架、顶栏「继续 SxxExx」、详情页进度面板；打开条目自动续播，云盘起流前最多重试 5 次。<b>续播按「上次播放」定位：</b>优先进行中的那一集，其次最后看完的下一集，再退回第一集；首页 / 分类行 / 列表都走同一套逻辑。<b>列表直接显示上次播放：</b>副标题优先写成「上次看到 SxxExx · 已看 yy%」，右侧规格列给已看集数（如 <code>3/21 集</code>）。<b>首页队列可展开：</b>多部待续播时显示「N 部待续播」，点击从一行最多 3 张展开成完整网格，再点收起。</td></tr>
+          <tr><td class="cap">四种浏览视图</td><td><span class="pill ok">已完成</span></td><td>书架 / 海报墙 / 卡片 / 列表；顶栏切换，`UserDefaults` 记住选择；卡片模式含大海报 + 底部胶片条（已看整块压暗并打勾，← → 切换、回车播放，剧集按集切换）。<b>胶片条不再横向硬滚：</b>按窗口宽度算一行放几格，放不下时收成一格「还有 N 部 · 展开全部」，点开原地铺成多行网格，标题右侧也可「查看全部 / 收起」。海报墙顶部统计条（4K / 1080P / 720P / 已看 / 未识别），条目超过 200 时右侧出现字母索引；列表表头点击片名 / 年份 / 评分可切换排序，单击选中、双击详情、空格播放，右侧时钟键回到最近添加。</td></tr>
+          <tr><td class="cap">影片 / 剧集详情页</td><td><span class="pill ok">已完成</span></td><td><b>不再弹独立窗口：直接在影院页面内铺满展示</b>，返回并入顶栏控制台（铭牌换成「返回影院」，Esc 同效），回到列表并保留原滚动位置；页面里不再有浮在封面图上的返回胶囊和右上角关闭叉。<b>剧集详情不再铺大幅剧照：</b>顶部那条 360pt 的 Hero 横幅已去掉（海报和片名在下方档案卡里，横幅只剩重复信息），页面直接从档案卡开始。内容区仍用深色影院风，只切内容不翻转整个窗口外观。剧照虚化氛围底（向下渐隐到纯深色，不再出现固定高度的硬边横带）。<b>「剧集档案」把海报、片名、简介、资料与演职员合成一张卡</b>：左侧 180–220pt 竖版海报（4px 香槟渐变外框 + 24px 投影，最多 5 张可左右切换）+ 评分牌（星级 / 分数 / 投票数）+ 整剧观看进度条；右侧琥珀刻字抬头（剧集档案 — 年份 · 季数 · 集数 + 播出状态胶囊）、24pt 衬线片名（原名不同时补一行小字）、宣传语、播放动作（开始观看 / 从第 1 集开始 / 预告片）、简介（默认 5 行可展开）、带图标的资料网格（首播 / 季数 / 集数 / 单集 / 类型 / 分级 / 语言 / 国家 / 平台 / 制作 / 合集 / TMDB，缺项不占位，国家名中文化）；卡片底部用分隔线接演职员横条（导演 + 可点人物头像；标题区已有「预告片」，横条上的重复入口已去掉）。<b>播放动作只留一行</b>：大号「开始观看 / 继续播放」按钮已经带进度文案，不再重复一条「开始观看 SxxExx」；跳过片头尾做成拟物小开关，和「预告片」同一行，点开是滑杆面板（片头 / 片尾 0–300 秒 + 整部剧 / 本集 + 自动识别 / 清除）。卡片为深色玻璃底 + 左上角琥珀光 + 琥珀渐变描边，和海报的暖色衔接。影片详情与剧集同一套档案卡：<b>不再铺 340pt Hero</b>，海报 + 评分牌 + 进度、片名 / 原名、可展开简介与图标资料网格（上映 / 片长 / 类型 / 分级 / 语言 / 国家 / 制作 / 评分 / 预算 / 票房 / 合集 / TMDB）都在卡内，缺简介时给出重新匹配提示；演职员收在卡底，下方依次是继续播放、合集、多版本与技术信息。剧集有继续播放、跳过片头尾、季切换、大号分集网格，每集通过 TMDB 季接口补上单集标题 / 剧情简介 / 剧照。<b>海报可多图：</b>详情页悬停出现左右箭头与分页点，最多 5 张；翻到非当前封面时出现「设为封面」，点了才写回索引。</td></tr>
           <tr><td class="cap">剧集季分组 / 下一集</td><td><span class="pill ok">已完成</span></td><td>一部剧按 tmdbID 聚合成一张卡，季数取自本地剧集；详情「剧集」标题行是<b>季下拉</b>（「第 N 季 · M 集 ▾」），菜单按季给出「集数 · 已看数」，多季时不会滚丢当前季，未收录的季不列出；只有一季时直接标明「第 N 季 · M 集」。默认定位到「下一集」所在季。海报列与集卡承担「上次看到 / 已看多少集」；<b>每张单集卡片常显 3pt 进度轨道</b>（未看也有空轨道，已看按比例填琥珀），文案分「上次看到 / 当前集 / 已看完 / yy% / 未看」，<b>当前集用琥珀描边</b>。<b>集卡两段式操作：</b>第一次点击只选中（2.2pt 琥珀描边 + 柔光 + 深色蒙层），中央浮出实心琥珀播放按钮；再次点击才开播。悬停时先显示半透明玻璃播放键，切季会自动清掉选中。资料条上的「18 季 / 849 集」来自 TMDB，是整部剧的信息。<b>单集信息缓存：</b>每集标题 / 简介 / 剧照按 tmdbID + 季写进图库设置库，打开详情直接秒出，超过 12 小时才后台补一次最新；切季同样先读缓存，请求失败保留旧内容。<b>键盘操作：</b>剧集详情内 ← → 逐集、↑ ↓ 跨一行（按网格实际列数计算），空格 / 回车播放选中集，未选中时从「下一集」开始；选中变化自动滚到可视区，进播放器时交还焦点，关闭后自动回到网格。海报墙卡片模式同样补上空格播放。</td></tr>
           <tr><td class="cap">跳过片头尾</td><td><span class="pill ok">已完成</span></td><td><b>在线优先：</b>点「自动识别」先用 TMDB <code>external_ids</code> 把剧集换成 IMDb ID，再查 TheIntroDB（<code>api.introdb.app/segments</code>）的社区时间轴，网盘片源也能识别；在线没有记录时退回本地 ffmpeg 静音检测。<b>刮削完成后自动补一次</b>（只补未设置过的剧集，后台执行不拖慢进度），打开详情页也会静默补一次，查到即写入。<br><b>每集独立：</b>设置卡新增「整部剧 / 本集 SxxExx」分段选择，单集覆盖优先于整部剧；未单独设置时显示「沿用整部剧」，清除后回落。起播时还会在线查这一集的真实片头，若拿到结果时仍在片头区间，直接跳到正确位置并写成单集覆盖（每集只查一次）。<br>手动面板：跳过片头尾开关与「预告片」同排，点开是拟物滑杆面板——片头 / 片尾各一条 0–300 秒滑杆（15 秒步进），默认值一眼可见；下方是「整部剧 / 本集 SxxExx」范围、自动识别与清除。启用后开关亮琥珀 LED，副标题实时显示「片头 90s · 片尾 60s」。起播自动跳过片头，剩余时间进入片尾区间自动跳结尾并记为看完，0 秒表示不跳过。</td></tr>
-          <tr><td class="cap">播放信息 / 章节</td><td><span class="pill ok">已完成</span></td><td>起播后后台补一次 ffprobe（`-show_chapters`），按 I 键弹出播放信息叠加：分辨率 / 编码 / 容器 / 码率 / 帧率 / HDR（含 Dolby Vision / HDR10+ / HLG）/ 音轨 / 章节数 / 输出；控制条新增信息键与章节菜单，⌥← / ⌥→ 跳上一章 / 下一章。</td></tr>
-          <tr><td class="cap">播放器快捷键统一 · 连按加速</td><td><span class="pill ok">已完成</span></td><td><b>影院与网络资源同一套键位：</b>← / → 快退 / 快进，↑ / ↓ 上一个 / 下一个（剧集为上一集 / 下一集），⌘ + 方向键始终只切视频，J / L 与 ← / → 共用设置里的「快进 / 快退步长」（不再固定 10 秒）。<b>连按 / 按住加速：</b>同方向连续触发按 1× → 2× → 3× → 4× → 6× → 8× 逐级放大步长，单次最多 10 分钟；换方向或停手 1.2 秒复位，长按的系统重复事件按 120ms 限频。<b>控制条同步：</b>播放器按钮与窗口工具栏的 ⏪ / ⏩ 也走同一步长与加速，图标不再写死 10 秒；提示文案随步长显示。</td></tr>
+          <tr><td class="cap">播放信息 / 章节</td><td><span class="pill ok">已完成</span></td><td>起播后后台补一次 ffprobe（<code>-show_chapters</code>），I 键开关播放信息叠加。面板已扩成<b>四列 26+ 字段</b>：视频（画面 / 编码 / 容器 / 码率 / 帧率 / HDR / 色彩 primaries·transfer·matrix·range·codecTag）、音频（主音轨 / 编码 / 声道 / 语言 / 轨道数 / 输出）、字幕（当前 / 来源 / 轨道 / 时间轴 / 字号 / 位置）、播放（章节 / 角度 / 大小 / 已播 / 实时码率 / 丢帧 / 解码）。底部「更多探测信息」折叠完整 ffprobe 文本，<b>⇧⌘I</b> 直接展开；控制条保留信息键与章节菜单，⌥← / ⌥→ 跳上一章 / 下一章。</td></tr>
+          <tr><td class="cap">播放器快捷键统一 · 连按加速</td><td><span class="pill ok">已完成</span></td><td><b>影院与网络资源同一套键位：</b>← / → 快退 / 快进，↑ / ↓ 上一个 / 下一个（剧集为上一集 / 下一集），⌘ + 方向键始终只切视频，J / L 与 ← / → 共用设置里的「快进 / 快退步长」（不再固定 10 秒）。<b>连按 / 按住加速：</b>同方向连续触发按 1× → 2× → 3× → 4× → 6× → 8× 逐级放大步长，单次最多 10 分钟；换方向或停手 1.2 秒复位，长按的系统重复事件按 120ms 限频。<b>控制条同步：</b>播放器按钮与窗口工具栏的 ⏪ / ⏩ 也走同一步长与加速，图标不再写死 10 秒；提示文案随步长显示。<b>轨道快捷键：</b>S 循环切换内封字幕（跳过图片字幕）、A 循环切换音轨，切换结果用 Toast 回报当前轨道；⇧⌘I 直达完整探测信息。</td></tr>
           <tr><td class="cap">进度条悬停关键帧</td><td><span class="pill ok">已完成</span></td><td><b>顶栏进度条也能预览画面：</b>鼠标移上去先出现一条落点标线，约 55ms 后浮出 176×99 的关键帧气泡 + 时间胶囊，气泡水平跟光标、竖直贴在播放舱下方（全屏时浮在工具栏下沿）。<b>丝滑的关键：</b>帧按「采样段」缓存（≤3 分钟 1 秒一帧、≤10 分钟 2 秒、≤30 分钟 5 秒、更长的片子 10 秒一帧），同一段内来回滑动直接命中不再解码；快速掠过只更新落点不取帧；拖动进度条时同样预览。气泡画在画面层而不是工具栏里——工具栏容器装不下浮层。<b>相关：</b>画面内控制条原本就有拖动预览，这一次把顶栏一档补齐，两处都走同一个取帧器（320×180、0.8s 容差适配 HLS 关键帧间隔）。该功能默认关闭，可在设置 › 影院 › 进度条悬停预览里自行打开。</td></tr>
           <tr><td class="cap">首段加速 / 拖拽音画同步</td><td><span class="pill ok">已完成</span></td><td>起流 ffmpeg 参数收紧：探测窗口 <code>-probesize / -analyzeduration</code> 4M → 2M，HLS <code>-hls_init_time</code> 1 → 0.5，分片 <code>-hls_flags temp_file</code> 先写临时文件再改名，拖动后不会读到写了一半的片段。<b>大文件本地播放：</b>本地源生成速度提到 12×（云端保持 6×），首段与拖动重建更快；同时按播放位置限制「提前生成窗口」——领先超过 4 分钟就 SIGSTOP 暂停 ffmpeg、回落到 90 秒内再恢复，60 GB 长片不会在几分钟内写满磁盘，云端也不会一次把整片拉下来。播放中每 3 秒滚动清理 2 分钟前的分片。<b>按封装微调：</b>4K 重新封装加 <code>-max_muxing_queue_size 2048</code> 防包队列溢出；兼容转码从 <code>medium</code> 降到 <code>veryfast</code>，先把首段等出来。<b>实测探针：</b>每次起播 / 拖动都会把「本地 or 网盘、模式、偏移、首段耗时」写进 Diagnostics，方便按真实 SMB / WebDAV 片源核对。<b>拖拽后音画同步</b>：跳转起流时加 <code>-copyts -start_at_zero -avoid_negative_ts make_zero</code>，让视频关键帧与音频目标点两路时间戳都从 0 起步；音频统一加 <code>-async 1</code>，长时间拖动后不会越走越偏。<br><small>云端片源差异大，最终以真实 SMB / WebDAV 片源实测为准。</small></td></tr>
           <tr><td class="cap">下一集预热 / 缓存策略</td><td><span class="pill ok">已完成</span></td><td><b>下一集预热：</b>当前集剩余 5 分钟时，后台为下一集解析直链并预生成首段，随后 SIGSTOP 挂起 ffmpeg（只占几 MB、不跑完整集）；切集时直接复用播放列表与本地 HLS 服务，跳过解析、探测与首段等待。只对 MKV / TS 这类需要转封装的容器预热，MP4 / MOV 仍走原生直读；20 分钟未使用自动丢弃，打开别的片子时也会立即释放。<br><b>缓存清理：</b>容量上限按 90% 回收，留出余量；命中缓存时刷新修改时间，LRU 按「最后一次播放」淘汰；会话目录统一带 <code>-session-</code>，启动时清理 6 小时前的异常残留，容量回收时跳过正在播放 / 预热的目录。</td></tr>
@@ -4880,17 +4891,17 @@
           <tr><td class="cap">规格角标与筛选</td><td><span class="pill ok">已完成</span></td><td>片名 / 分辨率里的 <code>4K / 2K / 1080P</code>、<code>DV / DoVi / Dolby Vision</code>、<code>HDR10+ / HDR10 / HDR / HLG</code>、<code>10bit</code>、<code>Atmos</code>、<code>DTS:X / DTS-HD / DTS</code>、<code>TrueHD</code>、<code>60fps</code> 全部派生为角标，并按辨识度排序。<b>只留最重要的 1–2 个：</b>按分辨率 → HDR 规格 → 音质取前两位，不再铺满；类型角标只在详情资料里出现，悬停档案最多 4 个。157pt 竖版卡左上是这组角标，右上只留评分 / 未识别 / 版本数；书架卡片、海报墙卡片与详情资料同样只留关键规格。筛选面板保留「规格」组：杜比视界 / HDR / 杜比全景声 / 高帧率。</td></tr>
           <tr><td class="cap">字幕样式 / 烧录</td><td><span class="pill ok">已完成</span></td><td>设置 › 播放新增字幕颜色（白 / 黄 / 青 / 绿）与位置（底部 / 偏上 / 中间），与字号、背景一起即时生效。播放器字幕菜单新增「烧录字幕（PGS / SUP / ASS）…」：选文件后复制到临时目录，边下边播强制转码并叠加 `subtitles=` 滤镜，缓存键包含字幕以免命中无字幕结果；再点可关闭烧录。</td></tr>
           <tr><td class="cap">本地目录监听 · FSEvents</td><td><span class="pill ok">已完成</span></td><td>启动时监听 `LibraryPaths.originals`，FSEvents 回调去抖 1.2 秒后重新读取图库清单并刷新影院；开启「扫描完网盘后自动刮削」时会顺带自动刮削本地新视频。云盘没有文件系统事件，仍由扫描 / 刷新目录触发。</td></tr>
-          <tr><td class="cap">目录 NFO 自动解析</td><td><span class="pill ok">已完成</span></td><td>刮削前先找同目录 NFO：优先 `<视频名>.nfo`，其次 `movie.nfo / tvshow.nfo / season.nfo`，再退回目录里的任意 `.nfo`。解析 title / originaltitle / year / plot / runtime / rating / genre / tmdbid / uniqueid / season / episode / poster / fanart；命中即直接写入索引并跳过网络。本地读文件，网盘按目录列一次并用统一下载链路读小文件；NFO 导出不做。</td></tr>
-          <tr><td class="cap">排序</td><td><span class="pill ok">已完成</span></td><td>最近添加 / 评分 / 年份 / 片名 / 时长；对电影与剧集同时生效，写入本地偏好。</td></tr>
+          <tr><td class="cap">目录 NFO 自动解析</td><td><span class="pill ok">已完成</span></td><td>刮削前先找同目录 NFO：优先 `<视频名>.nfo`，其次 `movie.nfo / tvshow.nfo / season.nfo`，再退回目录里的任意 `.nfo`。解析 title / originaltitle / year / plot / runtime / rating / genre / tmdbid / uniqueid / season / episode / poster / fanart；命中即直接写入索引并跳过网络。本地读文件，网盘按目录列一次并用统一下载链路读小文件；<b>NFO 导出已接通：</b>按 <code>movie</code> / <code>episodedetails</code> 生成 Kodi / Jellyfin / Emby 可读 XML，刮削后按开关自动导出，也可在设置 › 高级「立即导出」。</td></tr>
+          <tr><td class="cap">排序</td><td><span class="pill ok">已完成</span></td><td>最近添加 / 评分 / 年份 / 片名 / 时长 / 随机，六项菜单直接写出方向文案；对电影与剧集同时生效，写入本地偏好。随机按会话种子稳定、进入影院或切到随机时重洗。</td></tr>
           <tr><td class="cap">筛选面板 V2</td><td><span class="pill ok">已完成</span></td><td>年份 / 类型 / 地区 / 语言 / 分辨率 / 规格（杜比视界 / HDR / 全景声 / 高帧率）/ 片长 / 评分 / 观看状态均可多选，组内 OR、组间 AND；没有数据的分类自动隐藏；另有「高分 8+」「最近 30 天」智能筛选；实时显示符合条目数。</td></tr>
           <tr><td class="cap">手动重新匹配</td><td><span class="pill ok">已完成</span></td><td>输入片名 → 豆瓣 / TMDB 候选 → 选择后只改当前条目；入口在详情页「手动匹配 / 重新匹配」。<b>匹配来源可选：</b>全部 / TMDB / 豆瓣 / TVDB，选「全部」会同时查所有已配置的源并按顺序合并，结果逐条标注来源，去重键带来源前缀避免 ID 撞号；选择记忆到下次打开，切换来源会自动重搜。</td></tr>
           <tr><td class="cap">剧集批量匹配 · 季集映射</td><td><span class="pill ok">已完成</span></td><td>选完剧进入季集映射页：默认「文件名数字」模式，`11.mkv` / `13 4K.mkv` / `谷雨 11.mkv` 都能取到 11 / 13 而不是顺序乱排；`4K / 2160p / HDR / 编码 / 音轨` 等版本标记会先剥离，同名版本自动共用一集并标 `×N`。可切「按顺序」、调集号偏移（含「把 11 当作第 1 集」快捷按钮）、按集号排序、逐条改号；目录链会补季，避免 54 个文件被排成 54 集。</td></tr>
-          <tr><td class="cap">电影详情 · 档案式统一设计</td><td><span class="pill ok">已完成</span></td><td>电影详情改成与剧集详情同一套「档案卡」：同人画虚化铺底；左侧海报 + 评分牌 + 个人评分 + 观看进度，右侧「影片档案」抬头、32 号片名 / 原名 / 宣传语、可展开简介与图标资料网格（上映 / 片长 / 类型 / 分级 / 语言 / 国家 / 制作 / 评分 / 预算 / 票房 / 合集 / TMDB），演职员条收在卡底；下方依次是继续播放条、合集、多版本与文件技术信息。列表 / 海报墙 / Hero 单击默认进详情，播放改由详情页按钮触发；设置里仍可改回「单击直接播放」。</td></tr>
+          <tr><td class="cap">电影详情 · 档案式统一设计</td><td><span class="pill ok">已完成</span></td><td>电影详情改成与剧集详情同一套「档案卡」：同人画虚化铺底；左侧海报（180–220pt、4px 香槟边 + 24px 投影、可多图切换）+ 评分牌 + 个人评分 + 观看进度，右侧「影片档案」抬头、24pt 衬线片名 / 原名 / 宣传语、可展开简介与图标资料网格（上映 / 片长 / 类型 / 分级 / 语言 / 国家 / 制作 / 评分 / 预算 / 票房 / 合集 / TMDB），演职员条收在卡底；下方依次是继续播放条、合集、多版本与文件技术信息。列表 / 海报墙 / Hero 单击默认进详情，播放改由详情页按钮触发；设置里仍可改回「单击直接播放」。</td></tr>
           <tr><td class="cap">智能季集映射 · 大模型 + 工具</td><td><span class="pill ok">已完成</span></td><td>季集映射页「交给助手」：把剧名 / 季 / 文件列表（文件名、已识别集号、时长、大小）与补充要求发给设置里的 OpenAI 兼容模型；提供 3 个 function tools（<code>set_episode_mode</code>、<code>set_episode_offset</code>、<code>apply_episode_mapping</code>），最多 3 轮工具调用；回填后集号仍可逐条改，应用前不写库。未配置助手时给出明确提示，不影响现有文件名 / 顺序匹配。</td></tr>
           <tr><td class="cap">一键智能整理 · 大模型按目录匹配</td><td><span class="pill ok">已完成</span></td><td>影院顶栏新增「一键智能整理」（窄窗口收在「更多」里）：点一下打开智能助手，自动填入整理指令并发送，把「怎么分组、哪部是电影 / 剧集、对应哪一季、第几集」交给模型多轮处理：类型以文件名为准（SxxExx / 第 N 集 → 剧集，年份 / 片源 → 电影），不只看目录；同一部作品的 4K / 1080p / 杜比视界 / 蓝光原盘 / 加长版等多版本按 <code>parsed_title + parsed_year</code> 归为一个作品、一次性写回；一个文件夹里有多部续集 / 合集时按文件名分组，用 <code>photo_ids</code> 分批应用。新增 4 个工具：<code>list_cinema_scopes</code> 列出本地与每个网盘影院（scope id / 视频数 / 已识别数）；<code>cinema_tree</code> 逐层读真实目录树、文件名、解析出的片名 / 年份 / 季 / 集 / 分辨率与当前匹配状态（顶层看文件夹概览，传 folder 展开到季目录）；<code>search_cinema_candidates</code> 按片名 + 类型 + 年份搜 TMDB / 豆瓣候选（TMDB 剧集补季数 / 集数）；<code>apply_cinema_match</code> 按 candidate_id 把文件夹或指定视频写回，可显式指定季号与 <code>episodes</code> 逐集映射，季集都能对上。工具以「完整视频清单」为准，未刮削过的网盘也能整理；模型最多 20 轮工具调用，整理期间影院写操作不再逐轮弹窗（入口即授权），其它写操作仍要确认；最后用 <code>cinema_tree(only_unmatched=true)</code> 复查并汇总剩余未识别。</td></tr>
           <tr><td class="cap">智能助手 · 影院匹配 / 刮削</td><td><span class="pill ok">已完成</span></td><td>影院页打开智能助手时会附一份【当前影院】快照（视频总数、已识别 / 未识别、目录树与少量视频样本），不再把影院误判成空图库。新增 3 个工具：<code>list_cinema_items</code> 查看目录与视频、<code>scrape_cinema</code> 刮削当前影院或指定文件夹（含子文件夹）、<code>match_cinema</code> 用片名批量手动匹配未识别视频（可指定单个文件或整个文件夹）。匹配 / 刮削只写元数据与海报，不移动、不改名、不删除视频；执行前同样需要用户确认。</td></tr>
           <tr><td class="cap">合集 / 多版本</td><td><span class="pill ok">已完成</span></td><td>TMDB `belongs_to_collection` 自动归组，书架出现合集行；详情页「查看合集」进入独立合集页：横向年份海报、按上映顺序播放、合集统计（影片 / 版本 / 已看 / 下一部，未入库续集只提示）。同 tmdbID + 季集号合并，画质优先，详情页选版本播放。</td></tr>
-          <tr><td class="cap">收藏 / 想看 / 清单</td><td><span class="pill ok">已完成</span></td><td>本地收藏、想看、1–5 星；自定义清单支持新建、加入、按清单筛选与删除；右键菜单与详情页都可操作。顶栏「清单」下拉直接给出收藏计数、每个清单的条目数与「新建清单…」。</td></tr>
+          <tr><td class="cap">收藏 / 想看 / 清单</td><td><span class="pill ok">已完成</span></td><td>本地收藏、想看、1–5 星；自定义清单支持新建、加入、按清单筛选与删除；右键菜单与详情页都可操作。顶栏「清单」下拉直接给出收藏计数、每个清单的条目数与「新建清单…」。<b>列表、卡片、集卡与海报墙共用同一套右键菜单：</b>播放 / 详情 / 收藏 / 想看 / 加入清单 / 重新刮削 / 手动匹配 / 换海报 / 设为默认版本 / 访达 / 标记已看 / 复制路径 / 忽略 / 删除，不再出现列表少几项的情况。</td></tr>
           <tr><td class="cap">在线字幕</td><td><span class="pill ok">已完成</span></td><td>OpenSubtitles 搜索 / 登录 / 下载到本机缓存；播放器字幕菜单直接载入。需在 设置 › 影院 › 播放 填 API Key（搜索）与账号密码（下载），同名外挂仍然优先。</td></tr>
           <tr><td class="cap">演职员 / 人物页</td><td><span class="pill ok">已完成</span></td><td>TMDB `credits` 补全演职员，详情页横向头像；刮削时按 tmdbID 缓存，几十集只拉一次。头像与名字可点进<b>人物页</b>：<b>页面内二级页，不再弹独立窗口</b>——详情视图在下方保留，顶栏「返回」逐层后退（人物页 → 影片 / 剧集详情 → 列表），Esc 同效。版式对齐「剧集档案」：172pt 圆形头像（琥珀细环 + 外圈留白 + 暖光）+ 本库作品数牌；右侧「演职员档案」琥珀刻字 + 部门（演员 / 导演 / 编剧…）+ 大号姓名 + 「饰 角色」+ 生日本 / 出生地 chips + 可展开简介；下方「作品」标题行带「本库已有 / 全部作品」切换与计数，海报网格 150–210pt（本库作品标「在库」角标，点击直接播放，右键可看详情）。搜索面板里打开的仍是同一套人物页（面板本身是弹窗）。</td></tr>
           <tr><td class="cap">预告片 · 国内源</td><td><span class="pill ok">已完成</span></td><td><b>不再打开浏览器</b>：详情页「预告片 / 观看预告片」与演职员横条上的链接都改为<b>页面内播放层</b>——深色铺满、16:9 画面 + AVPlayer 原生控制条（播放 / 拖动 / 音量 / 全屏）+ 标题与来源胶囊；顶栏「返回」和 Esc 先关预告片，再逐层退详情。<b>片源优先豆瓣</b>（国内可直连）：先用片名 / 原名在 <code>movie.douban.com/j/subject_suggest</code> 找条目（片名相同、年份接近、电影 / 剧集类型一致加分），再取 <code>m.douban.com/rexxar/api/v2/movie/{id}/trailers</code> 的 mp4 直链；长剧在豆瓣常按季拆分，按匹配度依次试前 4 个条目，取第一个有片源的（实测「乡村爱情」落到第 18 季拿到预告）。直链必须带 <code>Referer</code>，由 <code>CloudAssetResourceLoader</code> 代理请求，AVPlayer 直接起播。大片几十条花絮只留 12 条并把正式「预告片」排在花絮前；多条时底部给切换胶囊；找不到时播放层内给出空态与「再试一次」，全程不跳网页。TMDB 的 YouTube key 仅保留在索引里，不再用于播放。</td></tr>
@@ -4899,7 +4910,7 @@
           <tr><td class="cap">文件夹视图 / 目录钻取</td><td><span class="pill ok">已完成</span></td><td>顶栏「文件夹」分段按真实目录建树：首层是顶层目录，点卡片逐层进入，面包屑可回退，任意深度都能一直点下去；每层只列直属视频，匹配后显示影片 / 剧集名；整目录刮削 / 手动匹配会连同子目录一起处理，目录详情里也能继续钻取。<b>返回并入顶栏：</b>进到子目录后左侧铭牌换成「返回」键，点一下或按 Esc 退回上一级（详情页打开时先关详情），同一条控制台里仍保留「全部 / 电影 / 电视剧 / 文件夹」分段，随时可以跳出去；面包屑仍可直接跳到任意一层。</td></tr>
           <tr><td class="cap">相簿内影院操作</td><td><span class="pill ok">已完成</span></td><td>相簿 / 网格多选视频右键：手动匹配（可多选一次套用）、刮削所选、影院收藏 / 想看 / 清单、跳到对应影院；未刮削的视频也能先匹配。</td></tr>
           <tr><td class="cap">观看记录</td><td><span class="pill ok">已完成</span></td><td>独立面板：按今天 / 本周 / 更早分组，可切「全部 / 进行中 / 已看完」；显示剩余时间，单条移出先确认，也可一次清空。</td></tr>
-          <tr><td class="cap">设置 · 七页</td><td><span class="pill ok">已完成</span></td><td>影院设置二级 tab 重排为<b>刮削 / 字幕 / 显示 / 播放 / 来源 / 家长 / 高级</b>，等宽铺满、带一级图标 tab 下一层的选中底与琥珀下划线。新增「字幕」页：OpenSubtitles API Key + 账号密码（合并进一个钥匙串条目、读取结果进程内缓存，不再每次打开设置都弹授权）+ 字幕字号 / 颜色 / 位置 / 背景；「显示」补默认排序；「播放」补自动连播 / 循环 / 默认静音 / 快进步长 / 控制条位置 / 转码缓存上限；「高级」收纳 TMDB 接口与图片镜像、维护与「恢复已忽略的视频」。<b>钥匙串：</b>影院敏感信息合并为一个条目并写入显式 ACL 只信任当前 App，进程内只读一次；打开设置不再触碰钥匙串，字幕 / PIN 只在进入对应页面时读，同一个条目共享一次授权（不会再逐字段弹三次）。旧版分散条目不再自动读取。<br><b>刮削页 · 数据源列表：</b>TMDB / TVDB / 豆瓣 各占一行（左侧拖动把手 + 序号 + 名称与说明，右侧配置状态与连通性），<b>行的顺序就是刮削尝试顺序</b>，可拖动或用右键「上移 / 下移」调整，第一行标「首选」；未填 Key 的源打开页面时自动展开配置，每行独立「测试连通性」（示例片名搜索，结果只影响本行：已配置 / 免 Key / 测试中 / 连通 / 不通），不再把三个源的输入框堆在一起。<br><b>统一设置行：</b>字幕 / 显示 / 播放 / 来源 / 家长 / 高级 六页改成与系统「通用 / 外观」页一致的分组表单——每组一张卡，卡头是小图标 + 组名 +（状态胶囊 / 右侧说明），行内左侧标题与一句解释、右侧放开关 / 选择器 / 按钮，行间细分隔线；输入类设置改为标题在上、整行输入框在下。开关统一用系统 Switch，危险动作仍二次确认。</td></tr>
+          <tr><td class="cap">设置 · 七页</td><td><span class="pill ok">已完成</span></td><td>影院设置二级 tab 重排为<b>刮削 / 字幕 / 显示 / 播放 / 来源 / 家长 / 高级</b>，等宽铺满、带一级图标 tab 下一层的选中底与琥珀下划线。新增「字幕」页：OpenSubtitles API Key + 账号密码（合并进一个钥匙串条目、读取结果进程内缓存，不再每次打开设置都弹授权）+ 字幕字号 / 颜色 / 位置 / 背景；「显示」补默认排序；「播放」补自动连播 / 循环 / 默认静音 / 快进步长 / 控制条位置 / 转码缓存上限；「高级」收纳 TMDB 接口与图片镜像、维护与「恢复已忽略的视频」。<b>钥匙串：</b>影院敏感信息合并为一个条目并写入显式 ACL 只信任当前 App，进程内只读一次；打开设置不再触碰钥匙串，字幕 / PIN 只在进入对应页面时读，同一个条目共享一次授权（不会再逐字段弹三次）。旧版分散条目不再自动读取。<br><b>刮削页 · 数据源列表：</b>TMDB / TVDB / 豆瓣 各占一行（左侧拖动把手 + 序号 + 名称与说明，右侧配置状态与连通性），<b>行的顺序就是刮削尝试顺序</b>，可拖动或用右键「上移 / 下移」调整，第一行标「首选」；未填 Key 的源打开页面时自动展开配置，每行独立「测试连通性」（示例片名搜索，结果只影响本行：已配置 / 免 Key / 测试中 / 连通 / 不通），不再把三个源的输入框堆在一起。<br><b>统一设置行：</b>字幕 / 显示 / 播放 / 来源 / 家长 / 高级 六页改成与系统「通用 / 外观」页一致的分组表单——每组一张卡，卡头是小图标 + 组名 +（状态胶囊 / 右侧说明），行内左侧标题与一句解释、右侧放开关 / 选择器 / 按钮，行间细分隔线；输入类设置改为标题在上、整行输入框在下。开关统一用系统 Switch，危险动作仍二次确认。<b>2026-11-23 补齐：</b>显示页加每行数量 / 海报比例 / 背景同人画 / 减弱动效 / 界面语言；播放页加默认音轨 / 默认字幕 / 全局跳过片头片尾 / 记忆倍速 / 优先硬解 / 画中画；高级页加豆瓣镜像 / 请求超时 / 日志等级 / 清理海报缓存 / 重建索引 / 导出 NFO。</td></tr>
           <tr><td class="cap">忽略 / 删除视频</td><td><span class="pill ok">已完成</span></td><td>右键卡片 / 集卡：<b>忽略（以后不刮削）</b>把视频移出影院并写入按来源保存的忽略清单，刮削候选直接跳过；「高级」可一键恢复并重新检测。<b>删除视频文件…</b>二次确认后真删原文件：本地删原图、SMB 走已挂载路径、WebDAV 走 DELETE、阿里 / 百度 / 夸克走各自删除接口；失败把服务器原因提示到 Toast / 通知，成功同步清理刮削索引、进度、收藏与清单引用。剧集卡支持整部忽略 / 整部删除。</td></tr>
           <tr><td class="cap">通知 / 任务中心</td><td><span class="pill ok">已完成</span></td><td>每次刮削写入任务记录（来源、总数、识别数、结果与文案），任务中心按「全部 / 进行中 / 已完成 / 失败」分段并给出近 7 天统计，失败可单条重试或「重试全部失败」，支持清空归档。顶栏「更多」里的通知中心按今天 / 本周 / 更早分组、保留 30 天、可全部已读；右上 Toast 栈最多 3 条：成功 4 秒消失，失败常驻并可重试，收藏 / 想看 / 加入清单可撤销。</td></tr>
           <tr><td class="cap">首次建库引导</td><td><span class="pill ok">已完成</span></td><td>没有片源且未跳过时显示三步引导（选择来源 → 确认扫描规则 → 坐下看片），唯一主按钮「添加片源」打开现有连接向导，「稍后再说」写入本地偏好不再出现；协议只作为能力说明。</td></tr>
@@ -4915,15 +4926,18 @@
           <tr><td class="cap">人物页作品档案</td><td><span class="pill ok">已完成</span></td><td><b>默认按最新排序：</b>作品与全部作品列表都按年份从新到旧，没有年份的排最后。<b>未入库默认置灰：</b>不在本库的作品整块压到 55% 不透明，鼠标悬停即恢复并浮出档案，不再用 <code>.disabled</code>（那会连 hover 一起吞掉）。<b>悬停按需补全：</b>未入库作品没有本地档案，悬停时用 TMDB <code>details</code> 拉一次简介 / 评分 / 类型 / 片长并缓存（<code>cinemaCreditDetails(for:)</code>）。<b>档案内容：</b>标题、星级 + 投票数、一行元信息（类型 · 年份 · 每集 / 总时长 · 季集 · 上映 / 首播）、饰演角色、类型胶囊、在库状态灯、5 行简介（未到位时显示「正在读取简介…」）、未入库说明与页脚。<b>卡片按内容自适应高度：</b>浮层用 <code>GeometryReader</code> 定位，会把整层高度提给子视图，卡片必须 <code>fixedSize(vertical: true)</code>，否则顶部信息与简介之间会被撑出一大块空白。</td></tr>
           <tr><td class="cap">详情页响应式排版</td><td><span class="pill ok">已完成</span></td><td>剧集详情 / 影片详情 / 人物页统一用 <code>GeometryReader</code> 拿可视宽度排版：内容宽度 = 窗口内容区宽度 − 左右各 24pt，<b>不再有 1440pt 上限</b>；页面只 <code>.frame(maxWidth: .infinity)</code>，不写固定宽度，窗口缩小时不会被上一次的宽度撑住。<b>列数按实测宽度显式算：</b>统一走 <code>LumaCore/GridLayout.columns(contentWidth:targetSize:spacing:)</code>，集卡目标 210pt（间距 16、卡片 140–340pt 弹性）、资料项目标 210pt（间距 12）、人物页作品海报目标 190pt（间距 16、至少 2 列、卡片最小 150pt），<code>GridItem(.flexible)</code> 在算好的列数里均分剩余宽度。窗口每变宽约一列就多排一列、变窄自动减列；不再用 <code>.adaptive</code>（它会按 maximum 反推列数，宽窗口只把卡片拉宽）。<b>档案卡自己也有断点：</b>可用宽度 &lt; 760pt 时海报与资料改成上下排列，否则左右两栏；资料网格的列数按右栏实际宽度算。演职员横条保持横向滚动，方向键跨行直接复用同一套列数。<b>悬停档案：</b>可视宽度 &lt; 820pt 时不显示（会盖住大半网格），信息仍在卡片与档案里。</td></tr>
           <tr><td class="cap">音轨菜单默认勾选</td><td><span class="pill ok">已完成</span></td><td>播放器控制条的音轨菜单与「视频 › 音轨」都改用菜单式 <code>Toggle</code>：当前在播的音轨由系统画勾，起播默认落在实际播放的那一条；不再用自绘 checkmark（<code>NSMenu</code> 会丢掉自定义 <code>HStack</code> 里的图标，表现为一条都没选中）。</td></tr>
+          <tr><td class="cap">真实 SMB / WebDAV 片源联调</td><td><span class="pill ok">已完成</span></td><td>群晖 DiskStation 5 个真实片源（DV + TrueHD 7.1 4K / AVC + TrueHD 5.1 / HEVC10 + DTS-HD MA 5.1 / 4K60 DDP 2.0 / 2.2GB MP4）：首片 0.32–1.78s，SMB 顺序读 10 秒 4K 仅 77–160ms；真实 SMB 上 seek 三配方对比，B 配方首片 850→317ms（1080p）/ 322→160ms（4K60），已落地为当前参数。真实 WebDAV 服务（自签名证书、断连重连）复核通过；<code>RemoteRangeSource</code> 8MB 分块 + 6 路预取已单独压测。</td></tr>
           <tr><td class="cap">网盘播放 · 并发分块</td><td><span class="pill ok">已完成</span></td><td><b>带宽吃不满的根因是本机分块服务串行下载</b>：原来所有分块走一条串行队列，且每块新建 URLSession（握手 + 慢启动反复）。改为共享 Range 会话（连接复用）+ 最多 6 路并发预取（每块 8MB，预取窗口 6 块），同一块只下一次、其它请求等信号量结果；缓存淘汰按真实播放位置（<code>servedChunk</code>），预取不会把正在读的块删掉；<code>httpMaximumConnectionsPerHost</code> 提到 6。WebDAV / 官方网盘走这条链路；<b>SMB 是系统挂载的本地路径</b>，直读不走分块代理（千兆下顺序读本身可跑满）。</td></tr>
           <tr><td class="cap">文件菜单 · 接入网络资源</td><td><span class="pill ok">已完成</span></td><td>「文件」菜单在「接入网络存储…」下新增「接入网络资源…」，与侧边栏「网络资源 → 导入资源」同一个向导入口。</td></tr>
+          <tr><td class="cap">详情海报规范 · 多图切换</td><td><span class="pill ok">已完成</span></td><td>海报宽度按档案卡断点取 180 / 200 / 220pt，内图 2:3；外圈 4px 香槟渐变包边（深铜 → 香槟金）+ 24px 投影，片名 24pt 衬线。多图最多 5 张：当前封面 + TMDB 图片候选按中文 / 原版 / 其他语言与评分排序；悬停出左右箭头、底部分页点与 <code>2/5</code> 计数，后层露出前后两张模拟实体海报叠放；翻页只是预览，点「设为封面」才写回索引，只有一张时完全隐藏控件。</td></tr>
+          <tr><td class="cap">影院性能与可观测性</td><td><span class="pill ok">已完成</span></td><td>海报缓存磁盘上限 6 GB、LRU 回收，滚动时按窗口预取；影院聚合结果按 <code>scope|dataRevision|filterRevision|day|parental|parentalLevel|shuffleSeed</code> 签名缓存，筛选 / 排序只重算一次；索引启动异步读取并给骨架屏；<code>Diagnostics.Level</code> 分 important / standard / verbose，逐帧与预热日志降为 verbose；豆瓣镜像、请求超时与日志等级都在设置 › 高级可调。</td></tr>
           <tr><td class="cap">完整构建</td><td><span class="pill ok">已完成</span></td><td>`swift build --product PhotosClone` 通过；应用可启动并保持运行。</td></tr>
         </tbody>
       </table>
     </div>
 
     <div class="callout">
-      <b>下一刀顺序建议：</b>真实 SMB / WebDAV 片源实测缓冲与拖拽（已加耗时探针，按日志微调）→ NFO / 海报导出（给 Jellyfin / Emby）→ 跨设备同步 / 手机遥控 / Trakt → 蓝光菜单与 ISO/BDMV 原盘。
+      <b>下一刀顺序建议：</b>网络影院在线播放（当前仍是占位）→ 跨设备同步 / 手机遥控 / Trakt → 蓝光菜单与 ISO/BDMV 原盘。片源侧 SMB、真实 WebDAV（自签名 / 断连重连）与网盘代理 8MB / 6 路预取均已实测；NFO / 海报导出已在 2026-11-23 补齐，不再列为本轮待办。
     </div>
 
     <div class="callout violet">

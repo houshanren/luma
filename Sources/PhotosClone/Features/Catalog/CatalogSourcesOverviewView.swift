@@ -19,6 +19,7 @@ struct CatalogSourcesOverviewView: View {
                 } else {
                     sourceSection
                     favoriteSection
+                    cinemaSharedSection
                 }
             }
             .padding(.horizontal, 26)
@@ -45,6 +46,67 @@ struct CatalogSourcesOverviewView: View {
 
     private var query: String {
         catalog.globalQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - 影院收藏 / 想看
+
+    private var cinemaSharedItems: [CinemaEntry] {
+        var seen = Set<UUID>()
+        return (store.cinemaUserStateEntries(favorite: true)
+                + store.cinemaUserStateEntries(favorite: false))
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    /// 影院与网络资源共用同一份用户状态：这里直接列出影院的收藏 / 想看，点一下回影院。
+    @ViewBuilder
+    private var cinemaSharedSection: some View {
+        let items = cinemaSharedItems
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 7) {
+                    Image(systemName: "film.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(LumaBrand.amber)
+                    Text("影院收藏与想看")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("与影院同步")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(items) { entry in
+                            Button {
+                                store.navigate(to: .cinema)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: store.cinemaUserState(for: entry.id).favorite
+                                          ? "heart.fill" : "bookmark.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(store.cinemaUserState(for: entry.id).favorite
+                                                         ? LumaBrand.coral : LumaBrand.amber)
+                                    Text(entry.title)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .lineLimit(1)
+                                    if let year = entry.year {
+                                        Text(String(year))
+                                            .font(.system(size: 9.5))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.primary.opacity(0.05),
+                                            in: Capsule(style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .help("回影院查看「\(entry.title)」")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - 稍后看
@@ -97,6 +159,26 @@ struct CatalogSourcesOverviewView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                // 搜索框已经收进顶栏：结果页保留一个明确的退出入口，避免停在搜索结果里。
+                Button {
+                    catalog.globalQuery = ""
+                } label: {
+                    Label("清除搜索", systemImage: "xmark.circle")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                // 三套搜索互通：网络资源里没有的，带去影院再搜一次。
+                Button {
+                    store.cinemaSearchSeed = query
+                    store.cinemaSearchVisible = true
+                    store.navigate(to: .cinema)
+                } label: {
+                    Label("在影院中搜索", systemImage: "film")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             // 自然语言解析结果：把「中文字幕 / 90 年代」拆成条件胶囊，让用户知道系统在筛什么。
             if let plan = catalog.globalQueryPlan, !plan.chips.isEmpty {

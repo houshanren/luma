@@ -10,12 +10,7 @@ struct CatalogAvatarView: View {
     var ringColor: Color?
 
     /// 解码后的小图缓存：列表滚动时不重复解码，同时限制总数避免常驻内存过大。
-    private static let cache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 512
-        cache.totalCostLimit = 24 * 1024 * 1024
-        return cache
-    }()
+    private static let cache = MemoryImageCache(totalCostLimit: 24 * 1024 * 1024, countLimit: 512)
 
     private static let palette: [(Color, Color)] = [
         (Color(red: 0.98, green: 0.47, blue: 0.42), Color(red: 0.86, green: 0.24, blue: 0.38)),

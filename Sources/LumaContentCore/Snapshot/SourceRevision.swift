@@ -43,4 +43,11 @@ public final class SourceRevisionTracker: @unchecked Sendable {
         defer { lock.unlock() }
         storage[sourceID.rawValue] = nil
     }
+
+    /// 换图库：所有源的修订号都属于上一个图库，整体作废。
+    public func resetAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.removeAll()
+    }
 }

@@ -39,6 +39,10 @@ struct ImportSheetView: View {
             if targetAlbumID == nil, let current = store.currentAlbumID {
                 targetAlbumID = current
             }
+            // 原生图库先确认「照片」正在用的就是当前这个库，否则提前给出切换引导。
+            if store.isNativeContainer {
+                store.refreshSystemWriteTargetState()
+            }
         }
     }
 
@@ -233,6 +237,67 @@ struct ImportSheetView: View {
         .padding(.top, 18)
     }
 
+    /// 原生图库：明确告诉用户写入目标与边界，避免误以为在复制文件。
+    private var nativeTargetNotice: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "photo.badge.checkmark")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("写入系统「照片」图库")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("通过 PhotoKit 新增项目，只做新增：不改动已有照片、相册与 Photos.sqlite。拍摄时间与位置会一并写入；可按文件夹创建相簿与文件夹，失败会逐条给出原因。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .strokeBorder(Color.accentColor.opacity(0.18), lineWidth: 0.6))
+    }
+
+    /// 当前打开的是挂载的其它「照片」图库：PhotoKit 只能写「照片」正在用的那个库。
+    private var targetMismatchNotice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("这个图库还不是「照片」当前图库")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("「照片」同一时间只允许写入它自己打开的那个图库。在「照片」中打开「\(store.systemLibraryName ?? "这个图库")」后，就能导入照片、创建相簿与文件夹。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                Button("在「照片」中打开图库…") {
+                    store.openCurrentLibraryInPhotosForImport()
+                }
+                .controlSize(.small)
+                Button("重新检测") {
+                    store.refreshSystemWriteTargetState()
+                }
+                .controlSize(.small)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .strokeBorder(Color.orange.opacity(0.25), lineWidth: 0.6))
+    }
+
     private var optionsPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -240,28 +305,40 @@ struct ImportSheetView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("相簿")
-                        .font(.system(size: 12, weight: .medium))
-                    Picker("相簿", selection: $targetAlbumID) {
-                        Text("无").tag(UUID?.none)
-                        ForEach(store.albumsSorted) { album in
-                            Text(album.name).tag(UUID?.some(album.id))
-                        }
+                if store.isNativeContainer {
+                    nativeTargetNotice
+                    if store.systemWriteTargetState == .mismatch {
+                        targetMismatchNotice
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    Text("未按文件夹整理的文件会添加到该相簿。")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
                 }
 
-                Divider()
+                if !store.isNativeContainer {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("相簿")
+                            .font(.system(size: 12, weight: .medium))
+                        Picker("相簿", selection: $targetAlbumID) {
+                            Text("无").tag(UUID?.none)
+                            ForEach(store.albumsSorted) { album in
+                                Text(album.name).tag(UUID?.some(album.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        Text("未按文件夹整理的文件会添加到该相簿。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Divider()
+                }
 
                 Toggle(isOn: $settings.importCreateAlbumsFromFolders) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("将最后一层文件夹创建为相簿")
+                        Text(store.isNativeContainer
+                             ? "将最后一层文件夹创建为「照片」相簿"
+                             : "将最后一层文件夹创建为相簿")
                             .font(.system(size: 12, weight: .medium))
                         Text("每个文件夹的最末一级目录会成为相簿名称。")
                             .font(.system(size: 10.5))
@@ -274,9 +351,13 @@ struct ImportSheetView: View {
 
                 Toggle(isOn: $settings.importPreserveFolderStructure) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("保留上层文件夹结构")
+                        Text(store.isNativeContainer
+                             ? "保留上层文件夹结构（「照片」文件夹）"
+                             : "保留上层文件夹结构")
                             .font(.system(size: 12, weight: .medium))
-                        Text("上层目录会创建为可展开的文件夹。")
+                        Text(store.isNativeContainer
+                             ? "上层目录会创建为「照片」里的文件夹，相簿放进去；关闭后只保留末级相簿。"
+                             : "上层目录会创建为可展开的文件夹。")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -293,7 +374,9 @@ struct ImportSheetView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("跳过完全重复的文件")
                             .font(.system(size: 12, weight: .medium))
-                        Text("导入前计算 SHA-256；与图库或本批次已有文件完全相同时不复制。")
+                        Text(store.isNativeContainer
+                             ? "导入前计算 SHA-256；拾光写入过的相同文件不会重复写进「照片」。"
+                             : "导入前计算 SHA-256；与图库或本批次已有文件完全相同时不复制。")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -302,25 +385,27 @@ struct ImportSheetView: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
 
-                Toggle(isOn: $settings.importVerifyCopies) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("导入后校验文件完整性")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("复制完成后重新计算目标文件哈希，确认写入没有损坏。")
+                if !store.isNativeContainer {
+                    Toggle(isOn: $settings.importVerifyCopies) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("导入后校验文件完整性")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("复制完成后重新计算目标文件哈希，确认写入没有损坏。")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+
+                    if candidates.contains(where: { !$0.isDirectory }) {
+                        Divider()
+                        Text("直接选择的照片会导入图库，不会创建相簿。")
                             .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-
-                if candidates.contains(where: { !$0.isDirectory }) {
-                    Divider()
-                    Text("直接选择的照片会导入图库，不会创建相簿。")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Divider()
@@ -336,6 +421,11 @@ struct ImportSheetView: View {
             .padding(18)
             .disabled(store.isImporting)
         }
+    }
+
+    /// 当前库不是「照片」正在使用的图库：先引导切换，避免导入到一半才失败。
+    private var systemTargetBlocked: Bool {
+        store.isNativeContainer && store.systemWriteTargetState == .mismatch
     }
 
     @ViewBuilder
@@ -357,7 +447,9 @@ struct ImportSheetView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Text("已导入 \(progress.importedCount.formatted()) 项")
+                    Text(store.isNativeContainer
+                         ? "已写入 \(progress.importedCount.formatted()) 项"
+                         : "已导入 \(progress.importedCount.formatted()) 项")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                     if progress.skippedDuplicates > 0 {
@@ -404,13 +496,16 @@ struct ImportSheetView: View {
                 Button("导入所选（\(selectedCount.formatted())）") {
                     beginImport(importAll: false)
                 }
-                .disabled(selectedIDs.isEmpty)
+                .disabled(selectedIDs.isEmpty || systemTargetBlocked)
+                .help(systemTargetBlocked ? "需要先在「照片」中打开这个图库" : "只导入当前勾选的项目")
 
                 Button("导入全部") {
                     beginImport(importAll: true)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+                .disabled(systemTargetBlocked)
+                .help(systemTargetBlocked ? "需要先在「照片」中打开这个图库" : "导入全部项目")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
@@ -432,11 +527,7 @@ struct FileThumbnailView: View {
     let url: URL
     @State private var image: NSImage?
 
-    private static let cache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.totalCostLimit = 128 * 1024 * 1024
-        return cache
-    }()
+    private static let cache = MemoryImageCache(totalCostLimit: 128 * 1024 * 1024)
 
     private var isMovie: Bool {
         VideoFormats.isVideo(url)

@@ -648,41 +648,18 @@ struct CloudGridEmptyState: View {
                     Spacer(minLength: 0)
                 }
             } else if cloud.scanPhase.isScanning {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text("正在扫描网盘… 已发现 \(cloud.scanMediaCount.formatted()) 项")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                LumaLoadingState(message: "正在扫描网盘… 已发现 \(cloud.scanMediaCount.formatted()) 项")
             } else if cloud.isRestoringScan {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text("正在读取上次扫描结果…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                LumaLoadingState(message: "正在读取上次扫描结果…")
             } else if isFiltering, !cloud.photos.isEmpty {
                 filteredEmptyView
             } else {
-                VStack(spacing: 10) {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 46, weight: .ultraLight))
-                        .foregroundStyle(.tertiary)
-                    Text(cloud.scanPhase == .cancelled ? "扫描已停止" : emptyTitle)
-                        .font(.system(size: 15, weight: .semibold))
-                    Text(cloud.scanPhase == .cancelled
-                         ? "点工具栏的刷新按钮继续扫描剩余目录。"
-                         : "缩略图与 EXIF 按需读取；稍后刷新，或在左侧「相簿」里浏览已扫描的目录。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.top, 50)
+                LumaEmptyState(symbol: "photo.on.rectangle.angled",
+                               title: cloud.scanPhase == .cancelled ? "扫描已停止" : emptyTitle,
+                               message: cloud.scanPhase == .cancelled
+                                   ? "点工具栏的刷新按钮继续扫描剩余目录。"
+                                   : "缩略图与 EXIF 按需读取；稍后刷新，或在左侧「相簿」里浏览已扫描的目录。")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(.horizontal, 20)
@@ -725,29 +702,20 @@ struct CloudGridEmptyState: View {
     }
 
     private var filteredEmptyView: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .font(.system(size: 42, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text("没有符合筛选条件的项目")
-                .font(.system(size: 15, weight: .semibold))
-            Text(store.similarScope != nil
-                 ? "没有相似照片，点顶部胶囊退出相似检索，或换一个相簿再试。"
-                 : (store.cloudScope.requiresAnalysis && store.cloudAnalyzedCount == 0
-                    ? "先在左侧「场景 › 识别内容」完成识别，再按场景或图内文字浏览。"
-                    : "调整范围、筛选或搜索关键词后再试。"))
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("清除筛选与搜索") {
-                store.setCloudScope(.all)
-                store.clearFilter()
-                store.searchText = ""
-            }
-            .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 50)
+        LumaEmptyState(symbol: "line.3.horizontal.decrease.circle",
+                       title: "没有符合筛选条件的项目",
+                       message: store.similarScope != nil
+                           ? "没有相似照片，点顶部胶囊退出相似检索，或换一个相簿再试。"
+                           : (store.cloudScope.requiresAnalysis && store.cloudAnalyzedCount == 0
+                              ? "先在左侧「场景 › 识别内容」完成识别，再按场景或图内文字浏览。"
+                              : "调整范围、筛选或搜索关键词后再试。"),
+                       actions: [LumaEmptyAction(title: "清除筛选与搜索",
+                                                 symbol: "line.3.horizontal.decrease.circle") {
+                           store.setCloudScope(.all)
+                           store.clearFilter()
+                           store.searchText = ""
+                       }])
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

@@ -14,6 +14,10 @@ struct PhotoCell: View {
     var elevated: Bool = false
     /// 非图库网格（地图 / 地点 / 卡片墙）打开查看器时的顺序基准，用于序号、总数与左右翻页。
     var viewerContext: [PhotoItem]?
+    /// 堆叠网格里这张代表图的整组张数（网格统一算好传入，避免每格重复计算指纹）。
+    var stackCount: Int = 1
+    /// 这摞照片是否来自连拍组：连拍双击进查看器整组浏览，其它堆叠双击原地展开。
+    var stackIsBurst: Bool = false
     @State private var image: NSImage?
     @State private var didLoad = false
     @State private var isHovering = false
@@ -55,6 +59,11 @@ struct PhotoCell: View {
         }
         if photo.isVideo, let duration = photo.duration, duration > 0 {
             parts.append(formatDuration(duration))
+        }
+        if stackCount > 1 {
+            parts.append(store.isStackExpanded(photo.id)
+                         ? "已展开的堆叠 · \(stackCount) 张，双击收起"
+                         : "堆叠 · \(stackCount) 张，双击展开")
         }
         return parts.joined(separator: " · ")
     }
@@ -294,6 +303,33 @@ struct PhotoCell: View {
                 .allowsHitTesting(false)
             }
 
+            // 堆叠角标：左上角显示整组张数，一眼看出这是一摞照片。
+            if stackCount > 1 {
+                VStack {
+                    HStack(spacing: 0) {
+                        HStack(spacing: 2.5) {
+                            Image(systemName: "square.stack.3d.down.right.fill")
+                                .font(.system(size: 7.5, weight: .semibold))
+                            Text("\(stackCount)")
+                                .font(.system(size: 9, weight: .semibold))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2.5)
+                        .background(.black.opacity(0.46), in: Capsule())
+                        .overlay {
+                            Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5)
+                        }
+                        .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(6)
+                .allowsHitTesting(false)
+            }
+
             // 色标：左侧细条，不遮挡画面；与评分 / 旗标共同构成整理状态。
             if photo.labelColor != .none {
                 HStack(spacing: 0) {
@@ -417,10 +453,36 @@ struct PhotoCell: View {
                 }
             },
             double: {
-                openPhotoBySettings()
+                if stackCount > 1, store.isStackExpanded(photo.id) {
+                    // 已展开的堆叠：双击收起。
+                    withAnimation(settings.motion.layout) {
+                        store.toggleStackExpansion(photo.id)
+                    }
+                } else if stackCount > 1, !stackIsBurst {
+                    // 同场景 / 实况堆叠：双击在原地铺开整组。
+                    withAnimation(settings.motion.layout) {
+                        store.toggleStackExpansion(photo.id)
+                    }
+                } else {
+                    // 连拍组的代表图直接进查看器：查看器本身就按整组浏览。
+                    openPhotoBySettings()
+                }
             }
         )
         .onDrop(of: [.text], isTargeted: nil) { providers, location in
+            // 系统相簿：拖拽改顺序，经 PhotoKit 写回「照片」。
+            if let systemAlbumID = store.currentSystemAlbumID {
+                PhotoDrag.loadIDs(from: providers) { ids in
+                    guard !ids.isEmpty, !ids.contains(photo.id) else { return }
+                    Task { @MainActor in
+                        store.moveSystemPhotos(Set(ids),
+                                               inSystemAlbum: systemAlbumID,
+                                               before: photo.id,
+                                               after: location.x > width / 2)
+                    }
+                }
+                return true
+            }
             guard let albumID = store.currentAlbumID else { return false }
             PhotoDrag.loadIDs(from: providers) { ids in
                 guard let draggedID = ids.first, draggedID != photo.id else { return }
@@ -472,6 +534,30 @@ struct PhotoContextMenu: View {
     }
 
     var body: some View {
+        Group {
+            stackItems
+            menuItems
+        }
+    }
+
+    /// 堆叠组：展开 / 收起整组（堆叠关闭时 `stackCount` 恒为 1，这里自动隐藏）。
+    @ViewBuilder
+    private var stackItems: some View {
+        let count = store.stackCount(for: photo.id)
+        if count > 1 {
+            Button(store.isStackExpanded(photo.id)
+                   ? "收起堆叠（\(count) 张）"
+                   : "展开堆叠（\(count) 张）") {
+                withAnimation(.snappy(duration: 0.22)) {
+                    store.toggleStackExpansion(photo.id)
+                }
+            }
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
         // 菜单文案按整选区状态显示，多选时不会出现「收藏」却实际批量取消的错觉。
         let flags = store.selectionCommonFlags(actionIDs)
         if photo.isSystem {
@@ -518,6 +604,26 @@ struct PhotoContextMenu: View {
                     Button("移到最后") {
                         store.moveSystemPhotos(actionIDs, inSystemAlbum: albumID, toTop: false)
                     }
+                    if !store.systemAlbums.isEmpty || !store.systemFolders.isEmpty {
+                        Menu("移动到相簿") {
+                            SystemAlbumMenuItems(parent: nil, ids: actionIDs, movingFrom: albumID)
+                        }
+                    }
+                }
+                Divider()
+                if !photo.isVideo {
+                    Button("编辑…") {
+                        store.openEditor(photo.id)
+                    }
+                }
+                Button("修改拍摄信息…") {
+                    store.presentSystemMetadataEditor(actionIDs)
+                }
+                Button("新建相簿并加入所选…") {
+                    store.presentNewSystemAlbumWithPhotos(actionIDs)
+                }
+                Button("移到「照片」的最近删除", role: .destructive) {
+                    store.confirmDelete(actionIDs)
                 }
             }
             if actionIDs.count > 1 {
@@ -943,6 +1049,8 @@ private struct SystemAlbumMenuItems: View {
 
     let parent: Int64?
     let ids: Set<UUID>
+    /// 非空时表示「移动到相簿」：从该相簿移出再加到所选相簿。
+    var movingFrom: Int64? = nil
 
     var body: some View {
         let entries = store.systemChildren(of: parent).filter { entry in
@@ -956,13 +1064,20 @@ private struct SystemAlbumMenuItems: View {
                 switch entry {
                 case .folder(let folder):
                     Menu {
-                        SystemAlbumMenuItems(parent: folder.id, ids: ids)
+                        SystemAlbumMenuItems(parent: folder.id, ids: ids, movingFrom: movingFrom)
                     } label: {
                         Label(folder.name, systemImage: "folder")
                     }
                 case .album(let album):
-                    Button(album.name) {
-                        store.addSystemPhotos(ids, toSystemAlbum: album.id)
+                    if let source = movingFrom {
+                        Button(album.name) {
+                            store.moveSystemPhotos(ids, fromSystemAlbum: source, toSystemAlbum: album.id)
+                        }
+                        .disabled(album.id == source)
+                    } else {
+                        Button(album.name) {
+                            store.addSystemPhotos(ids, toSystemAlbum: album.id)
+                        }
                     }
                 }
             }

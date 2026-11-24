@@ -41,6 +41,17 @@ struct CloudMountSidebarRow: View {
         isMountSelected || store.sidebarItem == .cloudCinema(mount.id)
     }
 
+    /// 网盘行的健康：先看当前模型的实时错误（授权失效 / 连不上），没有再用会话快照。
+    private var liveHealth: SourceHealth? {
+        if cloud.needsCloudReauth {
+            return SourceHealth(state: .authRequired, checkedAt: Date(), message: cloud.error)
+        }
+        if let error = cloud.error {
+            return SourceHealth(state: .offline, checkedAt: Date(), message: error)
+        }
+        return store.sourceHub.health(for: .cloud(mount.id))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             row
@@ -60,14 +71,17 @@ struct CloudMountSidebarRow: View {
                 isCurrent: showsMountHighlight,
                 isEnabled: true,
                 isLoading: cloud.loading && isCurrent,
-                progress: scrapeProgress
+                progress: scrapeProgress,
+                health: liveHealth
             ),
             isExpanded: isCurrent && isExpanded,
             showsToggle: true,
             onOpen: {
                 openCinema()
             },
-            onToggle: toggle
+            onToggle: toggle,
+            onRetry: { store.refreshCloudDirectory() },
+            onReauthorize: { store.presentCloudWizard(flow: mount.kind.wizardFlow) }
         ) { _ in
             cover
         } menu: {

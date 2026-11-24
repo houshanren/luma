@@ -23,6 +23,10 @@ extension LibraryStore {
         if catalogPlaybackPhoto(for: id) == nil {
             finishCatalogPlayback()
         }
+        // 打开的不是电视频道时，结束上一次直播会话。
+        if tvPlaybackPhoto(for: id) == nil {
+            finishTVPlayback()
+        }
         viewerContextPhotos = context
         // 只让查看器的插入 / 移除参与动画：整窗级的 animation 会把网格、
         // 工具栏和选中态的更新一起塞进弹簧动画，开合时容易出现残影或掉帧。
@@ -47,6 +51,7 @@ extension LibraryStore {
     func closeViewer() {
         finishCinemaPlayback()
         finishCatalogPlayback()
+        finishTVPlayback()
         let lastID = viewerID
         withAnimation(AppSettings.shared.motion.overlay) {
             viewerID = nil
@@ -563,7 +568,16 @@ extension LibraryStore {
     }
 
     func openEditor(_ id: UUID) {
-        guard let photo = photo(id: id), !photo.isVideo, !photo.isSystem, !photo.isCloud else { return }
+        guard let photo = anyPhoto(id: id), !photo.isVideo, !photo.isCloud else { return }
+        if photo.isSystem {
+            // 系统照片走 PhotoKit 非破坏性编辑：只有「照片」当前图库可写时开放。
+            guard canWriteSystemLibrary else {
+                showToast("当前图库只读，无法编辑；请先在「照片」中打开这个图库")
+                return
+            }
+            editorID = id
+            return
+        }
         editorID = id
     }
 

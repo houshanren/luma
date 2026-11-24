@@ -55,6 +55,10 @@ final class CloudBrowserModel: ObservableObject {
     @Published var scanFolderCount = 0
     @Published var scanMediaCount = 0
     @Published var scanTruncated = false
+    /// 本轮扫描开始时间：状态条据此显示已用时间与预估剩余。
+    @Published var scanStartedAt: Date?
+    /// 扫描开始前已有的媒体数：本次摘要用它算「已存在 / 新增」。
+    @Published var scanBaselineMediaCount = 0
     /// 全盘扫描得到的媒体清单与目录清单（与当前列表分开，切换相簿时直接复用）。
     var scanPhotos: [PhotoItem] = []
     /// 目录清单不参与逐条发布：扫描时目录可能上千个，逐批 publish 会让整棵侧边栏反复重建。

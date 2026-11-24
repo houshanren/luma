@@ -118,7 +118,8 @@ struct DoubanClient: CinemaMetadataSource {
         components.queryItems = query
         guard let url = components.url else { throw DoubanError.invalidBase }
 
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: AppSettings.shared.cinemaRequestTimeout)
         request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         request.setValue(base, forHTTPHeaderField: "Referer")
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
@@ -186,7 +187,8 @@ struct DoubanClient: CinemaMetadataSource {
     /// rexxar 接口固定在 m.douban.com，和搜索用的 apiBase 分开。
     private func mobileGet(path: String) async throws -> Data {
         guard let url = URL(string: "https://m.douban.com" + path) else { throw DoubanError.invalidBase }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: AppSettings.shared.cinemaRequestTimeout)
         request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         request.setValue("https://movie.douban.com/", forHTTPHeaderField: "Referer")
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")

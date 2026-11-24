@@ -103,74 +103,49 @@ struct EmptyStateView: View {
         }
     }
 
+    private var emptyActions: [LumaEmptyAction] {
+        if store.photoFilter != .all || store.keywordFilter != nil {
+            return [LumaEmptyAction(title: "清除筛选",
+                                    symbol: "line.3.horizontal.decrease.circle") {
+                store.clearFilter()
+            }]
+        }
+        if store.sidebarItem == .trash, store.trashCount > 0 {
+            return [LumaEmptyAction(title: "清空最近删除", symbol: "trash") {
+                store.confirmEmptyTrash()
+            }]
+        }
+        if store.sidebarItem == .library {
+            return [LumaEmptyAction(title: "导入照片",
+                                    symbol: "square.and.arrow.down",
+                                    filled: true) {
+                store.presentImportPanel()
+            }]
+        }
+        if store.isCloudScope {
+            return [LumaEmptyAction(title: "刷新", symbol: "arrow.clockwise") {
+                store.refreshCloudDirectory()
+            }]
+        }
+        return []
+    }
+
     var body: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(LinearGradient(colors: [Color.accentColor.opacity(0.20),
-                                                  Color.accentColor.opacity(0.05)],
-                                         startPoint: .topLeading,
-                                         endPoint: .bottomTrailing))
-                    .frame(width: 96, height: 96)
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(.white.opacity(0.14), lineWidth: 0.8)
-                    .frame(width: 96, height: 96)
-                Image(systemName: content.icon)
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(Color.accentColor.opacity(0.9))
+        LumaEmptyState(symbol: content.icon,
+                       title: content.title,
+                       message: content.message,
+                       actions: emptyActions)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 空状态不再铺一层实心底色：让环境光与一团强调色光晕透出来，和网站主视觉一致。
+            .background {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.16))
+                    .frame(width: 340, height: 340)
+                    .blur(radius: 100)
+                    .offset(y: -70)
+                    .allowsHitTesting(false)
             }
-            .shadow(color: Color.accentColor.opacity(0.32), radius: 24, y: 10)
-
-            Text(content.title)
-                .font(.system(size: 19, weight: .semibold))
-                .tracking(-0.015)
-            if !content.message.isEmpty {
-                Text(content.message)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if store.photoFilter != .all || store.keywordFilter != nil {
-                Button("清除筛选") {
-                    store.clearFilter()
-                }
-                .controlSize(.large)
-                .padding(.top, 6)
-            } else if store.sidebarItem == .trash, store.trashCount > 0 {
-                Button("清空最近删除") {
-                    store.confirmEmptyTrash()
-                }
-                .controlSize(.large)
-                .padding(.top, 6)
-            } else if store.sidebarItem == .library {
-                Button("导入照片") {
-                    store.presentImportPanel()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.top, 6)
-            } else if store.isCloudScope {
-                Button("刷新") {
-                    store.refreshCloudDirectory()
-                }
-                .controlSize(.large)
-                .padding(.top, 6)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // 空状态不再铺一层实心底色：让环境光与一团强调色光晕透出来，和网站主视觉一致。
-        .background {
-            Circle()
-                .fill(Color.accentColor.opacity(0.16))
-                .frame(width: 340, height: 340)
-                .blur(radius: 100)
-                .offset(y: -70)
-                .allowsHitTesting(false)
-        }
-        .animation(settings.motion.overlay, value: content.title)
+            .animation(settings.motion.overlay, value: content.title)
     }
 }
 

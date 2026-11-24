@@ -28,6 +28,39 @@ extension LibraryStore {
         loadPhotoKitMediaTypesIfNeeded()
     }
 
+    // MARK: - 返回搜索
+
+    /// 记下搜索现场：详情页顶栏据此显示「返回搜索」，一步回到刚才的关键词与筛选。
+    func beginSearchReturn(_ snapshot: SearchReturnSnapshot) {
+        searchReturn = snapshot
+    }
+
+    /// 跨库命中要等目标图库就绪才真正落地：就绪后再补上落点页面。
+    func markSearchReturnLanded(_ item: SidebarItem) {
+        guard var snapshot = searchReturn else { return }
+        snapshot.landingItem = item
+        searchReturn = snapshot
+    }
+
+    /// 「返回搜索」是否可用：只在由搜索跳到的那个页面上出现。
+    var searchReturnAvailable: Bool {
+        guard let snapshot = searchReturn, let landing = snapshot.landingItem else { return false }
+        return landing == sidebarItem
+    }
+
+    /// 顶栏「返回搜索」：回到搜索前的页面，恢复关键词与来源 / 类型筛选。
+    func returnToSearch() {
+        guard let snapshot = searchReturn, searchReturnAvailable else { return }
+        searchReturn = nil
+        pendingSearchRestore = snapshot
+        searchScope = snapshot.scope
+        if sidebarItem != snapshot.originItem {
+            // 这里会清掉搜索词与临时浏览态；恢复内容在下面重新写回。
+            navigate(to: snapshot.originItem)
+        }
+        searchText = snapshot.query
+    }
+
     /// 切换浏览范围时清理的临时状态：选择、查看器、搜索、筛选与二级详情。
     /// 拾光 / 系统图库走 `navigate(to:)`，网盘走 `setCloudScope` / `selectCloudFolder`，三处行为一致。
     func clearTransientBrowsingState() {
@@ -42,6 +75,8 @@ extension LibraryStore {
         selectedPerson = nil
         similarScope = nil
         selectedFavoriteBucket = nil
+        // 离开网络影院时详情随之关闭，顶栏返回不会残留到别的页面。
+        networkCinemaDetail = nil
     }
 
     /// 打开相簿 / 文件夹后预热前若干张快速缩略图（解码一次并写入本地快速层缓存），

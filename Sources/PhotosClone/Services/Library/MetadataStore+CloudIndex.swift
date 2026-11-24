@@ -432,6 +432,80 @@ extension MetadataStore {
         }
     }
 
+    /// 统一搜索用：跨所有网盘索引按文件名模糊匹配，只返回少量最近条目。
+    /// 走 LIKE，数据量是索引条数级别（最多几万），够快且不额外建表。
+    func searchCloudIndexAssets(keyword: String, limit: Int = 80)
+        -> [(mountID: UUID, record: CloudScanRecord)] {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return [] }
+        let pattern = "%" + Self.escapedLikeFragment(trimmed) + "%"
+        return queue.sync {
+            guard let rows = try? db.query("""
+                SELECT mount_id, path, folder_path, name, size, modified_at, width, height,
+                       duration, is_video, thumbnail_url, remote_id, codec, captured_at
+                FROM cloud_index_assets
+                WHERE name LIKE ? ESCAPE '\\'
+                ORDER BY captured_at DESC, path ASC
+                LIMIT ?;
+                """, [pattern, limit]) else { return [] }
+            return rows.compactMap { row in
+                guard let mountID = row["mount_id"]?.string.flatMap(UUID.init(uuidString:)),
+                      let path = row["path"]?.string else { return nil }
+                let modified = row["modified_at"]?.double.map { Date(timeIntervalSince1970: $0) }
+                let captured = row["captured_at"]?.double.map { Date(timeIntervalSince1970: $0) }
+                let record = CloudScanRecord(path: path,
+                                             name: row["name"]?.string
+                                                 ?? (path as NSString).lastPathComponent,
+                                             size: row["size"]?.int64 ?? 0,
+                                             modifiedAt: modified,
+                                             width: row["width"]?.int,
+                                             height: row["height"]?.int,
+                                             duration: row["duration"]?.double,
+                                             remoteID: row["remote_id"]?.string,
+                                             thumbnailURL: row["thumbnail_url"]?.string,
+                                             isVideo: (row["is_video"]?.int ?? 0) != 0,
+                                             folderPath: row["folder_path"]?.string,
+                                             codec: row["codec"]?.string,
+                                             capturedAt: captured,
+                                             addedAt: modified)
+                return (mountID, record)
+            }
+        }
+    }
+
+    /// 统一搜索用：跨所有网盘索引按目录名模糊匹配。
+    func searchCloudIndexFolders(keyword: String, limit: Int = 40)
+        -> [(mountID: UUID, path: String, name: String, mediaCount: Int)] {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return [] }
+        let pattern = "%" + Self.escapedLikeFragment(trimmed) + "%"
+        return queue.sync {
+            guard let rows = try? db.query("""
+                SELECT mount_id, path, name, media_count
+                FROM cloud_index_folders
+                WHERE name LIKE ? ESCAPE '\\'
+                ORDER BY media_count DESC, path ASC
+                LIMIT ?;
+                """, [pattern, limit]) else { return [] }
+            return rows.compactMap { row in
+                guard let mountID = row["mount_id"]?.string.flatMap(UUID.init(uuidString:)),
+                      let path = row["path"]?.string else { return nil }
+                return (mountID,
+                        path,
+                        row["name"]?.string ?? (path as NSString).lastPathComponent,
+                        row["media_count"]?.int ?? 0)
+            }
+        }
+    }
+
+    /// LIKE 片段转义：把用户输入里的通配符当成普通字符。
+    private static func escapedLikeFragment(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
+
     private static func escapedLikePrefix(_ prefix: String) -> String {
         let escaped = prefix
             .replacingOccurrences(of: "\\", with: "\\\\")

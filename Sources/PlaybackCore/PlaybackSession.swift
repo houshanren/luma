@@ -46,6 +46,8 @@ public struct PlaybackStreamContext {
     /// 播放器最终要落到的完整时间轴秒数。
     public var resumeAt: Double?
     public var preferredMode: StreamMode
+    /// 直播：没有续播、不落缓存，非 HLS 源直接交给 ffmpeg 转封装。
+    public var isLive: Bool
     /// 换片令牌：起流完成后用来判断这次请求是否已经过期。
     public var generation: Int
     public var isCurrent: () -> Bool
@@ -78,6 +80,7 @@ public struct PlaybackStreamContext {
                 offset: Double,
                 resumeAt: Double?,
                 preferredMode: StreamMode,
+                isLive: Bool = false,
                 generation: Int,
                 isCurrent: @escaping () -> Bool) {
         self.photoID = photoID
@@ -108,6 +111,7 @@ public struct PlaybackStreamContext {
         self.offset = offset
         self.resumeAt = resumeAt
         self.preferredMode = preferredMode
+        self.isLive = isLive
         self.generation = generation
         self.isCurrent = isCurrent
     }
@@ -475,6 +479,7 @@ public final class PlaybackSession: ObservableObject {
                 burnSubtitle: context.burnSubtitle,
                 burnSubtitleStream: context.burnSubtitleStream,
                 cacheSignature: context.cacheSignature,
+                isLive: context.isLive,
                 refreshSource: context.refreshSource)
             do {
                 // 起流要做目录清理、拉起 ffmpeg、等服务写首段：全部是阻塞操作，
@@ -496,7 +501,12 @@ public final class PlaybackSession: ObservableObject {
                 let base = session.playbackStartOffset
                 // 首次起播才向钩子要续播位置；后续重建流只认调用方给的目标。
                 if appliedStartAt == nil {
-                    if !resumeAttempted {
+                    if context.isLive {
+                        // 直播没有续播：不查进度、不前跳。
+                        pendingResume = nil
+                        resumeAttempts = 0
+                        appliedStartAt = nil
+                    } else if !resumeAttempted {
                         appliedStartAt = context.resumeAt ?? hooks?.resumePosition(for: context.photoID)
                         resumeAttempted = true
                         resumeApplied = resumeIsProgress && (appliedStartAt ?? 0) > 3

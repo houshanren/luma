@@ -11,6 +11,8 @@ public struct PlaybackFailure: Equatable, Sendable {
     public let code: Int?
     public let message: String
     public let isIncompatibleAsset: Bool
+    /// 底层 CoreMedia 错误里带出的 HTTP 状态码（例如直播源返回 403），非 HTTP 失败为 nil。
+    public let httpStatus: Int?
 
     /// 从 `AVPlayerItem.error` 提取，沿 underlying error 链匹配已知的不兼容错误码。
     public init(error: NSError?, fallback: String) {
@@ -32,6 +34,7 @@ public struct PlaybackFailure: Equatable, Sendable {
         self.domain = error?.domain
         self.code = error?.code
         self.isIncompatibleAsset = incompatibleAsset || unloadableMedia
+        self.httpStatus = chain.lazy.compactMap(Self.httpStatus(in:)).first
         if incompatibleAsset {
             self.message = "系统播放器无法解码该视频的编码或 HDR 格式（\(error?.domain ?? "CoreMedia") \(error?.code ?? -12927)）。"
         } else if unloadableMedia {
@@ -41,6 +44,14 @@ public struct PlaybackFailure: Equatable, Sendable {
             let raw = error?.localizedDescription ?? fallback
             self.message = raw.isEmpty ? fallback : raw
         }
+    }
+
+    /// 从 CoreMedia 的错误描述里取 HTTP 状态码，例如
+    /// `CoreMediaErrorDomain error -12660 - HTTP 403: Forbidden`。
+    private static func httpStatus(in error: NSError) -> Int? {
+        let text = error.localizedDescription
+        guard let range = text.range(of: #"HTTP \d{3}"#, options: .regularExpression) else { return nil }
+        return Int(text[range].drop { !$0.isNumber })
     }
 }
 
@@ -767,6 +778,17 @@ public final class VideoPlayerModel: ObservableObject {
     /// 进度条实际画出的缓冲末尾：播放器缓冲 + 已生成分片，取较大值。
     public var bufferedEndTime: Double {
         max(bufferedTime, generatedEndTime)
+    }
+
+    /// 还能退回多远：播放器报出的可 seek 区间起点（会话内时间）。
+    /// 直播时移的「时间河」用它当河床起点，避免河随画面一起漂移。
+    public var seekableStartTime: Double {
+        guard let item = player.currentItem else { return 0 }
+        let starts = item.seekableTimeRanges.compactMap { value -> Double? in
+            let start = CMTimeGetSeconds(value.timeRangeValue.start)
+            return start.isFinite ? start : nil
+        }
+        return max(0, starts.min() ?? 0)
     }
 
     /// 卡住时的一条完整状态快照：区分「播放器在等什么」和「本地服务没数据」。

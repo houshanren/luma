@@ -128,7 +128,21 @@ extension LibraryStore {
 
     /// 移到最近删除前先展示确认卡片；已经在最近删除里则直接转为永久删除确认。
     func confirmDelete(_ ids: Set<UUID>) {
-        guard !isReadOnlyScope, !ids.isEmpty else { return }
+        guard !ids.isEmpty else { return }
+        // 官方「照片」图库作为当前图库：经 PhotoKit 移到「照片」的最近删除。
+        if isSystemScope, canEditNativeOverlay {
+            guard canWriteSystemLibrary else {
+                showToast("当前图库只读，不能删除；请先在「照片」中打开这个图库")
+                return
+            }
+            if sidebarItem == .systemTrash {
+                showToast("已在「照片」的最近删除里；恢复或清空请在「照片」中操作")
+                return
+            }
+            pendingDeletion = DeleteRequest(ids: ids, kind: .trash)
+            return
+        }
+        guard !isReadOnlyScope else { return }
         if sidebarItem == .trash {
             confirmPermanentDelete(ids)
             return
@@ -142,7 +156,11 @@ extension LibraryStore {
         pendingDeletion = nil
         switch request.kind {
         case .trash:
-            delete(request.ids)
+            if isSystemScope, canEditNativeOverlay {
+                deleteSystemToPhotosTrash(request.ids)
+            } else {
+                delete(request.ids)
+            }
         case .permanent:
             deletePermanently(request.ids)
         case .emptyTrash:
@@ -166,11 +184,12 @@ extension LibraryStore {
 
     /// 断开系统图库前先确认：只移除侧边栏连接，不删除该图库的照片与元数据。
     func confirmRemoveSystemLibrary(path: String, name: String? = nil) {
-        guard systemLibraries.contains(where: { $0.path == path }) || systemLibraryPath == path else {
+        guard systemLibraries.contains(where: { isSameSystemLibraryPath($0.path, path) })
+                || systemLibraryPath.map({ isSameSystemLibraryPath($0, path) }) == true else {
             return
         }
         let title = name
-            ?? systemLibraries.first(where: { $0.path == path })?.name
+            ?? systemLibraries.first(where: { isSameSystemLibraryPath($0.path, path) })?.name
             ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         pendingDisconnect = DisconnectRequest(target: .systemLibrary(path: path, name: title))
     }

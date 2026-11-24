@@ -169,6 +169,27 @@ struct LumaRowHighlight: View {
     }
 }
 
+/// 行内自管 hover：悬停状态只影响这一行，侧边栏不再维护全局 hovered 状态导致整棵树重算。
+/// 系统图库相簿动辄上千条，必须让悬停开销限制在单行内。
+struct HoverRowHighlight<Content: View>: View {
+    let active: Bool
+    @ViewBuilder var content: Content
+    @State private var hovered = false
+
+    var body: some View {
+        content
+            .background { LumaRowHighlight(active: active, hovered: hovered) }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    if !hovered { hovered = true }
+                case .ended:
+                    hovered = false
+                }
+            }
+    }
+}
+
 private struct LumaGlassModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     let shape: AnyShape

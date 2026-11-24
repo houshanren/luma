@@ -103,7 +103,15 @@ struct CloudContentRepository: ContentRepository {
             subtitle: entry.modifiedAt.map(Self.dateText),
             artworkURL: entry.thumbnailURL,
             badges: entry.isVideo ? ["视频"] : [],
-            isPlayable: entry.isMedia && !entry.isRestricted
+            isPlayable: entry.isMedia && !entry.isRestricted,
+            asset: ContentAssetFacts(updatedAt: entry.modifiedAt,
+                                     byteCount: entry.size > 0 ? entry.size : nil,
+                                     duration: entry.duration,
+                                     pixelWidth: entry.pixelWidth,
+                                     pixelHeight: entry.pixelHeight,
+                                     remoteID: entry.remoteID,
+                                     videoCodec: entry.codecName,
+                                     isRestricted: entry.isRestricted)
         )
     }
 

@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import LumaContentCore
 
 // MARK: - 115 网盘（浏览器 Cookie 直连）
 //
@@ -372,14 +373,7 @@ enum Pan115Drive {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 180
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    static let session = HTTPSessionPool.shared.session(.cloud)
 }
 
 // MARK: - 115 直链编码

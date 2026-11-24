@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import AVFoundation
 import Network
 import NetFS
+import LumaContentCore
 
 // MARK: - WebDAV 错误
 
@@ -364,19 +365,19 @@ struct WebDAVClient {
         allowsSelfSignedCertificate ? Self.trustingSession : Self.session
     }
 
+    /// WebDAV 会话画像：25s 请求、180s 资源、每主机 4 条连接；Cookie 保留给 NAS 登录态。
+    private static let profile = HTTPSessionProfile(timeout: 25,
+                                                     resourceTimeout: 180,
+                                                     maximumConnectionsPerHost: 4,
+                                                     allowsCookies: true)
+
     private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 25
-        configuration.timeoutIntervalForResource = 180
-        configuration.httpMaximumConnectionsPerHost = 4
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
+        URLSession(configuration: profile.configuration())
     }()
 
     /// 放行自签名证书的会话：仅用于用户明确勾选「信任自签名证书」的挂载。
     private static let trustingSession: URLSession = {
-        URLSession(configuration: session.configuration,
+        URLSession(configuration: profile.configuration(),
                    delegate: SelfSignedTrustDelegate(),
                    delegateQueue: nil)
     }()

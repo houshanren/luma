@@ -54,13 +54,14 @@ struct MissavCatalogProvider: CatalogProvider {
 
     /// 已知镜像：按顺序尝试，哪个能出内容就用哪个。
     /// MissAV 的主域名经常被 Cloudflare 或地区网络拦掉，单域名写死很容易整源不可用。
+    /// 顺序按实测结果排：`missav.live` / `missav123.com` 能直接出列表（前者最快），
+    /// `missav.ws` / `missav.ai` 目前返回 403 验证页，留作备用镜像。
+    /// `missav.com` 只返回一个没有卡片的空页、`missav.vip` 直接 404，都已移除。
     private static let mirrorRoots = [
         "https://missav.live",
         "https://missav123.com",
         "https://missav.ws",
-        "https://missav.ai",
-        "https://missav.com",
-        "https://missav.vip"
+        "https://missav.ai"
     ]
 
     private static let mirrorLock = NSLock()
@@ -127,31 +128,33 @@ struct MissavCatalogProvider: CatalogProvider {
             return (html, cached)
         }
 
-        do {
-            let result = try await withThrowingTaskGroup(of: (html: String, root: String).self) { group in
-                for root in candidateRoots(source) {
-                    group.addTask {
-                        let html = try await fetchOne(path: path, root: root, source: source)
-                        guard !isChallenge(html) else {
-                            throw CatalogError.parse("镜像要求人机验证")
-                        }
-                        return (html, root)
-                    }
-                }
-                while true {
-                    guard let next = try? await group.next() else {
-                        throw CatalogError.parse("站点暂时不可用")
-                    }
-                    group.cancelAll()
-                    return next
+        // 镜像竞速只能被「真正拿到内容的镜像」结束：任何一个镜像 403 / 超时 /
+        // 返回验证页都不能打断其它镜像。旧写法用 throwing group，第一个报错的
+        // 镜像（missav.ws / .ai 常直接 403）会把整个竞速拖垮，明明 missav.live
+        // 可用也报「站点暂时不可用 / 需要验证」。这里让每个子任务自己吞掉错误，
+        // 只有全部镜像都失败才向上抛。
+        let result: (html: String, root: String)? = await withTaskGroup(of: Optional<(html: String, root: String)>.self) { group in
+            for root in candidateRoots(source) {
+                group.addTask {
+                    guard let html = try? await fetchOne(path: path, root: root, source: source),
+                          !isChallenge(html) else { return nil }
+                    return (html, root)
                 }
             }
-            remember(result.root, for: source)
-            return result
-        } catch {
-            markAllFailed(source)
-            throw error
+            for await candidate in group {
+                if let candidate {
+                    group.cancelAll()
+                    return candidate
+                }
+            }
+            return nil
         }
+        guard let result else {
+            markAllFailed(source)
+            throw CatalogError.parse("站点暂时不可用")
+        }
+        remember(result.root, for: source)
+        return result
     }
 
     /// 单个镜像的请求：7 秒内没回来就让位给其他镜像。

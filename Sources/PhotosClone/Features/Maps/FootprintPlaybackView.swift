@@ -27,6 +27,8 @@ struct FootprintPlaybackView: View {
     @State private var head: FootprintPoint?
     @State private var legFraction: Double = 0
     @State private var isDwelling = false
+    /// 当前站点停留进度：照片多的站点按这个进度翻页展示，不再只露第一张。
+    @State private var dwellFraction: Double = 0
     @State private var playing = false
     @State private var speed: FootprintSpeed = .cruise
     @State private var follow = true
@@ -123,7 +125,12 @@ struct FootprintPlaybackView: View {
     private func beginPlayback(_ plan: FootprintPlan) {
         guard let timeline = cruiseTimeline, !plan.isEmpty else { return }
         guard !plan.legs.isEmpty else {
-            finish(plan)
+            // 只有一站（所有照片都在同一地点）：没有可巡航的行程。
+            // 直接把这一站的照片摊开展示，而不是立刻结束、只留一张终点图钉。
+            finished = false
+            playing = false
+            isDwelling = true
+            dwellFraction = 0
             return
         }
         finished = false
@@ -147,6 +154,7 @@ struct FootprintPlaybackView: View {
         legFraction = frame.legFraction
         head = frame.head
         isDwelling = frame.isDwelling
+        dwellFraction = frame.dwellFraction
         guard updateCamera, follow else { return }
 
         let target = MapCameraPosition.camera(Self.cruiseCamera(frame))
@@ -431,11 +439,19 @@ struct FootprintPlaybackView: View {
         return sortedPhotos[index]
     }
 
-    private func photos(in stop: FootprintStop) -> [PhotoItem] {
+    /// 当前站点展示的照片：每页 3 张，按停留进度翻页。
+    /// 照片多的站点（几十张）在停留期间会依次翻过若干页，而不是永远只看到同一张。
+    private func photos(in stop: FootprintStop, pageProgress: Double = 0) -> [PhotoItem] {
         guard !sortedPhotos.isEmpty else { return [] }
         let lower = min(max(0, stop.sampleRange.lowerBound), sortedPhotos.count - 1)
         let upper = min(max(lower, stop.sampleRange.upperBound), sortedPhotos.count - 1)
-        return Array(sortedPhotos[lower...upper].suffix(3))
+        // 一页 3 张、最多 4 页：足够交代这一站拍了什么，也不会把停留拖得太长。
+        let series = Array(sortedPhotos[lower...upper].prefix(12))
+        let pageSize = 3
+        let pages = max(1, (series.count + pageSize - 1) / pageSize)
+        let page = min(pages - 1, max(0, Int(pageProgress * Double(pages))))
+        let start = page * pageSize
+        return Array(series[start..<min(series.count, start + pageSize)])
     }
 
     // MARK: - 画面质感
@@ -753,7 +769,9 @@ struct FootprintPlaybackView: View {
     }
 
     private func photoStack(_ plan: FootprintPlan) -> some View {
-        let items = plan.stops.indices.contains(stopIndex) ? photos(in: plan.stops[stopIndex]) : []
+        let items = plan.stops.indices.contains(stopIndex)
+            ? photos(in: plan.stops[stopIndex], pageProgress: isDwelling ? dwellFraction : 0)
+            : []
         return ZStack {
             ForEach(Array(items.enumerated().reversed()), id: \.element.id) { offset, photo in
                 Button {
@@ -776,6 +794,7 @@ struct FootprintPlaybackView: View {
         .frame(width: 96, height: 68, alignment: .trailing)
         .opacity(items.isEmpty ? 0 : 1)
         .animation(settings.motion.overlay, value: stopIndex)
+        .animation(settings.motion.overlay, value: items.first?.id)
     }
 
     // MARK: - 结束 / 空 / 加载

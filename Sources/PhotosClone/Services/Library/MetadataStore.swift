@@ -50,7 +50,7 @@ final class MetadataStore {
             guard let rows = try? db.query("""
                 SELECT * FROM assets ORDER BY captured_at DESC LIMIT ? OFFSET ?
                 """, [limit, offset]) else { return [] }
-            return rows.compactMap { photo(from: $0) }
+            return rows.compactMap { Self.photo(from: $0) }
         }
     }
 
@@ -98,6 +98,23 @@ final class MetadataStore {
     func clearCinemaEntries(scope: String) {
         queue.async { [weak self] in
             try? self?.db.execute("DELETE FROM cinema_entries WHERE scope = ?", [scope])
+        }
+    }
+
+    /// 刮削结果的体积（payload 字节数之和）：资源页展示与清理用。
+    func cinemaEntriesBytes() -> Int64 {
+        queue.sync {
+            guard let rows = try? db.query(
+                "SELECT COALESCE(SUM(LENGTH(payload)), 0) AS total FROM cinema_entries"),
+                  let value = rows.first?["total"]?.int else { return 0 }
+            return Int64(value)
+        }
+    }
+
+    /// 一次清空所有影院的刮削结果：条目、详情补全与推荐全部释放，下次进入影院重新刮削。
+    func clearAllCinemaEntries() {
+        queue.async { [weak self] in
+            try? self?.db.execute("DELETE FROM cinema_entries")
         }
     }
 
@@ -759,7 +776,7 @@ final class MetadataStore {
         var photos: [PhotoItem] = []
         photos.reserveCapacity(photoRows.count)
         for row in photoRows {
-            if let photo = photo(from: row) {
+            if let photo = Self.photo(from: row) {
                 photos.append(photo)
             }
         }
@@ -807,7 +824,9 @@ final class MetadataStore {
         return data
     }
 
-    func photo(from row: [String: SQLiteValue]) -> PhotoItem? {
+    /// 资产行 → PhotoItem。跨库搜索会只读打开其它图库的数据库，
+    /// 因此行解析不依赖当前 `MetadataStore` 实例，允许直接复用。
+    static func photo(from row: [String: SQLiteValue]) -> PhotoItem? {
         guard let idString = row["id"]?.string, let id = UUID(uuidString: idString),
               let filename = row["filename"]?.string,
               let originalName = row["original_name"]?.string,

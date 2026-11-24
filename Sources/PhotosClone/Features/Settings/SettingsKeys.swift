@@ -4,6 +4,14 @@ import AppKit
 enum SettingsKeys {
     /// 设置窗口当前停留的分页：其它入口可以先写入目标页再打开设置。
     static let selectedTab = "settings.selectedTab"
+    /// 是否在侧边栏显示「网络电视」：关闭后整个入口隐藏，频道也不参与搜索。
+    /// 这一项同时也是「网络电视」模块的总开关（`AppModule.television`）。
+    static let showTelevision = "settings.modules.television"
+    /// 其余模块开关：图库（始终开启，仅占位）/ 网络存储 / 网络资源 / 网络影院。
+    static let moduleLibraries = "settings.modules.library"
+    static let moduleCloud = "settings.modules.cloud"
+    static let moduleCatalog = "settings.modules.catalog"
+    static let moduleCinema = "settings.modules.cinema"
     static let appearance = "settings.appearance"
     static let accent = "settings.accent"
     static let photoOpenMode = "settings.photoOpenMode"
@@ -13,6 +21,8 @@ enum SettingsKeys {
     /// 查看器是否用当前照片的模糊影像铺满舞台背景。
     static let viewerBackdrop = "settings.viewerBackdrop"
     static let grouping = "settings.grouping"
+    /// 网格堆叠形态（关闭 / 仅连拍 / 连拍与同场景）。
+    static let stackMode = "settings.stackMode"
     static let thumbSize = "settings.thumbSize"
     /// 新打开的侧边栏页面（媒体类型 / 相簿 / 文件夹…）图片列表默认每行张数。
     static let defaultGridColumns = "settings.defaultGridColumns"
@@ -98,6 +108,28 @@ enum SettingsKeys {
     static let cacheLimitDefaultsVersion = "settings.cacheLimitDefaults.v2"
     /// 外挂字幕字号。
     static let subtitleFontSize = "settings.video.subtitleFontSize"
+    /// 默认音轨偏好：original（原声）/ zh / en。
+    static let videoPreferredAudio = "settings.video.preferredAudio"
+    /// 默认字幕策略：auto（自动挂载）/ off（不自动挂）。
+    static let videoPreferredSubtitle = "settings.video.preferredSubtitle"
+    /// 退出时记住倍速。
+    static let videoRememberSpeed = "settings.video.rememberSpeed"
+    /// 上次使用的倍速。
+    static let videoLastSpeed = "settings.video.lastSpeed"
+    /// 优先系统硬解：关闭后强制走转封装 / 软解路径。
+    static let videoPreferHardwareDecoding = "settings.video.preferHardwareDecoding"
+    /// 是否允许画中画。
+    static let videoPiPEnabled = "settings.video.pipEnabled"
+    /// 全局跳过片头秒数：剧集没有单独设置时用它兜底。
+    static let cinemaSkipIntroSeconds = "settings.cinema.skipIntroSeconds"
+    /// 全局跳过片尾秒数。
+    static let cinemaSkipOutroSeconds = "settings.cinema.skipOutroSeconds"
+    /// 刮削请求超时（秒）。
+    static let cinemaRequestTimeout = "settings.cinema.requestTimeout"
+    /// 日志详细程度：important / standard / verbose。
+    static let cinemaLogLevel = "settings.cinema.logLevel"
+    /// 刮削成功后导出 NFO 到同目录（默认关）。
+    static let cinemaExportNFO = "settings.cinema.exportNFO"
     /// 外挂字幕是否显示半透明底色。
     static let subtitleBackground = "settings.video.subtitleBackground"
     /// 外挂字幕颜色：white / yellow / cyan / green。

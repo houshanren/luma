@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 // MARK: - 夸克网盘（浏览器 Cookie 直连）
 //
@@ -375,12 +376,6 @@ enum QuarkDrive {
         return pairs.map { "\($0.0)=\($0.1)" }.joined(separator: "; ")
     }
 
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 180
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    /// 会话统一由 `HTTPSessionPool` 建：超时 / 缓存 / Cookie 策略只在一处维护。
+    static let session = HTTPSessionPool.shared.session(.cloud)
 }

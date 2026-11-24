@@ -6,14 +6,14 @@ struct LibraryEntry: Identifiable {
     let url: URL
     let name: String
     let modifiedAt: Date?
-    let isNative: Bool
     let isCurrent: Bool
+    var isDefault: Bool = false
 
     var title: String {
-        var text = name
-        if isCurrent { text += "（上次打开）" }
-        if isNative { text += "（系统照片图库）" }
-        return text
+        var tags: [String] = []
+        if isCurrent { tags.append("当前") }
+        if isDefault { tags.append("默认") }
+        return tags.isEmpty ? name : "\(name)（\(tags.joined(separator: "·"))）"
     }
 }
 
@@ -101,7 +101,13 @@ struct LibraryPickerView: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Button("新建…") {
-                    store.presentNewLibraryPanel()
+                    // 先收起选择器窗口（恢复主窗口），等窗口真正回到前台再挂建库向导，
+                    // 否则 sheet 可能挂到已被隐藏的主窗口上而看不见。
+                    store.showLibraryPicker = false
+                    store.libraryPickerOnLaunch = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        store.beginNewLibraryFlow()
+                    }
                 }
                 Button("选取图库") {
                     choose()

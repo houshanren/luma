@@ -74,6 +74,12 @@ extension LibraryStore {
 
     func runImport(entries: [(url: URL, folders: [String])], options: ImportOptions) {
         guard !entries.isEmpty else { return }
+        // 官方「照片」图库作为当前图库时，导入必须走 PhotoKit 新增资产：
+        // 不能复制进库包里的 originals，也不能改 Photos.sqlite。
+        if isNativeContainer {
+            runSystemLibraryImport(entries: entries, options: options)
+            return
+        }
         // 磁盘空间预检：先把明显放不下的导入挡在复制之前。
         let totalBytes = entries.reduce(Int64(0)) { sum, entry in
             sum + Int64((try? entry.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)

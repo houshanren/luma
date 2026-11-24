@@ -128,6 +128,21 @@ final class CatalogDatabase {
             """, [key, data, Date().timeIntervalSince1970])
     }
 
+    /// 某个前缀下的键值占用（字节）：影院列表快照 / TMDB 补全这类可再生缓存展示用。
+    func keyValueBytes(prefix: String) -> Int64 {
+        guard let db = database() else { return 0 }
+        let rows = try? db.query("""
+            SELECT COALESCE(SUM(LENGTH(value)), 0) AS total FROM catalog_kv WHERE key LIKE ?
+            """, [prefix + "%"])
+        return Int64(rows?.first?["total"]?.int ?? 0)
+    }
+
+    /// 删掉某个前缀下的键值：清理影院列表快照与 TMDB 补全，下次进入重新聚合。
+    func clearKeyValues(prefix: String) {
+        guard let db = database() else { return }
+        try? db.execute("DELETE FROM catalog_kv WHERE key LIKE ?", [prefix + "%"])
+    }
+
     // MARK: - 播放进度
 
     func loadProgress() -> [String: CatalogProgress] {
@@ -273,10 +288,25 @@ final class CatalogDatabase {
     func saveSnapshot(_ snapshot: CatalogPageSnapshot, forKey key: String) {
         guard let db = database(),
               let payload = try? JSONEncoder().encode(snapshot) else { return }
+        saveSnapshotData(payload, savedAt: snapshot.savedAt, forKey: key)
+    }
+
+    /// 通用快照写入：网络影院的列表快照也落在这张表里，与资源页共用同一套淘汰与清理。
+    func saveSnapshotData(_ payload: Data, savedAt: Date, forKey key: String) {
+        guard let db = database() else { return }
         try? db.execute("""
             INSERT INTO catalog_snapshots(page_key, payload, saved_at) VALUES(?, ?, ?)
             ON CONFLICT(page_key) DO UPDATE SET payload = excluded.payload, saved_at = excluded.saved_at
-            """, [key, payload, snapshot.savedAt.timeIntervalSince1970])
+            """, [key, payload, savedAt.timeIntervalSince1970])
+    }
+
+    func snapshotData(forKey key: String) -> Data? {
+        guard let db = database() else { return nil }
+        var result: Data?
+        try? db.forEachRow("SELECT payload FROM catalog_snapshots WHERE page_key = ?", [key]) { row in
+            result = row["payload"]?.data
+        }
+        return result
     }
 
     func deleteSnapshots(prefix: String) {

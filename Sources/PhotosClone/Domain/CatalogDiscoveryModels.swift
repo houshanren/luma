@@ -108,6 +108,7 @@ struct CatalogSmartPlaylist: Codable, Hashable, Identifiable {
 }
 
 /// 网络资源区的顶层分页。
+/// 内置资料库不再作为可见入口：它只作为内部数据，供搜索、片源详情匹配与人物档案使用。
 enum CatalogHubTab: String, CaseIterable, Identifiable, Hashable {
     case browse
     case ranking
@@ -115,15 +116,12 @@ enum CatalogHubTab: String, CaseIterable, Identifiable, Hashable {
     case history
     case playlists
     case following
-    /// 内置资料库放在最后：它是查阅入口，不是日常浏览的主线。
-    case talent
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .browse: return "资源"
-        case .talent: return "资料库"
         case .following: return "关注"
         case .ranking: return "榜单"
         case .history: return "足迹"
@@ -135,7 +133,6 @@ enum CatalogHubTab: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .browse: return "square.grid.2x2.fill"
-        case .talent: return "books.vertical.fill"
         case .following: return "star.circle.fill"
         case .ranking: return "chart.bar.fill"
         case .history: return "clock.arrow.circlepath"

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import UniformTypeIdentifiers
+import LumaCore
 
 struct PhotoViewerView: View {
     @EnvironmentObject private var store: LibraryStore
@@ -64,7 +65,8 @@ struct PhotoViewerView: View {
     private var totalCount: Int { viewerPosition.total }
     private var loadKey: String {
         guard let photo else { return "none" }
-        return "\(photo.id.uuidString)-\(photo.editVersion)-\(settings.viewFullHDR)"
+        // 电视线路切换会自增 token：变化后重新装片，不必退出播放器。
+        return "\(photo.id.uuidString)-\(photo.editVersion)-\(settings.viewFullHDR)-\(store.tvLineTokens[photo.id, default: 0])"
     }
     private var currentIndex: Int? {
         guard photo != nil else { return nil }
@@ -394,31 +396,412 @@ struct PhotoViewerView: View {
 
     /// 顶栏播放舱：上行是拍摄信息与序号，下行是进度与时间。
     /// 宽度固定、高度压到两行最紧凑的一档：翻页时胶囊尺寸不变，画面也不会被工具栏遮住太多。
+    /// 直播没有可拖动的时间轴，顶栏只保留一行换台信息，避免内容顶出胶囊。
+    @ViewBuilder
     private func videoToolbarDeck(_ photo: PhotoItem) -> some View {
-        // 工具栏本身已经有一层玻璃胶囊：这里不再叠自己的背景，只保留内容。
-        VStack(spacing: 0) {
-            videoToolbarInfoLine(photo)
-            HStack(spacing: 6) {
-                VideoToolbarProgress(model: videoModel,
-                                     session: viewer.playbackSession,
-                                     showsRemaining: $videoShowsRemainingTime,
-                                     chapterFractions: toolbarChapterFractions)
-                    .frame(maxWidth: .infinity)
-                // 音量收在进度右端：移入图标向左展开一条可拖动的小轨道，不占常驻宽度。
-                VideoInlineVolume(model: videoModel)
+        if store.tvPlaybackChannel(for: photo.id) != nil {
+            TVToolbarDeck(store: store, photo: photo, player: videoModel, tv: store.tvModel)
+        } else if let entry = cinemaEntry(for: photo) {
+            // 影视播放：顶栏改成「正在放映」舱，不再显示文件拍摄时间。
+            // 宽度跟随工具栏可用空间（上限 600），并把实测宽度交给信息行做分级收放。
+            HStack(alignment: .center, spacing: 8) {
+                CinemaArtwork(urlString: entry.posterURL ?? entry.backdropURL,
+                              contentMode: .fill,
+                              maxPixelSize: 160)
+                    .frame(width: 20, height: 27)
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.6)
+                    }
+                    .fixedSize()
+                    .help("正在播放：\(entry.title)")
+
+                VStack(spacing: 1) {
+                    // 工具栏给的实际宽度只有 GeometryReader 拿得到（偏好值传不出 ToolbarItem），
+                    // 用它驱动信息行的分级收放，宽窄判断才真实可靠。
+                    GeometryReader { proxy in
+                        cinemaToolbarInfoLine(entry, width: proxy.size.width)
+                            .frame(width: proxy.size.width, height: 18, alignment: .leading)
+                    }
+                    .frame(height: 18)
+                    HStack(spacing: 6) {
+                        VideoToolbarProgress(model: videoModel,
+                                             session: viewer.playbackSession,
+                                             showsRemaining: $videoShowsRemainingTime,
+                                             chapterFractions: toolbarChapterFractions)
+                            .frame(maxWidth: .infinity)
+                        VideoInlineVolume(model: videoModel)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 4)
+            .padding(.bottom, 0)
+            .frame(minWidth: 520, maxWidth: 640)
+        } else if let context = catalogContext(for: photo) {
+            // 网络资源（网页源）：海报 + 片名 + 来源站点 + 分集号 + 队列 / 下一集，
+            // 与直播舱、影院舱共用同一套信息语言与分级收放规则。
+            HStack(alignment: .center, spacing: 8) {
+                CatalogArtworkImage(source: context.source,
+                                    urlString: catalogCoverURL(context),
+                                    cornerRadius: 3)
+                    .frame(width: 20, height: 27)
+                    .fixedSize()
+                    .help("正在播放：\(context.item.title)")
+
+                VStack(spacing: 1) {
+                    GeometryReader { proxy in
+                        catalogToolbarInfoLine(context, photo: photo, width: proxy.size.width)
+                            .frame(width: proxy.size.width, height: 18, alignment: .leading)
+                    }
+                    .frame(height: 18)
+                    HStack(spacing: 6) {
+                        VideoToolbarProgress(model: videoModel,
+                                             session: viewer.playbackSession,
+                                             showsRemaining: $videoShowsRemainingTime,
+                                             chapterFractions: toolbarChapterFractions)
+                            .frame(maxWidth: .infinity)
+                        VideoInlineVolume(model: videoModel)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 4)
+            .padding(.bottom, 0)
+            .frame(minWidth: 520, maxWidth: 640)
+        } else {
+            // 工具栏本身已经有一层玻璃胶囊：这里不再叠自己的背景，只保留内容。
+            VStack(spacing: 0) {
+                videoToolbarInfoLine(photo)
+                HStack(spacing: 6) {
+                    VideoToolbarProgress(model: videoModel,
+                                         session: viewer.playbackSession,
+                                         showsRemaining: $videoShowsRemainingTime,
+                                         chapterFractions: toolbarChapterFractions)
+                        .frame(maxWidth: .infinity)
+                    // 音量收在进度右端：移入图标向左展开一条可拖动的小轨道，不占常驻宽度。
+                    VideoInlineVolume(model: videoModel)
+                }
+            }
+            .padding(.horizontal, 12)
+            // 两行内容贴住胶囊上沿时会被切掉：顶部留出一点余量，底部相应收紧，整体高度不变。
+            .padding(.top, 5)
+            .padding(.bottom, 0)
+            // 固定宽度：尽量容下标题 / 时间 / 地点 / 序号，翻页时不再左右跳动。
+            .frame(width: 560)
+        }
+    }
+
+    /// 当前播放项是否来自影院（且与查看器里的条目对得上）。
+    private func cinemaEntry(for photo: PhotoItem) -> CinemaEntry? {
+        guard let entry = store.cinemaPlaybackEntry, entry.file.photoID == photo.id else { return nil }
+        return entry
+    }
+
+    /// 影院信息行：只保留「正在放映」的必要信息，并随舱宽分级收放。
+    /// 宽：片名 + 类型年份 + 季集号 + 评分 + 画质；中：去类型与画质；
+    /// 窄：只留片名 + 季集号；队列位置与「下一集」始终靠右，窄舱下按钮退化成图标。
+    private func cinemaToolbarInfoLine(_ entry: CinemaEntry, width: CGFloat) -> some View {
+        let wide = width >= 560
+        let regular = width >= 470
+        let specs = wide ? cinemaBadgeTags(entry.file, limit: 1) : []
+        let episode = cinemaEpisodeCode(entry)
+        let next = entry.kind == .tv ? store.cinemaQueueNeighbor(of: entry.id, delta: 1) : nil
+        return HStack(spacing: 5) {
+            // 左右各留一段可伸缩空白：片名与标签整体居中，光标不用去最左边找。
+            Spacer(minLength: 6)
+            Text(entry.title)
+                .font(.system(size: 13, weight: .semibold))
+                .tracking(-0.01)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+                .help(cinemaTitleHelp(entry))
+
+            if wide {
+                let kindText = entry.kind == .tv ? "剧集" : "电影"
+                Text(entry.year.map { "\(kindText) · \($0)" } ?? kindText)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(0.52))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
+                    .fixedSize()
+                    .help(entry.year.map { "\(kindText) · \($0) 年" } ?? kindText)
+            }
+
+            if let episode {
+                Text(episode)
+                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule(style: .continuous))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5)
+                    }
+                    .fixedSize()
+                    .help(cinemaEpisodeHelp(entry))
+            }
+
+            if regular, let rating = entry.rating ?? entry.doubanRating, rating > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 7.5))
+                    Text(String(format: "%.1f", rating))
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                }
+                .foregroundStyle(LumaBrand.amber)
+                .fixedSize()
+                .help("评分 \(String(format: "%.1f", rating))")
+            }
+
+            ForEach(specs, id: \.self) { tag in
+                Text(tag)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Color.primary.opacity(0.50))
+                    .padding(.horizontal, 3.5)
+                    .padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: 2.5, style: .continuous))
+                    .fixedSize()
+            }
+
+            Spacer(minLength: 4)
+
+            if let currentIndex, regular {
+                Text("\(currentIndex + 1)/\(totalCount)")
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.primary.opacity(0.48))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help(entry.kind == .tv
+                          ? "队列位置：第 \(currentIndex + 1) / \(totalCount) 集"
+                          : "队列位置：第 \(currentIndex + 1) / \(totalCount) 部")
+            }
+
+            if let next {
+                Button {
+                    _ = store.stepCinemaQueue(1)
+                } label: {
+                    HStack(spacing: 3) {
+                        if wide || regular { Text("下一集") }
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 7.5, weight: .bold))
+                    }
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(0.72))
+                    .padding(.horizontal, wide || regular ? 6 : 4)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    }
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help("下一集：\(cinemaNextEpisodeHelp(next))")
+            }
+
+            // 音轨 / 字幕 / 比例入口按真实宽度占位，不再浮在文字上方。
+            VideoMediaMenuButtons(ui: videoUI, model: videoModel, style: .toolbar)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .font(.system(size: 11, weight: .medium))
+        .lineLimit(1)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func cinemaTitleHelp(_ entry: CinemaEntry) -> String {
+        guard let original = entry.originalTitle,
+              !original.isEmpty,
+              original != entry.title else { return entry.title }
+        return "\(entry.title)（\(original)）"
+    }
+
+    /// 季集号：第1季·第1集；一次包含多集时写成第1季·第1-3集。
+    private func cinemaEpisodeCode(_ entry: CinemaEntry) -> String? {
+        guard entry.kind == .tv else { return nil }
+        if let season = entry.season, let episode = entry.episode {
+            if let end = entry.episodeEnd, end > episode {
+                return "第\(season)季·第\(episode)-\(end)集"
+            }
+            return "第\(season)季·第\(episode)集"
+        }
+        if let episode = entry.episode {
+            if let end = entry.episodeEnd, end > episode {
+                return "第\(episode)-\(end)集"
+            }
+            return "第\(episode)集"
+        }
+        return nil
+    }
+
+    private func cinemaEpisodeHelp(_ entry: CinemaEntry) -> String {
+        var parts: [String] = []
+        if let season = entry.season { parts.append("第 \(season) 季") }
+        if let episode = entry.episode {
+            if let end = entry.episodeEnd, end > episode {
+                parts.append("第 \(episode)–\(end) 集")
+            } else {
+                parts.append("第 \(episode) 集")
             }
         }
-        .padding(.horizontal, 12)
-        // 两行内容贴住胶囊上沿时会被切掉：顶部留出一点余量，底部相应收紧，整体高度不变。
-        .padding(.top, 5)
-        .padding(.bottom, 0)
-        // 固定宽度：尽量容下标题 / 时间 / 地点 / 序号，翻页时不再左右跳动。
-        .frame(width: 560)
+        return parts.isEmpty ? "剧集" : parts.joined(separator: " · ")
+    }
+
+    private func cinemaNextEpisodeHelp(_ entry: CinemaEntry) -> String {
+        let code = cinemaEpisodeCode(entry)
+        return code.map { "\($0) · \(entry.title)" } ?? entry.title
+    }
+
+    // MARK: - 网络资源播放舱
+
+    /// 当前播放项是否来自网络资源（网页源分集）。
+    private func catalogContext(for photo: PhotoItem) -> CatalogPlaybackContext? {
+        store.catalogPlaybackContext(for: photo.id)
+    }
+
+    private func catalogCoverURL(_ context: CatalogPlaybackContext) -> String {
+        context.episode.coverURL.isEmpty ? context.item.coverURL : context.episode.coverURL
+    }
+
+    /// 站点备注里的评分：`更新至 7 集 · 8.1 分` → 8.1。
+    private func catalogRating(from remark: String) -> Double? {
+        for part in remark.split(separator: "·") {
+            let text = part.trimmingCharacters(in: .whitespaces)
+            guard text.hasSuffix("分"),
+                  let value = Double(text.dropLast().trimmingCharacters(in: .whitespaces)) else { continue }
+            return value
+        }
+        return nil
+    }
+
+    /// 网络资源信息行：片名 / 来源站点 / 分集号 / 站点评分，右端是队列位置与「下一集」。
+    /// 来源站点用它的强调色圆点标记，相当于直播里的台标身份。
+    private func catalogToolbarInfoLine(_ context: CatalogPlaybackContext,
+                                        photo: PhotoItem,
+                                        width: CGFloat) -> some View {
+        let wide = width >= 560
+        let regular = width >= 470
+        let remark = context.item.remark.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rating = catalogRating(from: remark)
+        let hasNext = store.hasAdjacentVideo(from: photo.id, delta: 1)
+        return HStack(spacing: 5) {
+            // 左右各留一段可伸缩空白：片名与来源 / 分集整体居中。
+            Spacer(minLength: 6)
+            Text(context.item.title)
+                .font(.system(size: 13, weight: .semibold))
+                .tracking(-0.01)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+                .help(context.item.title)
+
+            // 来源站点：颜色圆点常驻，名称在常规宽度以上出现。
+            HStack(spacing: 3) {
+                Circle()
+                    .fill(context.source.kind.sidebarTint)
+                    .frame(width: 5, height: 5)
+                if wide || regular {
+                    Text(context.source.name)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.primary.opacity(0.52))
+                        .lineLimit(1)
+                        .frame(maxWidth: 72, alignment: .leading)
+                }
+            }
+            .fixedSize()
+            .help("来源：\(context.source.name)")
+
+            Text(context.episode.title)
+                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.accentColor.opacity(0.12), in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5)
+                }
+                .fixedSize()
+                .help(context.episode.title)
+
+            if regular, let rating {
+                HStack(spacing: 2) {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 7.5))
+                    Text(String(format: "%.1f", rating))
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                }
+                .foregroundStyle(LumaBrand.amber)
+                .fixedSize()
+                .help("站点评分 \(String(format: "%.1f", rating))")
+            } else if wide, !remark.isEmpty, rating == nil {
+                // 没有评分时退回站点自己的更新备注，只露出一小段，悬停看全文。
+                Text(remark.count > 12 ? String(remark.prefix(12)) + "…" : remark)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(0.46))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help(remark)
+            }
+
+            Spacer(minLength: 4)
+
+            if let currentIndex, regular {
+                Text("\(currentIndex + 1)/\(totalCount)")
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.primary.opacity(0.48))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help("播放列表位置：\(currentIndex + 1) / \(totalCount)")
+            }
+
+            if hasNext {
+                Button {
+                    store.viewerStepVideo(1)
+                } label: {
+                    HStack(spacing: 3) {
+                        if wide || regular { Text("下一集") }
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 7.5, weight: .bold))
+                    }
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(0.72))
+                    .padding(.horizontal, wide || regular ? 6 : 4)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    }
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help("播放下一集")
+            }
+
+            VideoMediaMenuButtons(ui: videoUI, model: videoModel, style: .toolbar)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .font(.system(size: 11, weight: .medium))
+        .lineLimit(1)
+        .accessibilityElement(children: .contain)
     }
 
     /// 播放舱第一行：与原先顶栏信息一致，标题 / 实况 / 日期时间 / 地点 / 圆环与序号全部保留。
     private func videoToolbarInfoLine(_ photo: PhotoItem) -> some View {
-        let title = burstTitle ?? infoTitle(for: photo)
+        let tvName = tvChannelName(for: photo)
+        let title = burstTitle ?? tvName ?? infoTitle(for: photo)
         let showsLead = title != nil || photo.isLivePhoto
         return HStack(spacing: 6) {
             if let title {
@@ -438,11 +821,13 @@ struct PhotoViewerView: View {
                 infoSeparator
             }
 
-            if photo.hasKnownCaptureDate {
-                captureStamp(photo.capturedAt, size: 11)
-            } else {
-                Text("时间未知")
-                    .foregroundStyle(Color.primary.opacity(0.62))
+            if tvName == nil {
+                if photo.hasKnownCaptureDate {
+                    captureStamp(photo.capturedAt, size: 11)
+                } else {
+                    Text("时间未知")
+                        .foregroundStyle(Color.primary.opacity(0.62))
+                }
             }
 
             if let place = infoPlaceLine(for: photo) {
@@ -505,10 +890,26 @@ struct PhotoViewerView: View {
         store.saveVideoFrameCommand()
     }
 
+    // MARK: - 电视直播：工具栏动作
+
+    /// 时移开关：进入时暂停直播回看刚过去的画面，再点一次回到直播边缘。
+    private func toggleTVTimeshift() {
+        if viewer.tvTimeshiftActive {
+            viewer.tvTimeshiftActive = false
+            videoModel.requestSeek(to: max(0, videoModel.bufferedEndTime - 0.5))
+            videoModel.play()
+            store.showToast("已回到直播")
+        } else {
+            videoModel.pause()
+            viewer.tvTimeshiftActive = true
+        }
+    }
+
     /// 顶栏中部的照片信息：地点 / 实况 / 拍摄时间 / 地理位置 / 序号。
     /// 单行紧凑排版，高度严格控制在工具栏内，既不裁切也不会把旁边的控件顶大。
     private func viewerToolbarInfo(_ photo: PhotoItem) -> some View {
-        let title = burstTitle ?? infoTitle(for: photo)
+        let tvName = tvChannelName(for: photo)
+        let title = burstTitle ?? tvName ?? infoTitle(for: photo)
         let showsLead = title != nil || photo.isLivePhoto
         return HStack(spacing: 7) {
             if let title {
@@ -530,13 +931,15 @@ struct PhotoViewerView: View {
                     .frame(width: 1, height: 12)
             }
 
-            if photo.hasKnownCaptureDate {
-                captureStamp(photo.capturedAt, size: 11.5)
-            } else {
-                Text("时间未知")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(Color.primary.opacity(0.62))
-                    .lineLimit(1)
+            if tvName == nil {
+                if photo.hasKnownCaptureDate {
+                    captureStamp(photo.capturedAt, size: 11.5)
+                } else {
+                    Text("时间未知")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.62))
+                        .lineLimit(1)
+                }
             }
 
             if let place = infoPlaceLine(for: photo) {
@@ -678,6 +1081,11 @@ struct PhotoViewerView: View {
     /// 没有地点信息时返回 nil，顶栏只显示时间与序号，不用文件名冒充标题。
     private func infoTitle(for photo: PhotoItem) -> String? {
         photo.placeTitle
+    }
+
+    /// 电视直播的频道名：直播没有真实拍摄时间，顶栏用它替代日期时间。
+    private func tvChannelName(for photo: PhotoItem) -> String? {
+        store.tvPlaybackChannel(for: photo.id)?.name
     }
 
     /// 地点副行：标题已占用街道时补城市 / 区县，标题是城市时补区县或省份。
@@ -834,86 +1242,104 @@ struct PhotoViewerView: View {
                         VideoDeckButton(icon: "arrow.up.left.and.arrow.down.right",
                                         help: "全屏 (F)",
                                         action: toggleVideoFullScreen)
-                    }
 
-                    Button {
-                        viewer.showInfoPanel.toggle()
-                    } label: {
-                        Image(systemName: viewer.showInfoPanel ? "info.circle.fill" : "info.circle")
-                    }
-                    .help("信息")
-
-                    // 连拍的帧条只在选择模式浮出，普通浏览时不提供胶片条开关。
-                    if burstMembers.isEmpty {
-                        Button {
-                            settings.viewerFilmstrip.toggle()
-                        } label: {
-                            Image(systemName: "film")
+                        // 电视频道：直播动作 + 频道动作全部收进工具栏，
+                        // 与画面 OSD 共用同一个动作组，顺序与行为不会各写一套。
+                        if let channel = store.tvPlaybackChannel(for: photo.id) {
+                            TVChannelActionCluster(channel: channel,
+                                                   photoID: photo.id,
+                                                   isLive: !channel.isCatchUp,
+                                                   timeshiftActive: $viewer.tvTimeshiftActive,
+                                                   showGuide: $viewer.tvGuideShown,
+                                                   style: .toolbar,
+                                                   onToggleTimeshift: toggleTVTimeshift,
+                                                   onCapture: captureVideoFrame)
                         }
-                        .foregroundStyle(settings.viewerFilmstrip ? Color.accentColor : Color.primary)
-                        .help(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图")
                     }
 
-                    ShareLink(items: store.shareURLs) {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .disabled(store.shareURLs.isEmpty)
-                    .help("共享")
-
-                    if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                    // 电视频道：信息 / 胶片条 / 共享 / 收藏照片 / 幻灯片 / 编辑这些照片向操作没有意义，
+                    // 全部交给播放页的频道工具，工具栏只保留播放器通用能力。
+                    if store.tvPlaybackChannel(for: photo.id) == nil {
                         Button {
-                            store.toggleFavorite(photo.id)
+                            viewer.showInfoPanel.toggle()
                         } label: {
-                            Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
+                            Image(systemName: viewer.showInfoPanel ? "info.circle.fill" : "info.circle")
                         }
-                        .foregroundStyle(photo.isFavorite ? Color.pink : Color.primary)
-                        .help(photo.isFavorite ? "取消收藏" : "收藏")
-                    }
+                        .help("信息")
 
-                    if !photo.isVideo, (!photo.isReadOnly || photo.isSystem), store.canScanBeauty {
+                        // 连拍的帧条只在选择模式浮出，普通浏览时不提供胶片条开关。
+                        if burstMembers.isEmpty {
+                            Button {
+                                settings.viewerFilmstrip.toggle()
+                            } label: {
+                                Image(systemName: "film")
+                            }
+                            .foregroundStyle(settings.viewerFilmstrip ? Color.accentColor : Color.primary)
+                            .help(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图")
+                        }
+
+                        ShareLink(items: store.shareURLs) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .disabled(store.shareURLs.isEmpty)
+                        .help("共享")
+
+                        if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                            Button {
+                                store.toggleFavorite(photo.id)
+                            } label: {
+                                Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
+                            }
+                            .foregroundStyle(photo.isFavorite ? Color.pink : Color.primary)
+                            .help(photo.isFavorite ? "取消收藏" : "收藏")
+                        }
+
+                        if !photo.isVideo, (!photo.isReadOnly || photo.isSystem), store.canScanBeauty {
+                            Button {
+                                store.showBeautyPanel = true
+                            } label: {
+                                Image(systemName: "wand.and.stars")
+                            }
+                            .help("智能美化…")
+                        }
+
                         Button {
-                            store.showBeautyPanel = true
+                            store.presentSlideshow()
                         } label: {
-                            Image(systemName: "wand.and.stars")
+                            Image(systemName: "play.rectangle")
                         }
-                        .help("智能美化…")
-                    }
+                        .disabled(store.visibleCount == 0)
+                        .help("幻灯片播放")
 
-                    Button {
-                        store.presentSlideshow()
-                    } label: {
-                        Image(systemName: "play.rectangle")
-                    }
-                    .disabled(store.visibleCount == 0)
-                    .help("幻灯片播放")
-
-                    if burstMembers.count > 1 {
-                        Button {
-                            toggleBurstPlayback()
-                        } label: {
-                            Image(systemName: viewer.burstPlaying ? "pause.fill" : "play.fill")
+                        if burstMembers.count > 1 {
+                            Button {
+                                toggleBurstPlayback()
+                            } label: {
+                                Image(systemName: viewer.burstPlaying ? "pause.fill" : "play.fill")
+                            }
+                            .help(viewer.burstPlaying ? "暂停连拍播放 (P)" : "播放连拍快照 (P)")
                         }
-                        .help(viewer.burstPlaying ? "暂停连拍播放 (P)" : "播放连拍快照 (P)")
-                    }
 
-                    moreMenu(photo)
+                        moreMenu(photo)
 
-                    if !photo.isVideo, !photo.isReadOnly {
-                        Button {
-                            store.openEditor(photo.id)
-                        } label: {
-                            Text("编辑")
-                                .font(.system(size: 12, weight: .semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .background(Color.primary.opacity(0.07), in: Capsule())
-                                .overlay {
-                                    Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
-                                }
-                                .contentShape(Capsule())
+                        if !photo.isVideo,
+                           !photo.isReadOnly || (photo.isSystem && store.canWriteSystemLibrary) {
+                            Button {
+                                store.openEditor(photo.id)
+                            } label: {
+                                Text("编辑")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 5)
+                                    .background(Color.primary.opacity(0.07), in: Capsule())
+                                    .overlay {
+                                        Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                                    }
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help("编辑照片")
                         }
-                        .buttonStyle(.plain)
-                        .help("编辑照片")
                     }
                 }
             }
@@ -1431,7 +1857,8 @@ struct PhotoViewerView: View {
                     ShortcutHelpView()
                 }
 
-                if !photo.isVideo && !photo.isReadOnly {
+                if !photo.isVideo,
+                   !photo.isReadOnly || (photo.isSystem && store.canWriteSystemLibrary) {
                     circleButton("slider.horizontal.3") {
                         store.openEditor(photo.id)
                     }
@@ -1867,7 +2294,8 @@ struct PhotoViewerView: View {
             toggleLivePhoto()
             return true
         }
-        if !photo.isReadOnly, ShortcutStore.matches(event, .viewerEdit) {
+        if (!photo.isReadOnly || (photo.isSystem && store.canWriteSystemLibrary)),
+           ShortcutStore.matches(event, .viewerEdit) {
             store.openEditor(photo.id)
             return true
         }
@@ -2118,5 +2546,303 @@ private extension PhotoItem {
     /// 顶栏用「时间未知」代替这种异常日期，避免把缺失信息伪装成真实时间。
     var hasKnownCaptureDate: Bool {
         capturedAt.timeIntervalSince1970 > 86_400
+    }
+}
+
+// MARK: - 工具栏频道舱
+
+/// 窗口工具栏里的电视「频道舱」：频道号 / 台标 / 台名 / 直播状态 + Now & Next + 节目进度 + 线路读数。
+/// 独立成小视图，直接观察播放器与频道模型，节目进度与收藏状态才能随时间实时刷新。
+private struct TVToolbarDeck: View {
+    @ObservedObject var store: LibraryStore
+    let photo: PhotoItem
+    /// 播放器：只传给音量控件；频道舱本身不再按播放时间 4Hz 重绘。
+    let player: VideoPlayerModel
+    /// 频道模型：节目单与收藏状态变化时刷新。
+    @ObservedObject var tv: IPTVBrowserModel
+
+    var body: some View {
+        let channel = store.tvPlaybackChannel(for: photo.id)
+        let number = channel.map { tv.channelNumber(for: $0) } ?? 0
+        let now = channel.flatMap { tv.currentProgram(for: $0) }
+        let lineIndex = store.tvLineIndex(for: photo.id)
+        let lineCount = store.tvLineCount(for: photo.id)
+        let isCatchup = channel?.isCatchUp == true
+        let programTitle = isCatchup
+            ? (photo.title ?? channel?.name ?? "回看")
+            : now?.title
+
+        // 单行排布：频道身份 + Now + 线路。
+        // 台名 / 节目不设固定宽度，靠 layoutPriority 吃满剩余空间：
+        // 台名优先完整显示，节目在后，窗口变窄时先收节目，再收台名。
+        // 回看在下面多一行真正的进度条：可点、可拖，不再挤在舱底 1.5pt 的细线上。
+        return VStack(spacing: 3) {
+            HStack(spacing: 7) {
+                // 频道号：整条舱里最重的一档，扫一眼就知道在哪个台。
+                Text(String(format: "%02d", number))
+                    .font(.system(size: 17, weight: .black, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+                    .fixedSize()
+
+                TVLogoImage(urlString: channel?.logoURL,
+                            size: CGSize(width: 38, height: 19),
+                            cornerRadius: 3)
+                    .fixedSize()
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.10))
+                    .frame(width: 1, height: 16)
+
+                Text(channel?.name ?? "直播频道")
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(-0.01)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(2)
+                    .help(channel?.name ?? "直播频道")
+
+                // 直播状态只留一枚信号点，不再占用「直播」两个字的宽度。
+                if isCatchup {
+                    tag("回看")
+                } else {
+                    Circle()
+                        .fill(TVBrand.signal)
+                        .frame(width: 5.5, height: 5.5)
+                        .overlay {
+                            Circle().strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5)
+                        }
+                        .shadow(color: TVBrand.signal.opacity(0.55), radius: 3)
+                        .fixedSize()
+                        .help("正在直播")
+                }
+
+                if let programTitle {
+                    Text(programTitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.78))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                        .help(isCatchup
+                              ? programTitle
+                              : programTitle + " · "
+                                + Self.clock.string(from: now?.start ?? Date())
+                                + "–" + Self.clock.string(from: now?.end ?? Date()))
+                } else {
+                    Text("暂无节目单")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if isCatchup {
+                    Text(Self.catchupWhen(photo.capturedAt))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.primary.opacity(0.45))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .help("这档节目的播出时间")
+                }
+
+                Spacer(minLength: 4)
+
+                if lineCount > 1 {
+                    readout(channel: channel,
+                            lineIndex: lineIndex,
+                            lineCount: lineCount)
+                }
+                VideoInlineVolume(model: player)
+            }
+            if isCatchup {
+                TVCatchupProgressBar(model: player, epgDuration: photo.duration ?? 0)
+                    .padding(.horizontal, 2)
+            }
+        }
+        .frame(minWidth: 480, maxWidth: 720)
+        .padding(.horizontal, 8)
+        .padding(.top, 3)
+        .padding(.bottom, isCatchup ? 1 : 2)
+        // 直播：节目进度贴在舱底；回看已经有自己那一行可拖进度条，不再叠一条细线。
+        .overlay(alignment: .bottom) {
+            if !isCatchup {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.primary.opacity(0.08))
+                            Capsule()
+                                .fill(TVBrand.wave.opacity(0.72))
+                                .frame(width: max(0, proxy.size.width
+                                                  * Self.progress(now, at: context.date)))
+                        }
+                        .transaction { $0.animation = nil }
+                    }
+                    .frame(height: 1.5)
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 0.5)
+            }
+        }
+    }
+
+    /// 右侧读数胶囊：多线路时点「1/2」直接换线。
+    /// 单线与协议文字不再常驻，把宽度让给台名与节目。
+    private func readout(channel: TVChannel?,
+                         lineIndex: Int,
+                         lineCount: Int) -> some View {
+        Menu {
+            ForEach(Array((channel?.streamLines ?? []).enumerated()), id: \.offset) { index, url in
+                Button {
+                    _ = store.selectTVLine(index, for: photo.id)
+                } label: {
+                    let title = "线路 \(index + 1) · \(protocolLabel(of: url, channel: channel))"
+                    if index == lineIndex {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 1.5) {
+                Text("\(lineIndex + 1)/\(lineCount)")
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 6, weight: .bold))
+            }
+            .foregroundStyle(Color.primary.opacity(0.80))
+            .font(.system(size: 8.5, weight: .medium))
+            .monospacedDigit()
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("选择播放线路 · 当前 \(lineIndex + 1)/\(lineCount)")
+    }
+
+    /// 单条线路的协议：优先用换线时记下的元数据，缺失时跟随频道当前协议。
+    private func protocolLabel(of url: String, channel: TVChannel?) -> String {
+        let hls = store.tvLineMetadata[url]?.isHLS ?? (channel?.isHLS ?? true)
+        return hls ? "HLS" : "HTTP"
+    }
+
+    /// 台名旁的小标签（回看 / 时移等）。
+    private func tag(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 8.5, weight: .bold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(Color.primary.opacity(0.08), in: Capsule(style: .continuous))
+            .fixedSize()
+    }
+
+    /// 回看的播出时刻：「昨天 20:04」比一个光秃秃的 20:04 更好定位。
+    private static func catchupWhen(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let day: String
+        if calendar.isDateInToday(date) {
+            day = "今天"
+        } else if calendar.isDateInYesterday(date) {
+            day = "昨天"
+        } else if let before = calendar.date(byAdding: .day, value: -2,
+                                             to: calendar.startOfDay(for: Date())),
+                  calendar.isDate(date, inSameDayAs: before) {
+            day = "前天"
+        } else {
+            day = date.formatted(.dateTime.month(.defaultDigits).day())
+        }
+        return day + " " + clock.string(from: date)
+    }
+
+    private static func progress(_ program: TVEPGProgram?, at date: Date) -> CGFloat {
+        guard let program else { return 0 }
+        let span = program.end.timeIntervalSince(program.start)
+        guard span > 1 else { return 0 }
+        return CGFloat(min(1, max(0, date.timeIntervalSince(program.start) / span)))
+    }
+
+    private static let clock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+}
+
+// MARK: - 回看进度条
+
+/// 回看舱里唯一跟随播放器刷新的读数格式。
+private enum TVDeckFormat {
+    /// 播放读数：不足一小时用 mm:ss，超过用 h:mm:ss。
+    static func timecode(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "--:--" }
+        let total = Int(seconds.rounded(.down))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, secs) }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+}
+
+/// 回看进度条：信息行下方独立一行，`已播 · 轨道 · 总时长`。
+/// 直接复用播放页的 `VideoScrubber`——整条 16pt 都是热区，悬停加粗、拖动跟手、
+/// 松手才真正落位；不再是舱底那条 1.5pt 只能看的细线。
+/// 总时长优先用播放器解析出的片长，解析不出时用节目单时长兜底，避免读数停在 00:00。
+private struct TVCatchupProgressBar: View {
+    @ObservedObject var model: VideoPlayerModel
+    let epgDuration: Double
+
+    private var total: Double {
+        model.duration > 1 ? model.duration : max(0, epgDuration)
+    }
+    private var position: Double { max(0, model.currentTime) }
+    private var progress: Double {
+        guard total > 1 else { return 0 }
+        return min(1, max(0, position / total))
+    }
+    private var buffered: Double {
+        guard total > 1 else { return 0 }
+        return min(1, max(0, model.bufferedTime / total))
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(TVDeckFormat.timecode(position))
+                .foregroundStyle(TVBrand.gold.opacity(0.95))
+                .frame(minWidth: 34, alignment: .trailing)
+
+            VideoScrubber(progress: progress,
+                          buffered: buffered,
+                          tint: TVBrand.gold,
+                          knobBorder: Color.white.opacity(0.72),
+                          duration: total,
+                          onSeek: { value in
+                              guard total > 1 else { return }
+                              model.scrub(to: value * total)
+                          },
+                          onCommit: { value in
+                              guard total > 1 else { return }
+                              model.requestSeek(to: value * total)
+                          })
+                .frame(minWidth: 140, maxWidth: .infinity)
+
+            Text(TVDeckFormat.timecode(total))
+                .foregroundStyle(Color.primary.opacity(0.52))
+                .frame(minWidth: 34, alignment: .leading)
+        }
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .monospacedDigit()
+        .contentShape(Rectangle())
+        .help(total > 1 ? "点按 / 拖动定位 · 剩余 \(TVDeckFormat.timecode(max(0, total - position)))"
+                        : "回看进度")
     }
 }

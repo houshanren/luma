@@ -139,6 +139,7 @@ enum CinemaScraper {
         let parsed = parse(filename: photo.displayFilename, folderHint: folderHint)
         var firstError: Error?
         var sawResults = false
+        var failures: [CinemaProvider: String] = [:]
 
         for source in sources {
             if Task.isCancelled { break }
@@ -150,19 +151,25 @@ enum CinemaScraper {
                                              detailsCache: detailsCache)
             sawResults = sawResults || attempt.sawResults
             if let entry = attempt.entry {
-                return CinemaScrapeOutcome(entry: entry, error: nil)
+                return CinemaScrapeOutcome(entry: entry, error: nil, failedProviders: failures)
             }
-            if firstError == nil, let error = attempt.error { firstError = error }
+            if let error = attempt.error {
+                failures[source.provider] = error.localizedDescription
+                if firstError == nil { firstError = error }
+            }
         }
 
         // 所有源都没有返回任何候选，才把错误抛给上层（批量刮削据此判断断网 / 凭据失效）。
         if !sawResults, let firstError {
-            return CinemaScrapeOutcome(entry: nil, error: firstError.localizedDescription)
+            return CinemaScrapeOutcome(entry: nil,
+                                       error: firstError.localizedDescription,
+                                       failedProviders: failures)
         }
         return CinemaScrapeOutcome(entry: unmatchedEntry(photo: photo,
                                                          parsed: parsed,
                                                          folderHint: folderHint),
-                                   error: nil)
+                                   error: nil,
+                                   failedProviders: failures)
     }
 
     /// 在单个数据源上匹配。每个检索词最多尝试「原类型 + 年份 / 原类型无年份 / 反向类型」，

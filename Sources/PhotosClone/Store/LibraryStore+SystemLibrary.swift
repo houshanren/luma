@@ -64,6 +64,35 @@ extension LibraryStore {
         return systemChildrenBuckets[parent ?? -1] ?? []
     }
 
+    /// 侧边栏系统树拍平后的一行：文件夹与相簿按图库顺序混排，用层级控制缩进。
+    /// id 在拍平时算好一次，避免 `ForEach` 每次重建 body 都为上万行重复拼字符串。
+    struct SystemFlatRow: Identifiable {
+        let entry: SystemSidebarEntry
+        let level: Int
+        let id: String
+    }
+
+    /// 把系统树按当前展开状态拍平成单层数组。
+    /// 侧边栏把它直接喂给最外层 `LazyVStack`：展开几千个相簿也只创建可见行，
+    /// 不会再因为嵌套懒加载容器把整棵子树一次性实例化。
+    func systemFlatRows(expanded: Set<Int64>, expansionRevision: Int) -> [SystemFlatRow] {
+        let key = "\(systemStructureRevision)#\(expansionRevision)"
+        if key == systemFlatRowsCacheKey { return systemFlatRowsCache }
+        var rows: [SystemFlatRow] = []
+        func walk(_ parent: Int64?, _ level: Int) {
+            for entry in systemChildren(of: parent) {
+                rows.append(SystemFlatRow(entry: entry, level: level, id: entry.id))
+                if case .folder(let folder) = entry, expanded.contains(folder.id) {
+                    walk(folder.id, level + 1)
+                }
+            }
+        }
+        walk(nil, 0)
+        systemFlatRowsCacheKey = key
+        systemFlatRowsCache = rows
+        return rows
+    }
+
     /// 侧边栏徽标用的有效项目数（不含已删除与隐藏），按内容版本缓存。
     var systemActivePhotoCount: Int {
         systemSidebarCounts.active
@@ -332,8 +361,13 @@ extension LibraryStore {
         panel.treatsFilePackagesAsDirectories = false
         panel.allowsMultipleSelection = false
         panel.prompt = "连接"
-        panel.message = "拾光一次只连接一个系统图库，选择新的会替换当前连接；只记录连接地址，不会改变 App 自己的图库位置"
+        panel.message = "连接后可在侧边栏切换；只记录连接地址，不会改变 App 自己的图库位置。同一个图库不会重复登记。"
         if panel.runModal() == .OK, let url = panel.url {
+            // 「自己外接自己」不产生第二条连接：当前图库本身不能重复登记。
+            if isContainerNativeLibraryPath(url.standardizedFileURL.path) {
+                showToast("这就是当前图库本身，不需要重复连接")
+                return
+            }
             connectSystemLibrary(url)
         }
     }
@@ -352,17 +386,23 @@ extension LibraryStore {
         }
     }
 
-    func createLibrary(at url: URL, migratingLocalData: Bool = false) {
+    @discardableResult
+    func createLibrary(at url: URL, migratingLocalData: Bool = false) async -> Bool {
         guard LibraryPaths.createLibrary(at: url) else {
             showToast("无法创建照片图库（目标位置已存在同名项目）")
-            return
+            return false
+        }
+        // 与切换一致：切库成功后再释放当前库，创建 / 切换失败时不留空壳。
+        // 迁入旧数据可能在几十 GB 级别，切换过程把大块复制放到后台执行。
+        guard await LibraryPaths.switchContainerAsync(to: url, migratingLocalData: migratingLocalData) else {
+            showToast("无法创建照片图库（目标位置不可写）")
+            return false
         }
         flushMetadata()
         metadataStore = nil
-        guard LibraryPaths.switchContainer(to: url, migratingLocalData: migratingLocalData) else {
-            showToast("无法创建照片图库")
-            return
-        }
+        // 新图库的快照目录与修订号都要重新建立。
+        resetSourceContentCache()
+        resetInMemoryCachesForLibrarySwitch()
         libraryIndexTask?.cancel()
         libraryIndexTask = nil
         libraryIndexComplete = true
@@ -391,10 +431,12 @@ extension LibraryStore {
         navigate(to: .library)
         rememberLibrary(url)
         showLibraryPicker = false
+        showNewLibrarySheet = false
         libraryPickerOnLaunch = false
         needsLibrarySetup = false
         containerLibraryPath = LibraryPaths.containerLibraryURL?.path
         showToast("已创建 \(url.lastPathComponent)")
+        return true
     }
 
     func resetSystemLibraryState() {
@@ -456,7 +498,24 @@ extension LibraryStore {
         systemWindowRevision &+= 1
     }
 
-    func presentNewLibraryPanel(migratingLocalData: Bool = false) {
+    /// App 内的「新建图库」：先打开创建向导（名称 / 位置 / 能力 / 库级设置），
+    /// 用户确认后才真正建库，不会点一下就凭空多出一个空图库。
+    func beginNewLibraryFlow() {
+        showNewLibrarySheet = true
+    }
+
+    /// 换库时作废只属于上一个图库的内存缓存：缩略图 / 海报解码结果、网络影院的列表与资料。
+    /// 磁盘快照、SQLite 与缓存目录都在各自图库内部，换库后由上层重新读取，不在这里删文件。
+    func resetInMemoryCachesForLibrarySwitch() {
+        ImageLoader.clearMemoryCaches()
+        CatalogArtworkMemory.shared.removeAll()
+        tvModel.clearImageCaches()
+        networkCinemaModel.resetForLibrarySwitch()
+    }
+
+    /// 选位置 → 建库。返回是否真的建好，调用方据此决定要不要关掉建库向导。
+    @discardableResult
+    func presentNewLibraryPanel(migratingLocalData: Bool = false) async -> Bool {
         let panel = NSSavePanel()
         panel.title = "新建照片图库"
         panel.message = "将创建一个与官方同款的 .photoslibrary 图库包（database / originals / resources）"
@@ -465,11 +524,23 @@ extension LibraryStore {
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.directoryURL = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-        guard panel.runModal() == .OK, let selected = panel.url else { return }
+        guard panel.runModal() == .OK, let selected = panel.url else { return false }
         let url = selected.pathExtension.lowercased() == "photoslibrary"
             ? selected
             : selected.appendingPathExtension("photoslibrary")
-        createLibrary(at: url, migratingLocalData: migratingLocalData)
+        let created = await createLibrary(at: url, migratingLocalData: migratingLocalData)
+        if !created {
+            // 建库向导仍盖在主窗口上，Toast 会被挡住：用系统弹窗把失败原因说清楚。
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "无法创建照片图库"
+            alert.informativeText = FileManager.default.fileExists(atPath: url.path)
+                ? "这个位置已经有同名图库，或目标文件夹不可写。换个名称 / 位置再试。"
+                : "请确认目标文件夹可写，然后重试。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
+        return created
     }
 
     /// 切换 App 自己的图库位置（会迁移/打开本地库）。
@@ -481,52 +552,68 @@ extension LibraryStore {
 
         let sameContainer = LibraryPaths.containerLibraryURL?.standardizedFileURL.path
             == url.standardizedFileURL.path
-        if !sameContainer {
-            flushMetadata()
-            metadataStore = nil
-            // 打开哪个图库就以哪个图库为准：不把当前图库的内容迁进去，
-            // 新库第一次打开时就是它自己的内容（原生库的拾光数据同样写在该库第一层 database/）。
-            guard LibraryPaths.switchContainer(to: url, migratingLocalData: false) else {
-                showToast("无法切换照片图库")
-                return
+        // 已经在用这个图库：只把界面切回它，不重放换库清理。
+        // 撤销栈、回收站清理、缩略图预热都属于「换库」，重复选当前库不该丢现场。
+        if sameContainer {
+            showNewLibrarySheet = false
+            showLibraryPicker = false
+            libraryPickerOnLaunch = false
+            containerLibraryPath = LibraryPaths.containerLibraryURL?.path
+            needsLibrarySetup = LibraryPaths.requiresLibrarySetup
+            rememberLibrary(url)
+            if LibraryPaths.isNativeLibrary(url) {
+                // 已加载就直接切回它的页面，未加载才扫描（不会重复重扫）。
+                connectSystemLibrary(url)
+            } else {
+                navigate(to: .library)
             }
-            libraryIndexTask?.cancel()
-            libraryIndexTask = nil
-            libraryIndexComplete = true
-            metadataStore = try? MetadataStore(url: LibraryPaths.metadataFile)
-            resetFaceClusterState()
-            let data = metadataStore?.loadLibrary() ?? LibraryData()
-            photos = data.photos
-            albums = data.albums
-            folders = data.folders
-            loadSmartAlbums()
-            loadPinnedItems()
-            loadAnalysisIndex()
-            similarScope = nil
-            abortHealthScan()
-            healthReport = nil
-            selection.removeAll()
-            viewerID = nil
-            editorID = nil
-            // 网络资源跟着图库走：换库后重新读取新图库自己的源、片单与日历。
-            finishCatalogPlayback()
-            catalogModel.loadForCurrentLibrary()
-            let name = url.deletingPathExtension().lastPathComponent
-            showToast("已打开 \(name)")
+            return
         }
+
+        // 先把目标图库切过去，成功后再放手当前库的数据库：
+        // 切换失败（不存在 / 只读 / 无权限）时当前图库必须原样可用。
+        guard LibraryPaths.switchContainer(to: url, migratingLocalData: false) else {
+            showToast("无法切换照片图库：请确认这个图库可写")
+            return
+        }
+        flushMetadata()
+        metadataStore = nil
+        // 快照与修订号跟着图库走。
+        resetSourceContentCache()
+        resetInMemoryCachesForLibrarySwitch()
+        libraryIndexTask?.cancel()
+        libraryIndexTask = nil
+        libraryIndexComplete = true
+        metadataStore = try? MetadataStore(url: LibraryPaths.metadataFile)
+        resetFaceClusterState()
+        let data = metadataStore?.loadLibrary() ?? LibraryData()
+        photos = data.photos
+        albums = data.albums
+        folders = data.folders
+        loadSmartAlbums()
+        loadPinnedItems()
+        loadAnalysisIndex()
+        similarScope = nil
+        abortHealthScan()
+        healthReport = nil
+        selection.removeAll()
+        viewerID = nil
+        editorID = nil
+        // 网络资源跟着图库走：换库后重新读取新图库自己的源、片单与日历。
+        finishCatalogPlayback()
+        catalogModel.loadForCurrentLibrary()
 
         needsLibrarySetup = LibraryPaths.requiresLibrarySetup
         rememberLibrary(url)
         showLibraryPicker = false
         libraryPickerOnLaunch = false
         containerLibraryPath = LibraryPaths.containerLibraryURL?.path
+        showToast("已打开 \(url.deletingPathExtension().lastPathComponent)")
 
         guard LibraryPaths.isNativeLibrary(url) else {
             // 打开哪个图库就用哪个图库自己的连接、网盘与设置。
-            if !sameContainer {
-                resetCloudStateForLibrarySwitch()
-                resetSystemLibraryState()
-            }
+            resetCloudStateForLibrarySwitch()
+            resetSystemLibraryState()
             // 「系统图库」这一分区跟着图库走：恢复该图库自己记住的连接（可能没有）。
             systemLibraryPath = metadataStore?.setting("system_library_path")
             if let path = systemLibraryPath {
@@ -538,22 +625,21 @@ extension LibraryStore {
         }
 
         // 当前图库就是官方「照片」图库：它直接作为主侧边栏展示，不再登记成「连接的系统图库」。
-        if !sameContainer {
-            resetCloudStateForLibrarySwitch()
-            resetSystemLibraryState()
-        }
+        resetCloudStateForLibrarySwitch()
+        resetSystemLibraryState()
         systemLibraryPath = url.path
         systemLibraryName = url.deletingPathExtension().lastPathComponent
         systemLibraryError = nil
         metadataStore?.setSetting("system_library_path", url.path)
         reloadPerLibraryState()
-        // 先启动加载再切换侧边栏，避免 sidebarItem 变更时重复触发一次扫描。
-        loadSystemLibrary(at: url, informOnFailure: true)
+        // 走统一入口：官方图库会先申请照片访问授权，再开始扫描，避免扫到一半被打断。
+        loadSystemLibraryIfNeeded(.systemLibrary)
         navigate(to: .systemLibrary)
     }
 
     /// 只记录 / 连接系统「照片」图库，绝不改变 App 自己的图库位置。
-    func connectSystemLibrary(_ url: URL) {
+    /// - Parameter forceRefresh: 「重新读取」时传 true，忽略已加载缓存并重建索引。
+    func connectSystemLibrary(_ url: URL, forceRefresh: Bool = false) {
         guard LibraryPaths.isLibraryContainer(url) else {
             showToast("请选择有效的 .photoslibrary 图库")
             return
@@ -563,9 +649,15 @@ extension LibraryStore {
             return
         }
 
+        let path = url.standardizedFileURL.path
+        let isSelf = isContainerNativeLibraryPath(path)
+
         // 已经在浏览同一个系统图库：只切回该页面，不重复扫描，避免来回切换。
-        if systemLibraryPath == url.path,
-           systemLibraryLoadedPath == url.path,
+        if !forceRefresh,
+           let current = systemLibraryPath.map({ URL(fileURLWithPath: $0).standardizedFileURL.path }),
+           current == path,
+           let loaded = systemLibraryLoadedPath.map({ URL(fileURLWithPath: $0).standardizedFileURL.path }),
+           loaded == path,
            !isLoadingSystemLibrary {
             showLibraryPicker = false
             libraryPickerOnLaunch = false
@@ -573,14 +665,31 @@ extension LibraryStore {
             return
         }
 
-        systemLibraryPath = url.path
+        // 换的是另一个系统图库：上一个库的识别结果 / 窗口 / 计数都属于旧库，全部作废。
+        if let current = systemLibraryPath.map({ URL(fileURLWithPath: $0).standardizedFileURL.path }),
+           current != path {
+            resetSystemLibraryState()
+        }
+
+        systemLibraryPath = path
         systemLibraryName = url.deletingPathExtension().lastPathComponent
         systemLibraryError = nil
-        metadataStore?.setSetting("system_library_path", url.path)
+        metadataStore?.setSetting("system_library_path", path)
         showLibraryPicker = false
         libraryPickerOnLaunch = false
-        registerSystemLibrary(url)
-        loadSystemLibrary(at: url, informOnFailure: true)
+        if isSelf {
+            // 「自己外接自己」不算连接：当前 App 图库只保留在「图库」里，不登记成第二个条目。
+            systemLibraries.removeAll { isSameSystemLibraryPath($0.path, path) }
+            persistSystemLibraries(systemLibraries)
+        } else {
+            registerSystemLibrary(URL(fileURLWithPath: path))
+        }
+        if forceRefresh {
+            loadSystemLibrary(at: URL(fileURLWithPath: path), informOnFailure: true, forceRefresh: true)
+        } else {
+            // 统一走授权 / 已加载判断：官方图库首次打开会先申请照片访问授权。
+            loadSystemLibraryIfNeeded(.systemLibrary)
+        }
         navigate(to: .systemLibrary)
     }
 
@@ -611,6 +720,9 @@ extension LibraryStore {
         // 换库时停止上一个图库的缩略图预热，避免把缓存写进新库。
         thumbnailPrewarmTask?.cancel()
         thumbnailPrewarmTask = nil
+        // 命名 / 新建相簿这类弹窗带着上一个图库的 ID，换库后必须关掉，不能让它操作新库。
+        namePrompt = nil
+        showNewAlbumSheet = false
         AppSettings.shared.reloadLibraryScopedValues()
         loadViewPreferences()
         loadCloudFavorites()
@@ -622,6 +734,10 @@ extension LibraryStore {
         migrateLegacyCinemaIndexIfNeeded()
         loadAIState()
         loadSystemLibraries()
+        loadKnownLibraries()
+        loadSystemManualOrderAlbums()
+        // 网络电视源与顺序写在各自图库里，换库后要重新读。
+        tvModel.reloadForCurrentLibrary()
         purgeExpiredTrashIfNeeded()
         // 美化推荐是派生结果，换库后必须清空，避免把上一个图库的照片带过来。
         resetBeautyState()
@@ -635,6 +751,8 @@ extension LibraryStore {
         systemAnalysisIndex = [:]
         systemAnalysisAutoResume = false
         systemFeatures = [:]
+        // 换库后 PhotoKit 的写入目标需要重新检测。
+        systemWriteTargetState = .unknown
         // 地图页的定位照片 / 地点聚类同样只属于上一个图库。
         resetPlaceCaches()
         // 撤销栈只对记录它的图库有效，换库时一并清空。
@@ -651,7 +769,7 @@ extension LibraryStore {
 
     // MARK: - 图库选择器
 
-    static let recentLibrariesKey = "settings.recentLibraries"
+    static let recentLibrariesKey = LibraryPaths.recentLibrariesKey
 
     func presentLibraryPicker() {
         showLibraryPicker = true
@@ -665,12 +783,40 @@ extension LibraryStore {
         paths.insert(path, at: 0)
         if paths.count > 10 { paths.removeLast(paths.count - 10) }
         UserDefaults.standard.set(paths, forKey: Self.recentLibrariesKey)
+        // 同时登记到全局图库列表：第一次的那个成为系统默认图库，之后都算挂载图库。
+        registerKnownLibrary(url)
     }
 
     // MARK: - 系统图库列表
 
+    /// 归一化路径：只差尾部斜杠 / 相对写法的同一个图库必须视为同一条记录。
+    func isSameSystemLibraryPath(_ lhs: String, _ rhs: String) -> Bool {
+        URL(fileURLWithPath: lhs).standardizedFileURL.path
+            == URL(fileURLWithPath: rhs).standardizedFileURL.path
+    }
+
+    /// 当前 App 图库本身就是官方「照片」图库时的自身路径；不是这种图库则返回 nil。
+    var containerNativeLibraryPath: String? {
+        guard let url = LibraryPaths.containerLibraryURL,
+              LibraryPaths.isNativeLibrary(url) else { return nil }
+        return url.standardizedFileURL.path
+    }
+
+    func isContainerNativeLibraryPath(_ path: String) -> Bool {
+        guard let selfPath = containerNativeLibraryPath else { return false }
+        return isSameSystemLibraryPath(path, selfPath)
+    }
+
+    /// 正在浏览的系统图库就是 App 自己的图库（而不是外接的第二个库）。
+    var isBrowsingContainerSystemLibrary: Bool {
+        guard let path = systemLibraryPath else { return false }
+        return isContainerNativeLibraryPath(path)
+    }
+
     /// 旧版把连接列表存在全局 UserDefaults，仅用于一次性迁入当前图库。
     private static let legacySystemLibrariesKey = "settings.systemLibraries"
+    /// 跨图库共享的连接列表：切换 / 新建图库后，之前连接的图库不能消失。
+    private static let globalSystemLibrariesKey = "settings.systemLibraries.global"
     /// 每个图库自己的系统图库连接列表（写在该图库的 SQLite settings 表）。
     private static let systemLibrariesSettingKey = "system_libraries"
 
@@ -688,21 +834,27 @@ extension LibraryStore {
             list = decoded
             UserDefaults.standard.removeObject(forKey: Self.legacySystemLibrariesKey)
         }
-        // 列表可保存多个图库，去重后最多保留 10 个。
-        var seen: Set<String> = []
-        list = list.filter { seen.insert($0.path).inserted }
-        if list.count > 10 { list.removeLast(list.count - 10) }
-        // 当前图库本身是官方「照片」图库时，它的内容是主侧边栏，不登记成额外连接。
-        let currentContainer = LibraryPaths.containerLibraryURL
-        let nativeSelfPath = currentContainer.flatMap {
-            LibraryPaths.isNativeLibrary($0) ? $0.standardizedFileURL.path : nil
+        // 连接列表跨图库共享：切换 / 新建图库后，之前连接的图库不能凭空消失。
+        if let data = UserDefaults.standard.data(forKey: Self.globalSystemLibrariesKey),
+           let global = try? JSONDecoder().decode([SystemLibraryRef].self, from: data) {
+            for ref in global where !list.contains(where: { isSameSystemLibraryPath($0.path, ref.path) }) {
+                list.append(ref)
+            }
         }
-        if let nativeSelfPath {
-            list.removeAll { $0.path == nativeSelfPath }
+        // 列表可保存多个图库，按归一化路径去重。上限放宽到 50：
+        // 之前的 10 条截断会把全局合并后的结果写回去，等于永久删掉别的图库的连接记录。
+        var seen: Set<String> = []
+        list = list.filter {
+            seen.insert(URL(fileURLWithPath: $0.path).standardizedFileURL.path).inserted
+        }
+        if list.count > 50 { list.removeLast(list.count - 50) }
+        // 当前图库本身是官方「照片」图库时，它的内容是主侧边栏，不登记成额外连接。
+        if let nativeSelfPath = containerNativeLibraryPath {
+            list.removeAll { isSameSystemLibraryPath($0.path, nativeSelfPath) }
         }
         if let path = systemLibraryPath,
-           path != nativeSelfPath,
-           !list.contains(where: { $0.path == path }) {
+           !isContainerNativeLibraryPath(path),
+           !list.contains(where: { isSameSystemLibraryPath($0.path, path) }) {
             list.insert(SystemLibraryRef(path: path,
                                          name: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent),
                         at: 0)
@@ -715,26 +867,164 @@ extension LibraryStore {
         guard let data = try? JSONEncoder().encode(list),
               let json = String(data: data, encoding: .utf8) else { return }
         metadataStore?.setSetting(Self.systemLibrariesSettingKey, json)
+        // 同时写一份全局列表：新建 / 切换图库后仍能看到之前连接的全部图库。
+        UserDefaults.standard.set(data, forKey: Self.globalSystemLibrariesKey)
+    }
+
+    // MARK: - 全部图库（默认 + 挂载）
+
+    /// 所有打开过的图库：第一条是系统默认图库，其余都是挂载图库。
+    /// 全局持久化，不跟当前图库走，切换 / 新建图库只会追加，不会把已有条目清掉。
+    static let knownLibrariesKey = LibraryPaths.knownLibrariesKey
+
+    func loadKnownLibraries() {
+        var list: [SystemLibraryRef] = []
+        if let data = UserDefaults.standard.data(forKey: Self.knownLibrariesKey),
+           let decoded = try? JSONDecoder().decode([SystemLibraryRef].self, from: data) {
+            list = decoded
+        }
+        // 旧版本没有全局列表：用「最近打开」记录恢复，早打开的排前面，最早那个成为默认图库。
+        if list.isEmpty,
+           let recent = UserDefaults.standard.stringArray(forKey: Self.recentLibrariesKey) {
+            list = recent.reversed().compactMap { path in
+                guard FileManager.default.fileExists(atPath: path) else { return nil }
+                return SystemLibraryRef(
+                    path: path,
+                    name: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent)
+            }
+        }
+        var seen: Set<String> = []
+        list = list.filter {
+            seen.insert(URL(fileURLWithPath: $0.path).standardizedFileURL.path).inserted
+        }
+        // 当前图库必须在列表里：首次升级 / 首次打开时用它兜底。
+        if let current = LibraryPaths.containerLibraryURL?.standardizedFileURL.path,
+           !list.contains(where: { isSameSystemLibraryPath($0.path, current) }) {
+            list.append(SystemLibraryRef(
+                path: current,
+                name: URL(fileURLWithPath: current).deletingPathExtension().lastPathComponent))
+        }
+        knownLibraries = list
+        // 「默认」= 下次启动会打开的那个库：显式默认优先，否则就是上次打开的库。
+        let explicit = UserDefaults.standard.bool(forKey: LibraryPaths.defaultLibraryExplicitKey)
+        let saved = UserDefaults.standard.string(forKey: LibraryPaths.defaultLibraryKey)
+        if explicit, let saved, list.contains(where: { isSameSystemLibraryPath($0.path, saved) }) {
+            defaultLibraryPath = saved
+        } else if let last = LibraryPaths.lastOpenedLibraryURL(),
+                  list.contains(where: { isSameSystemLibraryPath($0.path, last.path) }) {
+            defaultLibraryPath = last.path
+        } else {
+            defaultLibraryPath = nil
+        }
+        persistKnownLibraries()
+    }
+
+    func persistKnownLibraries() {
+        guard let data = try? JSONEncoder().encode(knownLibraries) else { return }
+        UserDefaults.standard.set(data, forKey: Self.knownLibrariesKey)
+    }
+
+    /// 记录一个打开过的图库：首次打开的那个自动成为系统默认图库，之后只追加挂载图库。
+    func registerKnownLibrary(_ url: URL) {
+        // 首次运行时先从旧记录恢复历史图库，默认图库才不会错认成刚打开的这一个。
+        if knownLibraries.isEmpty { loadKnownLibraries() }
+        let path = url.standardizedFileURL.path
+        if !knownLibraries.contains(where: { isSameSystemLibraryPath($0.path, path) }) {
+            knownLibraries.append(SystemLibraryRef(
+                path: path,
+                name: url.deletingPathExtension().lastPathComponent))
+        }
+        persistKnownLibraries()
+    }
+
+    /// 某个路径是不是启动图库：显式默认优先，其次是上次打开的图库。
+    /// 它代表「下次启动会打开哪个库」，界面上的「默认」标记以它为准。
+    func isDefaultLibrary(_ path: String) -> Bool {
+        guard let url = LibraryPaths.storedDefaultLibrary() ?? LibraryPaths.lastOpenedLibraryURL() else {
+            return false
+        }
+        return isSameSystemLibraryPath(path, url.path)
+    }
+
+    /// 是否用户显式设置的默认图库（与「上次打开」区分，用于文案与移除保护）。
+    func isExplicitDefaultLibrary(_ path: String) -> Bool {
+        guard let url = LibraryPaths.storedDefaultLibrary() else { return false }
+        return isSameSystemLibraryPath(path, url.path)
+    }
+
+    /// 把某个图库设为默认：下次启动直接打开它，并排到全部图库的第一位。
+    /// 这里会点亮「用户显式设置」标记，旧版本自动挑出来的默认值不会改变启动行为。
+    func setDefaultLibrary(_ path: String) {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path),
+              LibraryPaths.isLibraryContainer(url) else {
+            showToast("找不到这个图库，可能已被移动或删除")
+            return
+        }
+        let normalized = url.path
+        defaultLibraryPath = normalized
+        LibraryPaths.setStoredDefaultLibrary(url)
+        if let index = knownLibraries.firstIndex(where: { isSameSystemLibraryPath($0.path, normalized) }) {
+            let item = knownLibraries.remove(at: index)
+            knownLibraries.insert(item, at: 0)
+            persistKnownLibraries()
+        } else {
+            registerKnownLibrary(url)
+        }
+        let name = url.deletingPathExtension().lastPathComponent
+        showToast("「\(name)」已设为默认图库，下次启动直接打开")
+    }
+
+    /// 从「已打开」列表里移除一个挂载图库；只删记录，不动磁盘上的图库文件。
+    func removeKnownLibrary(_ path: String) {
+        let missing = !FileManager.default.fileExists(atPath: path)
+        // 显式设成的默认图库不允许移除；「上次打开」不算，否则刚用完的库就删不掉了。
+        guard !isExplicitDefaultLibrary(path) || missing else {
+            showToast("已设为默认的图库不能移除；可以先把其他图库设为默认")
+            return
+        }
+        let wasExplicitDefault = isExplicitDefaultLibrary(path)
+        knownLibraries.removeAll { isSameSystemLibraryPath($0.path, path) }
+        // 显式默认被移除时清掉启动偏好；「上次打开」的默认标记由 loadKnownLibraries 重算。
+        if wasExplicitDefault {
+            UserDefaults.standard.removeObject(forKey: LibraryPaths.defaultLibraryKey)
+            UserDefaults.standard.removeObject(forKey: LibraryPaths.defaultLibraryExplicitKey)
+        }
+        // 选择器的数据源包含「最近打开」：移除记录时必须一起清掉，否则它还会出现在选取图库里。
+        var recent = UserDefaults.standard.stringArray(forKey: Self.recentLibrariesKey) ?? []
+        recent.removeAll { isSameSystemLibraryPath($0, path) }
+        UserDefaults.standard.set(recent, forKey: Self.recentLibrariesKey)
+        persistKnownLibraries()
+        loadKnownLibraries()
+        showToast(missing
+                  ? "已移除失效的图库记录，文件不在磁盘上"
+                  : "已从列表移除挂载图库，文件仍保留在磁盘上")
     }
 
     /// 登记系统图库：列表可保存多个，连接新图库时追加或更新，切换只改变当前连接。
     func registerSystemLibrary(_ url: URL) {
         let path = url.standardizedFileURL.path
+        // 自己外接自己：只切换回当前图库，不写进连接列表。
+        if isContainerNativeLibraryPath(path) {
+            systemLibraries.removeAll { isSameSystemLibraryPath($0.path, path) }
+            persistSystemLibraries(systemLibraries)
+            return
+        }
         let name = url.deletingPathExtension().lastPathComponent
         var list = systemLibraries
-        if let index = list.firstIndex(where: { $0.path == path }) {
+        if let index = list.firstIndex(where: { isSameSystemLibraryPath($0.path, path) }) {
             list[index] = SystemLibraryRef(path: path, name: name)
         } else {
             list.insert(SystemLibraryRef(path: path, name: name), at: 0)
         }
-        if list.count > 10 { list.removeLast(list.count - 10) }
+        if list.count > 50 { list.removeLast(list.count - 50) }
         systemLibraries = list
         persistSystemLibraries(list)
     }
 
     /// 断开某个系统图库；若断开的正是当前库，则退回「图库」。
     func removeSystemLibrary(_ path: String) {
-        if systemLibraryPath == path {
+        if let active = systemLibraryPath, isSameSystemLibraryPath(active, path) {
             if isSystemScope {
                 navigate(to: .library)
             }
@@ -742,22 +1032,53 @@ extension LibraryStore {
             metadataStore?.setSetting("system_library_path", nil)
         }
         var list = systemLibraries
-        list.removeAll { $0.path == path }
+        list.removeAll { isSameSystemLibraryPath($0.path, path) }
         systemLibraries = list
         persistSystemLibraries(list)
+    }
+
+    // MARK: - 外接盘变化
+
+    /// 监听卷卸载：正在浏览的外接图库被拔掉时自动退回「图库」，
+    /// 连接记录保留（重新插上还能点回来），并清掉官方库判断的缓存。
+    func observeVolumeRemoval() {
+        guard volumeRemovalObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        volumeRemovalObservers.append(center.addObserver(forName: NSWorkspace.didUnmountNotification,
+                                                         object: nil,
+                                                         queue: .main) { [weak self] _ in
+            LibraryPaths.invalidateNativeCache()
+            Task { @MainActor in self?.handleVolumeRemoval() }
+        })
+    }
+
+    /// 卷卸载后的降级：不要把界面停在一个已经不存在的图库上。
+    func handleVolumeRemoval() {
+        if let path = systemLibraryPath, !FileManager.default.fileExists(atPath: path) {
+            let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            showToast("「\(name)」所在的磁盘已断开，已切回图库")
+            if isSystemScope { navigate(to: .library) }
+            resetSystemLibraryState()
+            metadataStore?.setSetting("system_library_path", nil)
+        }
+        if let container = LibraryPaths.containerLibraryURL,
+           !LibraryPaths.isLibraryContainer(container) {
+            showToast("当前图库所在的外置盘已断开，请重新连接后再继续操作")
+        }
     }
 
     /// 点击侧边栏里的系统图库：已加载过就只切回页面，不重复扫描。
     func activateSystemLibrary(_ ref: SystemLibraryRef) {
         guard FileManager.default.fileExists(atPath: ref.path) else {
-            showToast("找不到「\(ref.name)」，可能已被移动或删除")
-            removeSystemLibrary(ref.path)
+            // 外置盘没插时不能把连接记录删掉，否则重新插上就找不回来了。
+            showToast("找不到「\(ref.name)」，可能已被移动、删除，或外置盘未连接")
             return
         }
-        if systemLibraryPath == ref.path,
-           systemLibraryLoadedPath == ref.path,
-           !isLoadingSystemLibrary {
-            if !isSystemScope { navigate(to: .systemLibrary) }
+        // 旧数据里可能把「自己」登记成了一条连接：切回自己并清掉那条重复记录。
+        if isContainerNativeLibraryPath(ref.path) {
+            systemLibraries.removeAll { isSameSystemLibraryPath($0.path, ref.path) }
+            persistSystemLibraries(systemLibraries)
+            connectSystemLibrary(URL(fileURLWithPath: ref.path))
             return
         }
         connectSystemLibrary(URL(fileURLWithPath: ref.path))
@@ -768,12 +1089,14 @@ extension LibraryStore {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
-    /// 选择器里列出的图库：当前图库、最近打开过的、以及「图片」文件夹里的 .photoslibrary。
+    /// 选择器里列出的图库：当前图库、所有打开过的图库（含外置盘上的）、最近打开过的，
+    /// 以及「图片」文件夹里的 .photoslibrary。与侧边栏的「全部图库」共用同一份记录。
     func knownLibraryEntries() -> [LibraryEntry] {
         var urls: [URL] = []
         if let current = LibraryPaths.containerLibraryURL {
             urls.append(current)
         }
+        urls.append(contentsOf: knownLibraries.map { URL(fileURLWithPath: $0.path) })
         for path in UserDefaults.standard.stringArray(forKey: Self.recentLibrariesKey) ?? [] {
             urls.append(URL(fileURLWithPath: path))
         }
@@ -796,12 +1119,13 @@ extension LibraryStore {
                                         url: url,
                                         name: url.deletingPathExtension().lastPathComponent,
                                         modifiedAt: modified,
-                                        isNative: LibraryPaths.isNativeLibrary(url),
-                                        isCurrent: LibraryPaths.containerLibraryURL?.standardizedFileURL.path == path))
+                                        isCurrent: LibraryPaths.containerLibraryURL?.standardizedFileURL.path == path,
+                                        isDefault: isExplicitDefaultLibrary(path)))
         }
 
         entries.sort { lhs, rhs in
             if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
+            if lhs.isDefault != rhs.isDefault { return lhs.isDefault }
             return (lhs.modifiedAt ?? .distantPast) > (rhs.modifiedAt ?? .distantPast)
         }
         return entries
@@ -810,8 +1134,17 @@ extension LibraryStore {
     /// 打开任意 .photoslibrary（含官方「照片」图库）：都以这个图库为准切换，
     /// 展示它自己的内容，之后的导入、编辑与设置都写入它自己的数据库。
     func activateLibrary(_ url: URL) {
-        showLibraryPicker = false
-        libraryPickerOnLaunch = false
+        // 失效的图库（目录被移动 / 删除，或外置盘没插）绝不能进入切换流程：
+        // 切换失败会把界面留在半截状态，看起来像图库和侧边栏一起消失了。
+        guard LibraryPaths.isLibraryContainer(url) else {
+            let name = url.deletingPathExtension().lastPathComponent
+            showToast(name.isEmpty
+                      ? "找不到这个图库，可能已被移动或删除"
+                      : "找不到「\(name)」，可能已被移动、删除，或外置盘未连接")
+            return
+        }
+        // 选择器窗口的关闭放在 switchLibraryContainer 成功之后：
+        // 切换失败（只读 / 无权限）时保留选择器，用户可以直接换一个库再试。
         switchLibraryContainer(url)
     }
 
@@ -820,7 +1153,16 @@ extension LibraryStore {
     /// 当前是否允许给官方「照片」图库的照片写拾光的补充元数据。
     var canEditNativeOverlay: Bool { isNativeContainer }
 
-    private func updateSystemPhoto(_ id: UUID, mutate: (inout PhotoItem) -> Void) {
+    /// 原生导入完成后写拾光侧的第二份元数据：系统侧由 PhotoKit 写，这里只补标题。
+    func recordSystemImportOverlay(assetID: UUID, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        saveSystemOverlay(assetID) { overlay in
+            if (overlay.title ?? "").isEmpty { overlay.title = trimmed }
+        }
+    }
+
+    func updateSystemPhoto(_ id: UUID, mutate: (inout PhotoItem) -> Void) {
         systemRecentPhotos[id] = nil
         if let index = systemPhotos.firstIndex(where: { $0.id == id }) {
             mutate(&systemPhotos[index])
@@ -868,7 +1210,11 @@ extension LibraryStore {
                 saveSystemOverlay(id) { $0.isFavorite = favorite }
             }
         }
-        guard writeBack else { return }
+        guard writeBack else {
+            // 挂载的其它照片图库完全只读：收藏只记录在拾光，不碰原库。
+            showToast(favorite ? "已收藏（仅记录在拾光：此图库只读）" : "已取消收藏（仅记录在拾光）")
+            return
+        }
         Task {
             guard await prepareSystemLibraryWrite() else {
                 for id in ids { self.saveSystemOverlay(id) { $0.isFavorite = favorite } }
@@ -878,6 +1224,8 @@ extension LibraryStore {
                 try await PhotoKitBridge.setFavorite(favorite, assetIDs: Array(ids))
                 // 写回成功后清掉拾光覆盖值，以「照片」为准。
                 for id in ids { self.saveSystemOverlay(id) { $0.isFavorite = nil } }
+                self.systemFavoritesRevision &+= 1
+                self.showToast(favorite ? "已加入收藏，并同步到「照片」" : "已取消收藏，并同步到「照片」")
             } catch {
                 for id in ids { self.saveSystemOverlay(id) { $0.isFavorite = favorite } }
                 self.showToast("写回「照片」失败，已只记录在拾光：\(error.localizedDescription)")
@@ -994,6 +1342,16 @@ extension LibraryStore {
     }
 
     func loadSystemLibrary(at url: URL, informOnFailure: Bool = true, forceRefresh: Bool = false) {
+        // 同一个库已经加载好（或正在加载）：只切页面，不重扫。
+        // 「重新读取」传 forceRefresh 才会重建索引。
+        if !forceRefresh {
+            if isLoadingSystemLibrary { return }
+            if systemIndex != nil,
+               let loaded = systemLibraryLoadedPath,
+               isSameSystemLibraryPath(loaded, url.path) {
+                return
+            }
+        }
         // 打开系统图库默认展示「所有照片」全量网格，并按图库原始顺序（拍摄日期从新到旧）排列。
         if grouping != .all { grouping = .all }
         if sortKey != .capturedAt || sortAscending {
@@ -1001,8 +1359,11 @@ extension LibraryStore {
             sortAscending = false
         }
         // 当前图库就是官方图库时，先从它自己的 PhotosClone.sqlite 读回拾光的补充元数据。
-        if isNativeContainer {
+        // 浏览外接图库时不能把 App 自己图库的收藏 / 评分 / 关键词套过去。
+        if isNativeContainer, systemLibraryPath == nil || isBrowsingContainerSystemLibrary {
             systemOverlays = metadataStore?.loadOverlays() ?? [:]
+        } else {
+            systemOverlays = [:]
         }
         isLoadingSystemLibrary = true
         systemScanCount = 0
@@ -1333,11 +1694,19 @@ extension LibraryStore {
         clearSystemWindow()
         hydrateSystemCacheIfNeeded()
         loadPhotoKitMediaTypesIfNeeded()
+        // 载入完成后再判定一次：挂载的其它照片图库在这里被标成只读。
+        refreshSystemWriteTargetState()
+        // 跨图库搜索点开的条目：目标系统图库的索引到这一刻才真正可用。
+        consumePendingLibraryOpenIfReady()
     }
 
     /// 长曝光 / 电影效果只能通过 PhotoKit 智能相簿取 ID；仅对当前官方图库有效。
+    /// 这里绝不申请权限：浏览网络资源、网络电视等页面也会走到导航收尾，
+    /// 授权只由用户主动打开系统图库时申请。
     func loadPhotoKitMediaTypesIfNeeded() {
-        guard isNativeContainer, !isPhotoKitMediaTypeLoaded else { return }
+        guard isNativeContainer,
+              PhotoKitBridge.hasReadWritePermission,
+              !isPhotoKitMediaTypeLoaded else { return }
         isPhotoKitMediaTypeLoaded = true
         Task { [weak self] in
             let ids = await PhotoKitBridge.specialMediaTypeAssetIDs()
@@ -1368,6 +1737,7 @@ extension LibraryStore {
         systemLibraryLoadedPath = url.path
         invalidateSystemDuplicateGroups()
         hydrateSystemCacheIfNeeded()
+        refreshSystemWriteTargetState()
     }
 
     /// 把拾光的补充元数据叠加到官方「照片」图库的照片上（收藏 / 隐藏 / 关键词 / 标题 / 查看时间）。
@@ -1589,17 +1959,28 @@ extension LibraryStore {
     }
 
     /// 相簿项目数：索引模式直接读索引，避免依赖内存里的空 assetIDs。
+    /// 结果按结构版本缓存：侧边栏滚动时每个可见行都会问一次，不能每帧都查库。
     func systemAlbumPhotoCount(_ albumID: Int64) -> Int {
-        if let index = systemIndex { return index.albumAssetCount(albumID) }
-        return systemAlbum(id: albumID)?.assetIDs.count ?? 0
+        if systemAlbumCountCacheRevision != systemStructureRevision {
+            systemAlbumCountCache.removeAll(keepingCapacity: true)
+            systemAlbumCountCacheRevision = systemStructureRevision
+        }
+        if let cached = systemAlbumCountCache[albumID] { return cached }
+        let count: Int
+        if let index = systemIndex {
+            count = index.albumAssetCount(albumID)
+        } else {
+            count = systemAlbum(id: albumID)?.assetIDs.count ?? 0
+        }
+        systemAlbumCountCache[albumID] = count
+        return count
     }
 
     /// 侧边栏相簿是否为空。
     func systemAlbumIsEmpty(_ albumID: Int64) -> Bool {
-        if let index = systemIndex { return index.albumAssetCount(albumID) == 0 }
         // 扫描 / 建索引期间相簿成员还没读完：不显示「空相簿」标记，避免误判。
-        if isLoadingSystemLibrary { return false }
-        return systemAlbum(id: albumID)?.assetIDs.isEmpty ?? true
+        if systemIndex == nil, isLoadingSystemLibrary { return false }
+        return systemAlbumPhotoCount(albumID) == 0
     }
 
     /// 按主键取相簿：优先走索引，索引尚未建立时退回线性查找。
@@ -1746,8 +2127,10 @@ extension LibraryStore {
             let batchID = UUID()
             for target in pending {
                 guard let path = target.systemOriginalPath else { continue }
+                // 统一走 IngestService 的本地文件入口，不再直接调 ImportService。
+                let service = ingestService
                 let item = await Task.detached(priority: .userInitiated) {
-                    try? ImportService.importFile(URL(fileURLWithPath: path))
+                    try? service.importLocalFile(URL(fileURLWithPath: path))
                 }.value
                 if var item {
                     item.importBatchID = batchID

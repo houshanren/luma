@@ -55,6 +55,11 @@ struct CinemaSettingsSection: View {
     @State private var revealKey = false
     @State private var revealCookie = false
     @State private var revealAssrt = false
+    /// 显示页：每行数量 / 背景同人画 / 减弱动效 / 界面语言。
+    @AppStorage("cinema_wall_columns") private var wallColumnsTarget = 8
+    @AppStorage("cinema_ambient_backdrop") private var ambientBackdrop = true
+    @AppStorage("cinema_reduce_motion") private var reduceMotion = false
+    @AppStorage("cinema_ui_language") private var uiLanguage = "system"
     @State private var tab: CinemaSettingsTab = .scrape
     @State private var pendingClear: CinemaClearAction?
     @State private var pinInput = ""
@@ -72,7 +77,6 @@ struct CinemaSettingsSection: View {
 
     @AppStorage("cinema_show_rating_badge") private var showRatingBadge = true
     @AppStorage("cinema_show_format_badge") private var showFormatBadge = true
-    @AppStorage("cinema_open_detail_on_click") private var openDetailOnClick = true
     @AppStorage("cinema_resume_playback") private var resumePlayback = true
     @AppStorage("cinema_wall_density") private var wallDensity: CinemaWallDensity = .normal
 
@@ -646,10 +650,34 @@ struct CinemaSettingsSection: View {
                 settingToggle("显示规格角标",
                               detail: "只保留最重要的 1–2 个音画标记",
                               isOn: $showFormatBadge)
-                settingToggle("点击卡片打开详情",
-                              detail: "关闭后点卡片直接播放",
-                              isOn: $openDetailOnClick,
-                              divider: false)
+                settingRow("每行数量", detail: "海报墙每行显示几张；窗口变窄时自动缩小海报") {
+                    Picker("", selection: $wallColumnsTarget) {
+                        ForEach([6, 8, 10], id: \.self) { value in
+                            Text("\(value) 张").tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                }
+                settingRow("海报比例", detail: "海报墙 2:3、书架 16:9，固定不提供自定义") {
+                    Text("2:3 / 16:9")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                settingToggle("背景同人画",
+                              detail: "海报墙用当前影片背景图压暗铺底，切分类时交叉淡入",
+                              isOn: $ambientBackdrop)
+                settingToggle("减弱动效",
+                              detail: "关闭背景淡入、Hero 交叉淡入与卡片上浮，减少视觉干扰",
+                              isOn: $reduceMotion)
+                settingRow("界面语言", detail: "目前仅提供简体中文，跟随系统时同样显示中文") {
+                    Picker("", selection: $uiLanguage) {
+                        Text("跟随系统").tag("system")
+                        Text("简体中文").tag("zh-Hans")
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                }
                 settingNote("海报墙固定 2:3，书架固定 16:9；卡片只放关键规格，完整资料在详情页。")
             }
 
@@ -891,6 +919,52 @@ struct CinemaSettingsSection: View {
                     .labelsHidden()
                     .frame(width: 260)
                 }
+                settingRow("默认音轨", detail: "打开多音轨影片时先选哪条；原声 = 源文件默认轨") {
+                    Picker("", selection: $settings.videoPreferredAudio) {
+                        Text("原声优先").tag("original")
+                        Text("国语优先").tag("zh")
+                        Text("英语优先").tag("en")
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                }
+                settingRow("默认字幕", detail: "自动 = 按内嵌中文轨挂载；关闭 = 不自动挂任何字幕") {
+                    Picker("", selection: $settings.videoPreferredSubtitle) {
+                        Text("自动匹配").tag("auto")
+                        Text("不自动挂载").tag("off")
+                    }
+                    .labelsHidden()
+                    .frame(width: 130)
+                }
+                settingRow("跳过片头", detail: "剧集没有单独设置时用它兜底；0 = 不跳过") {
+                    HStack(spacing: 6) {
+                        Stepper("", value: $settings.cinemaSkipIntroSeconds, in: 0...300, step: 15)
+                            .labelsHidden()
+                        Text("\(settings.cinemaSkipIntroSeconds) 秒")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                }
+                settingRow("跳过片尾", detail: "片尾自动标记已看并跳到下一集") {
+                    HStack(spacing: 6) {
+                        Stepper("", value: $settings.cinemaSkipOutroSeconds, in: 0...300, step: 15)
+                            .labelsHidden()
+                        Text("\(settings.cinemaSkipOutroSeconds) 秒")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                }
+                settingToggle("记忆倍速",
+                              detail: "退出播放器时记住当前倍速，下次打开沿用",
+                              isOn: $settings.videoRememberSpeed)
+                settingToggle("优先系统硬解",
+                              detail: "关闭后强制走转封装 / 软解，个别显卡花屏时使用",
+                              isOn: $settings.videoPreferHardwareDecoding)
+                settingToggle("允许画中画",
+                              detail: "关闭后播放器里隐藏画中画按钮",
+                              isOn: $settings.videoPiPEnabled)
                 settingToggle("系统媒体集成",
                               detail: "控制中心与键盘 / 耳机媒体键控制当前视频",
                               isOn: $settings.systemMediaIntegration,
@@ -1047,9 +1121,58 @@ struct CinemaSettingsSection: View {
                              text: $settings.cinemaAPIBase)
                 settingField("图片地址",
                              placeholder: "https://image.tmdb.org/t/p",
-                             text: $settings.cinemaImageBase,
-                             divider: false)
+                             text: $settings.cinemaImageBase)
+                settingField("豆瓣镜像",
+                             detail: "豆瓣被限流时换成自建反代前缀",
+                             placeholder: "https://api.douban.com",
+                             text: $settings.cinemaDoubanBase)
+                settingRow("请求超时", detail: "豆瓣 / TMDB 搜索与详情的单次请求上限") {
+                    HStack(spacing: 6) {
+                        Stepper("", value: $settings.cinemaRequestTimeout, in: 5...60, step: 5)
+                            .labelsHidden()
+                        Text("\(Int(settings.cinemaRequestTimeout)) 秒")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                }
+                settingRow("日志等级", detail: "诊断日志详细程度，用于排查播放问题") {
+                    Picker("", selection: $settings.cinemaLogLevel) {
+                        Text("精简").tag("important")
+                        Text("标准").tag("standard")
+                        Text("详细").tag("verbose")
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                }
                 settingNote("访问不了 TMDB 时填自建反代或镜像前缀；只影响之后的请求。")
+            }
+
+            settingsGroup("缓存与索引", icon: "externaldrive") {
+                settingRow("海报缓存", detail: "磁盘缓存上限 6 GB，超出按最久未用淘汰") {
+                    Button("清理缓存") {
+                        CinemaArtworkCache.clearDiskCache()
+                        store.showToast("已清理影院海报缓存")
+                    }
+                    .controlSize(.small)
+                }
+                settingRow("重建索引", detail: "重新从数据库读取当前影院的刮削结果") {
+                    Button("重建") {
+                        store.rebuildCinemaIndexCache()
+                    }
+                    .controlSize(.small)
+                }
+                settingToggle("导出 NFO",
+                              detail: "刮削完成后把结果写到本地视频同目录，供 Jellyfin / Emby 读取",
+                              isOn: $settings.cinemaExportNFO)
+                settingRow("立即导出", detail: "只处理本地 / SMB 文件，网盘跳过") {
+                    Button("导出当前影院") {
+                        let count = store.exportCinemaNFOIfEnabled(for: store.cinemaActiveScope)
+                        if count == 0 { store.showToast("没有可导出的本地影片，或导出未开启") }
+                    }
+                    .controlSize(.small)
+                    .disabled(!settings.cinemaExportNFO)
+                }
             }
 
             settingsGroup("维护", icon: "wrench.and.screwdriver") {

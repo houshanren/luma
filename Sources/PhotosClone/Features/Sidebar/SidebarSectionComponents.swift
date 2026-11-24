@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// 侧边栏层级缩进：图库下的树整体比图库行再深一级。
+enum SidebarTreeMetrics {
+    /// 图库行图标列在 22pt 处（8 留白 + 12 折叠箭头 + 2 间距）；
+    /// 树里的行整体再缩进 26pt，图标列落在 34pt、文字落在 62pt，
+    /// 与父行的 22 / 50 拉开清楚的一级，子分区标题的竖线也对齐到 34pt。
+    static let childIndent: CGFloat = 26
+}
+
 /// 侧边栏分类行：拾光、系统图库与网盘共用同一套图标列、字号、内边距与悬停高亮。
 /// 数量只在调用方传入时显示（场景类型带数量，媒体类型与「更多项目」不带）。
 struct SidebarCategoryRow: View {
@@ -90,6 +98,9 @@ struct SidebarSectionHeader<MenuContent: View>: View {
     var topPadding: CGFloat = 12
     /// 嵌套在上级分区里时向右缩进，和一级分区拉开层级。
     var indent: CGFloat = 0
+    /// 一级模块（图库 / 网络存储 / 网络资源 / 网络影院 / 网络电视）：标题更大、行更高，
+    /// 末尾常驻一枚箭头，明确表达「整行可点，进入该模块主页」。
+    var isModule: Bool = false
     var isHovered: Bool = false
     var onOpen: (() -> Void)?
     let onToggle: () -> Void
@@ -100,6 +111,7 @@ struct SidebarSectionHeader<MenuContent: View>: View {
          active: Bool = false,
          topPadding: CGFloat = 12,
          indent: CGFloat = 0,
+         isModule: Bool = false,
          isHovered: Bool = false,
          onOpen: (() -> Void)? = nil,
          onToggle: @escaping () -> Void,
@@ -109,11 +121,14 @@ struct SidebarSectionHeader<MenuContent: View>: View {
         self.active = active
         self.topPadding = topPadding
         self.indent = indent
+        self.isModule = isModule
         self.isHovered = isHovered
         self.onOpen = onOpen
         self.onToggle = onToggle
         self.menu = menu
     }
+
+    private var rowHeight: CGFloat { isModule ? 26 : 22 }
 
     var body: some View {
         ZStack(alignment: .trailing) {
@@ -125,11 +140,11 @@ struct SidebarSectionHeader<MenuContent: View>: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("打开「\(title)」总览")
+                .help("打开「\(title)」主页")
             } else {
                 // 没有二级总览的分区：整行点击就展开 / 收起，不必非要点右侧箭头。
                 Button(action: onToggle) {
@@ -138,7 +153,7 @@ struct SidebarSectionHeader<MenuContent: View>: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -163,11 +178,13 @@ struct SidebarSectionHeader<MenuContent: View>: View {
                     .frame(width: 16)
                     .help("更多")
                 }
-                if isHovered || collapsed {
+                if isHovered || collapsed || isModule {
                     Button(action: onToggle) {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(isModule && !isHovered
+                                             ? Color.secondary.opacity(0.65)
+                                             : Color.secondary)
                             .rotationEffect(.degrees(collapsed ? -90 : 0))
                             .frame(width: 16, height: 16)
                             .contentShape(Rectangle())
@@ -179,25 +196,37 @@ struct SidebarSectionHeader<MenuContent: View>: View {
             .padding(.trailing, 8)
         }
         .padding(.top, topPadding)
-        .padding(.bottom, 3)
+        .padding(.bottom, isModule ? 2 : 3)
         .contentShape(Rectangle())
+        .background {
+            if isModule {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isHovered
+                          ? Color.primary.opacity(0.06)
+                          : (active ? Color.accentColor.opacity(0.10) : Color.clear))
+                    .padding(.horizontal, 2)
+            }
+        }
     }
 
-    /// 分区标题：左侧一条强调色细线 + 轻微字距，让侧边栏有清晰的层级节奏。
+    /// 分区标题：一级模块用一条更长的渐变竖线 + 13.5pt 主色标题；
+    /// 嵌套分区保留短细线 + 小号次级标题。
     private var label: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             Capsule()
                 .fill(
                     LinearGradient(colors: [
-                        Color.accentColor.opacity(active ? 0.95 : 0.42),
-                        Color.accentColor.opacity(active ? 0.35 : 0.08)
+                        Color.accentColor.opacity(active ? 0.95 : (isModule ? 0.55 : 0.42)),
+                        Color.accentColor.opacity(active ? 0.35 : (isModule ? 0.18 : 0.08))
                     ], startPoint: .top, endPoint: .bottom)
                 )
-                .frame(width: 2, height: 10)
+                .frame(width: isModule ? 2.5 : 2, height: isModule ? 14 : 10)
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: isModule ? 13.5 : 11, weight: .semibold))
                 .tracking(0.06)
-                .foregroundStyle(active ? Color.accentColor : Color.secondary)
+                .foregroundStyle(active
+                                 ? Color.accentColor
+                                 : (isModule ? Color.primary.opacity(0.92) : Color.secondary))
         }
         .padding(.leading, indent)
     }

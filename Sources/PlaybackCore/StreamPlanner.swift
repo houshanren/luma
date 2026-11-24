@@ -60,6 +60,10 @@ public struct StreamRequest {
     public var burnSubtitleStream: Int?
     /// HLS 分片与播放列表的输出目录。
     public var outputDirectory: URL
+    /// 直播源：去掉 readrate、用滑动窗口分片，并把请求头交给 ffmpeg 的 HTTP 客户端。
+    public var isLive: Bool
+    /// 直播源要求的请求头（UA / Referer 等）。
+    public var headers: [String: String]
 
     public init(input: String,
                 isRemote: Bool,
@@ -87,7 +91,9 @@ public struct StreamRequest {
                 bufferProfile: BufferProfile = .defaultProfile,
                 burnSubtitle: URL?,
                 burnSubtitleStream: Int? = nil,
-                outputDirectory: URL) {
+                outputDirectory: URL,
+                isLive: Bool = false,
+                headers: [String: String] = [:]) {
         self.input = input
         self.isRemote = isRemote
         self.mode = mode
@@ -115,6 +121,8 @@ public struct StreamRequest {
         self.burnSubtitle = burnSubtitle
         self.burnSubtitleStream = burnSubtitleStream
         self.outputDirectory = outputDirectory
+        self.isLive = isLive
+        self.headers = headers
     }
 }
 
@@ -207,7 +215,10 @@ public enum StreamPlanner {
         // 只看开头 2 MB 就足够判断流信息，缩短首段等待（原来 4 MB 在网盘上要多读几秒）。
         arguments += ["-probesize", "2M", "-analyzeduration", "2M"]
         // 本地文件读盘快，保持 12×；网盘按缓冲档位决定生成倍率，提前量由会话的 pacing 控制。
-        arguments += ["-readrate", request.isRemote ? "\(request.bufferProfile.remoteReadRate)" : "12"]
+        // 直播由源按实时推送，限速反而会积压，直接不限。
+        if !request.isLive {
+            arguments += ["-readrate", request.isRemote ? "\(request.bufferProfile.remoteReadRate)" : "12"]
+        }
         if seeking {
             // 输入选项，必须放在 -i 之前：关掉「解码后精确丢弃」，
             // 音轨才会和视频一样从 demuxer 落到的关键帧开始。
@@ -230,6 +241,23 @@ public enum StreamPlanner {
         // 接上 VideoToolbox 后解码几乎不占 CPU。转封装用不到解码，不加。
         if effectiveMode == .transcode {
             arguments += ["-hwaccel", "videotoolbox"]
+        }
+        // 直播直接把源地址交给 ffmpeg：带上源要求的 UA / Referer，断流时自动重连。
+        if request.isLive {
+            if let userAgent = request.headers.first(where: {
+                $0.key.caseInsensitiveCompare("User-Agent") == .orderedSame
+            })?.value, !userAgent.isEmpty {
+                arguments += ["-user_agent", userAgent]
+            }
+            let extraHeaders = request.headers
+                .filter { $0.key.caseInsensitiveCompare("User-Agent") != .orderedSame }
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)\r\n" }
+                .joined()
+            if !extraHeaders.isEmpty {
+                arguments += ["-headers", extraHeaders]
+            }
+            arguments += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
         }
         arguments += ["-i", request.input]
         if seeking {
@@ -390,11 +418,16 @@ public enum StreamPlanner {
         arguments += ["-f", "hls",
                       "-hls_time", "2",
                       "-hls_init_time", "0.5",
-                      "-hls_list_size", "0",
-                      "-hls_playlist_type", "event",
-                      // 分片先写临时文件再改名：AVPlayer 不会读到写了一半的片段。
-                      "-hls_flags", "temp_file",
-                      "-hls_segment_type", "fmp4"]
+                      // 直播用滑动窗口：只留最近几段，避免长时间观看把磁盘写满。
+                      "-hls_list_size", request.isLive ? "6" : "0"]
+        if request.isLive {
+            // 分片先写临时文件再改名，并在滑出窗口后删除旧段。
+            arguments += ["-hls_flags", "delete_segments+temp_file"]
+        } else {
+            arguments += ["-hls_playlist_type", "event",
+                          "-hls_flags", "temp_file"]
+        }
+        arguments += ["-hls_segment_type", "fmp4"]
         if multiAudio {
             // 一个视频 variant + 每路音轨一条 media playlist，播放器可即时换轨。
             arguments += ["-hls_fmp4_init_filename", "init_%v.mp4",

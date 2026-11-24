@@ -303,16 +303,19 @@ enum CinemaSort: String, CaseIterable, Identifiable {
     case year
     case title
     case duration
+    /// 随机：同一次进入影院内顺序稳定，下次进入重新洗牌。
+    case random
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .recent: return "最近添加"
-        case .rating: return "评分"
-        case .year: return "年份"
-        case .title: return "片名"
-        case .duration: return "时长"
+        case .recent: return "最近添加（新 → 旧）"
+        case .rating: return "评分（高 → 低）"
+        case .year: return "年份（新 → 旧）"
+        case .title: return "片名（A → Z）"
+        case .duration: return "时长（长 → 短）"
+        case .random: return "随机（每次进入重排）"
         }
     }
 
@@ -323,6 +326,7 @@ enum CinemaSort: String, CaseIterable, Identifiable {
         case .year: return "年份"
         case .title: return "片名"
         case .duration: return "时长"
+        case .random: return "随机"
         }
     }
 }
@@ -699,23 +703,10 @@ enum CinemaParentalLevel: Int, CaseIterable, Identifiable {
 
     func allows(certification: String?) -> Bool {
         guard self != .off else { return true }
-        guard let level = Self.level(of: certification) else { return true }
+        // 儿童模式：没有分级（未识别 / 刮削缺分级）一律按最严格处理，不冒险展示。
+        guard let level = Self.level(of: certification) else { return false }
         return level <= rawValue
     }
-}
-
-/// 刮削 / 维护任务记录：任务中心据此展示结果并支持失败重试。
-struct CinemaTaskRecord: Codable, Identifiable, Hashable {
-    var id: UUID = UUID()
-    /// 作用域键：local 或网盘 UUID 字符串。
-    var scopeKey: String
-    var scopeName: String
-    var startedAt: Date = Date()
-    var finishedAt: Date?
-    var total: Int = 0
-    var matched: Int = 0
-    var succeeded: Bool = true
-    var message: String = ""
 }
 
 /// 从文件名 + 所在文件夹解析出的基础信息。
@@ -899,6 +890,10 @@ struct CinemaEntry: Codable, Identifiable, Hashable {
     var backdropURL: String?
     var overview: String?
     var rating: Double?
+    /// 豆瓣评分：主源是 TMDB 时按需补一次，详情页三源评分牌用。
+    var doubanRating: Double? = nil
+    /// IMDb 评分：条目带 imdb_id 并且拿得到时才有。
+    var imdbRating: Double? = nil
     var scrapedAt: Date
     /// 刮削时使用的目录链（剧名 / 季），再次刮削时继续用它。
     var folderHint: String?
@@ -927,8 +922,10 @@ struct CinemaEntry: Codable, Identifiable, Hashable {
     var status: String? = nil
     /// 相似推荐（TMDB recommendations）：第一次打开详情时补一次，之后直接复用。
     var recommendations: [CinemaRecommendation]? = nil
-    /// 推荐分组缓存：猜你喜欢 / 豆瓣 / 同系列 / 同导演 / 同演员，详情页按 tab 切换。
+    /// 推荐分组缓存：TMDB / 豆瓣 / 同系列 / 同导演 / 同演员，详情页按 tab 切换。
     var recommendationGroups: [CinemaRecommendationGroup]? = nil
+    /// 推荐分组的抓取时间：旧缓存会按天刷新，避免豆瓣等后加的 tab 永远不出现。
+    var recommendationGroupsAt: Date? = nil
     /// 用户手动挑过海报 / 背景后置为 true，重新刮削时不再覆盖。
     var artworkLocked: Bool? = nil
     /// 这条结果来自哪个数据源；只有 TMDB 能补详情。
@@ -1072,4 +1069,6 @@ struct CinemaConnectionResult: Equatable {
 struct CinemaScrapeOutcome {
     var entry: CinemaEntry?
     var error: String?
+    /// 本轮每个数据源各自的错误：批量刮削据此只降级出错的源，不整批停。
+    var failedProviders: [CinemaProvider: String] = [:]
 }

@@ -63,7 +63,6 @@ enum CatalogProviders {
         // 所有源统一补一层「标题元数据」：站点没给备注时从标题派生番号 / 厂牌。
         return CatalogMetadataProvider(base: base)
     }
-
     private static func baseProvider(for kind: CatalogProviderKind) -> CatalogProvider? {
         switch kind {
         case .huangguo:
@@ -92,6 +91,44 @@ enum CatalogProviders {
             return MadouCatalogProvider()
         case .javgg:
             return JavGGCatalogProvider()
+        case .maccms:
+            return MacCMSCatalogProvider()
+        case .fofo:
+            return FoFoCatalogProvider()
+        case .ikanpp:
+            return IKanPPCatalogProvider()
+        case .iyf:
+            return IYFCatalogProvider()
+        }
+    }
+}
+
+/// 单源单页检索的统一入口：给并发搜索加一个超时兜底，
+/// 某个站点连不上 / 一直不返回时直接放弃，不拖慢整轮结果。
+enum CatalogSearchSupport {
+    /// 单个源的单次检索上限：超过就当这个源这一轮没有结果。
+    static let sourceTimeoutNanoseconds: UInt64 = 12_000_000_000
+
+    static func search(_ source: CatalogSource,
+                       keyword: String,
+                       page: Int = 1,
+                       timeout: UInt64 = sourceTimeoutNanoseconds) async -> [CatalogItem] {
+        guard let provider = CatalogProviders.provider(for: source.kind) else { return [] }
+        return await withTaskGroup(of: [CatalogItem]?.self) { group in
+            group.addTask {
+                guard let result = try? await provider.search(source: source,
+                                                              keyword: keyword,
+                                                              page: page) else { return nil }
+                return result.items
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeout)
+                return nil
+            }
+            // 先完成的那个说了算：结果、失败、超时都不再等其它源。
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? []
         }
     }
 }
@@ -266,7 +303,8 @@ enum CatalogHTTP {
     private static func perform(_ request: URLRequest, url: URL,
                                 accepting: Set<Int> = [200]) async throws -> Data {
         // 统一走 HTTPSourceTransport：UA / Referer / 自签证书 / 超时只在一处维护。
-        let profile = RequestProfile(trustSelfSigned: CatalogTrust.isTrusted(url.host ?? ""))
+        let profile = RequestProfile(headers: RequestProfile.browser.headerFields,
+                                    trustSelfSigned: CatalogTrust.isTrusted(url.host ?? ""))
         do {
             let response = try await HTTPSourceTransport.shared.send(
                 HTTPTransportRequest(url: url,
@@ -290,7 +328,7 @@ enum CatalogHTTP {
             case .tlsUntrusted:
                 throw CatalogError.tls(url.host ?? url.absoluteString)
             case .unavailable:
-                throw CatalogError.unavailable
+                throw CatalogError.unavailable(error.message)
             default:
                 throw error
             }

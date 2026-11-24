@@ -55,10 +55,25 @@ enum SourceErrorMapper {
                                message: error.localizedDescription,
                                recovery: [.retry])
         case .token(_), .api(_):
+            // Cookie 型网盘（夸克 / 115 / 阿里云盘）的失效经常只回一句「登录已过期 / 请重新登录」，
+            // 不会给出 401。这里识别这类文案，直接归到「重新登录」，避免用户只看到「重试」。
+            if isCookieExpired(message: error.localizedDescription) {
+                return SourceError(kind: .unauthorized,
+                                   message: error.localizedDescription,
+                                   recovery: [.reauthorize, .retry])
+            }
             return SourceError(kind: .unavailable,
                                message: error.localizedDescription,
                                recovery: [.retry, .reauthorize])
         }
+    }
+
+    /// Cookie / 令牌失效的文案特征：网盘接口把过期写进 message，而不是 HTTP 状态码。
+    private static func isCookieExpired(message: String) -> Bool {
+        let text = message.lowercased()
+        let hints = ["登录", "登陆", "重新登录", "授权失效", "授权过期", "cookie",
+                     "token", "expired", "unauthorized", "invalid session", "失效", "过期"]
+        return hints.contains { text.contains($0) }
     }
 
     private static func mapCatalog(_ error: CatalogError) -> SourceError {
@@ -79,8 +94,10 @@ enum SourceErrorMapper {
                                recovery: [.reconfigureSource, .retry])
         case .tls(let host):
             return .tls(host)
-        case .unavailable:
-            return .unavailable(error.localizedDescription)
+        case .unavailable(let detail):
+            return SourceError(kind: .unavailable,
+                               message: detail ?? error.localizedDescription,
+                               recovery: [.retry])
         }
     }
 
@@ -138,10 +155,17 @@ enum SourceErrorMapper {
         switch error.code {
         case .cancelled:
             return SourceError(kind: .cancelled, message: "请求已取消")
-        case .notConnectedToInternet, .networkConnectionLost, .timedOut,
-             .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+        case .notConnectedToInternet, .networkConnectionLost, .timedOut:
             return SourceError(kind: .unavailable,
                                message: error.localizedDescription,
+                               recovery: [.retry])
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            // 不少站点本身在线，只是被本地 DNS 拦成 0.0.0.0 / 无解析：
+            // 直接把可执行的恢复办法写进提示，比「连不上」有用。
+            return SourceError(kind: .unavailable,
+                               message: "连不上站点，域名解析可能被拦截。"
+                                   + "把系统 DNS 改成 223.5.5.5 或 8.8.8.8，"
+                                   + "或开启代理后再重试。",
                                recovery: [.retry])
         case .userAuthenticationRequired, .userCancelledAuthentication:
             return .unauthorized(error.localizedDescription)

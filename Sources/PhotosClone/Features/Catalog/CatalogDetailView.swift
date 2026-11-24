@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import LumaContentCore
 
 /// 资源详情：剧集是第一信息，进入后直接能选某一集播放。
 ///
@@ -21,6 +22,9 @@ struct CatalogDetailView: View {
     @State private var didAlignRange = false
     /// 图集大图预览的当前序号。
     @State private var previewIndex: Int?
+    /// 新建片单：先让用户取名，再创建并加入当前作品。
+    @State private var showsNewPlaylistPrompt = false
+    @State private var newPlaylistName = ""
     /// 封面主色：详情页底图会带一点作品本身的色调。
     @State private var heroTint: Color?
     /// 点详情里的女优 / 片商名字：打开跨源档案。
@@ -139,6 +143,23 @@ struct CatalogDetailView: View {
         .onDisappear {
             catalog.detailPersonTarget = nil
         }
+        .alert("新建片单", isPresented: $showsNewPlaylistPrompt) {
+            TextField("片单名称", text: $newPlaylistName)
+            Button("创建并加入") { createPlaylistAndAdd() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("给新片单取个名字，创建后会把当前作品加进去。")
+        }
+    }
+
+    /// 按用户输入的名字创建片单，并把当前作品加进去。
+    private func createPlaylistAndAdd() {
+        guard let source else { return }
+        let trimmed = newPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.isEmpty ? "片单 \(catalog.playlists.count + 1)" : trimmed
+        let id = catalog.createPlaylist(name: name)
+        catalog.addToPlaylist(id, source: source, item: item)
+        newPlaylistName = ""
     }
 
     private var closeButton: some View {
@@ -413,10 +434,10 @@ struct CatalogDetailView: View {
                         }
                     }
                     if !catalog.playlists.isEmpty { Divider() }
-                    Button("新建片单并加入") {
-                        guard let source else { return }
-                        let id = catalog.createPlaylist(name: "片单 \(catalog.playlists.count + 1)")
-                        catalog.addToPlaylist(id, source: source, item: detail.item)
+                    Button("新建片单并加入…") {
+                        guard source != nil else { return }
+                        newPlaylistName = "片单 \(catalog.playlists.count + 1)"
+                        showsNewPlaylistPrompt = true
                     }
                 } label: {
                     Image(systemName: "rectangle.stack.badge.plus")
@@ -1238,12 +1259,12 @@ struct CatalogDetailView: View {
                 store.showToast("图片保存失败")
                 return
             }
-            let temp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("catalog-\(UUID().uuidString).png")
             do {
-                try data.write(to: temp)
-                store.runImport(entries: [(url: temp, folders: ["网络资源图片"])],
-                                options: ImportOptions())
+                _ = try await store.ingestService.ingest(
+                    IngestRequest(payload: .imageData(data, fileExtension: "png"),
+                                  title: "网络资源图片",
+                                  folderName: "网络资源图片")
+                )
                 store.showToast("已保存到图库 · 网络资源图片")
             } catch {
                 store.showToast("图片保存失败：\(error.localizedDescription)")

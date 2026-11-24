@@ -49,16 +49,18 @@ public struct SourceID: Hashable, Codable, Sendable, CustomStringConvertible {
     /// 跨源任务（今日总榜补录、全源健康检测）使用的聚合源。
     public static let catalogHub = SourceID("catalog:hub")
 
+    /// 网络影院：聚合已启用影视源的跨源任务（列表探测、TMDB / 豆瓣资料补全）。
+    public static let networkCinema = SourceID("cinemaFeed:network")
+
+    /// 统一搜索：一次检索会跨图库 / 网盘 / 影院 / 电视 / 资源，任务条用它作为来源。
+    public static let search = SourceID("search:global")
+
     public static func television(_ id: UUID) -> SourceID {
         SourceID("tv:\(id.uuidString)")
     }
-
-    public static func localDisk(_ path: String) -> SourceID {
-        SourceID("disk:\(path)")
-    }
 }
 
-/// 六种内容来源。library 是唯一拥有写入会话的 kind；
+/// 五种内容来源。library 是唯一拥有写入会话的 kind；
 /// 链接图库仍然属于 library，只是处于非活动状态。
 public enum SourceKind: String, Codable, CaseIterable, Hashable, Sendable {
     case library
@@ -66,7 +68,6 @@ public enum SourceKind: String, Codable, CaseIterable, Hashable, Sendable {
     case cinemaFeed
     case catalogSite
     case iptv
-    case localDisk
 
     public var title: String {
         switch self {
@@ -75,7 +76,6 @@ public enum SourceKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .cinemaFeed: return "网络影院"
         case .catalogSite: return "网络资源"
         case .iptv: return "网络电视"
-        case .localDisk: return "本地磁盘"
         }
     }
 
@@ -87,7 +87,6 @@ public enum SourceKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .cinemaFeed: return "film.stack"
         case .catalogSite: return "play.rectangle.on.rectangle"
         case .iptv: return "tv"
-        case .localDisk: return "internaldrive"
         }
     }
 
@@ -104,7 +103,7 @@ public enum SourceKind: String, Codable, CaseIterable, Hashable, Sendable {
 public enum SourceActivationPolicy: String, Codable, CaseIterable, Hashable, Sendable {
     /// 链接图库：替换当前图库会话，撤销栈清空，写入目标改变。
     case replaceLibrarySession
-    /// 云盘 / 影院 / 资源 / 电视 / 本地磁盘：只切换右侧浏览内容，当前图库不变。
+    /// 云盘 / 影院 / 资源 / 电视：只切换右侧浏览内容，当前图库不变。
     case browseReadOnly
 
     public var isLibrarySwitch: Bool { self == .replaceLibrarySession }
@@ -149,8 +148,6 @@ public struct ContentCapabilities: OptionSet, Hashable, Sendable {
         [.categories, .homeFeed, .pagination, .search, .vodPlayback, .artwork]
     public static let television: ContentCapabilities =
         [.categories, .pagination, .search, .livePlayback, .epg, .artwork]
-    public static let disk: ContentCapabilities =
-        [.browseTree, .pagination, .search, .vodPlayback, .artwork]
 }
 
 extension ContentCapabilities: Codable {
@@ -260,7 +257,7 @@ public struct SourceDescriptor: Identifiable, Codable, Hashable, Sendable {
 }
 
 /// 应用级源目录：替代独立的 LibraryRegistry。
-/// 链接库、链接网盘、资源、影院、电视、本地磁盘都在同一份列表里，靠 kind 区分。
+/// 链接库、链接网盘、资源、影院、电视都在同一份列表里，靠 kind 区分。
 public struct SourceRegistryState: Codable, Hashable, Sendable {
     public var sources: [SourceDescriptor]
     public var activeLibraryID: SourceID?

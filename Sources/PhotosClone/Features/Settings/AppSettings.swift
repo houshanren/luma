@@ -242,6 +242,64 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(subtitlePosition, forKey: SettingsKeys.subtitlePosition) }
     }
 
+    /// 默认音轨：original（原声优先）/ zh（国语优先）/ en（英语优先）。
+    @Published var videoPreferredAudio: String {
+        didSet { UserDefaults.standard.set(videoPreferredAudio, forKey: SettingsKeys.videoPreferredAudio) }
+    }
+
+    /// 默认字幕：auto（按内嵌中文轨自动挂载）/ off（不自动挂载）。
+    @Published var videoPreferredSubtitle: String {
+        didSet { UserDefaults.standard.set(videoPreferredSubtitle, forKey: SettingsKeys.videoPreferredSubtitle) }
+    }
+
+    /// 退出播放器时记住倍速；下次打开沿用。
+    @Published var videoRememberSpeed: Bool {
+        didSet { UserDefaults.standard.set(videoRememberSpeed, forKey: SettingsKeys.videoRememberSpeed) }
+    }
+
+    /// 上次使用的播放倍速（仅当「记忆倍速」开启时生效）。
+    @Published var videoLastSpeed: Double {
+        didSet { UserDefaults.standard.set(videoLastSpeed, forKey: SettingsKeys.videoLastSpeed) }
+    }
+
+    /// 优先系统硬解；关闭后强制走转封装 / 软解，解决个别显卡花屏。
+    @Published var videoPreferHardwareDecoding: Bool {
+        didSet {
+            UserDefaults.standard.set(videoPreferHardwareDecoding,
+                                      forKey: SettingsKeys.videoPreferHardwareDecoding)
+        }
+    }
+
+    /// 是否在播放器里提供画中画。
+    @Published var videoPiPEnabled: Bool {
+        didSet { UserDefaults.standard.set(videoPiPEnabled, forKey: SettingsKeys.videoPiPEnabled) }
+    }
+
+    /// 全局跳过片头秒数：剧集没有单独设置时的兜底，0 表示不跳过。
+    @Published var cinemaSkipIntroSeconds: Int {
+        didSet { UserDefaults.standard.set(cinemaSkipIntroSeconds, forKey: SettingsKeys.cinemaSkipIntroSeconds) }
+    }
+
+    /// 全局跳过片尾秒数。
+    @Published var cinemaSkipOutroSeconds: Int {
+        didSet { UserDefaults.standard.set(cinemaSkipOutroSeconds, forKey: SettingsKeys.cinemaSkipOutroSeconds) }
+    }
+
+    /// 刮削请求超时（秒）：豆瓣 / TMDB 搜索与详情共用。
+    @Published var cinemaRequestTimeout: Double {
+        didSet { UserDefaults.standard.set(cinemaRequestTimeout, forKey: SettingsKeys.cinemaRequestTimeout) }
+    }
+
+    /// 日志详细程度：important / standard / verbose。
+    @Published var cinemaLogLevel: String {
+        didSet { UserDefaults.standard.set(cinemaLogLevel, forKey: SettingsKeys.cinemaLogLevel) }
+    }
+
+    /// 刮削成功后把 NFO 写到同目录（仅本地 / SMB），默认关闭。
+    @Published var cinemaExportNFO: Bool {
+        didSet { UserDefaults.standard.set(cinemaExportNFO, forKey: SettingsKeys.cinemaExportNFO) }
+    }
+
     /// 「最近删除」自动清理的保留天数；0 表示不自动清理。（随图库保存）
     @Published var trashRetentionDays: Int {
         didSet { persistLibraryInt(SettingsKeys.trashRetentionDays, trashRetentionDays) }
@@ -499,6 +557,17 @@ final class AppSettings: ObservableObject {
         subtitleBackground = defaults.object(forKey: SettingsKeys.subtitleBackground) as? Bool ?? true
         subtitleColor = defaults.string(forKey: SettingsKeys.subtitleColor) ?? "white"
         subtitlePosition = defaults.string(forKey: SettingsKeys.subtitlePosition) ?? "bottom"
+        videoPreferredAudio = defaults.string(forKey: SettingsKeys.videoPreferredAudio) ?? "original"
+        videoPreferredSubtitle = defaults.string(forKey: SettingsKeys.videoPreferredSubtitle) ?? "auto"
+        videoRememberSpeed = defaults.object(forKey: SettingsKeys.videoRememberSpeed) as? Bool ?? false
+        videoLastSpeed = defaults.object(forKey: SettingsKeys.videoLastSpeed) as? Double ?? 1
+        videoPreferHardwareDecoding = defaults.object(forKey: SettingsKeys.videoPreferHardwareDecoding) as? Bool ?? true
+        videoPiPEnabled = defaults.object(forKey: SettingsKeys.videoPiPEnabled) as? Bool ?? true
+        cinemaSkipIntroSeconds = defaults.object(forKey: SettingsKeys.cinemaSkipIntroSeconds) as? Int ?? 0
+        cinemaSkipOutroSeconds = defaults.object(forKey: SettingsKeys.cinemaSkipOutroSeconds) as? Int ?? 0
+        cinemaRequestTimeout = defaults.object(forKey: SettingsKeys.cinemaRequestTimeout) as? Double ?? 15
+        cinemaLogLevel = defaults.string(forKey: SettingsKeys.cinemaLogLevel) ?? "standard"
+        cinemaExportNFO = defaults.object(forKey: SettingsKeys.cinemaExportNFO) as? Bool ?? false
         // 默认优先 TMDB：没填 Key 时自动跳过，改用豆瓣匹配。
         let initialProvider = CinemaProvider(rawValue: defaults.string(forKey: SettingsKeys.cinemaProvider) ?? "") ?? .tmdb
         cinemaProvider = initialProvider

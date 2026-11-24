@@ -13,6 +13,10 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
     case healthCheck
     /// 一次性的连通性检测（网盘 / 站点根目录探测），与耗时的「健康检测」扫描区分开。
     case connectivity
+    /// 频道实时画面探测与播放状态标注（网络电视）：逐台抓帧，标出信号正常 / 异常。
+    case probe
+    /// 统一搜索：跨来源检索也会登记为后台任务，左下角能看到进度并可取消。
+    case search
     case ingest
     case compress
     case backup
@@ -24,6 +28,8 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
     case places
     case metadata
     case assistant
+    /// 直播录制短片：录完直接进图库，同样在任务中心露出进度。
+    case record
 
     public var title: String {
         switch self {
@@ -36,6 +42,8 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .analyze: return "分析"
         case .healthCheck: return "健康检测"
         case .connectivity: return "连接检测"
+        case .probe: return "画面探测"
+        case .search: return "搜索"
         case .ingest: return "导入"
         case .compress: return "压缩"
         case .backup: return "备份"
@@ -47,6 +55,7 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .places: return "地点"
         case .metadata: return "元数据"
         case .assistant: return "助手"
+        case .record: return "录制"
         }
     }
 }
@@ -89,6 +98,9 @@ public struct JobProgress: Identifiable, Hashable, Codable, Sendable {
     public var jobID: UUID
     public var sourceID: SourceID
     public var kind: SourceJobKind
+    /// 任务自己的标题（例如「补录更新日历」）：任务条与任务记录优先显示它，
+    /// 没有时再退回 `kind.title`。
+    public var title: String?
     public var completed: Int
     public var total: Int?
     public var phase: SourceJobPhase
@@ -102,6 +114,7 @@ public struct JobProgress: Identifiable, Hashable, Codable, Sendable {
     public init(jobID: UUID,
                 sourceID: SourceID,
                 kind: SourceJobKind,
+                title: String? = nil,
                 completed: Int = 0,
                 total: Int? = nil,
                 phase: SourceJobPhase = .pending,
@@ -112,6 +125,7 @@ public struct JobProgress: Identifiable, Hashable, Codable, Sendable {
         self.jobID = jobID
         self.sourceID = sourceID
         self.kind = kind
+        self.title = title
         self.completed = completed
         self.total = total
         self.phase = phase
@@ -151,6 +165,7 @@ public final class SourceJobCenter: @unchecked Sendable {
         storage[job.id] = JobProgress(jobID: job.id,
                                       sourceID: job.sourceID,
                                       kind: job.kind,
+                                      title: job.title,
                                       phase: .running,
                                       isCancellable: job.isCancellable)
         if let cancel { cancelHandlers[job.id] = cancel }
@@ -219,6 +234,15 @@ public final class SourceJobCenter: @unchecked Sendable {
         }
         lock.unlock()
         handler?()
+    }
+
+    /// 静默移除一个任务（不写历史、不留「已取消」记录）。
+    /// 用于被下一次输入立刻取代的检索：连续输入时任务记录里不该出现一串废弃的搜索。
+    public func discard(_ id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage[id] = nil
+        cancelHandlers[id] = nil
     }
 
     public func cancelAll(sourceID: SourceID) {

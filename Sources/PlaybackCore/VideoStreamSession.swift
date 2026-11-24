@@ -88,6 +88,8 @@ public final class VideoStreamSession {
     private let audioPassthrough: Bool
     /// 本次会话是否包含多条音轨（播放器侧可即时切换）。
     public private(set) var isMultiAudio = false
+    /// 直播会话：源持续推送、没有完整时长，不落缓存，输入直接交给 ffmpeg。
+    private let isLive: Bool
     /// 音轨声道数：>2 时给 AAC 更高码率，避免把 5.1 压得太狠。
     private let audioChannels: Int
     /// 选中音轨的编码（ffprobe 的展示名）。AAC / ALAC 可以直接拷进 fMP4，
@@ -160,6 +162,7 @@ public final class VideoStreamSession {
                 burnSubtitleStream: Int? = nil,
                 cacheSignature: String = "",
                 allowsCachePersistence: Bool = true,
+                isLive: Bool = false,
                 refreshSource: (() -> (URL, [String: String])?)? = nil) {
         self.environment = environment
         let profile = environment.bufferProfile
@@ -167,6 +170,7 @@ public final class VideoStreamSession {
         self.adaptiveProfile = profile
         self.cacheSignature = cacheSignature
         self.allowsCachePersistence = allowsCachePersistence
+        self.isLive = isLive
         let base = environment.cacheDirectory
         self.cacheDirectory = base.appendingPathComponent(
             Self.cacheDirectoryName(photoID: photoID,
@@ -227,8 +231,10 @@ public final class VideoStreamSession {
     /// 从中间起流生成的是半截时间轴，不能当完整缓存保存。
     /// 隔行源要转码去隔行，remux 结果画面有梳齿，不能落缓存。
     private var canPersistCache: Bool {
-        // 没有策略签名时禁止写缓存：不同策略会生成不同分片，不能共用同一个目录。
-        !cacheSignature.isEmpty
+        // 直播没有完整结束，永远不写长期缓存。
+        !isLive
+            // 没有策略签名时禁止写缓存：不同策略会生成不同分片，不能共用同一个目录。
+            && !cacheSignature.isEmpty
             // 音频延迟靠滤镜实现，缓存里的音频是 0 延迟版本，不能复用也不能覆盖它。
             && abs(audioDelay) < 0.001
             && allowsCachePersistence && audioPassthrough
@@ -239,7 +245,8 @@ public final class VideoStreamSession {
     /// 复用已有完整缓存的条件：缓存永远是从 0 生成的完整时间轴，
     /// 续播（startOffset > 0）也能直接拿它播放，再由播放器前跳到目标秒。
     private var canServeFromCache: Bool {
-        guard !cacheSignature.isEmpty,
+        guard !isLive,
+              !cacheSignature.isEmpty,
               abs(audioDelay) < 0.001,
               audioPassthrough,
               burnSubtitle == nil, burnSubtitleStream == nil,
@@ -739,7 +746,10 @@ public final class VideoStreamSession {
 
         let isRemote = !source.isFileURL
         var inputTarget: String
-        if isRemote {
+        if isRemote, isLive {
+            // 直播流是持续推送、不可 Range 的：不套本地代理，直接把源地址交给 ffmpeg。
+            inputTarget = source.absoluteString
+        } else if isRemote {
             let proxy = RemoteRangeSource(upstream: source,
                                           headers: headers,
                                           trustSelfSigned: trustSelfSigned,
@@ -822,7 +832,9 @@ public final class VideoStreamSession {
                                     bufferProfile: environment.bufferProfile,
                                     burnSubtitle: burnSubtitle,
                                     burnSubtitleStream: burnSubtitleStream,
-                                    outputDirectory: workDirectory)
+                                    outputDirectory: workDirectory,
+                                    isLive: isLive,
+                                    headers: headers)
         let arguments = StreamPlanner.arguments(for: request)
 
         let process = Process()

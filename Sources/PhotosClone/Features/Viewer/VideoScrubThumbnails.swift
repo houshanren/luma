@@ -12,11 +12,7 @@ enum VideoScrubThumbnails {
     private static let lock = NSLock()
 
     /// 预览帧缓存：按「片源 + 采样段」存储，来回滑动不再重复解码。
-    private static let images: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 120
-        return cache
-    }()
+    private static let images = MemoryImageCache(totalCostLimit: 120 * 1024 * 1024, countLimit: 120)
 
     /// 一段距离一帧：片长越长，采样段越长。
     static func sampleInterval(for duration: Double) -> Double {

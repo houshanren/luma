@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import AVFoundation
 import Network
 import NetFS
+import LumaContentCore
 
 enum CloudIdentity {
     static func id(mountID: UUID, path: String) -> UUID {
@@ -163,13 +164,7 @@ enum AListProbe {
         }
     }
 
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 8
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    private static let session = HTTPSessionPool.shared.session(.probe)
 }
 
 /// 云缩略图失败短缓存：同一张图失败后 60 秒内不再重复请求远端。

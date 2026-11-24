@@ -204,7 +204,7 @@ extension LibraryStore {
                         config: config,
                         apiKey: key,
                         messages: wire,
-                        tools: AILibraryTools.definitions
+                        tools: aiToolDefinitions
                     )
                     guard !Task.isCancelled else {
                         self.aiIsResponding = false

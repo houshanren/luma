@@ -5,9 +5,11 @@ enum NamePromptKind {
     case newFolder(parentID: UUID?)
     case renameAlbum(UUID)
     case renameFolder(UUID)
-    /// 官方「照片」图库的相簿写回（PhotoKit）。
-    case newSystemAlbum
+    /// 官方「照片」图库的相簿 / 文件夹写回（PhotoKit）。
+    case newSystemAlbum(folderID: Int64?)
+    case newSystemFolder(parentID: Int64?)
     case renameSystemAlbum(Int64)
+    case renameSystemFolder(Int64)
 }
 
 struct NamePromptPayload: Identifiable {
@@ -37,14 +39,26 @@ struct NamePromptPayload: Identifiable {
                           title: "重命名文件夹", actionTitle: "重命名", initialText: current)
     }
 
-    static func newSystemAlbum() -> NamePromptPayload {
-        NamePromptPayload(kind: .newSystemAlbum,
-                          title: "新建相簿（写入「照片」）", actionTitle: "创建", initialText: "")
+    static func newSystemAlbum(folderID: Int64? = nil) -> NamePromptPayload {
+        NamePromptPayload(kind: .newSystemAlbum(folderID: folderID),
+                          title: folderID == nil ? "新建相簿（写入「照片」）" : "新建相簿（放进此文件夹）",
+                          actionTitle: "创建", initialText: "")
+    }
+
+    static func newSystemFolder(parentID: Int64? = nil) -> NamePromptPayload {
+        NamePromptPayload(kind: .newSystemFolder(parentID: parentID),
+                          title: parentID == nil ? "新建文件夹（写入「照片」）" : "新建子文件夹",
+                          actionTitle: "创建", initialText: "")
     }
 
     static func renameSystemAlbum(_ id: Int64, current: String) -> NamePromptPayload {
         NamePromptPayload(kind: .renameSystemAlbum(id),
                           title: "重命名相簿（写入「照片」）", actionTitle: "重命名", initialText: current)
+    }
+
+    static func renameSystemFolder(_ id: Int64, current: String) -> NamePromptPayload {
+        NamePromptPayload(kind: .renameSystemFolder(id),
+                          title: "重命名文件夹（写入「照片」）", actionTitle: "重命名", initialText: current)
     }
 }
 
@@ -92,10 +106,14 @@ struct NamePromptSheet: View {
             store.renameAlbum(id, to: name)
         case .renameFolder(let id):
             store.renameFolder(id, to: name)
-        case .newSystemAlbum:
-            store.createSystemAlbum(named: name)
+        case .newSystemAlbum(let folderID):
+            store.createSystemAlbum(named: name, inFolder: folderID)
+        case .newSystemFolder(let parentID):
+            store.createSystemFolder(named: name, parentID: parentID)
         case .renameSystemAlbum(let id):
             store.renameSystemAlbum(id, to: name)
+        case .renameSystemFolder(let id):
+            store.renameSystemFolder(id, to: name)
         }
         dismiss()
     }

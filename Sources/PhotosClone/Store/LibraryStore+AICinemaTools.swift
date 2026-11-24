@@ -468,26 +468,25 @@ extension LibraryStore {
             summaries.append("观看记录 \(records.count)")
         }
         if kind == "tasks" || kind == "all" {
-            let tasks = cinemaTasks
-                .sorted { $0.startedAt > $1.startedAt }
+            let tasks = sourceJobHistory
+                .filter { $0.kind == .scrape }
+                .sorted { $0.updatedAt > $1.updatedAt }
                 .prefix(limit)
                 .map { task -> [String: Any] in
                     var item: [String: Any] = [
-                        "id": task.id.uuidString,
-                        "scope": task.scopeName,
-                        "total": task.total,
-                        "matched": task.matched,
-                        "succeeded": task.succeeded,
-                        "message": task.message,
-                        "started_at": Self.aiCinemaDateFormatter.string(from: task.startedAt)
+                        "id": task.jobID.uuidString,
+                        "scope": cinemaScopeName(forSource: task.sourceID),
+                        "total": task.total ?? 0,
+                        "matched": task.completed,
+                        "succeeded": task.phase == .finished,
+                        "message": task.message ?? "",
+                        "started_at": Self.aiCinemaDateFormatter.string(from: task.updatedAt)
                     ]
-                    if let finished = task.finishedAt {
-                        item["finished_at"] = Self.aiCinemaDateFormatter.string(from: finished)
-                    }
+                    item["finished_at"] = Self.aiCinemaDateFormatter.string(from: task.updatedAt)
                     return item
                 }
             payload["tasks"] = Array(tasks)
-            summaries.append("任务 \(cinemaTasks.count)")
+            summaries.append("任务 \(sourceJobHistory.filter { $0.kind == .scrape }.count)")
         }
         if kind == "notifications" || kind == "all" {
             let notes = cinemaNotifications

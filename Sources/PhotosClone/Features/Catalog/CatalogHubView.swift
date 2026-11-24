@@ -10,18 +10,16 @@ struct CatalogHubView: View {
             switch catalog.hubTab {
             case .browse:
                 CatalogSourcesOverviewView()
-            case .talent:
-                CatalogTalentLibraryView()
             case .following:
                 CatalogFollowingView()
             case .ranking:
-                CatalogRankingView()
+                CatalogRankingView(compact: true)
             case .history:
-                CatalogHistoryView()
+                CatalogHistoryView(compact: true)
             case .playlists:
                 CatalogPlaylistsView()
             case .calendar:
-                CatalogCalendarView()
+                CatalogCalendarView(compact: true)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -108,7 +106,6 @@ struct CatalogHubTabs: View {
     private func badge(for tab: CatalogHubTab) -> Int? {
         switch tab {
         case .browse: return nil
-        case .talent: return nil
         case .ranking: return catalog.currentSpotlight.count
         case .calendar: return catalog.todaySpotlight.count
         case .history: return catalog.allContinueWatching.count

@@ -32,6 +32,8 @@ final class CatalogBrowserModel: ObservableObject {
     var jobCenter: SourceJobCenter?
     /// 任务进度变化回调；由 LibraryStore 接到 `sourceJobRevision`，触发界面刷新。
     var onJobChange: (() -> Void)?
+    /// 任务结束后的归档回调：由 LibraryStore 接到 `archiveSourceJob`，写进任务记录。
+    var onJobFinished: ((UUID) -> Void)?
     /// 列表当前展示的是缓存快照而不是最新请求结果时，记录快照时间（离线视图提示用）。
     @Published var listSnapshotAt: Date?
     /// 本次刷新相对上次快照新出现的条目（key = "源 UUID|条目 id"）：
@@ -1128,11 +1130,14 @@ final class CatalogBrowserModel: ObservableObject {
         CatalogStore.deleteProgress(keys: [record.key])
     }
 
-    /// 清空全部观看足迹。
-    func clearProgress() {
-        let keys = Array(progress.keys)
+    /// 清空观看足迹。传 `sourceIDs` 时只清这个范围内的记录（网络影院的足迹页只清影视源）。
+    func clearProgress(sourceIDs: Set<UUID>? = nil) {
+        let keys: [String] = progress.compactMap { key, record -> String? in
+            guard sourceIDs?.contains(record.sourceID) ?? true else { return nil }
+            return key
+        }
         guard !keys.isEmpty else { return }
-        progress.removeAll()
+        for key in keys { progress[key] = nil }
         CatalogStore.deleteProgress(keys: keys)
     }
 
@@ -1238,6 +1243,8 @@ final class CatalogBrowserModel: ObservableObject {
         cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(id.uuidString + "|") }
         pageSnapshots = pageSnapshots.filter { !$0.key.hasPrefix(id.uuidString + "|") }
         CatalogSnapshotStore.remove(prefix: id.uuidString + "|")
+        // 网络影院的列表快照与网络资源同源：移除源后一并清掉该源的条目。
+        NetworkCinemaSnapshotStore.remove(sourceID: id)
         categoryThumbs = categoryThumbs.filter { !$0.key.hasPrefix(id.uuidString + "|") }
         saveCategoryThumbs()
         saveSources()

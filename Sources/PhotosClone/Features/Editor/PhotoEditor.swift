@@ -799,6 +799,29 @@ struct PhotoEditorView: View {
 
     private func load() async {
         isLoading = true
+        // 系统照片只能经 PhotoKit 取原图；本地照片优先从原图 + 配方重建。
+        if photo.isSystem {
+            guard let data = await PhotoKitBridge.originalImageData(assetID: photo.id),
+                  let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else {
+                isLoading = false
+                preview = nil
+                return
+            }
+            state = EditState()
+            history.removeAll()
+            redoStack.removeAll()
+            pendingSnapshot = nil
+            beautyAdvice = nil
+            beautyBase = nil
+            beautyStrength = 1
+            baseCI = ci
+            basePixelSize = CGSize(width: ci.extent.width, height: ci.extent.height)
+            preview = PhotoRenderer.render(base: ci, state: state.cropless(), maxPixel: 1600)
+            buildFilterThumbs(base: ci)
+            isLoading = false
+            if tool == .beauty { analyzeBeauty() }
+            return
+        }
         // 有编辑配方时从原图重建，保证再次编辑是非破坏性的。
         let recipe = photo.editRecipe
         let useOriginal = photo.hasEdits && recipe != nil
@@ -1017,6 +1040,12 @@ struct PhotoEditorView: View {
                   let data = jpegData(from: rendered) else {
                 isSaving = false
                 store.showToast("保存失败")
+                return
+            }
+            if photo.isSystem {
+                // 系统照片：整帧作为非破坏性调整写回「照片」。
+                store.saveSystemEdit(photoID: photo.id, jpegData: data)
+                isSaving = false
                 return
             }
             store.commitEditedImage(photoID: photo.id,

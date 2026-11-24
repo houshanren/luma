@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 /// 黄果短剧适配器。
 ///
@@ -35,85 +36,92 @@ struct HuangguoCatalogProvider: CatalogProvider {
 
     /// 一级分类来自首页主导航；每个频道页的 tab 再补成二级分类。
     private func fetchLiveCategories(source: CatalogSource) async throws -> [CatalogCategory] {
-        let root = try baseURL(source)
-        let homeHTML = try await fetchHTML(url: root, source: source)
-        var level1 = Self.parseNavCategories(homeHTML)
-        guard !level1.isEmpty else { return [] }
+        try await withResolvedBase(source) { base, src in
+            let homeHTML = try await fetchHTML(url: base, source: src)
+            var level1 = Self.parseNavCategories(homeHTML)
+            guard !level1.isEmpty else { return [] }
 
-        for index in level1.indices where !level1[index].isRank {
-            guard let url = URL(string: "\(root.absoluteString)/\(level1[index].id)/") else { continue }
-            guard let html = try? await fetchHTML(url: url, source: source) else { continue }
-            let tabs = Self.parseChannelTabs(html)
-            // 只有一个 tab 时它就是「全部」，没有分层意义。
-            if tabs.count > 1 { level1[index].children = tabs }
+            for index in level1.indices where !level1[index].isRank {
+                guard let url = URL(string: "\(base.absoluteString)/\(level1[index].id)/")
+                else { continue }
+                guard let html = try? await fetchHTML(url: url, source: src) else { continue }
+                let tabs = Self.parseChannelTabs(html)
+                // 只有一个 tab 时它就是「全部」，没有分层意义。
+                if tabs.count > 1 { level1[index].children = tabs }
+            }
+            return level1
         }
-        return level1
     }
 
     func home(source: CatalogSource) async throws -> CatalogPage {
-        let root = try baseURL(source)
-        let html = try await fetchHTML(url: root, source: source)
-        let items = Self.parseDramaCards(html, source: source)
-        return CatalogPage(items: items, page: 1, hasMore: false)
+        try await withResolvedBase(source) { base, src in
+            let html = try await fetchHTML(url: base, source: src)
+            let items = Self.parseDramaCards(html, source: src)
+            return CatalogPage(items: items, page: 1, hasMore: false)
+        }
     }
 
     /// 首页的「热门标签」区块，作为跨分类的第三级筛选。
     func tags(source: CatalogSource) async throws -> [CatalogCategory] {
-        let root = try baseURL(source)
-        let html = try await fetchHTML(url: root, source: source)
-        return Self.parseHotTags(html)
+        try await withResolvedBase(source) { base, src in
+            let html = try await fetchHTML(url: base, source: src)
+            return Self.parseHotTags(html)
+        }
     }
 
     func category(source: CatalogSource, category: CatalogCategory,
                   sort: CatalogSort, page: Int) async throws -> CatalogPage {
-        let root = try baseURL(source)
-        var address = "\(root.absoluteString)/\(category.id)/"
-        if page > 1 { address += "\(page)/" }
-        guard let url = URL(string: address) else {
-            throw CatalogError.parse("分类地址无效")
+        try await withResolvedBase(source) { base, src in
+            var address = "\(base.absoluteString)/\(category.id)/"
+            if page > 1 { address += "\(page)/" }
+            guard let url = URL(string: address) else {
+                throw CatalogError.parse("分类地址无效")
+            }
+            let html = try await fetchHTML(url: url, source: src)
+            let items = category.isRank
+                ? Self.parseRankItems(html, source: src)
+                : Self.parseDramaCards(html, source: src)
+            return CatalogPage(items: items, page: page,
+                               hasMore: Self.hasNextPage(html, path: category.id, page: page))
         }
-        let html = try await fetchHTML(url: url, source: source)
-        let items = category.isRank
-            ? Self.parseRankItems(html, source: source)
-            : Self.parseDramaCards(html, source: source)
-        return CatalogPage(items: items, page: page,
-                           hasMore: Self.hasNextPage(html, path: category.id, page: page))
-    }
-
-    func detail(source: CatalogSource, itemID: String) async throws -> CatalogDetail {
-        guard let url = URL(string: "\(try baseURL(source).absoluteString)/api/videos/\(itemID)")
-        else { throw CatalogError.parse("详情地址无效") }
-        let data = try await CatalogHTTP.fetchData(url: url, headers: jsonHeaders(source))
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let d = root["data"] as? [String: Any] else {
-            throw CatalogError.parse("详情数据格式异常")
-        }
-        let item = parseItem(d, source: source)
-        let parsed = parseEpisodes(from: d, id: itemID, source: source)
-        let episodes = parsed.isEmpty
-            ? [CatalogEpisode(index: 1, pageURL: "\(source.baseURL)/video/\(itemID)/")]
-            : parsed
-        return CatalogDetail(item: item, episodes: episodes,
-                             blocks: Self.parseSynopsis(d),
-                             facts: Self.parseFacts(d))
     }
 
     func search(source: CatalogSource, keyword: String, page: Int) async throws -> CatalogPage {
-        let root = try baseURL(source)
-        guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
-            throw CatalogError.parse("搜索关键词无效")
+        try await withResolvedBase(source) { base, src in
+            guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            else { throw CatalogError.parse("搜索关键词无效") }
+            var address = "\(base.absoluteString)/search/video/\(encoded)/"
+            if page > 1 { address += "\(page)/" }
+            guard let url = URL(string: address) else {
+                throw CatalogError.parse("搜索地址无效")
+            }
+            let html = try await fetchHTML(url: url, source: src)
+            let items = Self.parseDramaCards(html, source: src)
+            var hasMore = Self.hasNextPage(html, path: "search/video/\(encoded)", page: page)
+            // 搜索页可能不渲染页码链接，用「本页是否满」兜底。
+            if !hasMore { hasMore = items.count >= 24 }
+            return CatalogPage(items: items, page: page, hasMore: hasMore)
         }
-        var address = "\(root.absoluteString)/search/video/\(encoded)/"
-        if page > 1 { address += "\(page)/" }
-        guard let url = URL(string: address) else {
-            throw CatalogError.parse("搜索地址无效")
+    }
+
+    func detail(source: CatalogSource, itemID: String) async throws -> CatalogDetail {
+        try await withResolvedBase(source) { base, src in
+            guard let url = URL(string: "\(base.absoluteString)/api/videos/\(itemID)")
+            else { throw CatalogError.parse("详情地址无效") }
+            let data = try await CatalogHTTP.fetchData(url: url, headers: jsonHeaders(src))
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let d = root["data"] as? [String: Any] else {
+                throw CatalogError.parse("详情数据格式异常")
+            }
+            let item = parseItem(d, source: src)
+            let parsed = parseEpisodes(from: d, id: itemID, source: src)
+            let episodes = parsed.isEmpty
+                ? [CatalogEpisode(index: 1, pageURL: "\(base.absoluteString)/video/\(itemID)/")]
+                : parsed
+            return CatalogDetail(item: item, episodes: episodes,
+                                 blocks: Self.parseSynopsis(d),
+                                 facts: Self.parseFacts(d))
         }
-        let html = try await fetchHTML(url: url, source: source)
-        let items = Self.parseDramaCards(html, source: source)
-        var hasMore = Self.hasNextPage(html, path: "search/video/\(encoded)", page: page)
-        // 搜索页可能不渲染页码链接，用「本页是否满」兜底。
-        if !hasMore { hasMore = items.count >= 24 }
-        return CatalogPage(items: items, page: page, hasMore: hasMore)
     }
 
     func stream(source: CatalogSource, episode: CatalogEpisode) async throws -> CatalogStream {
@@ -128,67 +136,71 @@ struct HuangguoCatalogProvider: CatalogProvider {
         }
 
         let epNum = String(episode.index)
+        return try await withResolvedBase(source) { base, src in
+            // 站点播放接口是普通 POST，直接返回 streams.main
+            guard let url = URL(string: "\(base.absoluteString)/api/videos/\(id)/episodes/\(epNum)/playback")
+            else { throw CatalogError.parse("播放地址无效") }
+            let bodyData = try await CatalogHTTP.postJSON(url: url, headers: [
+                "User-Agent": src.userAgent,
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Referer": "\(base.absoluteString)/video/\(id)/"
+            ], body: Data("{}".utf8))
 
-        // 站点播放接口是普通 POST，直接返回 streams.main
-        guard let url = URL(string: "\(source.baseURL)/api/videos/\(id)/episodes/\(epNum)/playback") else {
-            throw CatalogError.parse("播放地址无效")
+            guard let json = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+                  let d = json["data"] as? [String: Any],
+                  let streams = d["streams"] as? [String: Any] else {
+                throw CatalogError.parse("播放地址格式异常")
+            }
+            let rawURL = (streams["main"] as? String)
+                ?? (streams["preview"] as? String)
+                ?? (streams["hevc"] as? String)
+                ?? ""
+            let clean = rawURL
+                .replacingOccurrences(of: "\\u0026", with: "&")
+                .replacingOccurrences(of: "\\/", with: "/")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard clean.lowercased().hasPrefix("http"),
+                  let playURL = URL(string: clean) else {
+                throw CatalogError.parse("未获取到可用播放地址")
+            }
+
+            // CDN 可能需要额外鉴权头
+            var extraHeaders: [String: String] = [:]
+            if let cdn = d["cdn"] as? [String: Any],
+               let authKey = cdn["authKey"] as? String,
+               let authValue = cdn["authValue"] as? String,
+               !authKey.isEmpty {
+                extraHeaders[authKey] = authValue
+            }
+
+            var headers: [String: String] = [
+                "User-Agent": src.userAgent,
+                "Referer": src.referer
+            ]
+            for (k, v) in extraHeaders { headers[k] = v }
+
+            return CatalogStream(url: playURL, headers: headers, isHLS: true)
         }
-        let bodyData = try await CatalogHTTP.postJSON(url: url, headers: [
-            "User-Agent": source.userAgent,
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Referer": "\(source.baseURL)/video/\(id)/"
-        ], body: Data("{}".utf8))
-
-        guard let json = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
-              let d = json["data"] as? [String: Any],
-              let streams = d["streams"] as? [String: Any] else {
-            throw CatalogError.parse("播放地址格式异常")
-        }
-        let rawURL = (streams["main"] as? String)
-            ?? (streams["preview"] as? String)
-            ?? (streams["hevc"] as? String)
-            ?? ""
-        let clean = rawURL
-            .replacingOccurrences(of: "\\u0026", with: "&")
-            .replacingOccurrences(of: "\\/", with: "/")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard clean.lowercased().hasPrefix("http"),
-              let playURL = URL(string: clean) else {
-            throw CatalogError.parse("未获取到可用播放地址")
-        }
-
-        // CDN 可能需要额外鉴权头
-        var extraHeaders: [String: String] = [:]
-        if let cdn = d["cdn"] as? [String: Any],
-           let authKey = cdn["authKey"] as? String,
-           let authValue = cdn["authValue"] as? String,
-           !authKey.isEmpty {
-            extraHeaders[authKey] = authValue
-        }
-
-        var headers: [String: String] = [
-            "User-Agent": source.userAgent,
-            "Referer": source.referer
-        ]
-        for (k, v) in extraHeaders { headers[k] = v }
-
-        return CatalogStream(url: playURL, headers: headers, isHLS: true)
     }
 
     func coverData(source: CatalogSource, urlString: String) async throws -> Data {
-        guard let url = URL(string: urlString) else { throw CatalogError.parse("封面地址无效") }
-        let data = try await CatalogHTTP.fetchData(url: url, headers: [
-            "User-Agent": source.userAgent,
-            "Referer": source.referer,
-            "Accept": "image/*,*/*;q=0.8"
-        ])
-        guard let image = CatalogCrypto.decodeImage(
-            data: data,
-            key: source.artworkKey ?? Self.defaultArtworkKey,
-            iv: source.artworkIV ?? Self.defaultArtworkIV
-        ) else { throw CatalogError.decryption }
-        return image
+        try await withResolvedBase(source) { _, src in
+            guard let url = URL(string: urlString) else {
+                throw CatalogError.parse("封面地址无效")
+            }
+            let data = try await CatalogHTTP.fetchData(url: url, headers: [
+                "User-Agent": src.userAgent,
+                "Referer": src.referer,
+                "Accept": "image/*,*/*;q=0.8"
+            ])
+            guard let image = CatalogCrypto.decodeImage(
+                data: data,
+                key: src.artworkKey ?? Self.defaultArtworkKey,
+                iv: src.artworkIV ?? Self.defaultArtworkIV
+            ) else { throw CatalogError.decryption }
+            return image
+        }
     }
 
     // MARK: - 页面请求
@@ -357,10 +369,72 @@ struct HuangguoCatalogProvider: CatalogProvider {
 
     // MARK: - 辅助
 
-    private func baseURL(_ source: CatalogSource) throws -> URL {
+    /// 先用缓存的可用地址直接请求；只有真的连不上时才清缓存、重新找地址并重试一次。
+    /// 这样正常使用时永远走缓存，换地址只发生在地址失效的那一刻。
+    private func withResolvedBase<T>(_ source: CatalogSource,
+                                     _ body: (URL, CatalogSource) async throws -> T) async throws -> T {
+        let original = try normalizedBase(source)
+        // 镜像地址可能是 `https://xxx.cc/`，拼路径必须去掉结尾斜杠：
+        // `//api/videos/…` 会被镜像直接当成 404。
+        var base = Self.origin(await HuangguoAddressResolver.shared.base(for: original, source: source))
+        do {
+            return try await body(base, pointed(source, at: base))
+        } catch {
+            guard Self.isAddressFailure(error) else { throw error }
+            await HuangguoAddressResolver.shared.invalidate(original)
+            let fresh = Self.origin(
+                await HuangguoAddressResolver.shared.refresh(original, source: source)
+            )
+            guard fresh != base else { throw error }
+            base = fresh
+            return try await body(base, pointed(source, at: base))
+        }
+    }
+
+    /// 站点根地址统一成不带结尾斜杠的形式。
+    private static func origin(_ url: URL) -> URL {
+        var text = url.absoluteString
+        while text.hasSuffix("/") { text.removeLast() }
+        return URL(string: text) ?? url
+    }
+
+    /// 源的 baseURL / Referer 指向实际使用的地址，页面、接口与封面都落在同一台镜像上。
+    private func pointed(_ source: CatalogSource, at base: URL) -> CatalogSource {
+        var copy = source
+        copy.baseURL = base.absoluteString
+        copy.referer = base.absoluteString + "/"
+        return copy
+    }
+
+    /// 只有「地址失效」类错误才值得换域名重试：连不上、超时、5xx、WAF、证书被劫持。
+    private static func isAddressFailure(_ error: Error) -> Bool {
+        if let error = error as? CatalogError {
+            switch error {
+            case .unavailable, .tls:
+                return true
+            case .http(let status):
+                return status == 0 || status >= 500 || status == 403
+            default:
+                return false
+            }
+        }
+        if let error = error as? SourceError {
+            switch error.kind {
+            case .unavailable, .blocked, .tlsUntrusted:
+                return true
+            case .http:
+                return (error.statusCode ?? 0) >= 500
+            default:
+                return false
+            }
+        }
+        return error is URLError
+    }
+
+    /// 老版本脚本里写死的域名已停用，先做一次静态迁移。
+    private func normalizedBase(_ source: CatalogSource) throws -> URL {
         var text = source.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") { text.removeLast() }
-        // 老版本脚本里写死的域名已停用，运行时迁移到新域名
         let migrations = ["huangguoai.com": "huangguoai.io"]
         if let host = URL(string: text)?.host, let target = migrations[host] {
             text = text.replacingOccurrences(of: host, with: target)

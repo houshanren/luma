@@ -7,9 +7,11 @@ import UniformTypeIdentifiers
 extension LibraryStore {
     // MARK: - 缓存
 
-    func cloudThumbnailCacheSize() -> Int64 {
+    /// 目录总体积：纯文件系统遍历，故意做成 nonisolated，
+    /// 让资源页这类「打开就要读数」的地方可以丢到后台算，不卡主线程。
+    nonisolated static func directorySize(at url: URL) -> Int64 {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: LibraryPaths.cloudThumbs,
+        guard let enumerator = fm.enumerator(at: url,
                                              includingPropertiesForKeys: [.fileSizeKey]) else {
             return 0
         }
@@ -21,48 +23,9 @@ extension LibraryStore {
         return total
     }
 
-    func clearCloudThumbnailCache() {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(at: LibraryPaths.cloudThumbs,
-                                                        includingPropertiesForKeys: nil) else { return }
-        for entry in entries {
-            try? fm.removeItem(at: entry)
-        }
-        cloudDirectoryCache.removeAll()
-        ImageLoader.clearMemoryCaches()
-        showToast("已清理网盘缩略图缓存")
-    }
-
-    func systemThumbnailCacheSize() -> Int64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: LibraryPaths.systemThumbs,
-                                             includingPropertiesForKeys: [.fileSizeKey]) else {
-            return 0
-        }
-        var total: Int64 = 0
-        for case let url as URL in enumerator {
-            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { continue }
-            total += Int64(size)
-        }
-        return total
-    }
-
-    func clearSystemThumbnailCache() {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(at: LibraryPaths.systemThumbs,
-                                                        includingPropertiesForKeys: nil) else { return }
-        for entry in entries {
-            try? fm.removeItem(at: entry)
-        }
-        ImageLoader.clearMemoryCaches()
-        showToast("已清理系统图库缩略图缓存")
-    }
-
-    // MARK: - 系统图库旁挂数据
-
-    /// 当前打开的图库就是官方「照片」图库时，拾光写进该图库包内的数据体积。
-    func systemLibrarySidecarSize() -> Int64 {
-        guard let container = LibraryPaths.containerLibraryURL, isNativeContainer else { return 0 }
+    /// 画廊容器里拾光旁挂数据的体积；`container` 为空（当前不是系统图库）时为 0。
+    nonisolated static func sidecarSize(in container: URL?) -> Int64 {
+        guard let container else { return 0 }
         let fm = FileManager.default
         return LibraryPaths.sidecarArtifacts(in: container).reduce(Int64(0)) { total, url in
             var isDirectory: ObjCBool = false
@@ -80,6 +43,45 @@ extension LibraryStore {
             }
             return sum
         }
+    }
+
+    func cloudThumbnailCacheSize() -> Int64 {
+        Self.directorySize(at: LibraryPaths.cloudThumbs)
+    }
+
+    func clearCloudThumbnailCache() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: LibraryPaths.cloudThumbs,
+                                                        includingPropertiesForKeys: nil) else { return }
+        for entry in entries {
+            try? fm.removeItem(at: entry)
+        }
+        cloudDirectoryCache.removeAll()
+        ImageLoader.clearMemoryCaches()
+        showToast("已清理网盘缩略图缓存")
+    }
+
+    func systemThumbnailCacheSize() -> Int64 {
+        Self.directorySize(at: LibraryPaths.systemThumbs)
+    }
+
+    func clearSystemThumbnailCache() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: LibraryPaths.systemThumbs,
+                                                        includingPropertiesForKeys: nil) else { return }
+        for entry in entries {
+            try? fm.removeItem(at: entry)
+        }
+        ImageLoader.clearMemoryCaches()
+        showToast("已清理系统图库缩略图缓存")
+    }
+
+    // MARK: - 系统图库旁挂数据
+
+    /// 当前打开的图库就是官方「照片」图库时，拾光写进该图库包内的数据体积。
+    func systemLibrarySidecarSize() -> Int64 {
+        guard isNativeContainer else { return 0 }
+        return Self.sidecarSize(in: LibraryPaths.containerLibraryURL)
     }
 
     /// 销毁拾光写进当前系统图库容器的全部旁挂数据，并把这个系统图库重新载入。

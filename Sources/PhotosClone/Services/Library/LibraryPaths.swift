@@ -12,6 +12,58 @@ enum LibraryPaths {
 
     private static let bootstrapFile = applicationRoot.appendingPathComponent("ContainerPath.txt")
 
+    /// 用户设置的默认图库：启动时优先打开它（按住 Option 仍会先弹出图库选择器）。
+    static let defaultLibraryKey = "settings.defaultLibraryPath.v1"
+    /// 只有用户主动点过「设为默认图库」才置位；旧版本自动挑出来的默认值不改变启动行为。
+    static let defaultLibraryExplicitKey = "settings.defaultLibraryExplicit.v1"
+
+    /// 读取用户显式设置的默认图库；路径已失效时退回「上次打开的图库」。
+    static func storedDefaultLibrary() -> URL? {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: defaultLibraryExplicitKey),
+              let path = defaults.string(forKey: defaultLibraryKey) else { return nil }
+        let url = URL(fileURLWithPath: path)
+        guard isLibraryContainer(url) else { return nil }
+        return url
+    }
+
+    static func setStoredDefaultLibrary(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        UserDefaults.standard.set(path, forKey: defaultLibraryKey)
+        UserDefaults.standard.set(true, forKey: defaultLibraryExplicitKey)
+    }
+
+    /// 上次打开的图库（启动引导文件），仍然存在才算。
+    /// 没有显式默认时，下次启动打开的就是它——界面上的「默认」标记也以它为准。
+    static func lastOpenedLibraryURL() -> URL? {
+        guard let stored = readBootstrap(), stored != "local" else { return nil }
+        let url = URL(fileURLWithPath: stored)
+        return isLibraryContainer(url) ? url : nil
+    }
+
+    /// 「全部图库」与「最近打开」的全局持久化键：启动兜底也读它们，键统一放在这里。
+    static let knownLibrariesKey = "settings.knownLibraries.v1"
+    static let recentLibrariesKey = "settings.recentLibraries"
+
+    /// 上次打开的图库已经不在了（外置盘没插 / 目录被删）时，
+    /// 退到第一个仍然存在的已知图库，而不是直接掉进建库引导——那看起来像所有图库都丢了。
+    static func firstExistingKnownLibrary() -> URL? {
+        let defaults = UserDefaults.standard
+        var paths: [String] = []
+        if let data = defaults.data(forKey: knownLibrariesKey),
+           let list = try? JSONDecoder().decode([SystemLibraryRef].self, from: data) {
+            paths.append(contentsOf: list.map(\.path))
+        }
+        if let recent = defaults.stringArray(forKey: recentLibrariesKey) {
+            paths.append(contentsOf: recent)
+        }
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            if isLibraryContainer(url) { return url }
+        }
+        return nil
+    }
+
     private(set) static var containerLibraryURL: URL?
     private(set) static var root: URL = applicationRoot
 
@@ -26,6 +78,9 @@ enum LibraryPaths {
     /// 网络资源的图库级配置：源、续看、收藏、片单、更新日历都写在当前图库里。
     /// 换图库时不加载上一个库的配置。
     static var catalogDir: URL { root.appendingPathComponent("resources/catalog", isDirectory: true) }
+    /// 网络电视：源、频道缓存与开关都写在这个库自己的 SQLite 里。
+    static var tvDir: URL { root.appendingPathComponent("resources/tv", isDirectory: true) }
+    static var tvDatabaseFile: URL { tvDir.appendingPathComponent("Television.sqlite") }
     /// 系统图库缩略图缓存：同样放本机，避免为每个格子往图库所在（可能很慢的）磁盘写文件。
     /// 官方 derivative 仍然直接复用，这里只存按格子尺寸生成的小图。
     static var systemThumbs: URL {
@@ -67,6 +122,11 @@ enum LibraryPaths {
     static var systemLibraryCacheDir: URL {
         root.appendingPathComponent("resources/system-cache", isDirectory: true)
     }
+    /// 原生图库导入的去重账本：源文件 SHA-256 → 已写入的系统资产标识。
+    /// 只记录拾光自己写进去的项目，不解读 Photos 自己的数据库。
+    static var systemImportManifest: URL {
+        systemLibraryCacheDir.appendingPathComponent("import-manifest.json", isDirectory: false)
+    }
 
     /// 索引库固定写在本机应用目录，而不是图库所在磁盘：
     /// 系统图库常在外置盘上，边读几十 GB 的 Photos.sqlite 边把索引写回同一块盘，
@@ -104,6 +164,7 @@ enum LibraryPaths {
             resources.appendingPathComponent("transcodes", isDirectory: true),
             resources.appendingPathComponent("backups", isDirectory: true),
             resources.appendingPathComponent("catalog", isDirectory: true),
+            resources.appendingPathComponent("tv", isDirectory: true),
             library.appendingPathComponent("cloud", isDirectory: true),
             legacySidecarPath(for: library)
         ]
@@ -235,6 +296,27 @@ enum LibraryPaths {
     private static let nativeLock = NSLock()
     private static var nativeCache: [String: Bool] = [:]
 
+    /// 外置盘插拔后，之前缓存的「不是官方库」结论必须作废：
+    /// 盘没插时判断过一次，插回来不能还按 App 图库对待。
+    static func invalidateNativeCache() {
+        nativeLock.lock()
+        nativeCache.removeAll()
+        nativeLock.unlock()
+    }
+
+    private static var volumeObservers: [NSObjectProtocol] = []
+
+    /// 监听卷挂载 / 卸载，清掉官方库判断的缓存。幂等，重复调用不会重复注册。
+    static func observeVolumeChanges() {
+        guard volumeObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                invalidateNativeCache()
+            })
+        }
+    }
+
     /// 任何 .photoslibrary 包（原生库或本 App 创建的库）都可作为容器。
     static func isLibraryContainer(_ url: URL) -> Bool {
         guard url.pathExtension.lowercased() == "photoslibrary" else { return false }
@@ -260,10 +342,24 @@ enum LibraryPaths {
     static func configure() {
         let stored = readBootstrap()
         var library: URL?
-        if let stored, stored != "local" {
+        var usedFallback = false
+        // 设过默认图库时优先进入它；目录被移走则照旧用上次打开的图库。
+        if let preferred = storedDefaultLibrary() {
+            library = preferred
+        } else if let stored, stored != "local" {
             library = URL(fileURLWithPath: stored)
         } else if stored == nil, let legacy = readLegacySystemLibraryPath() {
             library = URL(fileURLWithPath: legacy)
+        }
+
+        // 上次打开的图库已经不在（外置盘没插 / 目录被删）：
+        // 换一个仍然存在的图库继续，别让人以为所有图库都没了。
+        if let current = library, !isLibraryContainer(current) {
+            library = nil
+        }
+        if library == nil {
+            library = firstExistingKnownLibrary()
+            usedFallback = library != nil
         }
 
         if let library, isLibraryContainer(library) {
@@ -272,7 +368,9 @@ enum LibraryPaths {
             migrateSidecarToLibraryRootIfNeeded(at: library)
             prepare()
             migrateLegacyLayoutIfNeeded()
-            writeBootstrap(library.path)
+            // 兜底打开的是另一个库：不要把「上次打开的图库」改写成它，
+            // 否则外置盘重新插上后也回不到原来那个图库。
+            if !usedFallback { writeBootstrap(library.path) }
         } else {
             containerLibraryURL = nil
             root = applicationRoot
@@ -281,6 +379,7 @@ enum LibraryPaths {
                 migrateLegacyLayoutIfNeeded()
             }
         }
+        observeVolumeChanges()
     }
 
     /// 尚未选择任何图库，启动后必须先新建或打开一个图库。
@@ -300,7 +399,7 @@ enum LibraryPaths {
 
     static func prepare() {
         for dir in [root, databaseDir, originals, derivatives, edited, transcodes, backups,
-                    cloudThumbs, systemThumbs, systemLibraryCacheDir, catalogDir] {
+                    cloudThumbs, systemThumbs, systemLibraryCacheDir, catalogDir, tvDir] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }
@@ -385,6 +484,10 @@ enum LibraryPaths {
         guard isLibraryContainer(library) else { return false }
         prepareLibraryStructure(at: library)
         migrateSidecarToLibraryRootIfNeeded(at: library)
+        // 只读 / 无权限的卷上切换会「成功」但之后所有写入静默失败，这里直接拒绝。
+        guard FileManager.default.isWritableFile(atPath: databaseDir(for: library).path) else {
+            return false
+        }
         let newRoot = library
         if newRoot.standardizedFileURL.path == root.standardizedFileURL.path {
             containerLibraryURL = library
@@ -408,6 +511,48 @@ enum LibraryPaths {
 
         writeBootstrap(library.path)
         return true
+    }
+
+    /// 异步版切换：迁移旧图库内容（逐个文件硬链接 / 复制）放到后台线程，
+    /// 几十 GB 图库也不会把主线程卡住。其余步骤与同步版一致。
+    @discardableResult
+    static func switchContainerAsync(to library: URL, migratingLocalData: Bool = false) async -> Bool {
+        guard isLibraryContainer(library) else { return false }
+        prepareLibraryStructure(at: library)
+        migrateSidecarToLibraryRootIfNeeded(at: library)
+        guard FileManager.default.isWritableFile(atPath: databaseDir(for: library).path) else {
+            return false
+        }
+        let newRoot = library
+        if newRoot.standardizedFileURL.path == root.standardizedFileURL.path {
+            containerLibraryURL = library
+            writeBootstrap(library.path)
+            return true
+        }
+
+        let oldRoot = root
+        let newDatabase = newRoot.appendingPathComponent("database/PhotosClone.sqlite")
+        let needsMigration = !FileManager.default.fileExists(atPath: newDatabase.path)
+
+        root = newRoot
+        containerLibraryURL = library
+        prepare()
+
+        if needsMigration, migratingLocalData {
+            // 旧版平铺目录只涉及本机小目录，先同步搬完；大块内容交给后台。
+            migrateLegacyLayoutIfNeeded()
+            await Task.detached(priority: .userInitiated) {
+                copyShardedContents(from: oldRoot, to: newRoot)
+            }.value
+        }
+
+        writeBootstrap(library.path)
+        return true
+    }
+
+    /// 某个图库自己的数据库目录（用于切换前检查可写性）。
+    private static func databaseDir(for library: URL) -> URL {
+        library.appendingPathComponent("database", isDirectory: true)
     }
 
     /// 确保容器内具备 database / originals / resources 目录：

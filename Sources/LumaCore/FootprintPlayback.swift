@@ -251,8 +251,6 @@ public struct FootprintCruiseTimeline {
 public enum FootprintPlanner {
     /// 站点上限：再多就让视频过长，按时间均匀抽样。
     public static let maxStops = 150
-    /// 站点最小间距（米）：小于它的连续照片视为同一站（GPS 抖动）。
-    public static let mergeRadius = 30.0
     /// 同一地点键 + 几十米内 + 时间不中断时，连拍合并成一站。
     public static let placeMergeRadius = 60.0
     public static let placeMergeWindow: TimeInterval = 2 * 60 * 60
@@ -272,8 +270,9 @@ public enum FootprintPlanner {
                 let distance = self.distance(from: last.point, to: sample.point)
                 let gap = sample.time.timeIntervalSince(last.lastTime)
                 let samePlace = !sample.placeKey.isEmpty && sample.placeKey == last.placeKey
-                let merge = distance <= mergeRadius
-                    || (samePlace && distance <= placeMergeRadius && gap <= placeMergeWindow)
+                // 合并只发生在同一波连拍里：同一个院子隔天再拍必须拆成不同的站，
+                // 否则几十张照片会被压成一站，回放一闪而过、只能看到一张图。
+                let merge = (samePlace && distance <= placeMergeRadius && gap <= placeMergeWindow)
                     || (distance <= jitterRadius && gap <= jitterWindow)
                 if merge {
                     last.latitudeSum += sample.point.latitude
@@ -347,8 +346,9 @@ public enum FootprintPlanner {
         // 极短段另设最短时长，避免百米内的移动一闪而过。
         let visibleDistance = distance / cameraDistance
         let duration = distance < 1 ? 0.45 : max(0.9, visibleDistance / 0.24)
+        // 照片多的站点要停够时间翻看这一站的照片：每多一张略加，封顶 3.6 秒。
         let dwell = photoCount >= 2
-            ? min(0.85, max(0.2, 0.16 + 0.045 * Double(photoCount)))
+            ? min(3.6, max(0.5, 0.3 + 0.045 * Double(photoCount)))
             : 0
         return FootprintLeg(distance: distance,
                             cameraDistance: cameraDistance,

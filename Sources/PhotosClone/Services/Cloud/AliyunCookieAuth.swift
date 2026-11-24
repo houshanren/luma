@@ -1,4 +1,5 @@
 import Foundation
+import LumaContentCore
 
 // MARK: - 阿里云盘 Cookie / 令牌登录
 //
@@ -104,12 +105,5 @@ enum AliyunCookieAuth {
         return String(text[valueRange])
     }
 
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 120
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
-    }()
+    static let session = HTTPSessionPool.shared.session(.cloud)
 }

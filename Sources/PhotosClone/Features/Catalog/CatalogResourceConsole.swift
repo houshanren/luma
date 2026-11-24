@@ -17,7 +17,6 @@ struct CatalogResourceConsole: View {
     /// 面板可用宽度：窄窗口下统计区要换行，否则缓存卡会被窗口右缘切掉，
     /// 同时把整页内容宽度撑出可视区（「全部资源」的卡片跟着溢出）。
     @State private var panelWidth: CGFloat = 900
-    @FocusState private var searchFocused: Bool
 
     private var artworkBytes: Int64 { artworkStats.reduce(0) { $0 + $1.bytes } }
     private var artworkFiles: Int { artworkStats.reduce(0) { $0 + $1.files } }
@@ -37,10 +36,6 @@ struct CatalogResourceConsole: View {
 
     private var totalFollows: Int {
         catalog.followedPeople.count + catalog.followedCategories.count
-    }
-
-    private var query: String {
-        catalog.globalQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
@@ -92,8 +87,6 @@ struct CatalogResourceConsole: View {
                 statsBody
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
-
-            searchStrip
         }
         .padding(16)
         .modifier(ConsolePanelStyle())
@@ -257,107 +250,6 @@ struct CatalogResourceConsole: View {
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .top)
         .modifier(ConsoleWell())
-    }
-
-    private var searchStrip: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(catalog.isGlobalSearching ? Color.accentColor : Color.secondary)
-                    TextField("在所有资源里搜索…片名 / 女优 / 厂商",
-                              text: $catalog.globalQuery)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12.5))
-                        .focused($searchFocused)
-                        .onSubmit { catalog.searchAllSources() }
-                    if catalog.isGlobalSearching {
-                        ProgressView().controlSize(.mini)
-                        Text("扫描中")
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    } else if !catalog.globalQuery.isEmpty {
-                        Button {
-                            catalog.globalQuery = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    Text("跨源")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
-                }
-                .padding(.horizontal, 13)
-                .frame(height: 40)
-                .modifier(ConsoleWell(cornerRadius: 20))
-
-                if panelWidth >= 560 {
-                    Text("\(enabledSources.count) 个源参与检索")
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-
-            if searchFocused, query.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        if !searchSuggestions.isEmpty {
-                            Text("试试")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                            ForEach(searchSuggestions, id: \.self) { keyword in
-                                searchSuggestionChip(keyword)
-                            }
-                        }
-                        if !catalog.recentSearches.isEmpty {
-                            Text("最近")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                                .padding(.leading, 4)
-                            ForEach(Array(catalog.recentSearches.prefix(5)), id: \.self) { keyword in
-                                searchSuggestionChip(keyword)
-                            }
-                        }
-                    }
-                }
-                .scrollClipDisabled()
-            }
-        }
-    }
-
-    /// 搜索快捷词：关注的人 + 词典里的厂牌（中文品牌优先），点一下直接搜。
-    private var searchSuggestions: [String] {
-        var names: [String] = catalog.followedPeople.prefix(4).map(\.name)
-        let studios = CatalogNameDictionary.payload.studios
-            .filter { $0.contains { !$0.isASCII } }
-        for studio in studios where names.count < 8 && !names.contains(studio) {
-            names.append(studio)
-        }
-        return names
-    }
-
-    private func searchSuggestionChip(_ keyword: String) -> some View {
-        Button {
-            catalog.globalQuery = keyword
-            catalog.searchAllSources()
-        } label: {
-            Text(keyword)
-                .font(.system(size: 10))
-                .foregroundStyle(Color.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .help("搜索「\(keyword)」")
     }
 
     // MARK: - 资源管理

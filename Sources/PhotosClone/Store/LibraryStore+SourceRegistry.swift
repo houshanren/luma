@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import LumaContentCore
 
 /// 把现有图库 / 链接图库 / 云盘 / 资源 / 影院适配成统一源目录。
@@ -22,7 +23,7 @@ extension LibraryStore {
                 id: activeLibraryID,
                 kind: .library,
                 name: activeLibraryName.isEmpty ? "当前图库" : activeLibraryName,
-                subtitle: isNativeContainer ? "当前图库 · 原生" : "当前图库 · 拾光",
+                subtitle: isNativeContainer ? "系统照片图库" : "本地图库",
                 activation: .replaceLibrarySession,
                 content: .library,
                 write: isNativeContainer ? .nativeLibrary : .managedLibrary,
@@ -147,5 +148,62 @@ extension LibraryStore {
     func catalogContentRepository(for sourceID: UUID) -> CatalogContentRepository? {
         guard let source = catalogModel.sources.first(where: { $0.id == sourceID }) else { return nil }
         return CatalogContentRepository(source: source)
+    }
+
+    // MARK: - 命令策略
+
+    /// 当前上下文下的命令可用性：菜单只读它，不再各自拼 `.disabled(...)`。
+    var commandPolicy: CommandPolicy {
+        // 网络影院详情打开时，菜单按内容条目给出可用性（稍后看 / 打开原站）。
+        if networkCinemaDetail != nil {
+            return CommandPolicy(context: CommandContext(
+                kind: .cinemaFeed,
+                hasSelection: false,
+                hasCommandTargets: false,
+                isReadOnlyScope: true,
+                isTrash: false,
+                canFavorite: false,
+                canWatchlistItem: true,
+                canOpenSourceSite: true
+            ))
+        }
+        let descriptor = sourceHub.currentBrowseSourceID.flatMap {
+            sourceHub.state.descriptor(for: $0)
+        }
+        return CommandPolicy(context: CommandContext(
+            kind: descriptor?.kind ?? commandSourceKind,
+            hasSelection: !selection.isEmpty,
+            hasCommandTargets: !commandTargetIDs.isEmpty,
+            isReadOnlyScope: isReadOnlyScope,
+            isTrash: sidebarItem == .trash || sidebarItem == .systemTrash,
+            canFavorite: canToggleFavorite,
+            canDelete: isSystemScope && canWriteSystemLibrary
+        ))
+    }
+
+    /// 菜单里的「稍后看」：网络影院详情打开时按当前条目切换。
+    func toggleNetworkCinemaWatchlist() {
+        guard let entry = networkCinemaDetail else { return }
+        let favorite = catalog.isFavorite(sourceID: entry.source.id, itemID: entry.item.id)
+        catalog.setFavorite(!favorite, source: entry.source, items: [entry.item])
+        showToast(favorite ? "已移出稍后看" : "已加入稍后看")
+    }
+
+    /// 菜单里的「打开原站」：网络影院条目没有统一详情页时，退回影视源首页。
+    func openNetworkCinemaSourceSite() {
+        guard let entry = networkCinemaDetail,
+              let url = URL(string: entry.source.baseURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// 电视源不在注册表里，用侧边栏当前页面兜底。
+    private var commandSourceKind: SourceKind {
+        switch sidebarItem {
+        case .cloudMount: return .cloudMount
+        case .catalogSource, .catalogSources: return .catalogSite
+        case .cinema, .cloudCinema: return .cinemaFeed
+        case .iptv: return .iptv
+        default: return .library
+        }
     }
 }

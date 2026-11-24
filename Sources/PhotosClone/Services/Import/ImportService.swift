@@ -90,6 +90,11 @@ enum ImportService {
     private static var companionCache: [String: (stamp: Date?, files: [String: URL])] = [:]
 
     /// 查找与图片同名的实况照片视频（例如 IMG_1234.HEIC + IMG_1234.MOV）。
+    /// 原生图库导入也复用它，把配对视频作为 `.pairedVideo` 一起写进「照片」。
+    static func livePhotoCompanionURL(for imageURL: URL) -> URL? {
+        livePhotoCompanion(for: imageURL)
+    }
+
     private static func livePhotoCompanion(for imageURL: URL) -> URL? {
         let directory = imageURL.deletingLastPathComponent()
         let stem = imageURL.deletingPathExtension().lastPathComponent.lowercased()

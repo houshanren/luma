@@ -100,7 +100,7 @@ struct CatalogWizardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("导入网络资源")
                     .font(.system(size: 15, weight: .semibold))
-                Text("支持 FongMi 兼容配置与网页站点地址，可混填多条，自动识别")
+                Text("支持 FongMi 兼容配置、苹果CMS 影视接口、FoFo / 爱看片片 / 爱壹帆站点与网页站点地址，可混填多条，自动识别")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
             }
@@ -154,6 +154,8 @@ struct CatalogWizardView: View {
                         Text("粘贴配置或站点地址，每行一条")
                             .foregroundStyle(.secondary)
                         Text("https://example.com/huangguo_fongmi_config.json")
+                            .foregroundStyle(.tertiary)
+                        Text("https://example.com/api.php/provide/vod/")
                             .foregroundStyle(.tertiary)
                         Text("https://example.com/  https://example.org/")
                             .foregroundStyle(.tertiary)
@@ -330,7 +332,7 @@ struct CatalogWizardView: View {
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                if let source = entry.source {
+                if let source = entry.source, !source.categories.isEmpty {
                     Text("· \(source.categories.count) 个分类")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
@@ -466,25 +468,40 @@ struct CatalogWizardView: View {
                     ? "正在解析 \(index + 1)/\(addresses.count)：\(shortHost(address))"
                     : "正在读取配置并验证站点…"
                 do {
-                    var source = try await importOne(address)
-                    source.allowsInsecureTLS = allowInsecure && addresses.count == 1
-                    results.append(ImportedSource(address: address, source: source))
+                    let sources = try await importOne(address)
+                    guard !sources.isEmpty else {
+                        throw CatalogError.invalidConfig("没有解析出可用的站点")
+                    }
+                    for source in sources {
+                        var copy = source
+                        copy.allowsInsecureTLS = allowInsecure && addresses.count == 1 && sources.count == 1
+                        results.append(ImportedSource(address: address, source: copy))
+                        // 一次配置可能带几十个站点：上限之外的不再列出，避免面板卡住。
+                        if results.count >= 60 { break }
+                    }
                 } catch {
                     results.append(ImportedSource(address: address,
                                                   source: nil,
                                                   checks: [Check(text: error.localizedDescription,
                                                                  state: .failed)]))
                 }
+                if results.count >= 60 { break }
             }
             imported = results
 
-            // 逐项做三项校验：首页 / 详情 / 封面。
+            // 逐项做校验：普通站点继续校验首页 / 详情 / 封面；
+            // 苹果CMS 批量导入的源只做一次首页探测，否则一次会打几十个请求。
             for index in imported.indices where imported[index].source != nil {
                 guard var source = imported[index].source else { continue }
                 progressText = addresses.count > 1
                     ? "正在校验 \(index + 1)/\(addresses.count)：\(source.host)"
                     : "正在读取配置并验证站点…"
-                let checks = await validate(source)
+                let checks: [Check]
+                if source.kind == .maccms {
+                    checks = await validateHomeOnly(source)
+                } else {
+                    checks = await validate(source)
+                }
                 source.allowsInsecureTLS = allowInsecure && addresses.count == 1
                 imported[index].source = source
                 imported[index].checks = checks
@@ -508,36 +525,47 @@ struct CatalogWizardView: View {
         return .site
     }
 
-    /// 按地址挑适配器：域名特征优先，其余按 91 站处理。
-    private func importOne(_ address: String) async throws -> CatalogSource {
+    /// 按地址挑适配器：苹果CMS 接口优先，其次按域名特征，其余按 91 站处理。
+    /// 配置文件可能一次导出多个影视源，所以统一返回数组。
+    private func importOne(_ address: String) async throws -> [CatalogSource] {
         if Self.kind(of: address) == .config {
-            return try await HuangguoCatalogProvider.importSource(from: address)
+            return try await MacCMSCatalogProvider.importConfig(from: address)
         }
         let lower = address.lowercased()
+        // 苹果CMS 接口地址：`…/api.php/provide/vod/`，也接受站点根地址。
+        if lower.contains("api.php") || lower.contains("provide/vod") {
+            return [try await MacCMSCatalogProvider.importSource(from: address)]
+        }
         if lower.contains("91porna") {
-            return try await NinetyOnePornaCatalogProvider.importSource(from: address)
+            return [try await NinetyOnePornaCatalogProvider.importSource(from: address)]
+        } else if lower.contains("fofo") {
+            return [try await FoFoCatalogProvider.importSource(from: address)]
+        } else if lower.contains("ikanpp") || lower.contains("9fa9fa") {
+            return [try await IKanPPCatalogProvider.importSource(from: address)]
+        } else if lower.contains("iyf.tv") {
+            return [try await IYFCatalogProvider.importSource(from: address)]
         } else if lower.contains("xsz-av") {
-            return try await XszCatalogProvider.importSource(from: address)
+            return [try await XszCatalogProvider.importSource(from: address)]
         } else if lower.contains("missav") {
-            return try await MissavCatalogProvider.importSource(from: address)
+            return [try await MissavCatalogProvider.importSource(from: address)]
         } else if lower.contains("avple") {
-            return try await AvpleCatalogProvider.importSource(from: address)
+            return [try await AvpleCatalogProvider.importSource(from: address)]
         } else if lower.contains("shise") {
-            return try await ShiseCatalogProvider.importSource(from: address)
+            return [try await ShiseCatalogProvider.importSource(from: address)]
         } else if lower.contains("avgle") {
-            return try await AvgleCatalogProvider.importSource(from: address)
+            return [try await AvgleCatalogProvider.importSource(from: address)]
         } else if lower.contains("rou.video") {
-            return try await RouVideoCatalogProvider.importSource(from: address)
+            return [try await RouVideoCatalogProvider.importSource(from: address)]
         } else if lower.contains("91quanji") || lower.contains("quanji") {
-            return try await QuanjiCatalogProvider.importSource(from: address)
+            return [try await QuanjiCatalogProvider.importSource(from: address)]
         } else if lower.contains("javcl") {
-            return try await JavClCatalogProvider.importSource(from: address)
+            return [try await JavClCatalogProvider.importSource(from: address)]
         } else if lower.contains("madou") {
-            return try await MadouCatalogProvider.importSource(from: address)
+            return [try await MadouCatalogProvider.importSource(from: address)]
         } else if lower.contains("javgg") {
-            return try await JavGGCatalogProvider.importSource(from: address)
+            return [try await JavGGCatalogProvider.importSource(from: address)]
         } else {
-            return try await NinetyOneCatalogProvider.importSource(from: address)
+            return [try await NinetyOneCatalogProvider.importSource(from: address)]
         }
     }
 
@@ -591,6 +619,24 @@ struct CatalogWizardView: View {
             checks.append(Check(text: error.localizedDescription, state: .failed))
         }
         return checks
+    }
+
+    /// 苹果CMS 批量导入的轻量校验：只探测首页，避免一次配置打几十个详情 / 封面请求。
+    private func validateHomeOnly(_ source: CatalogSource) async -> [Check] {
+        CatalogTrust.setTrusted(source.host, source.trustsInsecureCertificate)
+        do {
+            guard let provider = CatalogProviders.provider(for: source.kind) else {
+                throw CatalogError.unsupportedProvider
+            }
+            let home = try await provider.home(source: source)
+            return [
+                Check(text: "接口可访问：\(source.name)", state: .ok),
+                Check(text: "首页解析 \(home.items.count) 条",
+                      state: home.items.isEmpty ? .failed : .ok)
+            ]
+        } catch {
+            return [Check(text: error.localizedDescription, state: .failed)]
+        }
     }
 
     private func add() {

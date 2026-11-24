@@ -6,6 +6,11 @@ struct CatalogHistoryView: View {
     @EnvironmentObject private var catalog: CatalogBrowserModel
     @EnvironmentObject private var store: LibraryStore
 
+    /// 可选的来源范围：网络影院只统计影视源的观看记录；网络资源总览不传，等于全部来源。
+    var sourceScope: Set<UUID>? = nil
+    /// 紧凑头部：网络影院里工具栏分页已经是标题，不再写一遍「观看足迹」与说明。
+    var compact: Bool = false
+
     private let calendar = Calendar.current
 
     /// 足迹的筛选范围：全部 / 未看完 / 已看完。
@@ -24,7 +29,10 @@ struct CatalogHistoryView: View {
     @State private var expandedDays: Set<Date> = []
     @State private var showClearConfirm = false
 
-    private var records: [CatalogProgress] { catalog.allContinueWatching }
+    private var records: [CatalogProgress] {
+        guard let sourceScope else { return catalog.allContinueWatching }
+        return catalog.allContinueWatching.filter { sourceScope.contains($0.sourceID) }
+    }
     private var unfinished: [CatalogProgress] { records.filter { $0.fraction < 0.97 } }
     private var finished: [CatalogProgress] { records.filter { $0.fraction >= 0.97 } }
     private var hero: CatalogProgress? { unfinished.first }
@@ -63,7 +71,7 @@ struct CatalogHistoryView: View {
         .scrollIndicators(.automatic)
         .alert("清空观看足迹？", isPresented: $showClearConfirm) {
             Button("取消", role: .cancel) {}
-            Button("清空", role: .destructive) { catalog.clearProgress() }
+            Button("清空", role: .destructive) { catalog.clearProgress(sourceIDs: sourceScope) }
         } message: {
             Text("会删除全部 \(records.count) 条播放进度，且无法恢复。")
         }
@@ -75,40 +83,54 @@ struct CatalogHistoryView: View {
         let weekCount = records.filter { $0.updatedAt >= weekStart }.count
         let total = records.reduce(0.0) { $0 + max(0, $1.seconds) }
         return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("观看足迹")
-                        .font(.system(size: 20, weight: .semibold))
-                    Text("这台机器上追过的网络内容，都在这里接着看。")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 12)
-                if !records.isEmpty {
-                    Button {
-                        showClearConfirm = true
-                    } label: {
-                        Label("清空记录", systemImage: "trash")
-                            .font(.system(size: 10.5, weight: .medium))
+            if !compact {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("观看足迹")
+                            .font(.system(size: 20, weight: .semibold))
+                        Text("这台机器上追过的网络内容，都在这里接着看。")
+                            .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
-                            .overlay {
-                                Capsule(style: .continuous)
-                                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.6)
-                            }
                     }
-                    .buttonStyle(.plain)
-                    .help("删除全部播放进度")
+                    Spacer(minLength: 12)
+                    clearButton
                 }
             }
             HStack(spacing: 10) {
-                statTile("clock.arrow.circlepath", durationText(total), "累计观看", tint: LumaBrand.amber)
-                statTile("calendar", "\(weekCount)", "本周播放", tint: LumaBrand.cyan)
+                // 紧凑模式：累计观看 / 本周播放已经在窗口标题栏，这里只留进度分布。
+                if !compact {
+                    statTile("clock.arrow.circlepath", durationText(total), "累计观看", tint: LumaBrand.amber)
+                    statTile("calendar", "\(weekCount)", "本周播放", tint: LumaBrand.cyan)
+                }
                 statTile("play.circle", "\(unfinished.count)", "未看完", tint: LumaBrand.coral)
                 statTile("checkmark.circle", "\(finished.count)", "已看完", tint: LumaBrand.mint)
+                if compact {
+                    Spacer(minLength: 8)
+                    clearButton
+                }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var clearButton: some View {
+        if !records.isEmpty {
+            Button {
+                showClearConfirm = true
+            } label: {
+                Label("清空记录", systemImage: "trash")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.6)
+                    }
+            }
+            .buttonStyle(.plain)
+            .help("删除全部播放进度")
         }
     }
 
@@ -585,19 +607,33 @@ struct CatalogHistoryView: View {
                 .background(Color.accentColor.opacity(0.12), in: Circle())
             Text("还没有观看记录")
                 .font(.system(size: 14, weight: .semibold))
-            Text("在网络资源里播放任意一集，这里会记住进度并排成时间轴。")
+            Text(sourceScope == nil
+                 ? "在网络资源里播放任意一集，这里会记住进度并排成时间轴。"
+                 : "在网络影院的电影 / 电视剧里播放任意一集，这里会记住进度并排成时间轴。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
-            Button {
-                catalog.setHubTab(.browse)
-                store.navigate(to: .catalogSources)
-            } label: {
-                Label("去网络资源看看", systemImage: "arrow.up.right")
-                    .font(.system(size: 11, weight: .medium))
+            if sourceScope == nil {
+                Button {
+                    catalog.setHubTab(.browse)
+                    store.navigate(to: .catalogSources)
+                } label: {
+                    Label("去网络资源看看", systemImage: "arrow.up.right")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .padding(.top, 4)
+            } else {
+                Button {
+                    store.networkCinemaTab = .movies
+                } label: {
+                    Label("去看电影", systemImage: "film")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .padding(.top, 4)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 72)

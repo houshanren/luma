@@ -6,12 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var cloud: CloudBrowserModel
     @EnvironmentObject private var settings: AppSettings
 
-    @State private var cacheSize: Int64 = 0
-    @State private var systemCacheSize: Int64 = 0
-    @State private var sidecarSize: Int64 = 0
     @State private var videoCacheSize: Int64 = 0
-    @State private var confirmDestroySidecar = false
-    @State private var libraryEntries: [LibraryEntry] = []
     @State private var aiKeyInput = ""
     @State private var aiTesting = false
     @State private var aiTestOK = false
@@ -23,6 +18,12 @@ struct SettingsView: View {
     @AppStorage("slideshowKenBurns") private var slideshowKenBurns = true
     /// 当前分页；其它入口可先写入目标页再打开设置窗口。
     @AppStorage(SettingsKeys.selectedTab) private var selectedTab: SettingsTab = .general
+    /// 侧边栏是否显示「网络电视」。关闭后整个入口隐藏，频道也不参与搜索。
+    @AppStorage(SettingsKeys.showTelevision) private var showTelevision = true
+    /// 其余模块开关：关闭后入口隐藏、搜索不再返回对应来源。
+    @AppStorage(SettingsKeys.moduleCloud) private var cloudModule = true
+    @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
+    @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -35,9 +36,6 @@ struct SettingsView: View {
             browsingTab
                 .tabItem { Label("浏览", systemImage: "photo.on.rectangle") }
                 .tag(SettingsTab.browsing)
-            libraryTab
-                .tabItem { Label("图库", systemImage: "photo.stack") }
-                .tag(SettingsTab.library)
             cinemaTab
                 .tabItem { Label("影院", systemImage: "film.stack") }
                 .tag(SettingsTab.cinema)
@@ -257,6 +255,18 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("最近删除") {
+                Picker("保留时间", selection: $settings.trashRetentionDays) {
+                    Text("30 天").tag(30)
+                    Text("90 天").tag(90)
+                    Text("不自动清理").tag(0)
+                }
+                .pickerStyle(.segmented)
+                Text("超过保留期的项目会在打开 App 时自动清掉；手动删除仍然需要确认。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             Section("幻灯片") {
                 HStack(spacing: 10) {
                     Image(systemName: "timer")
@@ -298,8 +308,44 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section {
+                ModuleSwitchGrid(density: .settings)
+                    .padding(.vertical, 2)
+            } header: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("功能模块")
+                    Spacer()
+                    Text("按需开启")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
         .formStyle(.grouped)
+        .onChange(of: showTelevision) { _, visible in
+            guard !visible else { return }
+            store.tvModel.cancelLoading()
+            leaveModuleIfNeeded()
+        }
+        .onChange(of: cloudModule) { _, _ in leaveModuleIfNeeded() }
+        .onChange(of: catalogModule) { _, _ in leaveModuleIfNeeded() }
+        .onChange(of: cinemaModule) { _, _ in leaveModuleIfNeeded() }
+    }
+
+    /// 关掉某个模块时，如果正停在它的页面上就退回图库，避免留下一个进不去的页面。
+    private func leaveModuleIfNeeded() {
+        switch store.sidebarItem {
+        case .cloudStorages, .cloudMount, .cloudCinema:
+            if !cloudModule { store.navigate(to: .library) }
+        case .catalogSources, .catalogSource:
+            if !catalogModule { store.navigate(to: .library) }
+        case .networkCinema:
+            if !cinemaModule { store.navigate(to: .library) }
+        case .iptv:
+            if !showTelevision { store.navigate(to: .library) }
+        default:
+            break
+        }
     }
 
     // MARK: 外观
@@ -947,134 +993,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: 图库（当前使用图库）
-
-    private var libraryTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                if store.containerLibraryPath != nil {
-                    currentLibraryCard
-                } else {
-                    emptyLibraryCard
-                }
-
-                settingsGroup(icon: "square.stack.3d.up.fill",
-                              title: "图库管理",
-                              subtitle: "切换后只显示新图库自己的照片、连接与设置；原图库的文件不会被删除。") {
-                    settingsCard {
-                        if otherLibraryEntries.isEmpty {
-                            settingsRow(icon: "tray",
-                                        tint: .secondary,
-                                        title: "没有找到其他图库",
-                                        subtitle: "用上方「新建图库…」或「打开图库…」添加后会出现在这里。") {
-                                EmptyView()
-                            }
-                        } else {
-                            ForEach(otherLibraryEntries) { entry in
-                                otherLibraryRow(entry)
-                                if entry.id != otherLibraryEntries.last?.id {
-                                    settingsDivider
-                                }
-                            }
-                        }
-                    }
-                }
-
-                settingsGroup(icon: "lock.shield",
-                              title: "图库保险库",
-                              subtitle: "把 originals、数据库与渲染结果备份到外置盘 / NAS；校验只读清单，恢复只补缺失或损坏的文件。") {
-                    VaultSettingsView()
-                }
-
-                settingsGroup(icon: "internaldrive",
-                              title: "存储与清理",
-                              subtitle: "只清理本机缓存与派生数据，不会影响图库、网盘或云端原图。") {
-                    settingsCard {
-                        settingsRow(icon: "trash",
-                                    tint: .secondary,
-                                    title: "最近删除",
-                                    subtitle: trashRetentionSubtitle) {
-                            Picker("", selection: $settings.trashRetentionDays) {
-                                Text("7 天后").tag(7)
-                                Text("30 天后").tag(30)
-                                Text("90 天后").tag(90)
-                                Text("180 天后").tag(180)
-                                Text("永不清理").tag(0)
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(width: 118)
-                        }
-
-                        settingsDivider
-
-                        settingsRow(icon: "photo.stack",
-                                    tint: .secondary,
-                                    title: "系统图库缩略图",
-                                    subtitle: systemCacheSize > 0 ? formatFileSize(systemCacheSize) : "暂无缓存") {
-                            Button("清理") {
-                                store.clearSystemThumbnailCache()
-                                refreshCacheSize()
-                            }
-                            .controlSize(.small)
-                            .disabled(systemCacheSize == 0)
-                        }
-
-                        settingsDivider
-
-                        settingsRow(icon: "externaldrive.badge.icloud",
-                                    tint: .secondary,
-                                    title: "网盘缩略图",
-                                    subtitle: cacheSize > 0 ? formatFileSize(cacheSize) : "暂无缓存") {
-                            Button("清理") {
-                                store.clearCloudThumbnailCache()
-                                refreshCacheSize()
-                            }
-                            .controlSize(.small)
-                            .disabled(cacheSize == 0)
-                        }
-
-                        if store.isNativeContainer {
-                            settingsDivider
-                            settingsRow(icon: "shippingbox",
-                                        tint: .orange,
-                                        title: "系统图库旁挂数据",
-                                        subtitle: sidecarSize > 0 ? formatFileSize(sidecarSize) : "暂无可清理数据") {
-                                HStack(spacing: 8) {
-                                    Button("刷新") { refreshCacheSize() }
-                                        .controlSize(.small)
-                                    Button("销毁…", role: .destructive) {
-                                        confirmDestroySidecar = true
-                                    }
-                                    .controlSize(.small)
-                                    .disabled(sidecarSize == 0)
-                                    .help("删除拾光的元数据库、索引 / 快照、缩略图、转码与缓存；不会动 Apple 的 Photos.sqlite、originals 原图与衍生图。")
-                                }
-                            }
-                        }
-                    }
-                }
-
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 22)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .onAppear { reloadLibraryEntries() }
-        .onChange(of: store.containerLibraryPath) { _, _ in reloadLibraryEntries() }
-        .confirmationDialog("销毁拾光在该系统图库写入的数据？",
-                            isPresented: $confirmDestroySidecar,
-                            titleVisibility: .visible) {
-            Button("销毁拾光数据", role: .destructive) {
-                store.destroySystemLibrarySidecar()
-                refreshCacheSize()
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只删除拾光自己的元数据库、索引 / 快照、缩略图、转码与缓存；Apple 的 Photos.sqlite、originals 原图与衍生图不会被动到。该操作不可撤销。")
-        }
-    }
-
     // MARK: 关于
 
     private var aboutTab: some View {
@@ -1168,217 +1086,6 @@ struct SettingsView: View {
         Divider().padding(.leading, 56)
     }
 
-    private func otherLibraryRow(_ entry: LibraryEntry) -> some View {
-        settingsRow(icon: "photo.stack",
-                    tint: .secondary,
-                    title: entry.name,
-                    subtitle: entry.url.path) {
-            Button("切换") {
-                store.activateLibrary(entry.url)
-                reloadLibraryEntries()
-            }
-            .controlSize(.small)
-        }
-    }
-
-    private var trashRetentionSubtitle: String {
-        settings.trashRetentionDays > 0
-            ? "超过 \(settings.trashRetentionDays) 天后在启动时自动永久删除"
-            : "不自动清理，直到手动清空最近删除"
-    }
-
-    /// 最近使用过的其他图库（含官方「照片」图库）；每个库都以自己的数据与连接打开。
-    private var otherLibraryEntries: [LibraryEntry] {
-        libraryEntries.filter { !$0.isCurrent }
-    }
-
-    private func reloadLibraryEntries() {
-        libraryEntries = store.knownLibraryEntries()
-    }
-
-    /// 当前图库：品牌渐变身份卡，左边封面与身份，右边统计胶囊，底部一组动作。
-    private var currentLibraryCard: some View {
-        let url = store.containerLibraryPath.map { URL(fileURLWithPath: $0) }
-        let stats = store.libraryStats
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                libraryCover(store.libraryCoverPhoto)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 8) {
-                        Text(url?.deletingPathExtension().lastPathComponent ?? "当前图库")
-                            .font(.system(size: 18, weight: .bold))
-                            .lineLimit(1)
-                        statusTag(icon: "internaldrive.fill", text: "当前图库")
-                    }
-
-                    Text(url?.path ?? "")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            metricChip("\(stats.photos.formatted())", "照片", icon: "photo")
-                            metricChip("\(stats.videos.formatted())", "视频", icon: "video")
-                            metricChip("\(stats.albums.formatted())", "相簿", icon: "rectangle.stack")
-                        }
-                        HStack(spacing: 6) {
-                            metricChip("\(stats.folders.formatted())", "文件夹", icon: "folder")
-                            metricChip("\(stats.systemLibraries.formatted())", "系统图库", icon: "photo.stack")
-                            metricChip("\(store.cloudMounts.count.formatted())", "网络存储", icon: "externaldrive")
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 8) {
-                Button {
-                    store.presentLibraryPicker()
-                } label: {
-                    Label("切换图库…", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    store.presentNewLibraryPanel()
-                } label: {
-                    Label("新建图库…", systemImage: "plus.rectangle.on.folder")
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    store.presentLibraryContainerPanel()
-                } label: {
-                    Label("打开图库…", systemImage: "folder")
-                }
-                .buttonStyle(.bordered)
-
-                Spacer(minLength: 0)
-
-                Button {
-                    store.revealLibraryInFinder()
-                } label: {
-                    Image(systemName: "arrow.up.forward.app")
-                }
-                .buttonStyle(.bordered)
-                .help("在访达中显示当前图库")
-            }
-            .controlSize(.small)
-        }
-        .padding(18)
-        .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(LinearGradient(colors: [Color.accentColor.opacity(0.20),
-                                              LumaBrand.violet.opacity(0.08),
-                                              Color.clear],
-                                     startPoint: .topLeading,
-                                     endPoint: .bottomTrailing))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.10), radius: 18, y: 8)
-    }
-
-    private func metricChip(_ value: String, _ label: String, icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            Text(value)
-                .font(.system(size: 11.5, weight: .semibold))
-                .monospacedDigit()
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.05), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
-        }
-    }
-
-    private var emptyLibraryCard: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.accentColor.opacity(0.12))
-                    .frame(width: 64, height: 64)
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 25, weight: .light))
-                    .foregroundStyle(Color.accentColor)
-            }
-            Text("尚未打开图库")
-                .font(.system(size: 14, weight: .semibold))
-            Text("新建或打开一个 .photoslibrary；每个图库都会独立保存自己的照片、连接与设置。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-            HStack(spacing: 8) {
-                Button {
-                    store.presentNewLibraryPanel()
-                } label: {
-                    Label("新建图库…", systemImage: "plus.rectangle.on.folder")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    store.presentLibraryContainerPanel()
-                } label: {
-                    Label("打开图库…", systemImage: "folder")
-                }
-                .buttonStyle(.bordered)
-            }
-            .controlSize(.large)
-            .padding(.top, 2)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
-        .padding(.horizontal, 20)
-        .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.primary.opacity(0.025))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.14),
-                              style: StrokeStyle(lineWidth: 1.2, dash: [6, 5]))
-        }
-    }
-
-    private func libraryCover(_ cover: PhotoItem?) -> some View {
-        ZStack {
-            if let cover {
-                PhotoThumbnailView(photo: cover)
-            } else {
-                LinearGradient(colors: [LumaBrand.violet.opacity(0.85), LumaBrand.cyan.opacity(0.55)],
-                               startPoint: .topLeading,
-                               endPoint: .bottomTrailing)
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 26, weight: .light))
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 104, height: 84)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.6)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
-    }
-
     private func statusTag(icon: String, text: String, spinning: Bool = false) -> some View {
         HStack(spacing: 3) {
             if spinning {
@@ -1400,9 +1107,6 @@ struct SettingsView: View {
     }
 
     private func refreshCacheSize() {
-        cacheSize = store.cloudThumbnailCacheSize()
-        systemCacheSize = store.systemThumbnailCacheSize()
-        sidecarSize = store.systemLibrarySidecarSize()
         videoCacheSize = VideoCache.luma.totalSize()
     }
 }

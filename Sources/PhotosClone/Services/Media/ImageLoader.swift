@@ -7,18 +7,10 @@ import CoreImage
 import LumaCore
 
 enum ImageLoader {
-    private static let cache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        // 双层网格缩略图（快速层 + 目标层）会同时驻留，上限相应放宽。
-        cache.totalCostLimit = 384 * 1024 * 1024
-        return cache
-    }()
-
-    private static let fullCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.totalCostLimit = 512 * 1024 * 1024
-        return cache
-    }()
+    /// 双层网格缩略图（快速层 + 目标层）会同时驻留，上限相应放宽。
+    /// 内存池统一由 `MemoryImageCache` 管理，不再单独持有 NSCache。
+    private static let cache = MemoryImageCache(totalCostLimit: 384 * 1024 * 1024)
+    private static let fullCache = MemoryImageCache(totalCostLimit: 512 * 1024 * 1024)
 
     private static func store(_ image: NSImage, forKey key: NSString) {
         let rep = image.representations.first
@@ -208,11 +200,7 @@ enum ImageLoader {
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    private static let displayCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.totalCostLimit = 192 * 1024 * 1024
-        return cache
-    }()
+    private static let displayCache = MemoryImageCache(totalCostLimit: 192 * 1024 * 1024)
 
     private static func displayKey(for photo: PhotoItem, maxPixel: CGFloat, sdr: Bool) -> NSString {
         "\(photo.cacheKey)-display-\(Int(maxPixel))\(sdr ? "-sdr" : "")" as NSString

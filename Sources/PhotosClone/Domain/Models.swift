@@ -518,6 +518,8 @@ enum SidebarItem: Hashable, Codable {
     case cloudStorages
     /// 网络资源总览（侧边栏「网络资源」分区头点击进入）。
     case catalogSources
+    /// 网络影院：聚合网络影视源（苹果CMS）的电影 / 电视剧，与网络存储的影院相互独立。
+    case networkCinema
     case systemAlbum(Int64)
     case systemFolder(Int64)
     case systemFavorites
@@ -567,6 +569,8 @@ enum SidebarItem: Hashable, Codable {
     case cloudCinema(UUID)
     /// 网络资源（影视源）：与网盘并列，但没有文件树与本地索引。
     case catalogSource(UUID)
+    /// 网络电视：直播频道墙，可整体开关。
+    case iptv
 
     /// 是否属于只读的系统「照片」图库范围。
     var isSystemScope: Bool {
@@ -878,6 +882,39 @@ enum GridGrouping: String, CaseIterable, Identifiable {
         case .years: return "年"
         case .months: return "月"
         case .all: return "所有照片"
+        }
+    }
+}
+
+/// 网格的堆叠浏览形态：把连拍 / 同场景连拍收成一张代表图，展开后再看整组。
+enum StackMode: String, CaseIterable, Identifiable {
+    case off
+    case bursts
+    case scenes
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "关闭堆叠"
+        case .bursts: return "仅连拍"
+        case .scenes: return "连拍与同场景"
+        }
+    }
+
+    /// 菜单 / 悬停提示里的完整说明。
+    var detail: String {
+        switch self {
+        case .off: return "每张照片单独显示"
+        case .bursts: return "同一连拍组收成一张代表图"
+        case .scenes: return "连拍组、实况与同场景连拍都收成一张代表图"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .off: return "square.stack.3d.down.right"
+        case .bursts, .scenes: return "square.stack.3d.down.right.fill"
         }
     }
 }

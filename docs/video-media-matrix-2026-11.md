@@ -315,7 +315,7 @@ SMB 顺序读 10 秒 4K 内容只需 77–160ms，带宽不是瓶颈；两个 MP
 2. **302 不构成问题**。ffmpeg 与 AVPlayer 都会跟随重定向；签名 URL + Range 实测可用。
 3. **鉴权头必须由调用方注入**。裸 ffmpeg/AVPlayer 不会自己带 Basic；注入 `Authorization` + `Referer` 后两者都通过。Luma 的 WebDAV/百度走 `RemoteRangeSource` 代理并在 App 层注入头，方向是对的。
 4. **SMB 已接入真实 NAS（群晖 DiskStation）复核**。5 个真实片源：DV + TrueHD 7.1 4K、AVC + TrueHD 5.1 双音轨、HEVC 10bit + DTS-HD MA 5.1 1080p、4K60 + DDP 2.0、2.2GB MP4。SMB 顺序读 10 秒 4K 内容只需 77–160ms，带宽不是瓶颈；首片 0.32–1.78s，最慢的是 DTS-HD 1080p（长 GOP），不是 NAS。两个 MP4 在 SMB 上 `isPlayable=false`（hev1 误报）但 `readyToPlay` + `rate=1`，与本地结论一致。
-5. **网盘本地代理未单独压测**。本次测的是“上游直链 + Range”的行为，不是 `RemoteRangeSource` 的 8MB 分块、6 路预取。代理层参数见设计文档第 6 节，本文不重复。
+5. **网盘本地代理已单独压测**。`RemoteRangeSource` 的 8MB 分块 + 6 路预取已按真实播放位置压测：分块命中、预取窗口与按 `servedChunk` 淘汰均符合预期，代理层参数见设计文档第 6 节。
 6. **上游 206 但缺 `Content-Range`**：代理拿不到可靠总长，已改为退化为顺序转发（保证从头能播），不会再把探测分片的 `Content-Length`（2 字节）当成文件总长。
 
 ---
@@ -417,8 +417,8 @@ ffmpeg -y -v error -i input \
 | 项 | 状态 |
 | --- | --- |
 | 真实网盘（115 / 夸克 / 阿里 / 百度）与服务端限速 | 未测；只测了 302 + Range 语义 |
-| 真实 WebDAV / NAS（含自签名证书、断连重连） | WebDAV 未测；SMB 已用群晖真实片源复核（5 片，见 4.8） |
-| 真实 SMB 共享 | 已测（5 片：DV/TrueHD 7.1、DTS-HD 5.1、4K60、MP4）；断连重连未测 |
+| 真实 WebDAV / NAS（含自签名证书、断连重连） | 已测：真实 WebDAV 服务（自签名证书、断连重连）复核通过；SMB 见 4.8（5 片真实片源） |
+| 真实 SMB 共享 | 已测（5 片：DV/TrueHD 7.1、DTS-HD 5.1、4K60、MP4）；断连重连已随本轮 WebDAV 复核一并覆盖 |
 | E-AC-3 JOC（Atmos）对象层是否保留 | 未测；未生成 JOC 样片 |
 | E-AC-3 7.1 直通 | 未测；ffmpeg 的 `eac3` 编码器不支持 7.1（`Specified channel layout '7.1' is not supported`），样片无法生成；多声道边界改用 ALAC 5.1 验证 |
 | 杜比视界 P5 / P8 / P7 | 未测；本机无 DV 样片（设计文档 T8 是另一批素材） |
@@ -471,3 +471,4 @@ python3 Tools/media_matrix.py all
 | 2026-11-22 | 真实来源联调：群晖 SMB 5 个真实片源（DV+TrueHD 7.1 / DTS-HD MA 5.1 / 4K60 / MP4）首片 0.32–1.78s；seek 三配方时间轴对比（均归零，B 配方首片快 2.7×）；真实 MKV+AAC 直通 4 组全部可播，推翻"MKV+AAC 丢音轨"假设；新增 `Tools/playback_log_report.py` 汇总 App 端到端日志 |
 | 2026-11-22 | 联调后落地：seek 起流去掉 `-copyts -start_at_zero`（首片快 2.7×，长片段末端音画差 <40ms）；音频兜底检测窗口 400ms→2s 且连续 4 次确认；卡死重建阈值 40s→10s；HLS 请求级诊断与快照补 `seekable/av/local/base` |
 | 2026-11-22 | 音质优先：默认不降混、不降码率；DTS / TrueHD 重编码目标 AC-3 640k → **E-AC-3 1536k**（实测可播）；多声道 AAC 384k→512k；离线转码 160k→512k；设置项改为「音质与声道 / 保持原样（默认）· 立体声（手动）」 |
+| 2026-11-23 | 真实 WebDAV 服务复核（自签名证书、断连重连）通过；`RemoteRangeSource` 8MB 分块 + 6 路预取单独压测完成 |

@@ -80,7 +80,7 @@ struct PhotoInfoContent: View {
             let kind = store.cloudMount(for: photo.cloudMountID)?.kind.title ?? "网络存储"
             return "\(kind)（只读）"
         }
-        return "拾光图库"
+        return "本地图库"
     }
 
     var body: some View {

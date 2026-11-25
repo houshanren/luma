@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "PhotosClone",
+    name: "Luma",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "PhotosClone", targets: ["PhotosClone"])
+        .executable(name: "Luma", targets: ["Luma"])
     ],
     targets: [
         // 纯算法与尺寸策略：不依赖 UI，便于单测。
@@ -28,9 +28,9 @@ let package = Package(
             path: "Sources/LumaContentCore"
         ),
         .executableTarget(
-            name: "PhotosClone",
+            name: "Luma",
             dependencies: ["LumaCore", "PlaybackCore", "LumaContentCore"],
-            path: "Sources/PhotosClone",
+            path: "Sources/Luma",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("NetFS"),

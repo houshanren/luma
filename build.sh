@@ -2,12 +2,33 @@
 set -eu
 cd "$(dirname "$0")"
 
+# ./build.sh preview —— 快速预览：只增量编译并替换 Luma.app 里的可执行文件，然后重启 App。
+# 不复制资源、不签名、不打包 zip：改一两个文件通常 1~2 分钟就能直接看到界面。
+if [ "${1:-}" = "preview" ]; then
+    APP="Luma.app"
+    EXEC="Luma"
+    if [ ! -d "$APP/Contents/MacOS" ]; then
+        echo "还没有完整的 $APP，先跑一次完整构建…"
+        exec ./build.sh release
+    fi
+    echo "快速增量编译…"
+    swift build -c release -Xswiftc -no-whole-module-optimization --product Luma
+    BIN_PATH="$(swift build -c release --show-bin-path)/Luma"
+    cp "$BIN_PATH" "$APP/Contents/MacOS/$EXEC"
+    chmod +x "$APP/Contents/MacOS/$EXEC"
+    echo "重启 $APP …"
+    osascript -e 'quit app "Luma"' >/dev/null 2>&1 || true
+    sleep 1
+    open "$APP"
+    exit 0
+fi
+
 CONFIG="${1:-release}"
 APP="Luma.app"
 EXEC="Luma"
 
-swift build -c "$CONFIG" --product PhotosClone
-BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/PhotosClone"
+swift build -c "$CONFIG" --product Luma
+BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/Luma"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

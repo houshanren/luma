@@ -21,7 +21,7 @@ PROXY = os.environ.get("MONO_PROXY", "http://127.0.0.1:8118")
 API = "https://zh.wikipedia.org/w/api.php"
 CATEGORY = "Category:日本AV女優"
 HEADERS = {
-    "User-Agent": "PhotosClone-Catalog/1.0 (personal media library)",
+    "User-Agent": "Luma-Catalog/1.0 (personal media library)",
     "Accept": "application/json",
     "Accept-Language": "zh-CN,zh;q=0.9",
 }

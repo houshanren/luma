@@ -2,6 +2,7 @@
 .env
 Luma.app/
 Luma-*-macOS.zip
+Luma-*-macOS-dev.zip
 .DS_Store
 *.xcuserstate
 .trae-html-share-packages/

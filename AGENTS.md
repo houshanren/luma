@@ -54,7 +54,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 ### 文件职责
 
-详见 `README.md` 的“目录结构”。几个关键点：
+完整目录清册见 `docs/development.md` §4（`Sources/Luma` 的 7 个一级目录逐文件列出）。下面只列关键文件：
 
 | 文件 | 职责 | 不要放什么 |
 | --- | --- | --- |
@@ -181,8 +181,8 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 「个人收藏」的浏览方式（`FavoritesViewMode`：全部 / 年 / 类型 / 地点 / 相机 / 人物）只做展示层：状态存 `SettingsKeys.favoritesViewMode`，汇总数据由 `LibraryStore+Favorites` 一次载入完整收藏列表后交给 `FavoritesDigestBuilder` 生成。相机维度必须经 `CameraBrand.detect` 按品牌聚合，品牌配色与设备插画只放在 `FavoritesDigestView`（`brandColors` / `BrandDeviceArt`），不要在 Domain 里引入 SwiftUI；地点按城市、人物只统计已命名。点分类卡片设置 `selectedFavoriteBucket` 下钻，`computeVisiblePhotos` 会从 `favoritesDigestSource` 过滤并关闭分页；顶栏用 `clearFavoritesBucket()` 返回当前维度。系统图库索引模式最多载入 30,000 条收藏。
 - 「地点摘要」与人物摘要共用页面交互与高光 / 色彩组件，但统计独立：`Domain/PlaceInsight` 只基于该地点聚类里的照片（到访轨迹、四季、时段、POI 地标、坐标），同框人物来自本地人脸聚类或系统图库已有结果；同样不落库、不上传，照片列表直接使用聚类快照，避免受分页窗口与当前筛选影响。
 - 网盘分类浏览同样是**派生视图**：范围枚举与计数模型在 `Domain/CloudInsight.swift`，筛选在 `LibraryStore+CloudInsight`，端侧识别结果放在 `CloudBrowserModel.analysis`（内存）并写入 `cloud_assets`（`mount_id + path`，同一行还存 EXIF / 特征 / 查看记录）；切换挂载、断开连接或换库时必须调用 `resetCloudInsight()` 清空内存，断开挂载时由 `removeCloudMount` 清理该挂载的 `cloud_assets` / `cloud_people` / 派生报告。网盘文件**带有 EXIF**：拍摄时间、相机、镜头、曝光与 GPS 由 `Services/Cloud/CloudEXIF` 读取文件头部解析（SMB 直接读挂载文件，WebDAV 走 `Range: bytes=0-262143`，官方网盘用直链 + Range），结果写回当前 `cloudPhotos` 的 `PhotoItem` 与 `cloudDirectoryCache`（内存）并落 `cloud_assets`；进入目录时由 `hydrateCloudCache` 按「路径 + 文件大小」校验后回填。媒体类型仍按扩展名/文件名推断（截屏走 `CloudMediaNaming.looksLikeScreenshot`），不要把文件名推断说成相机元数据。
-- 智能美化只生成渲染副本（与编辑器同一条 `commit` 管线：`resources/renders/` + `editRecipe` + `editVersion` + `ImageLoader.invalidate`），绝不覆盖原图；已编辑照片从原图重建编辑点后再叠加建议，不能丢弃用户已有调整。系统图库可经 PhotoKit 把美化结果作为可撤销调整写回原图（`applyBeautyToSystemOriginals`），这仍然不是覆盖原文件。
-- 跨范围派生缓存（系统图库识别 / 特征、体检与美化报告、网盘 EXIF / 分析 / 人物 / 查看记录）必须落当前图库的 `PhotosClone.sqlite`：`system_analysis`（按 `library_path`）、`derived_reports`（按范围 key + signature）、`cloud_assets`（按 `mount_id + path`）、`cloud_people` / `cloud_person_assets`（按 `mount_id`）。缓存必须带失效条件：系统图库用 `systemCacheSignature`（图库路径）比对 `system_analysis_signature|<path>`，不一致时 `purgeSystemCache` + `removeDerivedReports(prefix:)`；照片增删不会让整库识别缓存作废；网盘按「远端文件大小」校验，断开挂载时 `purgeCloudAssets` / `purgeCloudPeople` / `removeDerivedReports`。禁止把这些缓存写进 Apple 的目录、`Photos.sqlite` 或网盘。
+- 智能美化只生成渲染副本（与编辑器同一条 `commit` 管线：`Luma/resources/renders/` + `editRecipe` + `editVersion` + `ImageLoader.invalidate`），绝不覆盖原图；已编辑照片从原图重建编辑点后再叠加建议，不能丢弃用户已有调整。系统图库可经 PhotoKit 把美化结果作为可撤销调整写回原图（`applyBeautyToSystemOriginals`），这仍然不是覆盖原文件。
+- 跨范围派生缓存（系统图库识别 / 特征、体检与美化报告、网盘 EXIF / 分析 / 人物 / 查看记录）必须落当前图库的 `Luma.sqlite`：`system_analysis`（按 `library_path`）、`derived_reports`（按范围 key + signature）、`cloud_assets`（按 `mount_id + path`）、`cloud_people` / `cloud_person_assets`（按 `mount_id`）。缓存必须带失效条件：系统图库用 `systemCacheSignature`（图库路径）比对 `system_analysis_signature|<path>`，不一致时 `purgeSystemCache` + `removeDerivedReports(prefix:)`；照片增删不会让整库识别缓存作废；网盘按「远端文件大小」校验，断开挂载时 `purgeCloudAssets` / `purgeCloudPeople` / `removeDerivedReports`。禁止把这些缓存写进 Apple 的目录、`Photos.sqlite` 或网盘。
 - 系统图库的真实写入只能经 `PhotoKitBridge`（`PHPhotoLibrary.performChanges` + `PHContentEditingOutput` / `deleteAssets` / 相簿与文件夹的 ChangeRequest），且必须 `canWriteSystemOriginals` / `canDeleteSystemPhotos` / `canManageSystemAlbums`（`isSystemScope && isNativeContainer`）为真；由 Photos 自己更新原图与它的数据库。禁止直接以 SQL 改 `Photos.sqlite`，也禁止对额外连接的系统图库做真实写入。
 - 系统图库相簿写回：`LibraryStore+SystemAlbums` 提供新建 / 重命名 / 删除相簿、照片加入 / 移出 / 移到最前最后、收藏 / 隐藏写回。相簿映射用 Photos.sqlite 的 `ZGENERICALBUM.ZUUID`（`SystemAlbumInfo.uuid`，由索引或按需回查得到），由 `PhotoKitBridge.fetchAlbum` 解析 localIdentifier。删除相簿只删相簿本身，不删照片；新建后需要 `reloadSystemLibrary()` 才能拿到新相簿的 Z_PK。执行前必须 `prepareSystemLibraryWrite()`（权限 + 用样本照片校验「打开的就是系统照片库」），校验失败时收藏 / 隐藏退回 `asset_overlays`，相簿操作直接中止并提示。
 - 文件夹管理尚未接入：`PhotoKitBridge.verifyFolderWriteSupport()` 会临时新建一个文件夹读回类型并删除，用于验证「照片」是否允许通过 PhotoKit 管理文件夹；只有验证通过后才能继续实现，不能假定可用。
@@ -222,15 +222,15 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 ## 5. 图库与文件系统不变量
 
-- 图库是 `.photoslibrary` 包；**所有图库（自建库与直接打开的官方「照片」图库）**的数据都写入包内第一层 `database/`、`originals/`、`resources/`、`cloud/`。官方库里的 `Photos.sqlite` 与 Apple 自带原图只读：我们只在 `database/` 下另存 `PhotosClone.sqlite`，`originals/`、`resources/` 里只写自己的分片文件，不修改 Apple 的数据库与文件。真实编辑 / 删除系统图库照片必须经 PhotoKit（见 §4），由 Photos 自己写原图与数据库；任何情况下都不得用 SQL 直接改 `Photos.sqlite`。
+- 图库是 `.photoslibrary` 包；**拾光的数据统一写入包内 `Luma/` 目录**（`Luma/database/Luma.sqlite`、`Luma/originals/`、`Luma/resources/`、`Luma/cloud/` 等），图库根目录只保留 Apple 自己的结构。官方库里的 `Photos.sqlite` 与 Apple 自带原图只读：不修改 Apple 的数据库、`originals/` 与 `resources/`。真实编辑 / 删除系统图库照片必须经 PhotoKit（见 §4），由 Photos 自己写原图与数据库；任何情况下都不得用 SQL 直接改 `Photos.sqlite`。
 - 旧版 `private/com.lijialong.photosclone/` 的数据由 `migrateSidecarToLibraryRootIfNeeded` 上移（幂等）。**数据库迁移禁止直接搬运 `-wal` / `-shm`**：先把旧库三件套复制到临时目录、用 SQLite 打开做 `wal_checkpoint(TRUNCATE)` 合并，再只把主库文件搬进图库目录；把别的库的日志放进当前库目录会被当成当前库的日志回放，直接覆盖现有数据。
 - **没有图库时不允许创建任何固定位置数据**：
   - `LibraryPaths.configure()` 在无图库时不得调用 `prepare()`（除非检测到旧版本地数据用于迁移）；
   - `LibraryStore` 在 `needsLibrarySetup == true` 时不得打开/创建 `MetadataStore`；
   - 主界面被 `RootView` 的建库门禁挡住，此时不应有写操作。
 - 切换图库必须经过 `LibraryPaths.switchContainer(to:migratingLocalData:)`，它会处理目录结构与数据迁移；不要手工搬文件。
-- 打开任意图库（含官方「照片」图库）都以该图库为准：`activateLibrary(_:)` 统一走 `switchLibraryContainer(_:)`，展示该库自己的内容，元数据写入该库自己的 `database/PhotosClone.sqlite`（官方库中与 `Photos.sqlite` 并列）。打开图库时传 `migratingLocalData: false`，不把上一个库的内容搬进新库；只有建库引导的「迁入旧库」才迁移。侧边栏「系统图库」的 `connectSystemLibrary(_:)` 仍是只读浏览，不切换当前图库。
-- 图库选择记录：`UserDefaults["settings.recentLibraries"]`（最多 10 个），由 `rememberLibrary(_:)` 维护；当前图库以 `Application Support/PhotosClone/ContainerPath.txt` 为真源。
+- 打开任意图库（含官方「照片」图库）都以该图库为准：`activateLibrary(_:)` 统一走 `switchLibraryContainer(_:)`，展示该库自己的内容，元数据写入该库自己的 `Luma/database/Luma.sqlite`。打开图库时传 `migratingLocalData: false`，不把上一个库的内容搬进新库；只有建库引导的「迁入旧库」才迁移。侧边栏「系统图库」的 `connectSystemLibrary(_:)` 仍是只读浏览，不切换当前图库。
+- 图库选择记录：`UserDefaults["settings.recentLibraries"]`（最多 10 个），由 `rememberLibrary(_:)` 维护；当前图库以 `Application Support/Luma/ContainerPath.txt` 为真源。
 - 侧边栏固定三个分区：**拾光**（本地图库范围）/ **系统图库**（`store.systemLibraries`，可保存多个连接，同一时间只有一个处于连接/展开状态，只读）/ **网络存储**（`store.cloudMounts`）。当当前图库就是官方「照片」图库时（`isNativeContainer`），主侧边栏直接展示该库自己的结构（图库 / 精选集 / 固定 / 媒体类型 / 更多项目 / 场景 / 相簿），「固定」条目自动指向系统图库入口，不再渲染「拾光」「系统图库」两个分区；此时它自己的连接不再需要出现在系统图库列表里（`loadSystemLibraries()` 会剔除当前容器自身）。系统图库的连接列表与该连接状态都是 **per-library** 数据：写在当前图库自己的 `MetadataStore.settings`（`system_libraries` / `system_library_path`），切换图库时必须重新 `loadSystemLibraries()`；`UserDefaults["settings.systemLibraries"]` 只作为旧版全局列表的一次性迁入来源。连接用 `registerSystemLibrary(_:)`（追加或更新），断开用 `removeSystemLibrary(_:)`。网络存储的 `cloud_mounts`、云端收藏 `cloud_favorites` 同样写在图库自己的 settings 里。
 - 切换 / 新建图库必须走 `reloadPerLibraryState()`：它会重读图库级设置、视图状态、系统图库连接、网盘挂载与收藏；切换前先调用 `resetCloudStateForLibrarySwitch()` 清空上一个图库的挂载与目录缓存，否则旧挂载会被当成新库的连接写回新库。
 - 每个图库只管理自己的数据：照片与元数据、系统图库连接、网盘挂载与收藏、库级设置（视图状态 / 导入选项 / 最近删除保留期 / 系统图库载入上限 / 网格元数据显示）全部写在该图库内。新图库必须以空连接、默认设置启动；只有旧版全局设置会在升级时一次性迁入当时打开的图库。
@@ -261,7 +261,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 - 判断统一使用 `store.isSystemScope`、`store.isCloudScope`、`store.isReadOnlyScope`、`store.isNativeContainer`、`store.canEditNativeOverlay`、`store.isCurrentCloudWritable`。
 - 智能美化在三种范围都可用（`store.canScanBeauty` = 已建库）：本地图库生成可还原的渲染副本；系统图库与网盘是只读来源，默认从原图（官方 derivative / 云端大图）渲染并把结果作为新照片导入当前图库；官方库作为当前图库时，系统图库还可选择经 PhotoKit 写回原图（可撤销）。菜单项、体检页入口与推荐面板都用同一个 `canScanBeauty` 判断。
-- 官方「照片」图库是当前图库时，它是**增强对象**而不是只读浏览：内容读取 `Photos.sqlite`，拾光的补充元数据写在该库的 `PhotosClone.sqlite`（`asset_overlays`，`MetadataStore.saveOverlay(_:_:)`），绝不回写 `Photos.sqlite`；编辑、删除、相簿增删改、照片加入移出与排序、收藏与隐藏只允许经 PhotoKit，导入与重命名仍然禁止。额外连接的系统图库（`!isNativeContainer`）一律只读。
+- 官方「照片」图库是当前图库时，它是**增强对象**而不是只读浏览：内容读取 `Photos.sqlite`，拾光的补充元数据写在该库的 `Luma.sqlite`（`asset_overlays`，`MetadataStore.saveOverlay(_:_:)`），绝不回写 `Photos.sqlite`；编辑、删除、相簿增删改、照片加入移出与排序、收藏与隐藏只允许经 PhotoKit，导入与重命名仍然禁止。额外连接的系统图库（`!isNativeContainer`）一律只读。
 - 任何写操作入口（菜单、右键、快捷键、工具栏）都必须先做权限判断；只读时菜单项应 `disabled`，不要只在执行时弹 Toast。
 - 系统图库的拷贝出口：`importSystemSelectionToLibrary` / `importSystemAlbumToLibrary` / `importSystemFolderToLibrary`，目录递归用 `systemFolderAssetIDs`，重复项目按「同名 + 同大小」跳过。
 
@@ -274,7 +274,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | 浏览：网格 / 列表 / 瀑布流 / 完整宽高比、缩放、排序、筛选、搜索 | ✅ | ✅ | ✅ | 统一走 `ThumbnailAspect`、`store.thumbSize`、`photoFilter`、`sortKey`；网盘必须用 `cloudVisiblePhotos`，不得另写筛选分支。 |
 | 相簿 / 文件夹 | ✅ 可增删改 | ✅ 相簿可增删改、照片可加入移出与手动排序；文件夹只读（待验证） | ✅ 按目录浏览 | 系统图库通过 PhotoKit 写回，需要官方库作为当前库；新建相簿后重新载入索引；网盘只读目录，WebDAV 仅额外支持新建文件夹与上传。 |
 | 收藏 / 隐藏 / 关键词 / 查看时间 | ✅ | ✅ 收藏 / 隐藏经 PhotoKit 写回「照片」，关键词与查看时间写 `asset_overlays` | 仅收藏（`cloud_favorites`，写在当前图库） | 额外连接的系统图库、SMB 与官方网盘一律只读；写回失败时收藏 / 隐藏退回 `asset_overlays`。 |
-| 场景 / 包含文字（端侧识别） | ✅ 结果落 `asset_analysis`，可重复分析 | ✅ 结果落 `system_analysis`（按图库路径），内存 `systemAnalysisIndex` 即时刷新 | ✅ 结果落 `cloud_assets`（按挂载 + 路径），内存 `CloudBrowserModel.analysis` 即时刷新 | 系统图库在后台持续识别（索引分页 200 张/次，结果逐张出现，可停止）；网盘每次 120 张。两者都只写当前图库的 `PhotosClone.sqlite`；禁止写 `Photos.sqlite` 或网盘。**打开图库默认不识别**：只有用户本次运行中主动点过「识别照片内容…」且未手动停止时（`systemAnalysisAutoResume`），重新载入后才会对新增照片续跑。 |
+| 场景 / 包含文字（端侧识别） | ✅ 结果落 `asset_analysis`，可重复分析 | ✅ 结果落 `system_analysis`（按图库路径），内存 `systemAnalysisIndex` 即时刷新 | ✅ 结果落 `cloud_assets`（按挂载 + 路径），内存 `CloudBrowserModel.analysis` 即时刷新 | 系统图库在后台持续识别（索引分页 200 张/次，结果逐张出现，可停止）；网盘每次 120 张。两者都只写当前图库的 `Luma.sqlite`；禁止写 `Photos.sqlite` 或网盘。**打开图库默认不识别**：只有用户本次运行中主动点过「识别照片内容…」且未手动停止时（`systemAnalysisAutoResume`），重新载入后才会对新增照片续跑。 |
 | 值得重看（`revisit`） | ✅ | ✅ 只读派生（`LibraryHealthTuning` 阈值） | ✅ 只读派生 | 先按「拍摄超过两年 + 一年以上未打开」筛出候选，再由 `Domain/RevisitInsight` 按人物 / 地点 / 场景 / 年份拆主体（人物需共同出现 ≥2 张、地点 ≥2 张、场景 ≥3 张），年份分层与未打开计数在派生时算好，视图只展示；网盘用 EXIF 拍摄时间 + 本机查看记录（`cloud_assets.viewed_at` / `CloudBrowserModel.viewedAt`，不写网盘）判定，入口在「更多项目」。 |
 | 图库体检（模糊 / 相似连拍 / 过大视频） | ✅ | ✅ 只读预览；官方库作当前库时可移入「照片」最近删除 | ✅ 只读预览 | 系统图库用官方 derivative / 缓存缩略图检查当前已载入照片（索引模式为当前窗口），结果落 `derived_reports`；网盘对当前目录缩略图逐张检查（最多 500 张），结果同样落 `derived_reports` 并按目录回填。网盘不提供清理动作；系统图库的清理只经 PhotoKit。 |
 | 重复项目 | ✅ 可合并 | ✅ 隐藏副本 / 拷贝保留版本 / PhotoKit 移入「照片」最近删除 | ✅ 只读 | 网盘按「文件大小 + 像素尺寸」在内存分组，只展示与提示，不在本机合并网盘文件。 |
@@ -427,9 +427,9 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 ## 14. 常见陷阱
 
-- **产物名不一致**：SwiftPM 可执行目标叫 `PhotosClone`，打包后 App 叫 `Luma.app` / 进程名 `Luma`；`pkill -x Luma`，不要用 `PhotosClone`。
+- **产物名一致**：SwiftPM 可执行目标、产物与应用都叫 `Luma`；`pkill -x Luma`。
 - **多进程改文件**：本仓库可能被多个会话同时编辑；遇到编译期“file modified during the build”只需等待重试。
-- **`metadataFile` 位置**：`<图库根目录>/database/PhotosClone.sqlite`（官方「照片」图库同样在它包内第一层 `database/`，与 `Photos.sqlite` 并列），不是 `Application Support`；无图库时 `root` 指向 `Application Support/PhotosClone`，仅用于迁移旧数据。
+- **`metadataFile` 位置**：`<图库根目录>/Luma/database/Luma.sqlite`（Apple 的 `Photos.sqlite` 仍在 `<图库根目录>/database/`，两者分开），不是 `Application Support`；无图库时 `root` 指向 `Application Support/Luma`，仅用于迁移旧数据。
 - **官方图库识别**：`isNativeLibrary` 以是否存在 `database/Photos.sqlite` 判定；`isLibraryContainer` 只看扩展名与是否目录。
 - **ATS**：`Info.plist` 已允许任意加载与本地网络；新增域名/端口无需再改，但不要把该配置用于生产收紧以外的场景。
 - **HDR 开关**：关闭时查看器把图像转 8 位 sRGB（`ImageLoader.sdrImage`），不要把这个转换加到网格缩略图上（性能）。

@@ -110,6 +110,10 @@ public struct JobProgress: Identifiable, Hashable, Codable, Sendable {
     public var fractionValue: Double?
     /// 是否支持取消：不支持的任务不显示取消按钮，避免点了没反应。
     public var isCancellable: Bool
+    /// 任务开始运行的时间：任务记录靠它算出耗时。老记录没有这个字段时按 nil 处理。
+    public var startedAt: Date?
+    /// 任务结束（完成 / 失败 / 取消）的时间；仍在进行时为 nil。
+    public var finishedAt: Date?
 
     public init(jobID: UUID,
                 sourceID: SourceID,
@@ -121,7 +125,9 @@ public struct JobProgress: Identifiable, Hashable, Codable, Sendable {
                 message: String? = nil,
                 updatedAt: Date = Date(),
                 fractionValue: Double? = nil,
-                isCancellable: Bool = true) {
+                isCancellable: Bool = true,
+                startedAt: Date? = nil,
+                finishedAt: Date? = nil) {
         self.jobID = jobID
         self.sourceID = sourceID
         self.kind = kind
@@ -133,12 +139,45 @@ public struct JobProgress: Identifiable, Hashable, Codable, Sendable {
         self.updatedAt = updatedAt
         self.fractionValue = fractionValue
         self.isCancellable = isCancellable
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
     }
 
     public var fraction: Double? {
         if let fractionValue { return min(1, max(0, fractionValue)) }
         guard let total, total > 0 else { return nil }
         return min(1, max(0, Double(completed) / Double(total)))
+    }
+
+    /// 已耗时：进行中按当前时间滚动，已结束按结束时间定格。
+    public var elapsed: TimeInterval? {
+        guard let startedAt else { return nil }
+        return max(0, (finishedAt ?? Date()).timeIntervalSince(startedAt))
+    }
+
+    /// 耗时的展示文本：单位自适应，最小到毫秒。老记录没有开始时间时为 nil。
+    public var elapsedText: String? {
+        guard let elapsed else { return nil }
+        return JobDurationText.format(elapsed)
+    }
+}
+
+/// 后台任务耗时的统一格式化：单位自适应，最小到毫秒。
+/// 例：`850 毫秒` → `3.4 秒` → `2 分 05 秒` → `1 时 03 分`。
+public enum JobDurationText {
+    public static func format(_ seconds: Double) -> String {
+        let value = max(0, seconds)
+        if value < 1 {
+            return "\(Int((value * 1000).rounded())) 毫秒"
+        }
+        if value < 10 {
+            return String(format: "%.1f 秒", value)
+        }
+        let total = Int(value.rounded())
+        if total < 60 { return "\(total) 秒" }
+        if total < 3600 { return String(format: "%d 分 %02d 秒", total / 60, total % 60) }
+        if total < 86400 { return String(format: "%d 时 %02d 分", total / 3600, (total % 3600) / 60) }
+        return String(format: "%d 天 %02d 时", total / 86400, (total % 86400) / 3600)
     }
 }
 
@@ -167,7 +206,8 @@ public final class SourceJobCenter: @unchecked Sendable {
                                       kind: job.kind,
                                       title: job.title,
                                       phase: .running,
-                                      isCancellable: job.isCancellable)
+                                      isCancellable: job.isCancellable,
+                                      startedAt: Date())
         if let cancel { cancelHandlers[job.id] = cancel }
         return job.id
     }
@@ -196,6 +236,7 @@ public final class SourceJobCenter: @unchecked Sendable {
         item.completed = item.total ?? item.completed
         item.message = message
         item.updatedAt = Date()
+        if item.finishedAt == nil { item.finishedAt = item.updatedAt }
         storage[id] = item
         cancelHandlers[id] = nil
         pruneFinishedLocked()
@@ -208,17 +249,18 @@ public final class SourceJobCenter: @unchecked Sendable {
         item.phase = .failed
         item.message = message
         item.updatedAt = Date()
+        if item.finishedAt == nil { item.finishedAt = item.updatedAt }
         storage[id] = item
         cancelHandlers[id] = nil
         pruneFinishedLocked()
     }
 
-    /// 已完成 / 失败 / 取消的任务只保留最近 100 条：
+    /// 已完成 / 失败 / 取消的任务只保留最近 200 条：
     /// 现在连模型下载、特征加载这类高频任务也上报，不裁剪会让内存无限增长。
     private func pruneFinishedLocked() {
         let finished = storage.values.filter { $0.phase != .running && $0.phase != .pending }
-        guard finished.count > 100 else { return }
-        let excess = finished.sorted { $0.updatedAt < $1.updatedAt }.prefix(finished.count - 100)
+        guard finished.count > 200 else { return }
+        let excess = finished.sorted { $0.updatedAt < $1.updatedAt }.prefix(finished.count - 200)
         for item in excess { storage[item.jobID] = nil }
     }
 
@@ -229,6 +271,7 @@ public final class SourceJobCenter: @unchecked Sendable {
         if var item = storage[id] {
             item.phase = .cancelled
             item.updatedAt = Date()
+            if item.finishedAt == nil { item.finishedAt = item.updatedAt }
             storage[id] = item
             pruneFinishedLocked()
         }

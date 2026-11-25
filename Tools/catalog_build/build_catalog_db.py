@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import colorsys
 import hashlib
+import html
 import io
 import json
 import os
@@ -37,7 +38,8 @@ import subprocess
 import sys
 import unicodedata
 import urllib.parse
-from datetime import date
+from collections import Counter
+from datetime import date, datetime
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -755,6 +757,15 @@ def blank_actress(name):
         "sources": set(),
         "name_ja": None,
         "name_en": None,
+        "hobby": None,
+        "birth_precision": None,
+        "ruby": None,
+        "birthplace": None,
+        "blood_type": None,
+        "debut_year": None,
+        "agency": None,
+        "status": None,
+        "official_site": None,
     }
 
 
@@ -843,7 +854,7 @@ def apply_actress_details(merged, name_keys, details):
         site_stats = has_site_stats(detail.get("source"))
         region = target.get("region") or detail.get("region")
         for field in ("summary", "description", "source_url", "image",
-                      "birth_date", "height", "bust", "waist", "hips", "cup"):
+                      "birth_date", "height", "bust", "waist", "hips", "cup", "hobby"):
             value = detail.get(field)
             if field in ("summary", "description"):
                 value = summary_for(value, region)
@@ -902,6 +913,7 @@ def javbus_detail_rows():
             "waist": info.get("waist"),
             "hips": info.get("hips"),
             "cup": info.get("cup"),
+            "hobby": info.get("hobby"),
             "source_url": f"https://www.javbus.com/star/{star_id}",
             "region": "japan",
             "source": "javbus 演员页",
@@ -1055,7 +1067,7 @@ def merge_records(target, other):
         if name and name not in target["names"]:
             target["names"].append(name)
     for field in ("birth_date", "height", "bust", "waist", "hips", "cup", "summary",
-                  "description", "image", "source_url", "name_ja", "name_en"):
+                  "description", "image", "source_url", "name_ja", "name_en", "hobby"):
         if target.get(field) is None and other.get(field) is not None:
             target[field] = other[field]
     if other.get("age") is not None and target.get("age") is None:
@@ -1071,7 +1083,8 @@ def merge_records(target, other):
 
 def record_score(target):
     fields = ("birth_date", "height", "bust", "waist", "hips", "cup", "summary",
-              "description", "image", "source_url", "work_count", "name_ja", "name_en")
+              "description", "image", "source_url", "work_count", "name_ja", "name_en",
+              "hobby")
     return (sum(1 for field in fields if target.get(field) is not None)
             + len(target.get("names", [])) + len(target.get("tags", [])))
 
@@ -1310,11 +1323,27 @@ def sanitize_actress(target):
     height = target.get("height")
     if height is not None and not (130 <= height <= 200):
         target["height"] = None
-    birth = target.get("birth_date") or ""
-    if birth:
-        year = int(birth[:4]) if birth[:4].isdigit() else 0
-        if not (1940 <= year <= 2007):
+    birth = (target.get("birth_date") or "").strip()
+    target["birth_precision"] = None
+    if re.fullmatch(r"\d{4}", birth):
+        year = int(birth)
+        if 1940 <= year <= date.today().year:
+            target["birth_date"] = birth
+            target["birth_precision"] = "year"
+        else:
             target["birth_date"] = None
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", birth):
+        try:
+            parsed = datetime.strptime(birth, "%Y-%m-%d").date()
+        except ValueError:
+            parsed = None
+        if parsed and 1940 <= parsed.year <= date.today().year:
+            target["birth_date"] = birth
+            target["birth_precision"] = "day"
+        else:
+            target["birth_date"] = None
+    elif birth:
+        target["birth_date"] = None
     age = target.get("age")
     if age is not None and not (15 <= age <= 70):
         target["age"] = None
@@ -2180,10 +2209,195 @@ def studio_avatar(name: str) -> str | None:
     return data
 
 
+# ---------------------------------------------------------------- 国内作品与标签
+
+# 采集站的泛化标签不是资料，丢；角色/IP/服装/主题标签才是可用的丰富度。
+COS_GENERIC_TAGS = {
+    "coser", "cosplay", "cos作品", "cos图包", "cos图集", "cos", "cos写真",
+    "美图欣赏", "图集", "写真", "网红", "美女", "福利", "资源", "合集",
+}
+COS_TAG_BLOCK = ("私拍", "内购", "全集", "合集", "视频", "资源", "套图",
+                 "无码", "流出", "付费", "众筹", "更新", "新发")
+
+
+def _record_name_keys(record):
+    keys = set()
+    for name in [record.get("name"), *record.get("names", [])]:
+        if name:
+            key = merge_key(name.translate(JP_VARIANTS))
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _clean_post_title(value):
+    title = html.unescape((value or "").strip())
+    if not title:
+        return None
+    title = title.replace("［", "[").replace("］", "]")
+    # 标题里的体积 / 期数 / 更新日期是采集站的瞬时信息，不进作品标题。
+    title = re.sub(r"\[[^\]]*(?:\d+(?:\.\d+)?\s*G|期|套|更新|新发)[^\]]*\]?", "", title)
+    title = re.sub(r"\[[^\]]*(?:\d+\s*[Pp]|MB|GB|订阅|Partme)[^\]]*\]?",
+                   "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\[[^\]]*(?:Fantia|Patreon|Partme|Perohub)[^\]]*\]?",
+                   "", title, flags=re.IGNORECASE)
+    title = re.sub(r"[（(][^）)]*(?:\d+(?:\.\d+)?\s*G|期|套|更新)[^）)]*[）)]", "", title)
+    title = re.sub(r"\s*\b(?:Fantia|Patreon|Partme|Perohub)\b.*$", "", title,
+                   flags=re.IGNORECASE)
+    title = re.sub(r"\s*(?:会员)?订阅(?:合集)?\s*(?:[-–—]\s*)?(?:cos)?作品及?个人资料介绍.*$",
+                   "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*(?:会员)?订阅合集.*$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*[-–—]?\s*(?:cos)?作品及?个人资料介绍.*$", "", title,
+                   flags=re.IGNORECASE)
+    title = re.sub(r"\s*[-–—]?\s*微密圈.*$", "", title)
+    title = re.sub(r"\s*[-–—]?\s*(?:vip)?收费.*$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*\d{4}\s*年\s*\d{1,2}\s*月\s*(?:订阅|新作|更新).*$", "", title)
+    title = re.sub(r"\s*[–-]\s*(?:全套|内购|私拍|合集).*$", "", title)
+    title = re.sub(r"^\s*\[[^\]]{1,10}\]\s*", "", title)
+    title = re.sub(r"\[[^\]]*$", "", title)
+    title = re.sub(r"\[[^\]]*\]", "", title)
+    title = re.sub(r"[\s\[\]（）()]+$", "", title)
+    title = re.sub(r"\s+", " ", title)
+    title = title.strip(" -–—")
+    if not title or any(word in title for word in ("个人资料介绍", "会员订阅", "订阅合集", "微密圈")):
+        return None
+    return title
+
+
+def enrich_domestic_posts(actresses):
+    """把 coscd / kkkhai 的文章变成人物作品链接与角色/IP 标签。
+
+    只动国内条目：现有 raw 里的这两个站都是华语 Coser / 写真。
+    返回 (作品链接行, 新增标签数)；标签在写库前合并，链接写库后按名字解析成 id。
+    """
+    by_name: dict[str, dict] = {}
+    for record in actresses:
+        if record.get("region") not in DOMESTIC_REGIONS:
+            continue
+        for name in [record.get("name"), *record.get("names", [])]:
+            if not name:
+                continue
+            key = merge_key(name.translate(JP_VARIANTS))
+            if key:
+                by_name.setdefault(key, record)
+    all_person_keys = set()
+    for record in actresses:
+        all_person_keys |= _record_name_keys(record)
+
+    def find_record(raw_name):
+        for candidate in (raw_name, clean_domestic_name(raw_name or "")):
+            if not candidate:
+                continue
+            key = merge_key(candidate.translate(JP_VARIANTS))
+            record = by_name.get(key)
+            if record:
+                return record
+        return None
+
+    links: list[dict] = []
+    added_tags = 0
+
+    # 1) coscd：作品页链接 + 作品标签（碧蓝航线 / 原神 / 2B / 女仆…）。
+    people_path = os.path.join(RAW, "coscd_people.json")
+    posts_path = os.path.join(RAW, "coscd_posts.json")
+    tags_path = os.path.join(RAW, "coscd_tags.json")
+    if (os.path.exists(people_path) and os.path.exists(posts_path)
+            and os.path.exists(tags_path)):
+        tag_names = {tag["id"]: tag.get("name") for tag in load_json(tags_path)}
+        posts = load_json(posts_path)
+        post_by_link = {post.get("link"): post for post in posts if post.get("link")}
+        for person in load_json(people_path):
+            record = find_record(person.get("name") or "")
+            if not record:
+                continue
+            own_keys = _record_name_keys(record)
+            tag_counts = Counter()
+            for url in person.get("links") or []:
+                if not url:
+                    continue
+                post = post_by_link.get(url)
+                links.append({
+                    "name": record["name"],
+                    "region": record.get("region"),
+                    "source": "coscd",
+                    "kind": "work",
+                    "url": url,
+                    "title": _clean_post_title((post or {}).get("title")),
+                    "published_at": None,
+                })
+                for tag_id in (post or {}).get("tags") or []:
+                    tag = tag_names.get(tag_id)
+                    if tag:
+                        tag_counts[tag] += 1
+            picked = 0
+            for tag, _count in tag_counts.most_common():
+                if picked >= 8:
+                    break
+                text = (tag or "").strip()
+                if len(text) < 2 or len(text) > 24:
+                    continue
+                if text.casefold() in COS_GENERIC_TAGS:
+                    continue
+                if any(block in text for block in COS_TAG_BLOCK):
+                    continue
+                key = merge_key(text.translate(JP_VARIANTS))
+                if not key or key in all_person_keys:
+                    continue
+                # 「蠢沫沫cos」这类是本人名字的变体，不是角色标签。
+                if any(key.startswith(own) or own.startswith(key)
+                       for own in own_keys if len(own) >= 2):
+                    continue
+                if text in record.get("tags", []):
+                    continue
+                record.setdefault("tags", []).append(text)
+                added_tags += 1
+                picked += 1
+
+    # 2) kkkhai：文章标题/日期作为作品链接（人物由文章 tag 定位）。
+    tags_full_path = os.path.join(RAW, "kkkhai_tags_full.json")
+    posts_full_path = os.path.join(RAW, "kkkhai_posts_full.json")
+    if os.path.exists(tags_full_path) and os.path.exists(posts_full_path):
+        tag_names = {tag["id"]: tag.get("name") for tag in load_json(tags_full_path)}
+        for post in load_json(posts_full_path):
+            matched = None
+            for tag_id in post.get("tags") or []:
+                name = tag_names.get(tag_id)
+                if name:
+                    matched = find_record(name)
+                    if matched:
+                        break
+            if not matched:
+                continue
+            url = post.get("link")
+            if not url:
+                continue
+            published = (post.get("date") or "")[:10]
+            links.append({
+                "name": matched["name"],
+                "region": matched.get("region"),
+                "source": "kkkhai",
+                "kind": "work",
+                "url": url,
+                "title": _clean_post_title(post.get("title")),
+                "published_at": published if re.fullmatch(r"\d{4}-\d{2}-\d{2}", published) else None,
+            })
+
+    # 去重：同一人物同一来源同一 URL 只留一条。
+    seen = set()
+    unique = []
+    for row in links:
+        key = (row["name"], row["region"], row["source"], row["url"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique, added_tags
+
+
 # ---------------------------------------------------------------- 写库
 
 SCHEMA = """
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE actresses (
     id INTEGER PRIMARY KEY,
@@ -2193,6 +2407,7 @@ CREATE TABLE actresses (
     aliases TEXT NOT NULL DEFAULT '[]',
     region TEXT NOT NULL DEFAULT 'japan',
     birth_date TEXT,
+    birth_precision TEXT,
     age INTEGER,
     age_asof TEXT,
     height_cm INTEGER,
@@ -2200,6 +2415,14 @@ CREATE TABLE actresses (
     waist INTEGER,
     hips INTEGER,
     cup TEXT,
+    hobby TEXT,
+    ruby TEXT,
+    birthplace TEXT,
+    blood_type TEXT,
+    debut_year INTEGER,
+    agency TEXT,
+    status TEXT,
+    official_site TEXT,
     work_count INTEGER,
     tags TEXT NOT NULL DEFAULT '[]',
     summary TEXT,
@@ -2219,6 +2442,9 @@ CREATE TABLE studios (
     aliases TEXT NOT NULL DEFAULT '[]',
     region TEXT NOT NULL DEFAULT 'japan',
     kind TEXT,
+    founded_year INTEGER,
+    parent_name TEXT,
+    status TEXT,
     work_count INTEGER,
     summary TEXT,
     logo_url TEXT,
@@ -2235,10 +2461,212 @@ CREATE TABLE code_makers (
     studio_name TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT ''
 );
+
+-- 跨站 ID：去重、增量更新、避免继续靠名字模糊匹配。
+CREATE TABLE external_ids (
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    url TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (entity_type, entity_id, source)
+);
+CREATE INDEX idx_external_lookup ON external_ids(source, external_id);
+
+-- 人物主页 / 作品 / 社交链接。
+CREATE TABLE person_links (
+    id INTEGER PRIMARY KEY,
+    actress_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT,
+    published_at TEXT,
+    UNIQUE (actress_id, source, url)
+);
+CREATE INDEX idx_person_links_actress ON person_links(actress_id);
+
+-- 人物与机构（事务所 / 写真机构 / 专属厂牌）的关系。
+CREATE TABLE person_studios (
+    actress_id INTEGER NOT NULL,
+    studio_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (actress_id, studio_id, kind)
+);
+
+-- 作品底座：等 R18 / DMM / JavBus 数据导入后直接填。
+CREATE TABLE works (
+    id INTEGER PRIMARY KEY,
+    content_id TEXT,
+    dvd_id TEXT,
+    code TEXT,
+    kind TEXT,
+    title_ja TEXT,
+    title_zh TEXT,
+    title_en TEXT,
+    release_date TEXT,
+    runtime_min INTEGER,
+    director TEXT,
+    studio_id INTEGER,
+    label TEXT,
+    series TEXT,
+    genres TEXT NOT NULL DEFAULT '[]',
+    cover_url TEXT,
+    sample_urls TEXT NOT NULL DEFAULT '[]',
+    trailer_url TEXT,
+    source_url TEXT UNIQUE,
+    rating REAL,
+    popularity INTEGER,
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_works_code ON works(code);
+CREATE INDEX idx_works_release ON works(release_date);
+CREATE TABLE work_actresses (
+    work_id INTEGER NOT NULL,
+    actress_id INTEGER NOT NULL,
+    PRIMARY KEY (work_id, actress_id)
+);
 """
 
 
-def write_database(actresses, studios):
+def write_enrichment(connection, link_rows):
+    """写库后：按名字解析 id，落人物作品链接、主页链接与跨站 ID。"""
+    rows = connection.execute("SELECT id, name, region, aliases FROM actresses").fetchall()
+    name_ids: dict[str, set[tuple[int, str]]] = {}
+    for rid, name, region, aliases_json in rows:
+        names = [name]
+        try:
+            names.extend(json.loads(aliases_json or "[]"))
+        except (ValueError, TypeError):
+            pass
+        for candidate in names:
+            key = merge_key((candidate or "").translate(JP_VARIANTS))
+            if key:
+                name_ids.setdefault(key, set()).add((rid, region or "japan"))
+
+    def resolve(name, region=None):
+        key = merge_key((name or "").translate(JP_VARIANTS))
+        ids = set(name_ids.get(key) or ())
+        if region:
+            filtered = {item for item in ids if item[1] == region}
+            if filtered:
+                ids = filtered
+        if len(ids) == 1:
+            return next(iter(ids))[0]
+        return None
+
+    added_links = 0
+    added_ids = 0
+    added_works = 0
+
+    def add_link(rid, source, kind, url, title=None, published=None):
+        nonlocal added_links
+        if not rid or not url:
+            return
+        cursor = connection.execute(
+            """INSERT OR IGNORE INTO person_links
+               (actress_id, source, kind, url, title, published_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (rid, source, kind, url, title, published))
+        if cursor.rowcount:
+            added_links += 1
+
+    def add_external(rid, source, external_id, url=None):
+        nonlocal added_ids
+        if not rid or not external_id:
+            return
+        cursor = connection.execute(
+            """INSERT OR IGNORE INTO external_ids
+               (entity_type, entity_id, source, external_id, url, updated_at)
+               VALUES ('person', ?, ?, ?, ?, ?)""",
+            (rid, source, str(external_id), url, BUILD_DATE))
+        if cursor.rowcount:
+            added_ids += 1
+
+    # 1) 本轮从 coscd / kkkhai 文章整理出的作品链接。
+    for row in link_rows:
+        rid = resolve(row.get("name"), row.get("region"))
+        add_link(rid, row.get("source") or "unknown", row.get("kind") or "work",
+                 row.get("url"), row.get("title"), row.get("published_at"))
+        # 国内套图/写真也进 works 底座：没有番号，但有标题、来源和人物关系。
+        if rid and row.get("kind") == "work" and row.get("url") and row.get("title"):
+            source = row.get("source") or "unknown"
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO works
+                   (kind, title_zh, release_date, source, source_url, updated_at)
+                   VALUES ('photo', ?, ?, ?, ?, ?)""",
+                (row.get("title"), row.get("published_at"), source,
+                 row.get("url"), BUILD_DATE))
+            if cursor.rowcount:
+                added_works += 1
+                work_id = cursor.lastrowid
+            else:
+                found = connection.execute(
+                    "SELECT id FROM works WHERE source_url = ?", (row.get("url"),)).fetchone()
+                work_id = found[0] if found else None
+            if work_id:
+                connection.execute(
+                    "INSERT OR IGNORE INTO work_actresses (work_id, actress_id) VALUES (?, ?)",
+                    (work_id, rid))
+
+    # 2) JavBus：star_id 同时作为跨站 ID 与演员页链接。
+    stars_map_path = os.path.join(RAW, "javbus_name_map.json")
+    stars_zh_path = os.path.join(RAW, "javbus_stars_zh.json")
+    star_names: dict[str, set[str]] = {}
+    if os.path.exists(stars_map_path):
+        for entry in load_json(stars_map_path):
+            star_id = entry.get("star_id")
+            if not star_id:
+                continue
+            bucket = star_names.setdefault(star_id, set())
+            for name in (entry.get("zh"), entry.get("ja")):
+                if name:
+                    bucket.add(name)
+    if os.path.exists(stars_zh_path):
+        for star_id, name in load_json(stars_zh_path).items():
+            if name:
+                star_names.setdefault(star_id, set()).add(name)
+    for star_id, names in star_names.items():
+        ids = {rid for rid in (resolve(name) for name in names) if rid}
+        if len(ids) != 1:
+            continue
+        rid = ids.pop()
+        url = f"https://www.javbus.com/star/{star_id}"
+        add_external(rid, "javbus", star_id, url)
+        add_link(rid, "javbus", "profile", url, "JavBus 演员页")
+
+    # 3) JavRate：详情页 uuid + 主页链接。
+    actors_path = os.path.join(RAW, "javrate_actors_all.json")
+    if os.path.exists(actors_path):
+        for row in load_json(actors_path):
+            name = row.get("name")
+            url = row.get("url")
+            rid = resolve(name)
+            if not rid or not url:
+                continue
+            match = re.search(r"/detail/([0-9a-fA-F-]{8,})\.html", url)
+            if match:
+                add_external(rid, "javrate", match.group(1), url)
+            add_link(rid, "javrate", "profile", url, "JavRate 演员页")
+
+    # 4) 中文维基：条目名 + 链接。
+    bios_path = os.path.join(RAW, "wiki_actress_bios.json")
+    if os.path.exists(bios_path):
+        for name, info in load_json(bios_path).items():
+            url = (info or {}).get("url")
+            rid = resolve(name)
+            if not rid or not url:
+                continue
+            add_external(rid, "zhwiki", name, url)
+            add_link(rid, "zhwiki", "profile", url, info.get("ja") or name)
+
+    return added_links, added_ids, added_works
+
+
+def write_database(actresses, studios, link_rows, coser_tag_count):
     os.makedirs(OUT_DIR, exist_ok=True)
     load_avatars()
     if os.path.exists(OUT):
@@ -2247,18 +2675,24 @@ def write_database(actresses, studios):
     connection.executescript(SCHEMA)
     connection.executemany(
         """INSERT INTO actresses
-           (name, name_ja, name_en, aliases, region, birth_date, age, age_asof,
-            height_cm, bust, waist, hips, cup, work_count, tags, summary,
-            description, image_url, avatar_base64, source_url, source, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (name, name_ja, name_en, aliases, region, birth_date, birth_precision,
+            age, age_asof, height_cm, bust, waist, hips, cup, hobby, ruby,
+            birthplace, blood_type, debut_year, agency, status, official_site,
+            work_count, tags, summary, description, image_url, avatar_base64,
+            source_url, source, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (
                 a["name"], a.get("name_ja"), a.get("name_en"),
                 json.dumps([n for n in a["names"] if n != a["name"]], ensure_ascii=False),
                 a.get("region") or "japan",
-                a.get("birth_date"), a.get("age"), a.get("age_asof"),
+                a.get("birth_date"), a.get("birth_precision"),
+                a.get("age"), a.get("age_asof"),
                 a.get("height"), a.get("bust"), a.get("waist"), a.get("hips"),
-                a.get("cup"), a.get("work_count"),
+                a.get("cup"), a.get("hobby"), a.get("ruby"), a.get("birthplace"),
+                a.get("blood_type"), a.get("debut_year"), a.get("agency"),
+                a.get("status"), a.get("official_site"),
+                a.get("work_count"),
                 json.dumps(a.get("tags", []), ensure_ascii=False),
                 a.get("summary"), a.get("description"),
                 a.get("image"), AVATARS.get(a.get("image") or ""),
@@ -2293,15 +2727,21 @@ def write_database(actresses, studios):
         "INSERT OR REPLACE INTO code_makers (prefix, studio_name, source) VALUES (?, ?, ?)",
         [(prefix, maker, "内置词典") for prefix, maker in CODE_MAKERS.items()],
     )
+    link_count, external_count, works_count = write_enrichment(connection, link_rows)
     connection.executemany(
         "INSERT INTO meta (key, value) VALUES (?, ?)",
         [
-            ("version", "1"),
+            ("version", "3"),
             ("built_at", BUILD_DATE),
             ("actress_count", str(len(actresses))),
             ("studio_count", str(len(studios))),
             ("code_maker_count", str(len(CODE_MAKERS))),
-            ("sources", "zh.wikipedia / wikidata / javrate / kkkhai"),
+            ("hobby_count", str(sum(1 for a in actresses if a.get("hobby")))),
+            ("person_link_count", str(link_count)),
+            ("external_id_count", str(external_count)),
+            ("works_count", str(works_count)),
+            ("coser_tag_count", str(coser_tag_count)),
+            ("sources", "zh.wikipedia / wikidata / javrate / javbus / kkkhai / coscd"),
         ],
     )
     connection.commit()
@@ -2310,6 +2750,7 @@ def write_database(actresses, studios):
 
     print(f"已生成 {OUT}")
     print(f"女优 {len(actresses)} 位，厂牌 {len(studios)} 个，番号前缀 {len(CODE_MAKERS)} 条")
+    print(f"  人物链接 {link_count} 条，跨站 ID {external_count} 条，作品 {works_count} 条，Coser 标签 {coser_tag_count} 条")
     regions = {}
     for a in actresses:
         regions[a.get("region") or "japan"] = regions.get(a.get("region") or "japan", 0) + 1
@@ -2324,7 +2765,9 @@ def main():
             if name:
                 studio_keys.add(merge_key(name.translate(JP_VARIANTS)))
     actresses = build_actresses(studio_keys)
-    write_database(actresses, studios)
+    link_rows, coser_tag_count = enrich_domestic_posts(actresses)
+    print(f"  国内作品链接 {len(link_rows)} 条，角色/IP 标签 {coser_tag_count} 条")
+    write_database(actresses, studios, link_rows, coser_tag_count)
 
 
 if __name__ == "__main__":

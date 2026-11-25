@@ -13,8 +13,8 @@ if [ ! -f "$APP/Contents/Info.plist" ] || [ ! -d "$APP/Contents/Resources" ]; th
     exit 0
 fi
 
-swift build --product PhotosClone
-BIN="$(swift build --show-bin-path)/PhotosClone"
+swift build --product Luma
+BIN="$(swift build --show-bin-path)/Luma"
 
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/Luma"

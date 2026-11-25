@@ -498,7 +498,7 @@ AI 分两层：**本机理解**（默认离线、随图库写入结果）与 **�
 
 ## 下载
 
-- **发布产物**：[Luma-2.1.0-macOS.zip](https://github.com/houshanren/luma/releases)（macOS 14+，本地自签，未做 Apple 公证）
+- **发布产物**：[Luma-2.1.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v2.1.0/Luma-2.1.0-macOS.zip)（macOS 14+，本地自签，未做 Apple 公证）
 - **全部版本**：[Releases](https://github.com/houshanren/luma/releases)
 - **官方网站**：[http://houshanren.asia:10086/](http://houshanren.asia:10086/)
 - **从源码构建**：[`./build.sh`](#获取与构建)

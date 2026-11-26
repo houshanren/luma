@@ -681,7 +681,7 @@ struct SearchSectionHeader: View {
 // MARK: - 命中行
 
 struct SearchHitRow: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     let hit: SearchHit
     let onOpen: (SearchHit) -> Void
@@ -805,7 +805,7 @@ struct SearchHitRow: View {
 /// `compact`：封面在上、标题在下的紧凑格子；
 /// `feature`：封面大图铺满 + 底部渐变字幕，悬停浮出播放按钮。
 struct SearchHitCard: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     enum Style {
         case compact
@@ -999,7 +999,7 @@ struct SearchHitCard: View {
 /// 卡片封面：铺满给定的封面区。
 /// 图片类按卡面尺寸取图；图标类换成来源色大图标色板，保证格子整体不花。
 struct SearchCardVisual: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     let visual: SearchVisual
     let tint: Color
@@ -1177,8 +1177,8 @@ extension View {
 /// 四类来源各自落到自己的收藏存储：图库照片写照片标记，网盘文件写当前图库的本地收藏，
 /// 网络影院 / 网络资源条目写条目的「稍后看」表。其它来源（相簿、频道、节目等）不挂菜单。
 private struct SearchHitFavoriteMenu: ViewModifier {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     let hit: SearchHit
 

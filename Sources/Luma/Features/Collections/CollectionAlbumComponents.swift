@@ -73,8 +73,8 @@ struct AlbumCoverImage: View {
 
 /// 相簿总览的展示形式切换（网格 / 列表 / 拼贴墙），与「显示 › 相簿显示方式」共用同一个设置。
 struct AlbumDisplayStyleMenu: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     var body: some View {
         Menu {
@@ -191,7 +191,7 @@ struct AlbumOverviewRow<MenuContent: View>: View {
 
 /// 相簿总览拼贴墙方块：无边封面拼贴 + 渐变叠字（本地与系统图库共用）。
 struct AlbumOverviewTile<MenuContent: View>: View {
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
 
     let title: String
     let subtitle: String
@@ -499,7 +499,7 @@ struct FolderBackShape: Shape {
 }
 
 struct PeopleView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var pinchBase: Double?
     @State private var detailMode: PersonDetailMode = .summary
     @State private var insight: PersonInsight?
@@ -619,36 +619,19 @@ struct PeopleView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 96, height: 96)
-                    Image(systemName: "person.crop.circle.badge.questionmark")
-                        .font(.system(size: 42, weight: .light))
-                        .foregroundStyle(.secondary)
-                }
-                Text("人物与宠物")
-                    .font(.system(size: 22, weight: .semibold))
-                Text("连接 macOS 官方「照片」图库后，这里会显示官方端侧识别出的人物与宠物（含尚未命名的聚类）；识别始终在本机完成，本 App 不会上传任何照片。")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 400)
+                LumaEmptyState(symbol: "person.crop.circle.badge.questionmark",
+                               title: "人物与宠物",
+                               message: "连接 macOS 官方「照片」图库后，这里会显示官方端侧识别出的人物与宠物（含尚未命名的聚类）；识别始终在本机完成，本 App 不会上传任何照片。",
+                               actions: [LumaEmptyAction(title: "刷新识别结果",
+                                                         symbol: "arrow.clockwise") {
+                                   store.refreshSystemPeople()
+                               }])
 
                 HStack(spacing: 18) {
                     featureChip(icon: "lock.shield", title: "端侧识别")
                     featureChip(icon: "person.2", title: "官方结果")
                     featureChip(icon: "photo.on.rectangle", title: "只读引用")
                 }
-                .padding(.top, 4)
-
-                Button {
-                    store.refreshSystemPeople()
-                } label: {
-                    Label("刷新识别结果", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
                 .padding(.top, 4)
             }
             .padding(30)
@@ -707,10 +690,10 @@ struct PeopleView: View {
             detailMode = .summary
             collapseProgress = 0
             insight = nil
-            let request = PersonAvatarLoader.request(for: person, size: 84)
-            heroAvatar = PersonAvatarLoader.cached(request)
+            let request = PersonAvatarRequest.make(for: person, size: 84)
+            heroAvatar = PersonAvatarRegistry.cached(request)
             if heroAvatar == nil {
-                heroAvatar = await PersonAvatarLoader.load(request, store: store)
+                heroAvatar = await PersonAvatarRegistry.load(request)
             }
             let loaded = await store.systemPersonInsightAsync(for: person)
             if !Task.isCancelled, store.selectedPerson?.id == person.id {
@@ -772,8 +755,8 @@ struct PeopleView: View {
 }
 
 struct PersonAvatarView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     let person: SystemPersonInfo
     let size: CGFloat
     /// 头像形状：圆形或圆角方形；默认圆形（详情页等场景沿用圆形）。
@@ -782,7 +765,7 @@ struct PersonAvatarView: View {
     @State private var image: NSImage?
 
     var request: PersonAvatarRequest {
-        PersonAvatarLoader.request(for: person, size: size)
+        PersonAvatarRequest.make(for: person, size: size)
     }
 
     /// 裁切形状：圆角方形沿用全局卡片圆角设置。
@@ -815,11 +798,11 @@ struct PersonAvatarView: View {
             shape.stroke(Color.white.opacity(0.18), lineWidth: 0.8)
         }
         .task(id: request) {
-            if let cached = PersonAvatarLoader.cached(request) {
+            if let cached = PersonAvatarRegistry.cached(request) {
                 image = cached
                 return
             }
-            image = await PersonAvatarLoader.load(request, store: store)
+            image = await PersonAvatarRegistry.load(request)
         }
     }
 }

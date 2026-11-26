@@ -3,7 +3,7 @@ import AppKit
 
 /// 「位置」——按城市 / 区县聚合的地点统计卡片墙。
 struct PlaceStatisticsView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     /// 由顶部工具栏共享的搜索关键词。
     @Binding var query: String
     @State private var pinchBase: Double?
@@ -130,18 +130,10 @@ struct PlaceStatisticsView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "mappin.slash")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("没有带位置信息的照片")
-                .font(.system(size: 13, weight: .medium))
-            Text("照片需要包含 GPS 信息才会纳入地点统计。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 120)
+        LumaEmptyState(symbol: "mappin.slash",
+                       title: "没有带位置信息的照片",
+                       message: "照片需要包含 GPS 信息才会纳入地点统计。")
+            .padding(.top, 120)
     }
 
     private var columns: [GridItem] {

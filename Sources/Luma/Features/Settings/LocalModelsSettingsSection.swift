@@ -4,7 +4,7 @@ import LumaContentCore
 
 /// 设置 › 模型 › 本地能力：逐个开关本机模型，默认全部关闭。
 struct LocalModelsSettingsSection: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @ObservedObject private var installer = ModelInstaller.shared
     @AppStorage(SettingsKeys.modelManifestURL) private var manifestURL = ModelInstaller.defaultManifestURL
     @State private var pendingRemoval: ModelComponentDescriptor?

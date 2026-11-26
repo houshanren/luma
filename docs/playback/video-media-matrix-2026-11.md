@@ -3,7 +3,7 @@
 - 日期：2026-11-22
 - 范围：本地 / SMB / WebDAV / 网盘 四种来源，21 组视频编码 × 容器 × 音轨编码
 - 结论级别：已生成样片、已用 ffmpeg 9.0.2 + AVPlayer 实测；未实测项单列在第 8 节
-- 复现脚本：[media_matrix.py](file:///Users/lijialong/Documents/gitlab/photos/Tools/media_matrix.py)、[avplayer_probe.swift](file:///Users/lijialong/Documents/gitlab/photos/Tools/avplayer_probe.swift)
+- 复现脚本：[media_matrix.py](file:///Users/lijialong/Documents/gitlab/photos/Tools/dev/media_matrix.py)、[avplayer_probe.swift](file:///Users/lijialong/Documents/gitlab/photos/Tools/dev/avplayer_probe.swift)
 - 原始数据：[summary.md](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/summary.md)、[facts.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/facts.json)、[hls.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/hls.json)、[seek.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/seek.json)、[transport.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/transport.json)
 
 > 本文只写两种事实：ffmpeg / ffprobe 的直接输出，以及 AVPlayer 公开 API 的返回值 + 实际起播（`rate=1`、播放时间推进）。没有装 mpv / VLC / IINA / Infuse，因此不写这四者的实测结论。
@@ -34,7 +34,7 @@
 | 机器 | MacBook Pro，内置 Retina XDR；`maximumEDR=1.2`、`maxPotentialEDR=16` |
 | 系统 | macOS 27.0.1 arm64 |
 | ffmpeg | 仓库 `Vendor/ffmpeg-dv/bin/ffmpeg` 9.0.2（libplacebo + VideoToolbox + libx265） |
-| AVPlayer 探测 | 仓库 `Tools/avplayer_probe.swift`：AVURLAsset + AVPlayerItem 起播 1.5 秒 |
+| AVPlayer 探测 | 仓库 `Tools/dev/avplayer_probe.swift`：AVURLAsset + AVPlayerItem 起播 1.5 秒 |
 | 素材 | 21 个 6–8 秒合成片，视频 `testsrc2`、音频 1 kHz 正弦；落在 `~/Movies/LumaTestMedia/media` |
 | HLS 输出 | `~/Movies/LumaTestMedia/hls/<组合>_{remux,transcode,tonemap}` |
 
@@ -433,25 +433,25 @@ ffmpeg -y -v error -i input \
 
 ```bash
 # 1) 生成 21 个样片（约 35 MB，落在 ~/Movies/LumaTestMedia）
-python3 Tools/media_matrix.py generate
+python3 Tools/dev/media_matrix.py generate
 
 # 2) ffprobe 事实
-python3 Tools/media_matrix.py probe
+python3 Tools/dev/media_matrix.py probe
 
 # 3) AVPlayer 原生直读 + 实际起播
-python3 Tools/media_matrix.py avplayer
+python3 Tools/dev/media_matrix.py avplayer
 
 # 4) 按 Luma 现参数跑 remux / transcode / 强制 HDR→SDR，并用 AVPlayer 起播验证
-python3 Tools/media_matrix.py hls
+python3 Tools/dev/media_matrix.py hls
 
 # 5) 转封装 seek：AC-3 / E-AC-3 直通、DTS→AC-3、多音轨 master
-python3 Tools/media_matrix.py seek
+python3 Tools/dev/media_matrix.py seek
 
 # 6) 本地 / WebDAV(Range) / 网盘(302) / 无 Range 对比
-python3 Tools/media_matrix.py transport
+python3 Tools/dev/media_matrix.py transport
 
 # 一次性全跑
-python3 Tools/media_matrix.py all
+python3 Tools/dev/media_matrix.py all
 ```
 
 输出：
@@ -470,7 +470,7 @@ python3 Tools/media_matrix.py all
 | 2026-11-22 | 修复：hev1 原生直读判定、多音轨 LANGUAGE、缓存签名与音频延迟、离线转码帧率、单音轨直通兜底、HTTP Range 后缀与 HEAD；补 4K60→1080p 映射实测 |
 | 2026-11-22 | 深挖修复：SDR 屏拒绝 HDR 缓存、播放中缓存不被容量清理删除；新增 AC-3/E-AC-3/DTS/多音轨的 seek 回归 |
 | 2026-11-22 | 边界复核修复：206 缺 Content-Range 不再误用分片长度当总长、ffmpeg 非零退出不再阻断降级、缓存 HDR 判定跟随播放器内开关、stderr 落盘失败不再挂死、`stop()` 缓存分支判断修正；补 ALAC 5.1 直通与 E-AC-3 7.1 不可编码的事实 |
-| 2026-11-22 | 真实来源联调：群晖 SMB 5 个真实片源（DV+TrueHD 7.1 / DTS-HD MA 5.1 / 4K60 / MP4）首片 0.32–1.78s；seek 三配方时间轴对比（均归零，B 配方首片快 2.7×）；真实 MKV+AAC 直通 4 组全部可播，推翻"MKV+AAC 丢音轨"假设；新增 `Tools/playback_log_report.py` 汇总 App 端到端日志 |
+| 2026-11-22 | 真实来源联调：群晖 SMB 5 个真实片源（DV+TrueHD 7.1 / DTS-HD MA 5.1 / 4K60 / MP4）首片 0.32–1.78s；seek 三配方时间轴对比（均归零，B 配方首片快 2.7×）；真实 MKV+AAC 直通 4 组全部可播，推翻"MKV+AAC 丢音轨"假设；新增 `Tools/dev/playback_log_report.py` 汇总 App 端到端日志 |
 | 2026-11-22 | 联调后落地：seek 起流去掉 `-copyts -start_at_zero`（首片快 2.7×，长片段末端音画差 <40ms）；音频兜底检测窗口 400ms→2s 且连续 4 次确认；卡死重建阈值 40s→10s；HLS 请求级诊断与快照补 `seekable/av/local/base` |
 | 2026-11-22 | 音质优先：默认不降混、不降码率；DTS / TrueHD 重编码目标 AC-3 640k → **E-AC-3 1536k**（实测可播）；多声道 AAC 384k→512k；离线转码 160k→512k；设置项改为「音质与声道 / 保持原样（默认）· 立体声（手动）」 |
 | 2026-11-23 | 真实 WebDAV 服务复核（自签名证书、断连重连）通过；`RemoteRangeSource` 8MB 分块 + 6 路预取单独压测完成 |

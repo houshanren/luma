@@ -27,7 +27,7 @@ extension LibraryStore {
             }
         )
 
-        importTask = Task { [weak self] in
+        tasks.adopt(.libraryImport, Task { [weak self] in
             guard let self else { return }
             // 写前统一校验：权限 + 当前打开的就是「照片」正在使用的图库。
             // 校验不过就一个字节都不写，宁可失败也不把内容写进别的库。
@@ -238,7 +238,7 @@ extension LibraryStore {
                                        informOnFailure: false,
                                        forceRefresh: true)
             }
-        }
+        })
     }
 }
 

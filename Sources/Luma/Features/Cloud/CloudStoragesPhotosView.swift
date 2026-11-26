@@ -5,8 +5,8 @@ import LumaContentCore
 /// 存储图库：把所有网盘索引里的照片汇成一条时间线。
 /// 与「存储影院」并列——影院聚合视频，这里聚合图片；点图直接回到它在网盘里的目录。
 struct CloudStoragesPhotosView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
 
     @State private var items: [CloudAggregatedPhoto] = []
     @State private var indexStates: [UUID: CloudIndexState] = [:]
@@ -186,7 +186,7 @@ struct CloudStoragesPhotosView: View {
             .padding(.vertical, 4)
             .background(.ultraThinMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8)
+                Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: LumaControlMetrics.border)
             }
             .contentShape(Capsule())
         }
@@ -569,10 +569,7 @@ struct CloudStoragesPhotosView: View {
     }
 
     private func weekdayText(_ date: Date) -> String {
-        let weekday = date.formatted(.dateTime.weekday(.wide))
-        if Calendar.current.isDateInToday(date) { return "今天 · \(weekday)" }
-        if Calendar.current.isDateInYesterday(date) { return "昨天 · \(weekday)" }
-        return weekday
+        DateText.dayWithWeekday(date)
     }
 
     private func openInMount(_ item: CloudAggregatedPhoto) {

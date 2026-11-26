@@ -4,6 +4,16 @@ import SwiftUI
 import CoreLocation
 import UniformTypeIdentifiers
 
+/// 关键词封面缓存的键：只由真正影响结果的输入组成，
+/// 不再用 `String(describing:)` 把入口拼进字符串。
+struct KeywordCoverToken: Hashable {
+    let contentRevision: Int
+    let systemIndexSignature: String
+    let cloudRevision: Int
+    let cloudMetadataRevision: Int
+    let sidebarItem: SidebarItem
+}
+
 extension LibraryStore {
     // MARK: - Navigation
 
@@ -103,8 +113,7 @@ extension LibraryStore {
     /// 打开相簿 / 文件夹后预热前若干张快速缩略图（解码一次并写入本地快速层缓存），
     /// 让首屏与后续滚动直接命中；切换范围时取消上一次预热。
     private func prewarmOpenedCollection(_ item: SidebarItem) {
-        thumbnailPrewarmTask?.cancel()
-        thumbnailPrewarmTask = nil
+        tasks.cancel(.thumbnailPrewarm)
 
         let limit = Self.thumbnailPrewarmLimit
         // 系统图库的相簿 / 文件夹：成员列表与照片元数据都在后台取，
@@ -112,16 +121,16 @@ extension LibraryStore {
         if let index = systemIndex {
             switch item {
             case .systemAlbum(let id):
-                thumbnailPrewarmTask = prewarmSystemSelection {
+                tasks.adopt(.thumbnailPrewarm, prewarmSystemSelection {
                     let ids = Array(index.albumAssetIDs(id).prefix(limit))
                     return index.photos(ids: ids)
-                }
+                })
                 return
             case .systemFolder(let id):
-                thumbnailPrewarmTask = prewarmSystemSelection {
+                tasks.adopt(.thumbnailPrewarm, prewarmSystemSelection {
                     let ids = index.folderPreviewAssetIDs(id, limit: limit)
                     return index.photos(ids: ids)
-                }
+                })
                 return
             default:
                 break
@@ -143,7 +152,7 @@ extension LibraryStore {
         }
 
         guard !targets.isEmpty else { return }
-        thumbnailPrewarmTask = ImageLoader.prewarmQuickThumbnails(for: targets)
+        tasks.adopt(.thumbnailPrewarm, ImageLoader.prewarmQuickThumbnails(for: targets))
     }
 
     /// 后台取回首屏照片，再交给缩略图预热；主线程只负责轻量的 overlay 叠加。
@@ -157,7 +166,7 @@ extension LibraryStore {
                 PhotoKitThumbnailProvider.shared.prefetch(photos: targets,
                                                           maxPixel: ImageLoader.gridQuickPixel)
             } else {
-                self.thumbnailPrewarmTask = ImageLoader.prewarmQuickThumbnails(for: targets)
+                self.tasks.adopt(.thumbnailPrewarm, ImageLoader.prewarmQuickThumbnails(for: targets))
             }
         }
     }
@@ -261,13 +270,11 @@ extension LibraryStore {
 
     /// 关键词卡片墙的封面：取该关键词下的第一张照片。
     func keywordCover(for keyword: String) -> PhotoItem? {
-        let token = [
-            String(contentRevision),
-            systemIndexSignature,
-            String(cloudModel.revision),
-            String(cloudModel.metadataRevision),
-            String(describing: sidebarItem)
-        ].joined(separator: "\u{1F}")
+        let token = KeywordCoverToken(contentRevision: contentRevision,
+                                      systemIndexSignature: systemIndexSignature,
+                                      cloudRevision: cloudModel.revision,
+                                      cloudMetadataRevision: cloudModel.metadataRevision,
+                                      sidebarItem: sidebarItem)
         if keywordCoverToken != token {
             keywordCoverToken = token
             keywordCoverCache.removeAll()

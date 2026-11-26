@@ -50,6 +50,7 @@ extension GalleryView {
 
     @ViewBuilder
     var zoomSlider: some View {
+        @Bindable var store = store
         if store.isCardWallScope {
             Slider(value: Binding(get: { Double(store.cardColumns) },
                                   set: { store.cardColumns = Int($0.rounded()) }),
@@ -354,18 +355,18 @@ extension GalleryView {
 
     @ViewBuilder
     func metadataOptions() -> some View {
-        Toggle("标题", isOn: $settings.metadata.title)
-        Toggle("拍摄日期", isOn: $settings.metadata.capturedDate)
-        Toggle("关键词", isOn: $settings.metadata.keywords)
-        Toggle("已编辑", isOn: $settings.metadata.edited)
-        Toggle("文件类型", isOn: $settings.metadata.fileType)
-        Toggle("个人收藏", isOn: $settings.metadata.favorite)
-        Toggle("位置", isOn: $settings.metadata.location)
-        Toggle("相机", isOn: $settings.metadata.camera)
-        Toggle("分辨率", isOn: $settings.metadata.resolution)
-        Toggle("文件大小", isOn: $settings.metadata.fileSize)
-        Toggle("来源", isOn: $settings.metadata.source)
-        Toggle("视频时长", isOn: $settings.metadata.duration)
+        Toggle("标题", isOn: Bindable(settings).metadata.title)
+        Toggle("拍摄日期", isOn: Bindable(settings).metadata.capturedDate)
+        Toggle("关键词", isOn: Bindable(settings).metadata.keywords)
+        Toggle("已编辑", isOn: Bindable(settings).metadata.edited)
+        Toggle("文件类型", isOn: Bindable(settings).metadata.fileType)
+        Toggle("个人收藏", isOn: Bindable(settings).metadata.favorite)
+        Toggle("位置", isOn: Bindable(settings).metadata.location)
+        Toggle("相机", isOn: Bindable(settings).metadata.camera)
+        Toggle("分辨率", isOn: Bindable(settings).metadata.resolution)
+        Toggle("文件大小", isOn: Bindable(settings).metadata.fileSize)
+        Toggle("来源", isOn: Bindable(settings).metadata.source)
+        Toggle("视频时长", isOn: Bindable(settings).metadata.duration)
     }
 
     /// 网络存储没有「已编辑」与「相簿」概念，隐藏这两个无效筛选项。

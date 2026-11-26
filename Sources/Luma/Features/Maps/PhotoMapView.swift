@@ -24,8 +24,8 @@ private func coordinate(_ photo: PhotoItem) -> CLLocationCoordinate2D {
 }
 
 struct PhotoMapView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @StateObject private var camera = MapCameraController()
     @State private var showKeySheet = false
     @State private var keyDraft = ""
@@ -333,7 +333,7 @@ struct PhotoMapView: View {
             .padding(.vertical, 7)
             .background(.regularMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
             }
             .contentShape(Capsule())
         }
@@ -370,7 +370,7 @@ struct PhotoMapView: View {
             .padding(.vertical, 7)
             .background(.regularMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
             }
             .contentShape(Capsule())
         }
@@ -420,7 +420,7 @@ struct PhotoMapView: View {
             .padding(.vertical, 7)
             .background(.regularMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
             }
             .contentShape(Capsule())
         }
@@ -520,7 +520,7 @@ struct PhotoMapView: View {
             .padding(.vertical, 7)
             .background(.regularMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.6)
+                Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: LumaControlMetrics.hairline)
             }
             .contentShape(Capsule())
         }
@@ -586,7 +586,7 @@ struct MiniPhotoMap: View {
 }
 
 struct LibraryInfoView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     private var geoPhotos: [PhotoItem] { store.geoPhotos }
 
@@ -674,7 +674,7 @@ struct LibraryInfoView: View {
 }
 
 struct SystemLibraryInfoView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     private var visiblePhotos: [PhotoItem] {
         store.geoPhotos

@@ -18,8 +18,8 @@ enum TVRingPalette {
 /// 指针 / 悬停状态全部收在这个视图内部。拖动时只有表盘自身重绘，
 /// 外层的频道栏、日期条和节目列表都不会跟着重算——这是它跟手的前提。
 struct TVTimeRingStage: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var tv: IPTVBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(IPTVBrowserModel.self) private var tv
     @Environment(\.colorScheme) private var scheme
 
     /// 浅色主题：表盘变成暖白瓷面，文字改用主色，不再是一块黑表。

@@ -50,7 +50,7 @@ enum CloudStoragesHubTab: String, CaseIterable, Identifiable, Hashable {
 
 /// 网络存储区：五个分页共用一层容器，具体内容各自滚动。
 struct CloudStoragesHubView: View {
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(CloudBrowserModel.self) private var cloud
 
     var body: some View {
         Group {
@@ -71,8 +71,8 @@ struct CloudStoragesHubView: View {
 
 /// 工具栏中区的分页胶囊：总览 / 存储 / 影院 / 续播 / 管理。
 struct CloudStoragesHubTabs: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
     @Namespace private var tabNamespace
 
     var body: some View {
@@ -154,8 +154,8 @@ struct CloudStoragesHubTabs: View {
 /// 所有读数都来自本机索引（图库统计 / 网盘索引 / 影院刮削 / 续播记录），不做联网统计。
 /// 现在并入「存储」页，跟在存储卡片下方，不再单独占一个分页。
 struct CloudStoragesSnapshotPanels: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
 
     @State private var indexStates: [UUID: CloudIndexState] = [:]
 

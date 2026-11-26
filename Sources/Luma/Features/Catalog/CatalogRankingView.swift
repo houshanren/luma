@@ -3,7 +3,7 @@ import SwiftUI
 /// 跨源榜单：把各源首页 / 热榜 / 今日新增轮转混排成一张总榜。
 /// 顶部是维度切换与数据概览，下面是三甲展台、各源冠军、完整名次与双栏数据。
 struct CatalogRankingView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     /// 可选的来源范围：网络影院只统计影视源；网络资源总览不传，等于只看资源站。
     var sourceScope: Set<UUID>? = nil
@@ -634,6 +634,7 @@ struct CatalogRankingView: View {
         }
     }
 
+    @ViewBuilder
     private var emptyState: some View {
         VStack(spacing: 12) {
             if isLoading {
@@ -642,16 +643,11 @@ struct CatalogRankingView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             } else {
-                Image(systemName: catalog.spotlightMode.symbol)
-                    .font(.system(size: 30, weight: .light))
-                    .foregroundStyle(Color.accentColor.opacity(0.85))
-                Text(catalog.spotlightMode == .todayNew ? "今天还没有记录到新内容" : "这个维度暂时没有可用内容")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(catalog.spotlightMode == .todayNew
-                     ? "浏览几个源、或在更新日历里补录一次，这里就会出现今天的新内容。"
-                     : "检查源是否启用，或点右上角重新汇总。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
+                LumaEmptyState(symbol: catalog.spotlightMode.symbol,
+                               title: catalog.spotlightMode == .todayNew ? "今天还没有记录到新内容" : "这个维度暂时没有可用内容",
+                               message: catalog.spotlightMode == .todayNew
+                                   ? "浏览几个源、或在更新日历里补录一次，这里就会出现今天的新内容。"
+                                   : "检查源是否启用，或点右上角重新汇总。")
             }
         }
         .frame(maxWidth: .infinity)

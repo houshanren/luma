@@ -97,12 +97,11 @@ enum AppModule: String, CaseIterable, Identifiable {
     }
 }
 
-/// 模块开关的读写入口：视图用 `@AppStorage` 获得实时刷新，
-/// 搜索与启动恢复这类「取一次」的地方直接用这里的静态方法。
+/// 模块开关的读写入口：开关值随当前图库保存，视图与搜索都从这里取，
+/// 保证「切换图库 → 入口与搜索结果一起变」。
 enum AppModules {
     static func isEnabled(_ module: AppModule) -> Bool {
-        guard !module.isLocked else { return true }
-        return UserDefaults.standard.object(forKey: module.storageKey) as? Bool ?? true
+        AppSettings.shared.moduleEnabled(module)
     }
 
     static func isEnabled(_ source: SearchSourceKind) -> Bool {
@@ -146,11 +145,8 @@ struct ModuleSwitchGrid: View {
     /// 建库引导里悬停中的能力珠。
     @State private var hoveredBead: AppModule?
 
-    @AppStorage(SettingsKeys.moduleLibraries) private var libraries = true
-    @AppStorage(SettingsKeys.moduleCloud) private var cloud = true
-    @AppStorage(SettingsKeys.moduleCatalog) private var catalog = true
-    @AppStorage(SettingsKeys.showTelevision) private var television = true
-    @AppStorage(SettingsKeys.moduleCinema) private var cinema = true
+    /// 开关值跟着当前图库走：向导里读写的是「将要创建的新库」，设置页里是当前库。
+    @Environment(AppSettings.self) private var settings
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: density == .settings ? 150 : 132), spacing: 8)]
@@ -405,21 +401,13 @@ struct ModuleSwitchGrid: View {
     }
 
     private func binding(for module: AppModule) -> Binding<Bool> {
-        switch module {
-        case .library: return $libraries
-        case .cloud: return $cloud
-        case .catalog: return $catalog
-        case .television: return $television
-        case .cinema: return $cinema
-        }
+        settings.moduleBinding(module)
     }
 
     private func setAll(_ value: Bool) {
-        libraries = true          // 基础模块保持开启
-        cloud = value
-        catalog = value
-        television = value
-        cinema = value
+        for module in AppModule.allCases {
+            settings.setModuleEnabled(module, value || module.isLocked)
+        }
     }
 }
 

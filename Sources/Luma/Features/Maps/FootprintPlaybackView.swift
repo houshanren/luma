@@ -9,8 +9,8 @@ import SwiftUI
 /// 镜头高度按行程距离缩放（街区级移动也会被放到满屏可见的尺度），
 /// 光点与跟随镜头同帧推进，照片较多的站点短暂停留，并配上胶片质感的相机 HUD。
 struct FootprintPlaybackView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let photos: [PhotoItem]
     var onClose: () -> Void
@@ -417,7 +417,7 @@ struct FootprintPlaybackView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(.black.opacity(0.58), in: Capsule())
-        .overlay { Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.8) }
+        .overlay { Capsule().strokeBorder(.white.opacity(0.22), lineWidth: LumaControlMetrics.border) }
         .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
     }
 
@@ -843,7 +843,7 @@ struct FootprintPlaybackView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(.white.opacity(0.10), in: Capsule())
-                    .overlay { Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1) }
+                    .overlay { Capsule().strokeBorder(.white.opacity(0.18), lineWidth: LumaControlMetrics.border) }
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -915,15 +915,9 @@ struct FootprintPlaybackView: View {
 
     private var emptyState: some View {
         VStack(spacing: 14) {
-            Image(systemName: "mappin.slash")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.white.opacity(0.6))
-            Text("没有带位置信息的照片")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
-            Text("给照片补上拍摄地点后，就能把它们播成一段足迹。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.white.opacity(0.55))
+            LumaEmptyState(symbol: "mappin.slash",
+                           title: "没有带位置信息的照片",
+                           message: "给照片补上拍摄地点后，就能把它们播成一段足迹。")
             Button("关闭") { onClose() }
                 .keyboardShortcut(.cancelAction)
                 .padding(.top, 4)

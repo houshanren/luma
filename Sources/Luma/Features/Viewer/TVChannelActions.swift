@@ -10,9 +10,9 @@ struct TVChannelActionCluster: View {
         case overlay
     }
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var tv: IPTVBrowserModel
-    @EnvironmentObject private var viewer: ViewerModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(IPTVBrowserModel.self) private var tv
+    @Environment(ViewerModel.self) private var viewer
 
     let channel: TVChannel
     let photoID: UUID

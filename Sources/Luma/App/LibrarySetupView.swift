@@ -8,8 +8,8 @@ struct LibrarySetupView: View {
     /// 从「新建图库」入口以 sheet 打开：跳过品牌首屏，底部不再提供「退出拾光」。
     let creatingAdditionalLibrary: Bool
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     /// 迁入旧照片只对首次启动有意义；已有图库时新建的应该是一个空图库。
@@ -31,14 +31,14 @@ struct LibrarySetupView: View {
     /// 悬停中的外观弧 / 强调色圆点。
     @State private var hoveredArc: AppAppearance?
     @State private var hoveredDot: AppAccent?
-    /// 打开向导时的能力开关快照：sheet 里点「取消」要把全局开关还原。
-    private let moduleSnapshot: [String: Bool]
+    /// 打开向导时的能力开关快照：sheet 里点「取消」要把开关还原。
+    private let moduleSnapshot: [AppModule: Bool]
 
     init(creatingAdditionalLibrary: Bool = false) {
         self.creatingAdditionalLibrary = creatingAdditionalLibrary
         _showsModuleStep = State(initialValue: creatingAdditionalLibrary)
         moduleSnapshot = Dictionary(uniqueKeysWithValues: AppModule.allCases.map {
-            ($0.storageKey, AppModules.isEnabled($0))
+            ($0, AppModules.isEnabled($0))
         })
     }
 
@@ -93,9 +93,9 @@ struct LibrarySetupView: View {
             if !creatingAdditionalLibrary {
                 migrateLocalPhotos = canMigrateLocal
             }
-            // 向导里配置的是「将要创建的新库」：主题先只记到 UserDefaults，
+            // 向导里配置的是「将要创建的新库」：主题与模块开关先只记到 UserDefaults，
             // 建库完成后再写进新库，不能改到当前还在用的旧图库。
-            settings.defersThemeToNewLibrary = creatingAdditionalLibrary
+            settings.defersSettingsToNewLibrary = creatingAdditionalLibrary
             // 入场动画：圆环从两侧旋入、Logo 弹出，随后光晕开始缓慢呼吸。
             DispatchQueue.main.async {
                 ringAppeared = true
@@ -106,7 +106,7 @@ struct LibrarySetupView: View {
             }
         }
         .onDisappear {
-            settings.defersThemeToNewLibrary = false
+            settings.defersSettingsToNewLibrary = false
         }
     }
 
@@ -985,10 +985,10 @@ struct LibrarySetupView: View {
         }
     }
 
-    /// sheet 里取消：把能力开关还原成打开向导前的样子，避免「只是看看」也改了全局设置。
+    /// sheet 里取消：把能力开关还原成打开向导前的样子，避免「只是看看」也改了设置。
     private func cancelCreation() {
-        for (key, value) in moduleSnapshot {
-            UserDefaults.standard.set(value, forKey: key)
+        for (module, value) in moduleSnapshot {
+            settings.setModuleEnabled(module, value)
         }
         dismiss()
     }

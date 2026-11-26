@@ -3,7 +3,7 @@ import SwiftUI
 /// 设置 › 图库 › 图库保险库：备份、校验、恢复。
 /// 与设置页其他分组共用同一套行式卡片：30pt 图标底 + 标题 / 说明 + 右侧动作。
 struct VaultSettingsView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         VStack(spacing: 0) {

@@ -5,7 +5,7 @@ import TestSupport
 
 func runVideoMatrixChecks() {
 
-    // `Tools/media_matrix.py` 的 COPYABLE_AUDIO 与内核白名单必须同源：
+    // `Tools/dev/media_matrix.py` 的 COPYABLE_AUDIO 与内核白名单必须同源：
     // 矩阵里「remux + 音轨 copy」的结论依赖这份集合，任一边漂移都会让实测失效。
     expectEqual(AudioPlaybackPlan.copyableCodecs, Set(["aac", "alac", "ac3", "eac3"]),
                 "可直通音轨白名单与媒体矩阵工具一致")

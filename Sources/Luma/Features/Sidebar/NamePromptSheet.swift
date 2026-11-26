@@ -63,7 +63,7 @@ struct NamePromptPayload: Identifiable {
 }
 
 struct NamePromptSheet: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let payload: NamePromptPayload
     @State private var text: String

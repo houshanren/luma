@@ -3,7 +3,7 @@ import SwiftUI
 
 /// 「个人收藏」汇总：顶栏切换维度，每一屏只展示该维度的分类卡片，点卡片下钻。
 struct FavoritesDigestView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     /// 骨架阶段按年份取到的真实封面（汇总算完后由正式数据接管）。
     @State private var quickCovers: [String: [PhotoItem]] = [:]
 
@@ -552,25 +552,10 @@ struct FavoritesDigestView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 96, height: 96)
-                Image(systemName: "heart.slash")
-                    .font(.system(size: 38, weight: .light))
-                    .foregroundStyle(.secondary)
-            }
-            Text("还没有收藏")
-                .font(.system(size: 22, weight: .semibold))
-            Text("在任意照片或视频上按 F，或点工具栏的心形按钮，收藏就会出现在这里。")
-                .font(.system(size: 12.5))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, 50)
+        LumaEmptyState(symbol: "heart.slash",
+                       title: "还没有收藏",
+                       message: "在任意照片或视频上按 F，或点工具栏的心形按钮，收藏就会出现在这里。")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -990,7 +975,7 @@ private struct DigestPlaceCard: View {
                     .padding(.vertical, 4)
                     .background(.black.opacity(0.34), in: Capsule())
                     .overlay {
-                        Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                        Capsule().strokeBorder(.white.opacity(0.16), lineWidth: LumaControlMetrics.hairline)
                     }
                     .padding(10)
             }

@@ -195,18 +195,13 @@ extension LibraryStore {
     /// 换库 / 断开挂载时清掉扫描任务与清单。
     func resetCloudAlbumScan() {
         cancelCloudAlbumScan()
-        cloudModel.scanPublishTask?.cancel()
-        cloudModel.scanPublishTask = nil
-        cloudModel.metadataScanDelayTask?.cancel()
-        cloudModel.metadataScanDelayTask = nil
-        cloudModel.refreshLoopTask?.cancel()
-        cloudModel.refreshLoopTask = nil
+        cloudModel.tasks.cancel(.cloudScanPublish)
+        cloudModel.tasks.cancel(.cloudMetadataScanDelay)
+        cloudModel.tasks.cancel(.cloudRefreshLoop)
         cloudModel.scanLoadToken += 1
         cloudModel.isRestoringScan = false
-        cloudModel.thumbnailPrefetchTask?.cancel()
-        cloudModel.thumbnailPrefetchTask = nil
-        cloudModel.metadataFlushTask?.cancel()
-        cloudModel.metadataFlushTask = nil
+        cloudModel.tasks.cancel(.cloudThumbnailPrefetch)
+        cloudModel.tasks.cancel(.cloudMetadataFlush)
         cloudModel.metadataDirty = false
         cloudModel.pendingPhotoUpdates.removeAll()
         cloudModel.featuresLoadedMountID = nil

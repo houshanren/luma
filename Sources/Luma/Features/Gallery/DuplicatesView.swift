@@ -7,7 +7,7 @@ struct DuplicatesView: View {
     /// true 表示浏览系统图库（只读）：不删除 Apple 的照片，只能隐藏副本或到「照片」中合并。
     var system: Bool = false
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     @State private var sortMode: SortMode = .space
     @State private var hoveredPhotoID: UUID?
@@ -578,7 +578,7 @@ struct DuplicatesView: View {
 }
 
 private struct DuplicateThumb: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let photo: PhotoItem
     /// 系统图库为只读来源：不能合并删除，只能隐藏副本或拷贝到拾光。

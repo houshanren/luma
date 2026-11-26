@@ -438,7 +438,7 @@ package final class SystemIndex {
 
                 let created = coreDataDate(row["created"])
                 let added = coreDataDate(row["added"]) ?? created ?? Date()
-                let captured = created ?? parseEXIFDate(row["exifdate"]?.string) ?? added
+                let captured = created ?? EXIFDate.parse(row["exifdate"]?.string) ?? added
                 let isLive = subtype == 2 || subtype == 3 || playbackStyle == 3
                 let placedata = row["placedata"]?.data
                 let place = placedata.flatMap { ReverseGeoArchive.decode($0) }

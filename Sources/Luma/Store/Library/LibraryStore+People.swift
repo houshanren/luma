@@ -342,7 +342,7 @@ extension LibraryStore {
             }
         )
 
-        faceClusterTask = Task { [weak self] in
+        tasks.adopt(.faceCluster, Task { [weak self] in
             guard let self else { return }
             var people = self.localPeople
             var scanned = self.scannedFaceIDs
@@ -398,7 +398,7 @@ extension LibraryStore {
             self.metadataStore?.saveScannedFaceIDs(scanned)
             self.isClusteringFaces = false
             self.faceClusterProgress = nil
-            self.faceClusterTask = nil
+            self.tasks.finish(.faceCluster)
 
             if Task.isCancelled {
                 self.cancelSourceJob(jobID)
@@ -410,7 +410,7 @@ extension LibraryStore {
                 self.finishSourceJob(jobID, message: "分析完成 · \(refined.count) 位人物")
                 self.showToast("人物分析完成，共 \(refined.count) 位")
             }
-        }
+        })
     }
 
     /// 清空已扫描记录与聚类结果，从头重新识别当前图库的全部照片。
@@ -423,8 +423,7 @@ extension LibraryStore {
         loadFaceDataIfNeeded()
         // 换标识让正在跑的任务直接作废，避免它把旧结果写回来。
         faceClusterToken = UUID()
-        faceClusterTask?.cancel()
-        faceClusterTask = nil
+        tasks.cancel(.faceCluster)
         isClusteringFaces = false
         faceClusterProgress = nil
         scannedFaceIDs = []
@@ -436,7 +435,7 @@ extension LibraryStore {
     }
 
     func cancelFaceClustering() {
-        faceClusterTask?.cancel()
+        tasks.cancel(.faceCluster)
     }
 
     func closeLocalPerson() {
@@ -654,8 +653,7 @@ extension LibraryStore {
     }
 
     func resetFaceClusterState() {
-        faceClusterTask?.cancel()
-        faceClusterTask = nil
+        tasks.cancel(.faceCluster)
         localPeople = []
         selectedLocalPersonID = nil
         faceClusterProgress = nil
@@ -945,7 +943,6 @@ extension LibraryStore {
                     }
                     self.resetPlaceClusterCaches()
                     self.contentRevision &+= 1
-                    self.objectWillChange.send()
                     self.savePlaceCache()
                 }
                 pending = failed
@@ -960,7 +957,6 @@ extension LibraryStore {
             // 新解析出的地名要让地点聚类重新计算，并通知界面刷新。
             self.resetPlaceClusterCaches()
             self.contentRevision &+= 1
-            self.objectWillChange.send()
             self.savePlaceCache()
             self.isResolvingPlaces = false
             self.finishSourceJob(jobID, message: "已补齐 \(self.placeResolveDone) 个地点")

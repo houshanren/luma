@@ -457,7 +457,7 @@ struct CatalogToolbarBackButton: View {
 
 /// 中区信息：当前分类可点开菜单直接跳转（与左侧菜单同一份分类），右侧是刷新。
 struct CatalogToolbarConsole: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     @State private var text = ""
     @FocusState private var focused: Bool
@@ -1162,7 +1162,8 @@ struct CatalogPosterCell: View {
                     // 画面层（封面 / 预览流 / 暗角 / 保存遮罩）单独裁圆角；
                     // 文字与角标画在裁切外层，贴在四角时才不会被圆角吃掉一截。
                     ZStack(alignment: .topLeading) {
-                        CatalogArtworkImage(source: source, urlString: item.coverURL, cornerRadius: 14)
+                        CatalogArtworkImage(source: source, urlString: item.coverURL,
+                                            cornerRadius: LumaPosterMetrics.cornerRadius)
                             // 已看过的条目压暗，和「已看」角标一起把二刷列表的噪音降下去。
                             .opacity(isWatched && !isHovering ? 0.62 : 1)
 
@@ -1210,7 +1211,7 @@ struct CatalogPosterCell: View {
                             }
                         }
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous))
 
                     // 左上角角标栈：预览、合集、稍后看、观看状态依次往下排，互不遮挡。
                     leadingBadges
@@ -1288,20 +1289,24 @@ struct CatalogPosterCell: View {
                 }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous)
                     .strokeBorder(borderStyle,
-                                  lineWidth: isHovering ? 1.8 : (isFresh ? 1.2 : 0.8))
+                                  lineWidth: isHovering
+                                      ? LumaPosterMetrics.hoverBorderWidth
+                                      : (isFresh ? 1.2 : LumaPosterMetrics.borderWidth))
             }
             .overlay {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous)
                         .strokeBorder(Color.accentColor, lineWidth: 2)
                 }
             }
             .shadow(color: isFresh ? LumaBrand.coral.opacity(freshPulse ? 0.34 : 0.12)
                                    : .black.opacity(isHovering ? 0.28 : 0.12),
-                    radius: isFresh ? (freshPulse ? 12 : 6) : (isHovering ? 16 : 8),
-                    y: isHovering ? 8 : 3)
+                    radius: isFresh ? (freshPulse ? 12 : LumaPosterMetrics.shadowRadius)
+                                    : (isHovering ? LumaPosterMetrics.hoverShadowRadius
+                                                  : LumaPosterMetrics.shadowRadius),
+                    y: isHovering ? LumaPosterMetrics.hoverShadowY : LumaPosterMetrics.shadowY)
             // 悬停再补一层封面主色光晕，让卡片和画面融在一起。
             .shadow(color: isHovering && !isFresh ? hoverTint.opacity(0.28) : .clear,
                     radius: 18, y: 5)

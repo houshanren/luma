@@ -6,9 +6,9 @@ import AppKit
 /// 影院管理：影视源清单 + 聚合读数 + 资料补全 / 缓存维护。
 /// 版式参考「网络存储 › 网盘管理」与「网络资源 › 资源」：一屏看完源、内容与维护动作。
 struct NetworkCinemaManageView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var model: NetworkCinemaModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(NetworkCinemaModel.self) private var model
 
     @State private var hoveringSource: UUID?
     /// 正在编辑的影视源：源行菜单「编辑…」打开。
@@ -175,7 +175,7 @@ struct NetworkCinemaManageView: View {
                     .frame(height: 24)
                     .background(Color.primary.opacity(0.055), in: Capsule(style: .continuous))
                     .overlay {
-                        Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6)
+                        Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
                     }
             }
             .buttonStyle(.plain)
@@ -369,8 +369,8 @@ struct NetworkCinemaManageView: View {
 /// 关注：收藏的电影 / 剧集，加上未看完的追看记录。
 /// 与「网络资源 › 关注」的人物 / 片商不同，这里只读影视源里的条目。
 struct NetworkCinemaFollowingView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     /// 点开收藏条目：交给 Hub 进影院详情页。
     let onOpen: (NetworkCinemaItem) -> Void
@@ -535,14 +535,19 @@ struct NetworkCinemaFollowingView: View {
                     .overlay {
                         CatalogArtworkImage(source: source,
                                             urlString: favorite.coverURL,
-                                            cornerRadius: 11)
+                                            cornerRadius: LumaPosterMetrics.cornerRadius)
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius,
+                                                style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6)
+                        RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius,
+                                         style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08),
+                                          lineWidth: LumaPosterMetrics.borderWidth)
                     }
-                    .shadow(color: .black.opacity(0.14), radius: 7, y: 3)
+                    .shadow(color: .black.opacity(0.14),
+                            radius: LumaPosterMetrics.shadowRadius,
+                            y: LumaPosterMetrics.shadowY)
 
                 Text(favorite.title)
                     .font(.system(size: 11.5, weight: .semibold))

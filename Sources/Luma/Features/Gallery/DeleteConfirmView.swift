@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 两张确认卡片共用的外观：材质卡片、渐变描边与顶部一条强调色渐变。
 struct ConfirmationCard<Content: View>: View {
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
     let tint: Color
     @ViewBuilder var content: Content
 
@@ -36,8 +36,8 @@ struct ConfirmationCard<Content: View>: View {
 /// 删除前的确认卡片：缩略图扇形预览 + 一句说明 + 主次按钮。
 /// 移到最近删除可撤销（强调色），永久删除 / 清空最近删除不可撤销（红色且默认按钮为「取消」）。
 struct DeleteConfirmOverlay: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let request: LibraryStore.DeleteRequest
 
@@ -232,8 +232,8 @@ struct DeleteConfirmOverlay: View {
 /// 断开系统图库 / 网络存储前的确认卡片：来源图标 + 名称 + 影响范围说明。
 /// 两种断开都不会丢失原始数据，因此用强调色，并允许回车确认。
 struct DisconnectConfirmOverlay: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let request: LibraryStore.DisconnectRequest
 

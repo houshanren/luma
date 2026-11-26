@@ -139,9 +139,9 @@ enum ImportService {
         let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
         let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any]
 
-        let originalDate = ImportRules.parseEXIFDate(
+        let originalDate = EXIFDate.parse(
             exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
-        let digitizedDate = ImportRules.parseEXIFDate(
+        let digitizedDate = EXIFDate.parse(
             exif?[kCGImagePropertyExifDateTimeDigitized] as? String)
         if let date = originalDate ?? digitizedDate {
             item.capturedAt = date

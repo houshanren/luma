@@ -4,7 +4,7 @@ import SwiftUI
 struct KeywordGalleryView: View {
     var system: Bool
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     /// 连接的非当前系统图库是只读的：关键词无法添加，文案里直接说明原因。
     private var isReadOnlySystem: Bool { system && !store.canEditNativeOverlay }
@@ -22,7 +22,7 @@ struct KeywordGalleryView: View {
 
 /// 网盘的关键词卡片墙：关键词是拾光为远端文件记录的本地标签。
 struct CloudKeywordGalleryView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         KeywordWallView(system: false,
@@ -42,7 +42,7 @@ private struct KeywordWallView: View {
     var emptyHint: String?
     let onOpen: (String) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     init(system: Bool,
          isReadOnlySystem: Bool,
@@ -128,18 +128,10 @@ private struct KeywordWallView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "tag.slash")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("还没有关键词")
-                .font(.system(size: 13.5, weight: .medium))
-            Text(emptyHintText)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 110)
+        LumaEmptyState(symbol: "tag.slash",
+                       title: "还没有关键词",
+                       message: emptyHintText)
+            .padding(.top, 110)
     }
 }
 
@@ -151,7 +143,7 @@ private struct KeywordCardView: View {
     let cover: PhotoItem?
     let width: CGFloat
 
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
     @State private var isHovered = false
 
     private var height: CGFloat { max(118, width * 0.66) }
@@ -237,7 +229,7 @@ private struct KeywordCardView: View {
             .padding(.vertical, 3)
             .background(.white.opacity(0.18), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.5)
+                Capsule().strokeBorder(.white.opacity(0.22), lineWidth: LumaControlMetrics.hairline)
             }
     }
 }
@@ -249,7 +241,7 @@ private struct KeywordDetailView: View {
     let keyword: String
     let system: Bool
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var pinchBase: Double?
 
     private var photos: [PhotoItem] { store.visiblePhotos }
@@ -361,18 +353,10 @@ private struct KeywordDetailView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "tag.slash")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("这个关键词下没有照片")
-                .font(.system(size: 13.5, weight: .medium))
-            Text("照片可能已被移除，或标签来自其他图库。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 100)
+        LumaEmptyState(symbol: "tag.slash",
+                       title: "这个关键词下没有照片",
+                       message: "照片可能已被移除，或标签来自其他图库。")
+            .padding(.top, 100)
     }
 
     private var pinchGesture: some Gesture {

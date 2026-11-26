@@ -60,7 +60,7 @@ private struct TimelineCard: View {
     var compactTitle = false
     let action: () -> Void
 
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
     @State private var hovering = false
 
     private var corner: CGFloat { max(10, settings.cardRadius) }
@@ -186,7 +186,7 @@ private enum TimelineMetrics {
 
 /// 「年」分组：每年一张拼图卡片，点击进入该年的月总览。
 struct YearOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let width: CGFloat
 
     private var contentWidth: CGFloat { max(280, width - TimelineMetrics.horizontal * 2) }
@@ -271,7 +271,7 @@ private struct MonthDay: Identifiable {
 /// 「月」分组：按月分段，段内用「首日大卡 + 右侧三张」的拼图展示每一天；
 /// 点击某天会切回「所有照片」并定位到那一天。
 struct MonthOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let width: CGFloat
 
     private var contentWidth: CGFloat { max(280, width - TimelineMetrics.horizontal * 2) }

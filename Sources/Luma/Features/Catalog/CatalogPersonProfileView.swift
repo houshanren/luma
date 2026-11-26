@@ -15,7 +15,7 @@ struct CatalogPersonProfileView: View {
     /// 是否跨源检索作品。内置资料库入口设为 false，只显示本地档案。
     var loadsWorks: Bool = true
 
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
     @Environment(\.dismiss) private var dismiss
 
     /// 内置资料库资料（简介 / 字段）：直接读 SQLite，不联网。

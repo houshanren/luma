@@ -13,7 +13,7 @@ struct CinemaSeriesDetailView: View {
     /// 顶栏「返回」：没有二级页时关闭整个详情。
     var onClose: () -> Void = {}
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var hoveredEpisode: UUID?
     /// 键盘方向键游标：只服务键盘切集，鼠标点击不再有「选中」这一步。
     @State private var keyboardEpisodeID: UUID?
@@ -1215,7 +1215,7 @@ struct CinemaSeriesDetailView: View {
             .frame(height: 22)
             .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
             .help(badges.help)
         }
@@ -1302,7 +1302,7 @@ struct CinemaSeriesDetailView: View {
             .padding(.vertical, 3)
             .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
     }

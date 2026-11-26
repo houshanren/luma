@@ -2,7 +2,7 @@ import Foundation
 
 /// 内置的 AV 女优 / 片商资料库，数据来自仓库里的 `Resources/Catalog/catalog.sqlite`。
 ///
-/// 这张库在构建时由 `Tools/catalog_build/build_catalog_db.py` 生成：
+/// 这张库在构建时由 `Tools/catalog_build/build/build_catalog_db.py` 生成：
 /// - 女优：姓名与别名、地区、出生日期、年龄、身高、三围、罩杯、作品数、标签、简介
 /// - 片商：名称与别名、地区、作品数、简介
 /// - 番号前缀 → 片商

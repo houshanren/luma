@@ -236,7 +236,7 @@ package enum SystemPhotosLibrary {
 
             let createdAt = coreDataDate(row["created"])
             let addedAt = coreDataDate(row["added"]) ?? createdAt ?? Date()
-            let capturedAt = createdAt ?? parseEXIFDate(row["exifdate"]?.string) ?? addedAt
+            let capturedAt = createdAt ?? EXIFDate.parse(row["exifdate"]?.string) ?? addedAt
 
             var item = PhotoItem(
                 id: uuid,
@@ -544,14 +544,6 @@ package enum SystemPhotosLibrary {
     private static func coreDataDate(_ value: SQLiteValue?) -> Date? {
         guard let raw = value?.double, raw > 0 else { return nil }
         return Date(timeIntervalSinceReferenceDate: raw)
-    }
-
-    private static func parseEXIFDate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        return formatter.date(from: value)
     }
 
     private static func trim(_ value: String?) -> String? {

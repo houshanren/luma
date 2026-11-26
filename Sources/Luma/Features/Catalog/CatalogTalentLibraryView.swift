@@ -5,7 +5,7 @@ import SwiftUI
 /// 一条主视觉、一条展区导览、一排轻量入口，然后把空间留给展商卡本身。
 /// 数据全部来自 `Resources/Catalog/catalog.sqlite`，随 App 离线可查。
 struct CatalogTalentLibraryView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     @State private var mode: Mode = .people
     @State private var query = ""
@@ -198,7 +198,7 @@ struct CatalogTalentLibraryView: View {
                                          },
                                          backTitle: "返回资料库",
                                          loadsWorks: false)
-                    .environmentObject(catalog)
+                    .environment(catalog)
                     .transition(.opacity)
             }
         }
@@ -944,51 +944,22 @@ struct CatalogTalentLibraryView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "rectangle.stack.badge.minus")
-                .font(.system(size: 26, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("没有匹配的展项")
-                .font(.system(size: 14, weight: .semibold))
-            Text(emptyDetail)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                Button("清空筛选") {
-                    query = ""
-                    region = nil
-                    kind = .all
-                    sort = .works
-                    onlyFollowed = false
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                .padding(.horizontal, 14)
-                .frame(height: 30)
-                .background(Color.primary, in: Capsule(style: .continuous))
-
-                Button("随便看一位") {
-                    openRandomPerson()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .padding(.horizontal, 14)
-                .frame(height: 30)
-                .background(Color.accentColor.opacity(0.1), in: Capsule(style: .continuous))
-            }
-            .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-        .background(ExpoStyle.card,
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(ExpoStyle.hairline, lineWidth: 0.7)
-        }
+        LumaEmptyState(symbol: "rectangle.stack.badge.minus",
+                       title: "没有匹配的展项",
+                       message: emptyDetail,
+                       style: .card,
+                       actions: [
+                        LumaEmptyAction(title: "清空筛选", symbol: nil, filled: true) {
+                            query = ""
+                            region = nil
+                            kind = .all
+                            sort = .works
+                            onlyFollowed = false
+                        },
+                        LumaEmptyAction(title: "随便看一位", symbol: nil) {
+                            openRandomPerson()
+                        }
+                       ])
     }
 
     private var emptyDetail: String {

@@ -32,7 +32,7 @@ enum NetworkCinemaSort: String, CaseIterable, Identifiable {
 /// 工具栏中区的分页胶囊：影院管理 / 榜单 / 电影 / 电视剧 / 日历 / 足迹 / 关注。
 /// 与「网络资源」「网络存储」的工具栏分页同一套样式；页面内容区不再重复一条大胶囊。
 struct NetworkCinemaHubTabs: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Namespace private var tabNamespace
 
     var body: some View {
@@ -124,10 +124,10 @@ struct NetworkCinemaDetailTitleBar: View {
 /// 版式对齐「网络资源 / 网络存储」：影院管理、榜单、电影、电视剧、日历、足迹、关注七个分页，
 /// 切换入口在窗口工具栏；电影与电视剧是信息更完整的海报墙，点开条目后原地进入影院式详情页。
 struct NetworkCinemaHubView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
     /// 由 `LibraryStore` 持有：切到别的页面，探测与资料补全继续在后台跑。
-    @EnvironmentObject private var model: NetworkCinemaModel
+    @Environment(NetworkCinemaModel.self) private var model
 
     @State private var selectedGenre: String?
     /// 排序与顶栏控制台共用：`store.networkCinemaSort` 一改，列表立即重排。
@@ -258,7 +258,7 @@ struct NetworkCinemaHubView: View {
             if let selected = store.networkCinemaDetail {
                 // 返回收起详情由顶栏的返回胶囊统一负责（与网络资源详情同一位置）。
                 NetworkCinemaDetailView(entry: selected, model: model)
-                    .environmentObject(store)
+                    .environment(store)
             } else {
                 pageContent
             }
@@ -666,7 +666,7 @@ struct NetworkCinemaHubView: View {
             .frame(height: 24)
             .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
             .contentShape(Capsule())
         }
@@ -786,7 +786,7 @@ struct NetworkCinemaHubView: View {
             .frame(height: 24)
             .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
         .menuStyle(.borderlessButton)
@@ -1052,7 +1052,7 @@ struct NetworkCinemaZoomControl: View {
 /// 站点页顶栏中区：与网络资源完全同一枚胶囊舱。
 /// 首页 / 分类菜单 · 站点 · 最新 · 站内搜索 · 刷新。
 struct NetworkCinemaSourceConsole: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     @FocusState private var focused: Bool
 
@@ -1231,7 +1231,8 @@ struct NetworkCinemaSourceConsole: View {
 
     /// 站内搜索：与网络资源一样只搜当前这个源。
     private var searchField: some View {
-        HStack(spacing: 5) {
+        @Bindable var store = store
+        return HStack(spacing: 5) {
             if model.isSourceSearching {
                 ProgressView()
                     .controlSize(.mini)

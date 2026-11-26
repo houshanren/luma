@@ -486,17 +486,15 @@ extension LibraryStore {
         cinemaToasts.append(toast)
         guard kind == .success || kind == .info else { return }
         let id = toast.id
-        cinemaToastTasks[id]?.cancel()
-        cinemaToastTasks[id] = Task { [weak self] in
+        tasks.adopt(.cinemaToast(id), Task { [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
             self?.dismissCinemaToast(id)
-        }
+        })
     }
 
     func dismissCinemaToast(_ id: UUID) {
-        cinemaToastTasks[id]?.cancel()
-        cinemaToastTasks[id] = nil
+        tasks.cancel(.cinemaToast(id))
         cinemaToasts.removeAll { $0.id == id }
     }
 

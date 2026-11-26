@@ -34,7 +34,7 @@ enum LibraryHubTab: String, CaseIterable, Identifiable {
 
 /// 图库分区的分页胶囊：资源 / 照片 / 收藏，与其它 Hub 同一套工具栏样式。
 struct LibraryHubTabs: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @AppStorage(LibraryHubTab.storageKey) private var tabRaw = LibraryHubTab.resources.rawValue
     @Namespace private var tabNamespace
 
@@ -340,7 +340,7 @@ struct LibraryAggregatePhotosView: View {
 
     let mode: Mode
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @EnvironmentObject private var aggregate: LibraryAggregateModel
 
     @State private var selectedLibraryID: String?
@@ -630,25 +630,17 @@ struct LibraryAggregatePhotosView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: mode == .photos ? "photo.on.rectangle.angled" : "heart")
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text(mode == .photos ? "还没有可聚合的照片" : "还没有收藏的照片")
-                .font(.system(size: 16, weight: .semibold))
-            Text(mode == .photos
-                 ? "连接到「照片」图库后，各图库最近的照片会汇成一条时间线。"
-                 : "在各个图库里标了心形的照片会汇总到这里。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+        VStack(spacing: 12) {
+            LumaEmptyState(symbol: mode == .photos ? "photo.on.rectangle.angled" : "heart",
+                           title: mode == .photos ? "还没有可聚合的照片" : "还没有收藏的照片",
+                           message: mode == .photos
+                               ? "连接到「照片」图库后，各图库最近的照片会汇成一条时间线。"
+                               : "在各个图库里标了心形的照片会汇总到这里。")
             if aggregate.loading {
-                ProgressView().controlSize(.small).padding(.top, 2)
+                ProgressView().controlSize(.small)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 70)
     }
 
     // MARK: 数据
@@ -706,10 +698,7 @@ struct LibraryAggregatePhotosView: View {
     }
 
     private func weekdayText(_ date: Date) -> String {
-        let weekday = date.formatted(.dateTime.weekday(.wide))
-        if Calendar.current.isDateInToday(date) { return "今天 · \(weekday)" }
-        if Calendar.current.isDateInYesterday(date) { return "昨天 · \(weekday)" }
-        return weekday
+        DateText.dayWithWeekday(date)
     }
 
     /// 点开照片 / 视频：一律用原来的查看器（视频也走同一套播放器），

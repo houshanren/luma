@@ -18,7 +18,7 @@ struct GalleryScrollOffsetKey: PreferenceKey {
 /// 年 / 月 / 所有照片 的磨砂分段切换：悬停与选中都带柔和胶囊，贴合系统「照片」的顶栏。
 struct TimelineGroupingSwitch: View {
     @Binding var selection: GridGrouping
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
     @Namespace private var pill
     @State private var hoveredOption: GridGrouping?
 
@@ -81,9 +81,10 @@ struct TimelineGroupingSwitch: View {
 
 /// 收藏浏览方式切换：与地图样式切换一致的 segmented 外观。
 struct FavoritesViewModeSwitch: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
+        @Bindable var store = store
         Picker("收藏浏览方式", selection: $store.favoritesViewMode) {
             ForEach(FavoritesViewMode.allCases) { option in
                 Text(option.title).tag(option)
@@ -97,9 +98,10 @@ struct FavoritesViewModeSwitch: View {
 }
 
 struct PlaceGranularitySwitch: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
+        @Bindable var store = store
         Picker("地点聚合层级", selection: $store.placeGranularity) {
             ForEach(PlaceGranularity.allCases) { option in
                 Text(option.shortTitle).tag(option)
@@ -138,7 +140,7 @@ struct MapStyleSwitch: View {
 /// 整理工作室的维度切换：评分 / 旗标 / 色标 / 关键词。
 /// 选中态对齐人物页的系统分段控件：明确的灰色胶囊 + 深色半粗文字，不再靠材质差异提示。
 struct OrganizeDimensionSwitch: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         HStack(spacing: 2) {
@@ -189,7 +191,7 @@ struct OrganizeDimensionSwitch: View {
 /// 视频页的「海报墙 / 时间轴」切换：图标 + 文字的分段胶囊，
 /// 选中项用强调色渐变托底，切换时滑片过渡，与顶栏其它圆角控件同一套材质与描边。
 struct VideoHubLayoutSwitch: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Namespace private var selection
 
     var body: some View {
@@ -250,9 +252,10 @@ struct VideoHubLayoutSwitch: View {
 }
 
 struct PeopleGroupFilterSwitch: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
+        @Bindable var store = store
         Picker("人物筛选", selection: $store.peopleFilter) {
             ForEach(PeopleGroupFilter.allCases) { option in
                 Text(option.shortTitle).tag(option)

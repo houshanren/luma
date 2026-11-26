@@ -6,8 +6,8 @@ import PlaybackCore
 /// 频道信息与动作都收在窗口工具栏里；画面只保留时间河与节目单抽屉。
 /// 信息贴边、中间留空，保证不遮住画面主体。
 struct TVPlaybackOverlay: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var tv: IPTVBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(IPTVBrowserModel.self) private var tv
 
     let channel: TVChannel
     let photoID: UUID

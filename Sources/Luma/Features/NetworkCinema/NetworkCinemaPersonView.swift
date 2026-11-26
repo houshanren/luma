@@ -10,7 +10,7 @@ struct NetworkCinemaPersonView: View {
     let member: CinemaCastMember
     let onBack: () -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     @State private var profile: CinemaPersonProfile?
     @State private var loading = true
@@ -219,7 +219,7 @@ struct NetworkCinemaPersonView: View {
             .frame(height: 24)
             .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
         .frame(width: 172, alignment: .top)
@@ -294,7 +294,7 @@ struct NetworkCinemaPersonView: View {
             .padding(.vertical, 2.5)
             .background(Capsule().fill(CinemaDetailTone.ink.opacity(0.06)))
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
     }
 

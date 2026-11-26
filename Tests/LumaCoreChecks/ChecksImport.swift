@@ -93,7 +93,7 @@ func runImportChecks() {
     let utc = TimeZone(secondsFromGMT: 0)!
     let shanghai = TimeZone(secondsFromGMT: 8 * 3600)!
     let exifText = "2024:05:06 07:08:09"
-    let utcDate = ImportRules.parseEXIFDate(exifText, timeZone: utc)
+    let utcDate = EXIFDate.parse(exifText, timeZone: utc)
     expect(utcDate != nil, "合法 EXIF 时间可解析")
     if let utcDate {
         var calendar = Calendar(identifier: .gregorian)
@@ -107,11 +107,11 @@ func runImportChecks() {
         expectEqual(components.minute, 8, "EXIF 分")
         expectEqual(components.second, 9, "EXIF 秒")
     }
-    if let utcDate, let shanghaiDate = ImportRules.parseEXIFDate(exifText, timeZone: shanghai) {
+    if let utcDate, let shanghaiDate = EXIFDate.parse(exifText, timeZone: shanghai) {
         expectEqual(utcDate.timeIntervalSince(shanghaiDate), 8 * 3600,
                     "EXIF 时间按指定时区解释")
     }
-    expect(ImportRules.parseEXIFDate("2024-05-06 07:08:09") == nil, "非 EXIF 格式返回 nil")
-    expect(ImportRules.parseEXIFDate("") == nil, "空字符串返回 nil")
-    expect(ImportRules.parseEXIFDate(nil) == nil, "缺失 EXIF 时间返回 nil")
+    expect(EXIFDate.parse("2024-05-06 07:08:09") == nil, "非 EXIF 格式返回 nil")
+    expect(EXIFDate.parse("") == nil, "空字符串返回 nil")
+    expect(EXIFDate.parse(nil) == nil, "缺失 EXIF 时间返回 nil")
 }

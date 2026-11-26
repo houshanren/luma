@@ -244,7 +244,7 @@ extension CinemaLibraryView {
                             .padding(.vertical, 2.5)
                             .background(Capsule().fill(Color.primary.opacity(0.05)))
                             .overlay {
-                                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6)
+                                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
                             }
                     }
                 }

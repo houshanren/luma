@@ -22,8 +22,7 @@ extension LibraryStore {
     }
 
     func resetBeautyState() {
-        beautyTask?.cancel()
-        beautyTask = nil
+        tasks.cancel(.beauty)
         beautyReport = nil
         isScanningBeauty = false
         beautyScanProgress = 0
@@ -118,7 +117,7 @@ extension LibraryStore {
         isScanningBeauty = true
         beautyScanProgress = 0
         let jobID = beginBeautyScanJob()
-        beautyTask = Task { [weak self] in
+        tasks.adopt(.beauty, Task { [weak self] in
             guard let self else { return }
             var found: [(UUID, BeautyAdvice)] = []
             found.reserveCapacity(slice.count)
@@ -147,7 +146,7 @@ extension LibraryStore {
             if Task.isCancelled {
                 self.isScanningBeauty = false
                 self.beautyScanProgress = 0
-                self.beautyTask = nil
+                self.tasks.finish(.beauty)
                 self.cancelSourceJob(jobID)
                 return
             }
@@ -159,19 +158,18 @@ extension LibraryStore {
             self.persistBeautyReport(report)
             self.isScanningBeauty = false
             self.beautyScanProgress = 0
-            self.beautyTask = nil
+            self.tasks.finish(.beauty)
             self.finishSourceJob(jobID, message: "完成 · \(report.distinctCount) 张可美化")
             if report.distinctCount == 0 {
                 self.showToast("分析完成：这 \(slice.count) 张画面已经比较均衡")
             } else {
                 self.showToast("分析完成：\(report.distinctCount) 张可以美化")
             }
-        }
+        })
     }
 
     func cancelBeautyScan() {
-        beautyTask?.cancel()
-        beautyTask = nil
+        tasks.cancel(.beauty)
         isScanningBeauty = false
         beautyScanProgress = 0
     }
@@ -191,7 +189,7 @@ extension LibraryStore {
         cloudModel.beautyReportIsCloud = true
         beautyReportIsSystem = false
         let jobID = beginBeautyScanJob()
-        beautyTask = Task { [weak self] in
+        tasks.adopt(.beauty, Task { [weak self] in
             guard let self else { return }
             var found: [(UUID, BeautyAdvice)] = []
             var done = 0
@@ -218,7 +216,7 @@ extension LibraryStore {
             if Task.isCancelled {
                 self.isScanningBeauty = false
                 self.beautyScanProgress = 0
-                self.beautyTask = nil
+                self.tasks.finish(.beauty)
                 self.cancelSourceJob(jobID)
                 return
             }
@@ -229,14 +227,14 @@ extension LibraryStore {
             self.persistBeautyReport(report)
             self.isScanningBeauty = false
             self.beautyScanProgress = 0
-            self.beautyTask = nil
+            self.tasks.finish(.beauty)
             self.finishSourceJob(jobID, message: "完成 · \(report.distinctCount) 张可美化")
             if report.distinctCount == 0 {
                 self.showToast("分析完成：这 \(slice.count) 张画面已经比较均衡")
             } else {
                 self.showToast("分析完成：\(report.distinctCount) 张可以美化")
             }
-        }
+        })
     }
 
     /// 系统图库版推荐扫描：用官方 derivative / 缓存缩略图采样，推荐结果写入 `derived_reports`。
@@ -254,7 +252,7 @@ extension LibraryStore {
         cloudModel.beautyReportIsCloud = false
         beautyReportIsSystem = true
         let jobID = beginBeautyScanJob()
-        beautyTask = Task { [weak self] in
+        tasks.adopt(.beauty, Task { [weak self] in
             guard let self else { return }
             var found: [(UUID, BeautyAdvice)] = []
             let chunkSize = 12
@@ -284,7 +282,7 @@ extension LibraryStore {
             if Task.isCancelled {
                 self.isScanningBeauty = false
                 self.beautyScanProgress = 0
-                self.beautyTask = nil
+                self.tasks.finish(.beauty)
                 self.cancelSourceJob(jobID)
                 return
             }
@@ -295,14 +293,14 @@ extension LibraryStore {
             self.persistBeautyReport(report)
             self.isScanningBeauty = false
             self.beautyScanProgress = 0
-            self.beautyTask = nil
+            self.tasks.finish(.beauty)
             self.finishSourceJob(jobID, message: "完成 · \(report.distinctCount) 张可美化")
             if report.distinctCount == 0 {
                 self.showToast("分析完成：这 \(slice.count) 张画面已经比较均衡")
             } else {
                 self.showToast("分析完成：\(report.distinctCount) 张可以美化")
             }
-        }
+        })
     }
 
     /// 把候选按偏差方向分桶，并按「偏差程度 + 收藏加权 - 已编辑降权」排序。

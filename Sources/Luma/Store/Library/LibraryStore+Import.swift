@@ -113,7 +113,7 @@ extension LibraryStore {
         let existingHashes = Set(self.metadataStore?.contentHashes().keys.map { $0 } ?? [])
         let hashGate = ImportHashGate(existingHashes)
 
-        importTask = Task { [weak self] in
+        tasks.adopt(.libraryImport, Task { [weak self] in
             guard let self else { return }
             var imported = 0
             var skipped = 0
@@ -280,7 +280,7 @@ extension LibraryStore {
             if imported > 0, AppSettings.shared.cinemaAutoScrape {
                 self.startCinemaScrape(for: .local)
             }
-        }
+        })
     }
 
     nonisolated static func buildCandidates(from urls: [URL]) -> [ImportCandidate] {

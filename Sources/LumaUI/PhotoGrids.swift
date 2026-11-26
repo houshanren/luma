@@ -28,7 +28,7 @@ package struct SectionHeaderView: View {
                 .padding(.vertical, 3)
                 .background(.ultraThinMaterial, in: Capsule())
                 .overlay {
-                    Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
                 }
         }
         .padding(.horizontal, 20)

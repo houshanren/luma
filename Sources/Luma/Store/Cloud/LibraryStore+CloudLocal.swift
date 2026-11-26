@@ -216,13 +216,13 @@ extension LibraryStore {
     /// 标记派生缓存需要失效，并安排一次合并刷新。
     func markCloudMetadataChanged() {
         cloudModel.metadataDirty = true
-        guard cloudModel.metadataFlushTask == nil else { return }
-        cloudModel.metadataFlushTask = Task { [weak self] in
+        guard !cloudModel.tasks.isRunning(.cloudMetadataFlush) else { return }
+        cloudModel.tasks.adopt(.cloudMetadataFlush, Task { [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard let self else { return }
-            self.cloudModel.metadataFlushTask = nil
+            self.cloudModel.tasks.finish(.cloudMetadataFlush)
             self.flushCloudMetadata()
-        }
+        })
     }
 
     /// 把排队中的元数据更新一次性写回列表：只触发一次发布与一次缓存失效。
@@ -256,8 +256,7 @@ extension LibraryStore {
     /// 返回的任务可由视图的 `.task` 取消（离开网盘 / 切换目录时停止）。
     @discardableResult
     func prefetchCloudThumbnails(for photos: [PhotoItem], limit: Int = 60) -> Task<Void, Never>? {
-        cloudModel.thumbnailPrefetchTask?.cancel()
-        cloudModel.thumbnailPrefetchTask = nil
+        cloudModel.tasks.cancel(.cloudThumbnailPrefetch)
         guard !photos.isEmpty, limit > 0 else { return nil }
         var targets: [PhotoItem] = []
         targets.reserveCapacity(limit)
@@ -289,7 +288,7 @@ extension LibraryStore {
                 await Task.yield()
             }
         }
-        cloudModel.thumbnailPrefetchTask = task
+        cloudModel.tasks.adopt(.cloudThumbnailPrefetch, task)
         return task
     }
 

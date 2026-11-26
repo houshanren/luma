@@ -3,7 +3,7 @@ import AppKit
 
 /// 本地图库的端侧人物聚类页面。
 struct LocalPeopleView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var renameTarget: LocalPerson?
     @State private var renameText = ""
     @State private var showRename = false
@@ -333,38 +333,20 @@ struct LocalPeopleView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 96, height: 96)
-                Image(systemName: "person.crop.circle.badge.questionmark")
-                    .font(.system(size: 42, weight: .light))
-                    .foregroundStyle(.secondary)
-            }
-            Text("端侧人物聚类")
-                .font(.system(size: 22, weight: .semibold))
-            Text("使用本机 Vision 检测照片中的人脸并聚类为人物。\n分析结果只保存在当前图库，不会上传任何照片。")
-                .font(.system(size: 12.5))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            Button {
-                if store.pendingFacePhotoCount > 0 {
-                    store.startFaceClustering()
-                } else {
-                    showResetConfirm = true
-                }
-            } label: {
-                Label(emptyStateActionTitle, systemImage: "wand.and.stars")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.top, 4)
+        LumaEmptyState(symbol: "person.crop.circle.badge.questionmark",
+                       title: "端侧人物聚类",
+                       message: "使用本机 Vision 检测照片中的人脸并聚类为人物。\n分析结果只保存在当前图库，不会上传任何照片。",
+                       actions: [LumaEmptyAction(title: emptyStateActionTitle,
+                                                 symbol: "wand.and.stars",
+                                                 filled: true) {
+                           if store.pendingFacePhotoCount > 0 {
+                               store.startFaceClustering()
+                           } else {
+                               showResetConfirm = true
+                           }
+                       }])
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .disabled(store.isClusteringFaces)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, 60)
     }
 
     private func personCard(_ person: LocalPerson) -> some View {
@@ -447,10 +429,10 @@ struct LocalPeopleView: View {
         .task(id: "\(person.id.uuidString)|\(person.assetIDs.count)") {
             collapseProgress = 0
             insight = nil
-            let request = PersonAvatarLoader.request(for: person, size: 84)
-            heroAvatar = PersonAvatarLoader.cached(request)
+            let request = PersonAvatarRequest.make(for: person, size: 84)
+            heroAvatar = PersonAvatarRegistry.cached(request)
             if heroAvatar == nil {
-                heroAvatar = await PersonAvatarLoader.load(request, store: store)
+                heroAvatar = await PersonAvatarRegistry.load(request)
             }
             insight = store.localPersonInsight(for: person)
         }
@@ -525,8 +507,8 @@ struct LocalPeopleView: View {
 /// 本地人物头像：后台解码 + 内存缓存，避免在 body 里同步解码裁切图或缩略图。
 /// 头像形状随「人物」总览的显示偏好（圆形 / 圆角方形）。
 struct LocalPersonAvatar: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let person: LocalPerson
     let size: CGFloat
@@ -536,7 +518,7 @@ struct LocalPersonAvatar: View {
     @State private var image: NSImage?
 
     private var request: PersonAvatarRequest {
-        PersonAvatarLoader.request(for: person, size: size)
+        PersonAvatarRequest.make(for: person, size: size)
     }
 
     /// 裁切形状：圆角方形沿用全局卡片圆角设置。
@@ -569,11 +551,11 @@ struct LocalPersonAvatar: View {
             shape.stroke(Color.white.opacity(0.18), lineWidth: 0.8)
         }
         .task(id: request) {
-            if let cached = PersonAvatarLoader.cached(request) {
+            if let cached = PersonAvatarRegistry.cached(request) {
                 image = cached
                 return
             }
-            image = await PersonAvatarLoader.load(request, store: store)
+            image = await PersonAvatarRegistry.load(request)
         }
     }
 }

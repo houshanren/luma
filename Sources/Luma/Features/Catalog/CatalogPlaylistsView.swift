@@ -4,7 +4,7 @@ import SwiftUI
 
 /// 片单分页：上半是聚合片单（关键字跨源动态聚合），下半是手动片单。
 struct CatalogPlaylistsView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     @State private var showCreateSmart = false
     @State private var showCreateManual = false
@@ -15,11 +15,11 @@ struct CatalogPlaylistsView: View {
             switch catalog.openPlaylistPage {
             case .manual(let id):
                 CatalogPlaylistDetailView(playlistID: id) { closeDetail() }
-                    .environmentObject(catalog)
+                    .environment(catalog)
                     .transition(.opacity)
             case .smart(let id):
                 CatalogSmartPlaylistDetailView(playlistID: id) { closeDetail() }
-                    .environmentObject(catalog)
+                    .environment(catalog)
                     .transition(.opacity)
             case nil:
                 list
@@ -531,7 +531,7 @@ struct CatalogSmartPlaylistDetailView: View {
     /// 非空表示嵌在片单页里展示：左上角给「返回」，不再用弹窗。
     var onClose: (() -> Void)? = nil
 
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
     @Environment(\.dismiss) private var dismiss
 
     private var isEmbedded: Bool { onClose != nil }

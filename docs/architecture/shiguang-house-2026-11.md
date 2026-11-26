@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | 版本 | v0.2 |
-| 日期 | 2026-11-24（§4.4 字段补充于 2026-11-25） |
+| 日期 | 2026-11-24（§4.4 字段补充于 2026-11-25，数据更新至 2026-11-26 P3） |
 | 状态 | 设计稿；§4.4 已补入 `catalog.sqlite` 的完整字段与现状 |
 | 前置文档 | [iOS 版可行性报告](../product/luma-ios-feasibility.md)、[模块化与公共抽象建议](modularization-abstraction-2026-11.md)、[多模式内容框架评估](multi-mode-architecture-2026-11.md) |
 | 核心结论 | 产品拆成**记忆域**与**内容域**；记忆域用「一个资产表 + 一张来源出现表」承载所有个人影像；手机是只读挂载源，原图默认不落盘、按需流式读取；不接任何云厂商账号 API |
@@ -300,7 +300,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 
 ### 4.4 内容域资料库（catalog.sqlite）字段
 
-`catalog.sqlite` 属于内容域的「网络资源 → 资料库」，不进记忆时间线；这里补的是它当前完整的表结构，以及 2026-11-25 重建后的实际覆盖。带 `*` 的是本轮新增字段/表（`PRAGMA user_version = 3`）。
+`catalog.sqlite` 属于内容域的「网络资源 → 资料库」，不进记忆时间线；这里补的是它当前完整的表结构，以及 2026-11-26 R18 深度挖掘（schema v4）后的实际覆盖。带 `*` 的是新增字段/表（`PRAGMA user_version = 4`）。
 
 #### `actresses`（人物）
 
@@ -308,28 +308,28 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 | --- | --- | --- |
 | `id` | 主键 | 写入顺序 |
 | `name` | 展示名 | 多源归一化后的主名 |
-| `name_ja` | 日文名 | 14,728 人有值 |
-| `name_en` | 英文名 | 10,009 人有值 |
-| `aliases` | 别名 JSON | 12,849 人有值（日文维基「別名」+ 站点别名，含改名孪生括号注记别名） |
-| `region` | 地区 | 日本 17,767 / 大陆 5,852 / 欧美 1,452 / 台湾 1,127 / 韩国 617 / 香港 206 |
-| `birth_date` | 生日 | 16,193 人有值（大陆 2,877，49%） |
-| `birth_precision*` | 生日精度 | `day` 15,635 / `year` 553 / 空 10,833；仅年份的不再当完整生日 |
+| `name_ja` | 日文名 | 19,176 人有值 |
+| `name_en` | 英文名 | 25,430 人有值 |
+| `aliases` | 别名 JSON | 26,512 人有值（日文维基「別名」+ 站点别名 + R18 假名/罗马字，含改名孪生括号注记别名） |
+| `region` | 地区 | 日本 17,643 / 大陆 7,018 / 欧美 5,152 / 台湾 1,131 / 韩国 686 / 香港 205 |
+| `birth_date` | 生日 | 19,860 人有值（大陆 2,857，41%） |
+| `birth_precision*` | 生日精度 | `day` 19,303 / `year` 553 / 空 11,979；仅年份的不再当完整生日 |
 | `age` / `age_asof` | 年龄与基准日 | 3,469 人 |
-| `height_cm` | 身高 | 15,717 人（大陆 2,748，47%） |
-| `bust` / `waist` / `hips` | 三围 | 11,808 人齐全（大陆 1,658，28%） |
-| `cup` | 罩杯 | 7,072 人（B–N 字母） |
-| `hobby*` | 趣味/特技 | 9,249 条（JavBus + 日文维基 + 秀色女神「兴趣」） |
+| `height_cm` | 身高 | 18,038 人（大陆 2,732，39%） |
+| `bust` / `waist` / `hips` | 三围 | 11,800 人齐全（大陆 1,642，23%） |
+| `cup` | 罩杯 | 7,074 人（B–N 字母） |
+| `hobby*` | 趣味/特技 | 9,286 条（JavBus + 日文维基 + 秀色女神「兴趣」+ GRAPHIS） |
 | `ruby*` | 读音 | 预留：日文维基页未存原 wikitext，`読み` 待 DMM / 读音源回填 |
-| `birthplace*` | 出身地 | 13,100 条（日文维基「出身地」+ 国内档案，已过滤非地名残留） |
-| `blood_type*` | 血型 | 6,614 条（日文维基「血液型」+ 秀色女神） |
+| `birthplace*` | 出身地 | 13,099 条（日文维基「出身地」+ 国内档案，已过滤非地名残留） |
+| `blood_type*` | 血型 | 6,613 条（日文维基「血液型」+ 秀色女神） |
 | `debut_year*` | 出道年份 | 3,279 条（日文维基「デビュー」） |
 | `agency*` | 所属事务所 | 1,712 条（日文维基「所属事務所」，已剔除表格残留） |
 | `status*` | 现役/引退/复归 | 444 条（日文维基行文推断 `retired` 409 / `hiatus` 35） |
-| `official_site*` | 官方站 | 1,952 条（日文维基「公式サイト」，已剔除 DMM / XCITY / 新闻稿 / archive 等非官方链接） |
-| `work_count` | 作品数 | 12,332 人（javrate 计数 + 国内站内套图数取大，非官方计数） |
-| `tags` | 标签 JSON | 157 种；13,798 人有标签（角色/IP 标签 501 条：碧蓝航线、原神、2B、女仆、旗袍…） |
-| `summary` / `description` | 简介 | 10,560 / 54 条，只保留事实型 |
-| `image_url` / `has_avatar` | 头像 | 19,863 人有头像 URL（秀色女神真实封面 + JavBus + 秀人网镜像封面等）；96×96 JPEG base64 **19,849 条已拆到独立表 `person_avatars`**（有效下载 19,723 张，别名行共用同一 URL，7,158 人无 URL）。主表只留 `has_avatar` 标志，按主键单条取，启动全量加载不再背 200MB 大文本 |
+| `official_site*` | 官方站 | 3,038 条（日文维基「公式サイト」+ Wikidata，已剔除 DMM / XCITY / 新闻稿 / archive 等非官方链接） |
+| `work_count` | 作品数 | 13,745 人（javrate 计数 + 国内站内套图数取大，非官方计数） |
+| `tags` | 标签 JSON | 162 种；15,134 人有标签（角色/IP 标签 468 条：碧蓝航线、原神、2B、女仆、旗袍…） |
+| `summary` / `description` | 简介 | 10,684 / 54 条，只保留事实型 |
+| `image_url` / `has_avatar` | 头像 | 25,958 人有头像 URL（秀色女神真实封面 + JavBus + 秀人网镜像 + COS集/麻豆夹封面 + DMM 官方头像 + GRAPHIS 模特照）；96×96 JPEG base64 **25,541 条在独立表 `person_avatars`**，主表只留 `has_avatar` 标志，按主键单条取，启动全量加载不再背 200MB 大文本 |
 | `source_url` / `source` / `updated_at` | 来源与更新时间 | 多源拼接字符串，字段级溯源待做 |
 
 #### `studios`（厂商）
@@ -344,38 +344,42 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 | `parent_name*` | 母公司/集团（预留：官网 / 维基） |
 | `status*` | 活跃/停业（预留：官网） |
 
-现状：498 个厂商；14 条简介、42 个官网、**34 个真实 Logo**（`fetch_studio_logos.py` 从官网 og:image / apple-touch-icon 取得，8 个站点 403 跳过）、45 条番号前缀（只覆盖 13 个厂商）。
+现状：884 个厂商；14 条简介、42 个官网、**34 个真实 Logo**（`fetch_studio_logos.py` 从官网 og:image / apple-touch-icon 取得，8 个站点 403 跳过）、45 条番号前缀（只覆盖 13 个厂商）。R18 落库作品 ≥ 30 部的 386 个日本片商自动建档（`import_r18_dump.py`）。
 
 #### 新增表
 
 | 表 | 关键字段 | 用途 |
 | --- | --- | --- |
-| `external_ids*` | `entity_type`、`entity_id`、`source`、`external_id`、`url`、`updated_at` | 跨站 ID，避免继续靠名字模糊匹配；现有 40,970 条（JavBus 14,915 / Twitter 5,259 / Instagram 4,827 / Wikidata 4,489 / 日文维基 3,907 / JavRate 3,692 / 微博 2,185 / 中文维基 725 / YouTube 433 / DMM 240 / XCITY 213 / 抖音 65 / B 站 15 / 小红书 5）；`(source, external_id)` 已无重复 |
-| `person_links*` | `actress_id`、`source`、`kind`、`url`、`title`、`published_at` | 人物主页 / 社交链接；现有 43,431 条（作品已统一进 `works`，两处不再双写） |
+| `external_ids*` | `entity_type`、`entity_id`、`source`、`external_id`、`url`、`updated_at` | 跨站 ID，避免继续靠名字模糊匹配；现有 55,405 条（JavBus 14,912 / R18 14,426 / Twitter 5,255 / Instagram 4,826 / Wikidata 4,488 / 日文维基 3,902 / JavRate 3,688 / 微博 2,187 / 中文维基 724 / DMM 269 / YouTube 433 / XCITY 213 / 抖音 65 / B 站 15 / 小红书 5）；`(source, external_id)` 已无重复 |
+| `person_links*` | `actress_id`、`source`、`kind`、`url`、`title`、`published_at` | 人物主页 / 社交链接；现有 63,911 条（作品已统一进 `works`，两处不再双写） |
 | `person_studios*` | `actress_id`、`studio_id`、`kind`、`source` | 人物 ↔ 事务所/写真机构/专属厂牌；现有 raw 证据不足，暂空 |
-| `works*` | `content_id`、`dvd_id`、`code`、`kind`、`title_ja/zh/en`、`release_date`、`runtime_min`、`director`、`studio_id`、`label`、`series`、`genres`、`cover_url`、`sample_urls`、`trailer_url`、`source_url`、`rating`、`popularity` | 作品底座（唯一来源）；现有 148,516 条国内套图/写真（艺图湾 38,207 / 秀色女神 20,918 / xiurenwang 17,903 / coshe 17,573 / myxiuren 8,534 / cos2cy 7,383 / cosmeitu 6,026 / tuquge 5,665 / 狐樱社 4,265 / sluyu 4,171 / costuan 3,612 / 影语阁 3,478 / 52cos 3,142 / tuinvlang 1,816 / jvheku 1,798 / coscd 1,402 / kkkhai 668 / 其余长尾），日本作品待 R18/DMM 导入 |
-| `work_actresses*` | `work_id`、`actress_id` | 作品 ↔ 人物；现有 150,930 条；双向索引（PK `work_id,actress_id` + `idx_work_actresses_actress`），详情页「TA 的作品」走索引不再全表扫 |
-| `person_avatars*` | `actress_id`（主键）、`base64` | 头像独立表：现有 19,968 条 96×96 JPEG base64；主表只留 `has_avatar` 标志，按主键单条取，人物名字典启动不再整库加载大文本 |
-| `studio_avatars*` | `studio_id`（主键）、`base64` | 厂牌头像独立表：现有 498 条（34 真实 logo + 464 品牌字母头像） |
-| `person_tags*` | `actress_id`、`tag` | 标签关联表：现有 56,497 个「人-标签」对（160 种标签，其中角色/IP 468 条）；按角色/IP 筛选走 `idx_person_tags_tag`，不再靠 `tags` JSON 全表 LIKE。`actresses.tags` 保留给 app 全量加载 |
-| `actress_search*`（FTS5） | `text`（rowid = `actress_id`） | 名字搜索虚拟表：汉字按单字切分建索引，2 字中文名也能命中（trigram 对 2 字无效）；现有 31,912 行，查询用 `MATCH '"水" AND "淼"'` |
+| `works*` | `content_id`、`dvd_id`、`code`、`kind`、`title_ja/zh/en`、`release_date`、`runtime_min`、`director`、`studio_id`、`label`、`series`、`genres`、`cover_url`、`thumb_url*`、`sample_urls`、`trailer_url`、`source_url`、`rating`、`popularity` | 作品底座（唯一来源）；现有 **415,502** 条：国内套图/写真 153,171（`kind='photo'`：艺图湾 37,149 / 秀色女神 19,668 / xiurenwang 17,741 / coshe 17,566 / myxiuren 7,634 / cos2cy 7,246 / cosmeitu 6,026 / 麻豆夹 5,149 / 其余长尾）+ 日本影像 262,331（`kind='video'`：封面 / 缩略图 262,328 / 剧照 177,329 / 导演 118,675 / 试看 52,550 / 分类 151 万对）。字段来源见 [R18 dump 管线](../catalog/r18-dump-pipeline-2026-11.md) |
+| `work_actresses*` | `work_id`、`actress_id`、`position*` | 作品 ↔ 人物；现有 **1,157,021** 条（其中 1,001,454 条带 R18 出演顺位 `position`，1 = 主演/首位）；双向索引（PK `work_id,actress_id` + `idx_work_actresses_actress`） |
+| `work_genres*` | `work_id`、`genre` | 作品分类索引：现有 **1,511,287** 个「作品-分类」对；按分类筛选走 `idx_work_genres_genre`，不再对 `genres` JSON 全表 LIKE。`works.genres` 保留（详情页一次取全） |
+| `work_descriptions*` | `work_id`（主键）、`text` | 作品简介独立表：现有 **5,495** 条（R18 英文简介）；详情页按主键单条取，不撑大 `works` 主表扫描 |
+| `person_avatars*` | `actress_id`（主键）、`base64` | 头像独立表：现有 25,541 条 96×96 JPEG base64；主表只留 `has_avatar` 标志，按主键单条取，人物名字典启动不再整库加载大文本 |
+| `studio_avatars*` | `studio_id`（主键）、`base64` | 厂牌头像独立表：现有 886 条（34 真实 logo + 852 品牌字母头像） |
+| `person_tags*` | `actress_id`、`tag` | 标签关联表：现有 58,749 个「人-标签」对（162 种标签，其中角色/IP 468 条）；按角色/IP 筛选走 `idx_person_tags_tag`，不再靠 `tags` JSON 全表 LIKE。`actresses.tags` 保留给 app 全量加载 |
+| `actress_search*`（FTS5） | `text`（rowid = `actress_id`） | 名字搜索虚拟表：汉字按单字切分建索引，2 字中文名也能命中（trigram 对 2 字无效）；现有 31,835 行，查询用 `MATCH '"水" AND "淼"'` |
 
 #### 本轮实际写入
 
 | 指标 | 数量 |
 | --- | ---: |
-| 人物 | 31,912 |
-| 厂商 | 498 |
-| 爱好 | 9,249 |
-| 生日（精度 day / year） | 19,314 / 553 |
-| 血型 / 出身地 / 出道年 / 事务所 / 官网 | 6,615 / 13,101 / 3,279 / 1,712 / 3,038 |
-| 头像（独立表） | `person_avatars` 19,968 条 + `studio_avatars` 498 条（厂牌：34 真实 logo + 464 品牌字母头像） |
-| 标签种类 | 160 |
+| 人物 | 31,835 |
+| 厂商 | 886 |
+| 爱好 | 9,286 |
+| 生日（精度 day / year） | 19,303 / 553 |
+| 血型 / 出身地 / 出道年 / 事务所 / 官网 | 6,613 / 13,099 / 3,279 / 1,712 / 3,038 |
+| 头像（独立表） | `person_avatars` 25,541 条 + `studio_avatars` 886 条（厂牌：34 真实 logo + 852 品牌字母头像） |
+| 标签种类 | 162 |
 | 角色/IP 标签 | 468 |
-| 跨站 ID | 40,970 |
-| 人物链接 | 43,431（主页/社交；作品已并入 works） |
-| 作品（国内套图/写真） | 148,516 |
-| 作品 ↔ 人物 | 150,930 |
+| 跨站 ID | 55,405 |
+| 人物链接 | 63,911（主页/社交；作品已并入 works） |
+| 作品（套图 + 影像） | 415,502（`photo` 153,171 / `video` 262,331） |
+| 作品 ↔ 人物 | 1,157,021（其中 1,001,454 条带出演顺位） |
+| 作品分类对 / 简介 / 缩略图 / 导演 | 1,511,287 / 5,495 / 262,328 / 118,675 |
+| 库文件 | 552MB |
 | 厂牌 Logo | 34 |
 
 本轮最后两道工序是**同名重复人物合并**：其一，JavBus 演员改名后同一个人会落成两条（旧名页带括号注记全名、新名页剥括号现用名，日文名互换导致常规合并被「日文名冲突」规则挡下），`build_catalog_db.py` 新增 `merge_rename_twins` 按「剥掉括号段后的归一键」连边合并，地区或生日冲突的一律不并（保护同名不同人）。两次调用（`consolidate_actresses` 后 + `fix_script_regions` 展示名定型后）共合并 73 条，人物 26,470 → 26,397；剥括号归一后的重名组 91 → 30 组，剩余每组都带地区或生日冲突证据（如 `Yuna` korea/china、`愛染恭子` 生日差 28 年），无冲突未合组为 0。其二，**大陆人物跨源同名收敛**：国产写真模特在微博 / 秀色女神 / 萌萌社等源各留一版艺名（中英混写「水淼aqua vs 水淼」、站名前缀「模范模特方子萱 vs 方子萱」、相册艺名 vs 微博真名「果儿 vs 张杨果而」），全名归一对不上、`merge_domestic_variants` 的 3 字变体键又收不掉 2 字名；新增 `merge_cn_variants` 按 CJK 核心归一 + xsnvshen 相册封面同 URL（每人唯一的 album id 是人物指纹，公共图床假信号不算）+ 生日一致收敛，生日/身高/三围冲突一律不并，共收敛 113 条（「果儿 / 果儿Victoria / 果儿celia」三个生日不同正确保留三人，日本区 17,763 分毫未动），人物 26,397 → 26,284。
@@ -399,10 +403,16 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 
 随后按 P0+P1 落地抓取并重建：Wikidata 6,972 条、myxiuren 591 人、xiurenz 1,181 人、jvheku 609 人、yituwan 3,809 人 + 113 机构、七图社 1,381 人、颜蜜社 1,112 人；人物 27,021 → **31,912**，作品 132,018 → **148,516**，跨站 ID → **40,970**，链接 → **43,431**，头像 → **19,968**。作品去重在本轮改为「**必须同一 actress_id** + NO. 号分桶 + 归一标题相似度 + 共享人名/套名/日期」四重约束（同人物去重 59,831 条），避免不同 Coser 的同名套图被并成一件作品；`works` / `studios` / `person_links` 结构沿用，无迁移。
 
+2026-11-26 的 P2 又接入 R18.dev 全量 dump（CC0、gzip 278MB）：`import_r18_dump.py` 流式解析 PostgreSQL COPY（192.5 万作品 / 10.2 万女优 / 250.7 万条作品↔女优），用库内主名+别名把 R18 女优匹配到 1.49 万位日本人物，导出每人最近 100 部（可调）并通过 `works.kind='video'` 落库 **261,891** 部，作品表合计 **409,918**、作品↔人物 **1,147,273**、厂牌 **884**（≥30 部作品的 386 个 R18 maker 自动建档）。R18 女优档案只补已有记录：R18 跨站 ID 14,406、主页链接 19,152、假名 / 罗马字别名、DMM 官方头像（9,856 张）。库文件 161MB → **385MB**（数据全面优先，不再为体积裁剪）。
+
+2026-11-26 的 P3 收掉最后三个新源：COS集（coserji）4,968 篇 → 627 人 / 作品 3,181 部，麻豆夹（madouplus）30,023 篇 → 1,743 人 / 作品 5,148 部，两者都走 `fetch_cn_round10.py`（标题按「人名 – 套名」「[机构] 日期 编号 人名」解析，机构头与编号头多轮剥离）；新增 `fetch_graphis.py` 抓 GRAPHIS 月度模特 671 次登场 → 437 人，按日文名合并后命中 326 位已有日本女优，补身高 / 三围 / 罩杯 / 趣味 / 简介与 `prof.jpg` 头像 URL（`require_existing`，不新建人物）。重建后作品 **415,102**（套图 153,211 + 影像 261,891）、作品↔人物 **1,152,446**、人物 **31,842**、头像 25,549、库文件 **388MB**。同时修掉四处数据质量隐患：库内历史别名把「洛璃 LoLiSAMA」错挂到日本女优 LISA（`library_names()` 改为主名优先）、COS集封面取到模板广告位且相对路径拼错（`cover_of()` 先 `urljoin` 再过滤 `/ad.jpg`）、麻豆夹标题里的「VOL.133」被当人名（循环剥离 + 纯编号丢弃）、镜像站同一套图写成 `NO./VOL.` 且标题多带描述导致漏去重（分桶只取编号 + 同人物/同编号/同日期直接合并，全库去重 59,703 → **79,970** 条）。
+
+2026-11-26 的 R18 dump 深度挖掘把 schema 升到 **v4**：dump 23 张表逐一核对后，新增导演（`derived_director` / `derived_video_director`，落 `works.director` 118,675 部）、缩略图 `works.thumb_url`（262,328 部）、头尾剧照 `works.sample_urls`（177,329 部）、简介独立表 `work_descriptions`（5,495 条）、分类关系表 `work_genres`（原 962.6 万条作品↔分类，作品内去重后 **1,511,287** 对，`idx_work_genres_genre` 支持按分类筛作品）、出演顺位 `work_actresses.position`（`ordinality`，1,001,454 条非空），并用抽样表 `source_dmm_video_histrion` 反推出 269 个 DMM 演员 ID（精度优先：只取「1 女优 + 1 DMM 演员」的作品投票，≥2 部且占比 ≥60%）。男优、原作作者、机器翻译、DMM 预告片四类明确不入库。重建后作品 **415,502**（套图 153,171 + 影像 262,331）、作品↔人物 **1,157,021**、人物 **31,835**、库文件 **552MB**。管线与字段清单见 [R18.dev dump 管线](../catalog/r18-dump-pipeline-2026-11.md)，一键重跑用 `Tools/catalog_build/refresh_catalog.sh`（默认非严格模式，单步失败不中断）。
+
 #### 4.4.1 完整 DDL（catalog.sqlite）
 
 ```sql
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -516,7 +526,8 @@ CREATE TABLE works (
     series       TEXT,
     genres       TEXT NOT NULL DEFAULT '[]',       -- JSON 字符串数组
     cover_url    TEXT,
-    sample_urls  TEXT NOT NULL DEFAULT '[]',       -- JSON 字符串数组
+    thumb_url    TEXT,                             -- 列表缩略图（R18 ps 版）
+    sample_urls  TEXT NOT NULL DEFAULT '[]',       -- JSON 字符串数组（剧照）
     trailer_url  TEXT,
     source_url   TEXT UNIQUE,
     rating       REAL,
@@ -528,10 +539,25 @@ CREATE TABLE works (
 CREATE TABLE work_actresses (
     work_id    INTEGER NOT NULL,
     actress_id INTEGER NOT NULL,
+    position   INTEGER,                            -- R18 出演顺位：1 = 主演/首位
     PRIMARY KEY (work_id, actress_id)
 );
 -- 反查「这个人有哪些作品」是详情页最频繁的查询，PK 只覆盖 work 方向。
 CREATE INDEX idx_work_actresses_actress ON work_actresses(actress_id);
+
+-- 作品分类索引：按分类筛选 / 统计热度走 SQL，不用对 genres JSON 全表 LIKE。
+CREATE TABLE work_genres (
+    work_id INTEGER NOT NULL,
+    genre   TEXT NOT NULL,
+    PRIMARY KEY (work_id, genre)
+);
+CREATE INDEX idx_work_genres_genre ON work_genres(genre);
+
+-- 作品简介独立成表：R18 英文简介数百字，放主表会撑大 26 万行 works 的扫描。
+CREATE TABLE work_descriptions (
+    work_id INTEGER PRIMARY KEY,
+    text    TEXT NOT NULL
+);
 
 -- 头像 base64 独立成表：主表扫描不背大文本，按主键单条取。
 CREATE TABLE person_avatars (
@@ -584,7 +610,7 @@ meta                                  构建元信息（版本 / 数量 / 来源
 - `external_ids` 是**多态表**：`entity_type + entity_id + source` 唯一，用来把同一个人的 JavBus / JavRate / 日文维基 / R18 / DMM / IAFD 身份串起来，后续补数据不再靠名字模糊匹配。
 - `works.source_url` 唯一，国内套图以来源页去重；日本作品导入后改用 `content_id` / `dvd_id` / `code` 去重。
 - `person_studios` 不写没有证据的关系；现有 raw 只够建表，关系数据等机构/模特页抓取。
-- 迁移方式：`python3 Tools/catalog_build/build_catalog_db.py` 全量重建；`user_version` 从 2 升到 3，旧 App 仍可只用原有列。
+- 迁移方式：`python3 Tools/catalog_build/build/build_catalog_db.py` 全量重建（或用 `Tools/catalog_build/refresh_catalog.sh` 一键）；`user_version` 从 3 升到 4（新增 `works.thumb_url`、`work_actresses.position`、`work_genres`、`work_descriptions`），旧 App 仍可只用原有列。
 
 ---
 

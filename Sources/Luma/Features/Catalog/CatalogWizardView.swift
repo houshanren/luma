@@ -7,8 +7,8 @@ import LumaContentCore
 /// 地址可以混填配置与站点；文件支持拾光分享包、FongMi 配置与地址文本。
 /// 无论哪种方式，都必须完成「首页 / 详情 / 封面」校验才允许添加。
 struct CatalogWizardView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
 

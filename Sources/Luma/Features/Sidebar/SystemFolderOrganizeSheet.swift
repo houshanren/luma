@@ -3,7 +3,7 @@ import SwiftUI
 /// 系统图库文件夹的整理面板：提取确认 → 执行中 → 清理空文件夹。
 /// 三步共用一个 sheet，操作完成后面板原地切换，不打断连续操作。
 struct SystemFolderOrganizeSheet: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         Group {

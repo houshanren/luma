@@ -3,8 +3,8 @@ import AppKit
 
 /// 旅行故事线：按天展开一次出行的照片，可直接播放成电影风格回忆。
 struct TripStoryView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let trip: TripStory
 
@@ -155,9 +155,6 @@ struct TripStoryView: View {
     }
 
     private func dayTitle(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日 EEEE"
-        return formatter.string(from: date)
+        DateText.monthDayWeekday(date)
     }
 }

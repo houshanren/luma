@@ -166,7 +166,71 @@
 - 底部：版本、无需账号、本地运行与「退出拾光」同一行，样式为 10.5pt 次级文字。
 - 第二屏：能力以「光串」呈现（细绳 + 珠子），珠子 54pt，命中区覆盖整颗珠子与标签。
 
-## 11. 交付检查清单
+## 11. 胶囊与卡片：Token 与组件（强制）
+
+所有胶囊 / 卡片类控件必须走 `Sources/LumaUI/LumaSurfaces.swift`，不再在视图里各写一套圆角、内边距与描边。
+
+### 11.1 唯一入口
+
+| API | 用途 |
+| --- | --- |
+| `LumaInk.primary / secondary / tertiary(scheme)` | 三级文字墨色（深色下用白色透明度，浅色用 primary 透明度） |
+| `LumaInk.hairline(scheme)` | 0.6pt 发丝线：分隔线、胶囊描边 |
+| `LumaInk.fill(.faint / .quiet / .regular / .raised / .strong, scheme)` | 中性填充层级 |
+| `LumaInk.tintWash / tintHairline(tint, scheme)` | 强调色洗底 / 强调色描边 |
+| `LumaInk.onTint(tint)` | 实底上的文字：亮度 > 0.62 自动切深色字 |
+| `LumaControlMetrics` | 胶囊内边距 8/3、筛选 8/4、发丝线 0.6、强调线 0.8、卡片圆角 10、卡片内边距 10 |
+| `lumaChip(selected:tint:)` | 筛选 / 分段选中项 |
+| `LumaBadge(text, systemImage:tint:compact:)` | 计数、状态、类型标签 |
+| `lumaCardSurface(tint:raised:radius:)` | 页面内卡片、浮层里的行卡片（有 `settings.cardRadius` 时传进去） |
+| `lumaGlassPill()` | 压在照片 / 工具栏上的磨砂胶囊（唯一允许小控件上材质） |
+| `lumaPill(fill:stroke:...)` | 主 / 次按钮与一次性胶囊（自带内边距） |
+| `lumaPillSurface(fill:stroke:...)` | 已处理内边距、只需要底的场景 |
+
+### 11.2 选择规则
+
+1. **筛选项**：`lumaChip(selected:)`。选中 = 强调色洗底 + 同色描边；未选中 = 静默底。
+2. **标签 / 计数**：`LumaBadge`。行内 9–10pt 用 `compact: true`；彩色标签传 `tint`（品牌色 / 状态色）。
+3. **卡片**：`lumaCardSurface(tint:)`。`tint` 表示「这块属于某个模块 / 任务」，不是装饰。
+   视图里已经有 `settings.cardRadius` 时用 `radius: settings.cardRadius`，让卡片圆角跟随用户设置。
+4. **按钮**：`lumaPill`。实底按钮的前景必须用 `LumaInk.onTint(tint)`。
+5. **压在照片、视频、工具栏上的胶囊**：`lumaGlassPill()`；其它场景一律不上材质。
+
+禁止：
+- ❌ 手写 `Capsule().fill(...)` + `Capsule().strokeBorder(...)` 组合。
+- ❌ 手写 `0.5 / 0.6 / 0.8 / 1` 的描边宽度与 `5/1`、`8/4` 这类内边距。
+- ❌ 在图标 / 徽标上叠三层以上效果（填充 + 描边 + 内描边 + 双层投影）。
+
+### 11.3 浅色 / 深色 / 强调色
+
+- 颜色只经 `LumaInk` 或传入的 `tint`，不写 `Color.primary.opacity(0.05)` 这类字面值。
+- 强调色只表达「选中 / 进行中 / 可交互」；状态色（红 / 绿 / 橙）只表达状态。
+- 深色模式下洗底与描边更实（token 内部已处理），同一控件不允许再按 `scheme` 分叉写颜色。
+- 实底按钮的文字颜色必须过 `LumaInk.onTint`，金 / 薄荷这类浅强调色不能配白字。
+- 照片上的专用对比胶囊（白 / 黑半透明）允许保留专用色，但内边距与描边宽度仍用 token。
+
+### 11.4 响应式与自适应
+
+- 胶囊内容单行：`lineLimit(1)` + `truncationMode(.tail)`；长标题用 `layoutPriority(1)`，不要固定宽度。
+- 容器变窄时用 `ViewThatFits` 收起次要标签，或收进 `Menu`；不要把字号压到 9 以下硬塞。
+- 卡片不写死 `frame(width:)`：用 `minWidth` / `idealWidth` / 容器宽度计算列数。
+- 卡片圆角跟 `settings.cardRadius`（用户可调），胶囊永远是 Capsule。
+- 胶囊最小高度 22（`LumaControlMetrics.pillMinHeight`）；视觉更小时用 `contentShape` 扩大点击区。
+
+### 11.5 性能
+
+- 小控件不上材质：`.ultraThinMaterial` 是实时模糊，一屏几十个胶囊会直接掉帧；只有压在内容上的少量浮层允许。
+- 一个控件最多：一层填充 + 一层描边 + 一层投影；渐变与颜色用 `static` / `let`，不要在 `body` 里新建。
+- 列表 / 网格里的胶囊沿用父视图的 `scheme`，不要为每个徽标再建 `@Environment` 观察。
+- 只读必要状态：UI 依赖 `@Observable` 的按属性追踪（见 `AGENTS.md` §11 与 `refactor-status-2026-11.md` §G），不要为了一次刷新读整包状态。
+
+### 11.6 迁移规则
+
+- 新代码必须用上述 API。
+- 旧代码「看到就迁」：优先筛选项、工具栏胶囊、卡片底。
+- 全仓仍有 400+ 处手写 `Capsule()`，其中相当一部分是画在照片 / 视频上的专用对比胶囊与装饰进度条——这些保留，但改动文件时顺手把该文件里的控件胶囊换成 token。
+
+## 12. 交付检查清单
 
 - [ ] 浅色 / 深色 / 自动三种外观都看过
 - [ ] 十一种强调色中至少抽查金 / 薄荷 / 石墨三种极端亮度
@@ -174,3 +238,5 @@
 - [ ] 所有数字与时间用等宽，所有空态有出口
 - [ ] 动效可被「减弱动态效果」关闭
 - [ ] 文案使用「拾起 / 放下」口径，不出现「开启模块」之类混用
+- [ ] 胶囊 / 卡片使用 `LumaSurfaces` 的 token 与组件，没有手写描边宽度与内边距
+- [ ] 浅色 / 深色 / 强调色切换后复查：胶囊洗底、描边、实底文字对比度

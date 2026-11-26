@@ -53,19 +53,18 @@ extension LibraryStore {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         loadFaceDataIfNeeded()
         guard !query.isEmpty else {
-            semanticSearchTask?.cancel()
-            semanticSearchTask = nil
+            tasks.cancel(.semanticSearch)
             semanticSearchQuery = ""
             if !semanticSearchTags.isEmpty { semanticSearchTags = [] }
             return
         }
-        if query == semanticSearchQuery, semanticSearchTask != nil { return }
+        if query == semanticSearchQuery, tasks.isRunning(.semanticSearch) { return }
         semanticSearchQuery = query
-        semanticSearchTask?.cancel()
+        tasks.cancel(.semanticSearch)
         // 词表直配先立即生效，模型扩展结果随后补齐。
         let lexical = PhotoTagCatalog.shared?.searchTitles(for: query) ?? []
         if lexical != semanticSearchTags { semanticSearchTags = lexical }
-        semanticSearchTask = Task { [weak self] in
+        tasks.adopt(.semanticSearch, Task { [weak self] in
             let expanded = await Task.detached(priority: .userInitiated) {
                 SigLIPEngine.shared.expand(query: query)
             }.value
@@ -73,8 +72,8 @@ extension LibraryStore {
             var merged: [String] = []
             for tag in lexical + expanded where !merged.contains(tag) { merged.append(tag) }
             if merged != self.semanticSearchTags { self.semanticSearchTags = merged }
-            self.semanticSearchTask = nil
-        }
+            self.tasks.finish(.semanticSearch)
+        })
     }
 
     /// 信息面板「画面」一行：按标签目录顺序展示模型命中的中文标签。
@@ -182,7 +181,7 @@ extension LibraryStore {
             }
         )
 
-        intelligenceTask = Task { [weak self] in
+        tasks.adopt(.intelligence, Task { [weak self] in
             guard let self else { return }
             var buffer: [(id: UUID, labels: String, text: String, feature: Data?)] = []
             buffer.reserveCapacity(16)
@@ -217,7 +216,7 @@ extension LibraryStore {
 
             self.sceneCountsCacheKey = nil
             self.isAnalyzingIntelligence = false
-            self.intelligenceTask = nil
+            self.tasks.finish(.intelligence)
             let analysed = self.intelligenceDone
             self.intelligenceTotal = 0
             self.intelligenceDone = 0
@@ -229,12 +228,12 @@ extension LibraryStore {
                 self.finishSourceJob(jobID, message: "已分析 \(analysed) 张")
                 self.showToast("内容分析完成，共分析 \(analysed) 张")
             }
-        }
+        })
     }
 
     func cancelIntelligenceAnalysis() {
         intelligenceCancelled = true
-        intelligenceTask?.cancel()
+        tasks.cancel(.intelligence)
     }
 
     /// 重新分析全部照片：二维码 / 条码与证件照是新增识别项，历史分析结果需要覆盖更新。
@@ -347,10 +346,10 @@ extension LibraryStore {
         indexQuery.onlyPhotos = true
         let pageSize = Self.systemAnalysisPageSize
 
-        systemAnalysisTask = Task { [weak self] in
+        tasks.adopt(.systemAnalysis, Task { [weak self] in
             guard let self else { return }
             // 等缓存读回后再开始：已识别的照片直接跳过。
-            if let hydration = self.systemAnalysisHydration { await hydration.value }
+            if let hydration = self.tasks.task(.systemAnalysisHydration) { await hydration.value }
 
             var cursor = self.systemAnalysisSavedOffset
             var wrappedToStart = false
@@ -439,7 +438,7 @@ extension LibraryStore {
 
             self.persistSystemAnalysis(pendingRows)
             self.isAnalyzingSystemContent = false
-            self.systemAnalysisTask = nil
+            self.tasks.finish(.systemAnalysis)
             let analysed = self.systemAnalysisDone
             self.systemAnalysisTotal = 0
             self.systemAnalysisDone = 0
@@ -457,7 +456,7 @@ extension LibraryStore {
                 }
                 self.showToast("识别完成，共 \(self.systemAnalysisIndex.count) 张（已缓存到图库）")
             }
-        }
+        })
     }
 
     func cancelSystemContentAnalysis() {
@@ -465,7 +464,7 @@ extension LibraryStore {
         systemAnalysisAutoResume = false
         persistSystemAnalysisAutoResume(false)
         systemAnalysisCancelled = true
-        systemAnalysisTask?.cancel()
+        tasks.cancel(.systemAnalysis)
     }
 
     /// 清空系统图库的全部识别结果：内存索引、特征与 `system_analysis` 缓存一并删除，

@@ -30,6 +30,9 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
     case assistant
     /// 直播录制短片：录完直接进图库，同样在任务中心露出进度。
     case record
+    /// 系统图库整理：相簿 / 文件夹的批量移动、增删。
+    /// PhotoKit 没有细粒度进度，这类操作原来只是 fire-and-forget，任务中心看不到也回看不了。
+    case organize
 
     public var title: String {
         switch self {
@@ -56,6 +59,7 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .metadata: return "元数据"
         case .assistant: return "助手"
         case .record: return "录制"
+        case .organize: return "整理"
         }
     }
 }

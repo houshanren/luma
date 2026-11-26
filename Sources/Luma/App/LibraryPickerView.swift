@@ -20,7 +20,7 @@ struct LibraryEntry: Identifiable {
 /// 图库选择器（独立窗口，对齐系统「照片」的选取图库）：按住 Option 启动时自动弹出，
 /// 打开期间主窗口整窗隐藏；由 RootView 监听 `showLibraryPicker` 负责开窗与恢复。
 struct LibraryPickerView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var entries: [LibraryEntry] = []
     @State private var selection: String?
 
@@ -195,16 +195,16 @@ struct LibraryPickerView: View {
 
     private static func format(_ date: Date?) -> String {
         guard let date else { return "—" }
-        let calendar = Calendar.current
+        if let relative = DateText.relativeDay(date) {
+            return "\(relative) \(DateText.timeFormatter.string(from: date))"
+        }
+        return olderFormatter.string(from: date)
+    }
+
+    private static let olderFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
-        if calendar.isDateInToday(date) {
-            formatter.dateFormat = "'今天' HH:mm"
-        } else if calendar.isDateInYesterday(date) {
-            formatter.dateFormat = "'昨天' HH:mm"
-        } else {
-            formatter.dateFormat = "yyyy/M/d HH:mm"
-        }
-        return formatter.string(from: date)
-    }
+        formatter.dateFormat = "yyyy/M/d HH:mm"
+        return formatter
+    }()
 }

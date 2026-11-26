@@ -11,9 +11,9 @@ struct CinemaLibraryView: View {
     /// nil 表示本地图库的影院；有值表示某一个网盘实例自己的影院。
     let mountID: UUID?
 
-    @EnvironmentObject var store: LibraryStore
-    @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var viewer: ViewerModel
+    @Environment(LibraryStore.self) var store
+    @Environment(AppSettings.self) var settings
+    @Environment(ViewerModel.self) var viewer
     @Environment(\.openSettings) var openSettings
     /// 打开设置时直接落在「影院」分页。
     @AppStorage(SettingsKeys.selectedTab) var settingsTab: SettingsTab = .general
@@ -219,7 +219,7 @@ struct CinemaLibraryView: View {
                 },
                 onClose: { withAnimation(.easeOut(duration: 0.2)) { detailTarget = nil } }
             )
-            .environmentObject(store)
+            .environment(store)
             .transition(.opacity.combined(with: .scale(scale: 0.985)))
         case .entry(let entry):
             CinemaDetailView(
@@ -229,7 +229,7 @@ struct CinemaLibraryView: View {
                 },
                 onClose: { withAnimation(.easeOut(duration: 0.2)) { detailTarget = nil } }
             )
-            .environmentObject(store)
+            .environment(store)
             .transition(.opacity.combined(with: .scale(scale: 0.985)))
         default:
             EmptyView()
@@ -281,7 +281,7 @@ struct CinemaLibraryView: View {
             .scrollIndicators(.automatic)
             .overlay(alignment: .topTrailing) {
                 CinemaToastStack()
-                    .environmentObject(store)
+                    .environment(store)
             }
             .overlay(alignment: .trailing) {
                 wallLetterRail(proxy)
@@ -322,7 +322,7 @@ struct CinemaLibraryView: View {
                 } onCancel: {
                     panelTarget = nil
                 }
-                .environmentObject(store)
+                .environment(store)
             case .search:
                 CinemaSearchPanel { entry in
                     panelTarget = nil
@@ -340,7 +340,7 @@ struct CinemaLibraryView: View {
                         store.openCinema(entry)
                     }
                 }
-                .environmentObject(store)
+                .environment(store)
             case .history:
                 CinemaHistoryPanel(scope: scope) { entry in
                     panelTarget = nil
@@ -348,13 +348,13 @@ struct CinemaLibraryView: View {
                         store.openCinema(entry)
                     }
                 }
-                .environmentObject(store)
+                .environment(store)
             case .notifications:
                 CinemaNotificationSheet()
-                    .environmentObject(store)
+                    .environment(store)
             case .pin:
                 CinemaPINPromptSheet()
-                    .environmentObject(store)
+                    .environment(store)
             case .folder(let folder):
                 CinemaFolderDetailView(folder: folder,
                                        scope: scope,
@@ -370,19 +370,19 @@ struct CinemaLibraryView: View {
                                                detailTarget = .entry(entry)
                                            }
                                        })
-                .environmentObject(store)
+                .environment(store)
             case .folderMatch(let folder):
                 CinemaMatchSheet(photos: folder.subtreePhotos, folderHint: folder.hint) {
                     panelTarget = nil
                     refreshFolders()
                 }
-                .environmentObject(store)
+                .environment(store)
             case .match(let entry):
                 CinemaMatchSheet(entry: entry) {
                     panelTarget = nil
                     refreshFolders()
                 }
-                .environmentObject(store)
+                .environment(store)
             case .series, .entry:
                 // 详情页不再走弹窗，这里只是让 switch 保持穷尽。
                 EmptyView()

@@ -292,7 +292,7 @@ package struct PhotoCell: View {
                         .padding(.vertical, 3)
                         .background(.black.opacity(0.42), in: Capsule())
                         .overlay {
-                            Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                            Capsule().strokeBorder(.white.opacity(0.16), lineWidth: LumaControlMetrics.hairline)
                         }
                         .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                     }
@@ -337,7 +337,7 @@ package struct PhotoCell: View {
                         .padding(.vertical, 2.5)
                         .background(.black.opacity(0.46), in: Capsule())
                         .overlay {
-                            Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5)
+                            Capsule().strokeBorder(.white.opacity(0.18), lineWidth: LumaControlMetrics.hairline)
                         }
                         .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
                         Spacer(minLength: 0)

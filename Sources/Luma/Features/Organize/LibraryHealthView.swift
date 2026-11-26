@@ -2,8 +2,8 @@ import SwiftUI
 
 /// 图库体检：把「模糊、相似连拍、过大视频、待分析」集中成一张可操作的清单。
 struct LibraryHealthView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @State private var confirmDeleteDuplicates = false
     @State private var confirmDeleteSystemDuplicates = false
 

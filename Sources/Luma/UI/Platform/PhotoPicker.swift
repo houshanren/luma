@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// 使用苹果官方 PhotosUI（PHPickerViewController）安全挑选系统「照片」中的项目。
 /// PHPicker 在独立进程中运行，只把用户明确选择的文件交给我们，无需申请整个图库的访问权限。
 struct PhotoPickerSheet: NSViewControllerRepresentable {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     func makeCoordinator() -> Coordinator {

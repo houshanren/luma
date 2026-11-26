@@ -78,7 +78,7 @@ extension GalleryView {
                 CatalogHubView()
             case .networkCinema:
                 NetworkCinemaHubView()
-                    .environmentObject(store.networkCinemaModel)
+                    .environment(store.networkCinemaModel)
             case .people, .systemPeople:
                 PeopleView()
             case .revisit, .systemRevisit:
@@ -170,6 +170,25 @@ extension GalleryView {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 EmptyStateView()
+            }
+        } else if store.isPagedScope, store.loadedWindowPhotos.isEmpty {
+            // 分页窗口还没到位（首次进入 / 换页途中 / 一次取页失败）：
+            // 不能只留一片虚拟占位，否则整屏空白且没有滚动条；
+            // 这里补一个加载态，并主动再要一次窗口。
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("正在读取图库…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task {
+                // 首屏窗口由 GalleryView 的 `.task(id: pagedKey)` 负责加载；
+                // 这里只做兜底重试：1.5 秒后仍然为空，才认为上一次取页失败。
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled, store.loadedWindowPhotos.isEmpty else { return }
+                store.reloadVisibleWindowIfNeeded()
             }
         } else {
             photoGrid(width: width)
@@ -405,7 +424,7 @@ extension GalleryView {
             }
             .photoMarqueeSelection(fillHeight: viewport.height)
         }
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.visible)
         .coordinateSpace(name: GalleryScrollSpace.name)
         .defaultScrollAnchor(.top)
         .onAppear {
@@ -470,9 +489,24 @@ extension GalleryView {
             }
             .photoMarqueeSelection(fillHeight: viewport.height)
         }
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.visible)
         .coordinateSpace(name: GalleryScrollSpace.name)
         .defaultScrollAnchor(.top)
+        .overlay {
+            if isInVirtualPlaceholder {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在定位到这一段照片…")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .lumaGlassCapsule()
+                .allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .top) {
             // 换页 / 接续加载期间给一个浮层提示，不参与内容高度，不会顶动网格。
             if store.isPagedWindowLoading {
@@ -487,6 +521,8 @@ extension GalleryView {
         .modifier(TimelineScrollObserver { value in
             lastScrollOffset = value.offset
             updateVisibleDateSpan(offset: value.offset, viewportHeight: value.viewport)
+            updatePlaceholderFlag(offset: value.offset, viewport: value.viewport,
+                                  width: width, orientation: .newestAtTop)
             // 提前一屏预取下一页：等滚到占位边缘时数据已经到手，不会出现空白停顿。
             preloadForwardPageIfNeeded(offset: value.offset, viewport: value.viewport, width: width)
             handleTimelineScroll(offset: value.offset,
@@ -521,8 +557,8 @@ extension GalleryView {
         }
         .onChange(of: store.timelineJumpLandingID) { _, target in
             guard let target else { return }
-            // 换页后的第一次滚动由系统执行，期间不要把它当成用户拖动再次换页。
-            suppressTimelineJumpsUntil = Date().timeIntervalSince1970 + 1.2
+            // 换页后的落位滚动由系统执行，期间不要把它当成用户拖动再次换页。
+            suppressTimelineJumpsUntil = Date().timeIntervalSince1970 + 0.6
             DispatchQueue.main.async {
                 proxy.scrollTo(target, anchor: .center)
                 store.timelineJumpLandingID = nil
@@ -562,9 +598,25 @@ extension GalleryView {
             }
             .photoMarqueeSelection(fillHeight: viewport.height)
         }
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.visible)
         .coordinateSpace(name: GalleryScrollSpace.name)
         .defaultScrollAnchor(.bottom)
+        .overlay {
+            // 视野落在还没取回的占位区：给出明确反馈，避免看起来像「整屏空白」。
+            if isInVirtualPlaceholder {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在定位到这一段照片…")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .lumaGlassCapsule()
+                .allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .top) {
             // 换页 / 接续加载期间给一个浮层提示，不参与内容高度，不会顶动网格。
             if store.isPagedWindowLoading {
@@ -593,21 +645,19 @@ extension GalleryView {
         }
         .modifier(TimelineScrollObserver { value in
             lastScrollOffset = value.offset
-            lastTimelineContentHeight = value.contentHeight
-            lastTimelineViewport = value.viewport
             updateVisibleDateSpan(offset: value.offset, viewportHeight: value.viewport)
+            updatePlaceholderFlag(offset: value.offset, viewport: value.viewport,
+                                  width: width, orientation: .newestAtBottom)
             // 打开页面时窗口宽度 / 侧边栏在动画，占位高度会跟着变，滚动位置也会连续跳。
-            // 只有「已经贴住底部并稳定」才开始响应换页，避免把动画过程当成用户拖动；
-            // 落位后不会再有几何回调，所以用延时任务复查最后记录的数值。
+            // 先等一小段时间再开始响应换页，避免把动画过程当成用户拖动。
+            // 注意不能要求「此刻仍贴住底部」：用户进页面后立刻快速上滑时那个条件永远不成立，
+            // 时间轴换页会被永久关掉，表现就是滚进虚拟占位后一直空白。
             if !timelineGridReady {
-                guard value.contentHeight > value.viewport,
-                      value.offset >= value.contentHeight - value.viewport - 2 else { return }
+                guard value.contentHeight > value.viewport else { return }
                 timelineAnchorReadyTask?.cancel()
                 timelineAnchorReadyTask = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 400_000_000)
                     guard !Task.isCancelled else { return }
-                    guard lastTimelineContentHeight > lastTimelineViewport,
-                          lastScrollOffset >= lastTimelineContentHeight - lastTimelineViewport - 2 else { return }
                     timelineGridReady = true
                 }
                 return
@@ -639,8 +689,8 @@ extension GalleryView {
         .simultaneousGesture(pinchGesture)
         .onChange(of: store.timelineJumpLandingID) { _, target in
             guard let target else { return }
-            // 换页后的第一次滚动由系统执行，期间不要把它当成用户拖动再次换页。
-            suppressTimelineJumpsUntil = Date().timeIntervalSince1970 + 1.2
+            // 换页后的落位滚动由系统执行，期间不要把它当成用户拖动再次换页。
+            suppressTimelineJumpsUntil = Date().timeIntervalSince1970 + 0.6
             timelineGridReady = true
             // 新一页的视图可能还没完成布局，稍后再滚一次确保真的落到这张照片上。
             DispatchQueue.main.async {
@@ -827,6 +877,8 @@ extension GalleryView {
 
     func decideTimelineWork(offset: CGFloat, viewport: CGFloat, width: CGFloat,
                                     orientation: TimelineOrientation) {
+        // 刚换过页：等占位与视野重新稳定，避免按旧布局再跳一次。
+        guard Date().timeIntervalSince1970 > suppressTimelineJumpsUntil else { return }
         guard store.supportsTimelineJump, !store.isPagedWindowLoading else { return }
         let layout = timelineLayout(width: width, orientation: orientation)
         guard layout.total > 0, layout.loadedCount > 0 else { return }
@@ -887,8 +939,25 @@ extension GalleryView {
         guard rank < start || rank >= start + pageSize else { return }
         let target = min(max(0, rank - pageSize / 2), max(0, layout.total - pageSize))
         // 换页后内容高度会整体重排并连续回调几何值，静默一小段时间避免被当成新的拖动。
-        suppressTimelineJumpsUntil = Date().timeIntervalSince1970 + 1.0
+        // 0.6 秒与「滚动途中换页」的限流一致：快速甩动时大约每秒补一页，
+        // 既不会连续取消取页，也不会让用户长时间停在空白占位里。
+        suppressTimelineJumpsUntil = Date().timeIntervalSince1970 + 0.6
         store.jumpTimelineWindow(toRank: target)
+    }
+
+    /// 视野是否落在虚拟占位区（这一段照片还没取回来）。
+    /// 只在状态切换时更新 `@State`：滚动期间逐帧赋值会让整页反复求值。
+    func updatePlaceholderFlag(offset: CGFloat, viewport: CGFloat, width: CGFloat,
+                               orientation: TimelineOrientation) {
+        guard store.supportsTimelineJump, store.grouping == .all else {
+            if isInVirtualPlaceholder { isInVirtualPlaceholder = false }
+            return
+        }
+        let layout = timelineLayout(width: width, orientation: orientation)
+        let center = offset + viewport / 2
+        let outside = layout.total > 0
+            && (center < layout.windowTop || center >= layout.windowBottom)
+        if outside != isInVirtualPlaceholder { isInVirtualPlaceholder = outside }
     }
 
     /// 按当前滚动位置算出顶栏副标题的日期范围（与系统「照片」一致，随滚动动态变化）。

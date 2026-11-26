@@ -62,7 +62,7 @@ extension LibraryStore {
     /// 当前可见集合的堆叠计划：按可见集合指纹与模式缓存，滚动 / 选中不重算。
     func stackPlan() -> StackPlan {
         guard stackMode != .off else { return StackPlan() }
-        let key = visibleStateKey + "\u{1F}" + stackMode.rawValue
+        let key = StackPlanCacheKey(visible: visibleStateKey, stackMode: stackMode)
         if stackPlanCacheKey == key, let cached = stackPlanCache { return cached }
         let plan = buildStackPlan(visiblePhotos, mode: stackMode)
         stackPlanCacheKey = key
@@ -90,7 +90,7 @@ extension LibraryStore {
         guard stackMode != .off else { return [:] }
         // 与 `stackPlan` 同一份键缓存：网格每段 body 都会取这张表，逐次重建字典
         // 在几千张的相册里是纯浪费（滚动 / 选中时键不变，直接命中）。
-        let key = visibleStateKey + "\u{1F}" + stackMode.rawValue
+        let key = StackPlanCacheKey(visible: visibleStateKey, stackMode: stackMode)
         if stackBadgesCacheKey == key { return stackBadgesCache }
         let plan = stackPlan()
         var badges: [UUID: StackBadge] = [:]

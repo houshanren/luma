@@ -12,7 +12,7 @@ struct CinemaSearchPanel: View {
     let onOpenSeries: (CinemaSeries) -> Void
     let onPlay: (CinemaEntry) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     /// 防抖后的关键词：每次按键先等 180ms，避免每敲一个字符都遍历全库。
@@ -85,7 +85,7 @@ struct CinemaSearchPanel: View {
         }
         .sheet(item: $personTarget) { member in
             CinemaPersonSheet(member: member)
-                .environmentObject(store)
+                .environment(store)
         }
     }
 
@@ -202,7 +202,7 @@ struct CinemaSearchPanel: View {
                                                   : Color.primary.opacity(0.05)))
                 .overlay {
                     Capsule().strokeBorder(active ? LumaBrand.amber.opacity(0.32)
-                                                  : Color.primary.opacity(0.08), lineWidth: 0.6)
+                                                  : Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
                 }
         }
         .buttonStyle(.plain)
@@ -528,7 +528,7 @@ struct CinemaHistoryPanel: View {
     let scope: CinemaScope
     let onResume: (CinemaEntry) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var pendingClear = false
     @State private var pendingRemoval: CinemaProgressRecord?
@@ -763,7 +763,7 @@ struct CinemaHistoryPanel: View {
 // MARK: - 右上角 Toast 栈（F4）
 
 struct CinemaToastStack: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {

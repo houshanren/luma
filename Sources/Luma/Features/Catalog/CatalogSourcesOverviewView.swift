@@ -3,8 +3,8 @@ import SwiftUI
 /// 资源页：资源统计 → 资源管理 → 全部资源。
 /// 搜索并入统计控制台；搜索结果出现时替换管理区与资源墙。
 struct CatalogSourcesOverviewView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
 
     @State private var hoveringSource: UUID?
     /// 跨源搜索的结果二次筛选：点来源胶囊只看那个源，空 = 全部。
@@ -581,38 +581,15 @@ struct CatalogSourcesOverviewView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "play.rectangle.on.rectangle")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(Color.accentColor.opacity(0.9))
-            Text("还没有网络资源")
-                .font(.system(size: 16, weight: .semibold))
-            Text("把影视站、短剧源接入后，会像本地图库一样按分类浏览与播放。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("接入网络资源…") {
-                store.presentCatalogWizard()
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.black.opacity(0.86))
-            .padding(.horizontal, 18)
-            .frame(height: 32)
-            .background(.white, in: Capsule(style: .continuous))
-            .shadow(color: .black.opacity(0.24), radius: 12, y: 4)
-            .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 46)
-        .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.ultraThinMaterial)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.7)
-        }
+        LumaEmptyState(symbol: "play.rectangle.on.rectangle",
+                       title: "还没有网络资源",
+                       message: "把影视站、短剧源接入后，会像本地图库一样按分类浏览与播放。",
+                       style: .card,
+                       actions: [LumaEmptyAction(title: "接入网络资源…",
+                                                 symbol: nil,
+                                                 filled: true) {
+                           store.presentCatalogWizard()
+                       }])
     }
 }
 

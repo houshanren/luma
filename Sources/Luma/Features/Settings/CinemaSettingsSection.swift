@@ -49,8 +49,8 @@ private enum CinemaClearAction: String, Identifiable {
 
 /// 设置 › 影院：刮削、显示、播放与高级维护。
 struct CinemaSettingsSection: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     @State private var revealKey = false
     @State private var revealCookie = false
@@ -404,9 +404,9 @@ struct CinemaSettingsSection: View {
                 HStack(spacing: 6) {
                     Group {
                         if revealKey {
-                            TextField("API Key（v3）或 Read Access Token（v4）", text: $settings.cinemaAPIKey)
+                            TextField("API Key（v3）或 Read Access Token（v4）", text: Bindable(settings).cinemaAPIKey)
                         } else {
-                            SecureField("API Key（v3）或 Read Access Token（v4）", text: $settings.cinemaAPIKey)
+                            SecureField("API Key（v3）或 Read Access Token（v4）", text: Bindable(settings).cinemaAPIKey)
                         }
                     }
                     .textFieldStyle(.roundedBorder)
@@ -419,7 +419,7 @@ struct CinemaSettingsSection: View {
                     Text("刮削语言")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    Picker("", selection: $settings.cinemaLanguage) {
+                    Picker("", selection: Bindable(settings).cinemaLanguage) {
                         ForEach(languages, id: \.id) { item in
                             Text(item.title).tag(item.id)
                         }
@@ -427,7 +427,7 @@ struct CinemaSettingsSection: View {
                     .labelsHidden()
                     .frame(width: 116)
                     Spacer(minLength: 0)
-                    Button("粘贴") { paste(into: $settings.cinemaAPIKey) }
+                    Button("粘贴") { paste(into: Bindable(settings).cinemaAPIKey) }
                     Button("申请 API Key") { open("https://www.themoviedb.org/settings/api") }
                 }
                 .controlSize(.small)
@@ -441,14 +441,14 @@ struct CinemaSettingsSection: View {
                 HStack(spacing: 6) {
                     Group {
                         if revealKey {
-                            TextField("TheTVDB API Key（v4）", text: $settings.cinemaTVDBKey)
+                            TextField("TheTVDB API Key（v4）", text: Bindable(settings).cinemaTVDBKey)
                         } else {
-                            SecureField("TheTVDB API Key（v4）", text: $settings.cinemaTVDBKey)
+                            SecureField("TheTVDB API Key（v4）", text: Bindable(settings).cinemaTVDBKey)
                         }
                     }
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11.5))
-                    Button("粘贴") { paste(into: $settings.cinemaTVDBKey) }
+                    Button("粘贴") { paste(into: Bindable(settings).cinemaTVDBKey) }
                         .buttonStyle(.link)
                         .font(.system(size: 11))
                 }
@@ -456,7 +456,7 @@ struct CinemaSettingsSection: View {
                     Text("订阅 PIN")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    SecureField("普通 Key 留空", text: $settings.cinemaTVDBPin)
+                    SecureField("普通 Key 留空", text: Bindable(settings).cinemaTVDBPin)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11.5))
                         .frame(maxWidth: 180)
@@ -476,7 +476,7 @@ struct CinemaSettingsSection: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .frame(width: 32, alignment: .leading)
-                    TextField("https://movie.douban.com", text: $settings.cinemaDoubanBase)
+                    TextField("https://movie.douban.com", text: Bindable(settings).cinemaDoubanBase)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11.5))
                 }
@@ -487,9 +487,9 @@ struct CinemaSettingsSection: View {
                         .frame(width: 32, alignment: .leading)
                     Group {
                         if revealCookie {
-                            TextField("可选：被限流时填", text: $settings.cinemaDoubanCookie)
+                            TextField("可选：被限流时填", text: Bindable(settings).cinemaDoubanCookie)
                         } else {
-                            SecureField("可选：被限流时填", text: $settings.cinemaDoubanCookie)
+                            SecureField("可选：被限流时填", text: Bindable(settings).cinemaDoubanCookie)
                         }
                     }
                     .textFieldStyle(.roundedBorder)
@@ -614,7 +614,8 @@ struct CinemaSettingsSection: View {
     // MARK: 显示
 
     private var displayContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        @Bindable var store = store
+        return VStack(alignment: .leading, spacing: 14) {
             settingsGroup("浏览", icon: "rectangle.grid.2x2.fill", note: "改动即时生效") {
                 settingRow("默认视图", detail: "进入影院时先看到的布局") {
                     Picker("", selection: $store.cinemaViewMode) {
@@ -691,13 +692,13 @@ struct CinemaSettingsSection: View {
             settingsGroup("自动挂载", icon: "captions.bubble", note: "三项均默认关闭") {
                 settingToggle("同目录外挂字幕",
                               detail: "视频所在文件夹里有同名 .srt / .ass 时自动载入",
-                              isOn: $settings.autoSiblingSubtitles)
+                              isOn: Bindable(settings).autoSiblingSubtitles)
                 settingToggle("内嵌字幕轨",
                               detail: "本地 / SMB 视频自动提取中文字幕轨；云端仍在播放器里手动选",
-                              isOn: $settings.autoEmbeddedSubtitles)
+                              isOn: Bindable(settings).autoEmbeddedSubtitles)
                 settingToggle("在线字幕匹配",
                               detail: "播放后按片名在已启用的来源里搜一条中文字幕；失败时静默",
-                              isOn: $settings.autoOnlineSubtitles,
+                              isOn: Bindable(settings).autoOnlineSubtitles,
                               divider: false)
                 settingNote("优先级：同目录外挂 › 内嵌字幕轨 › 在线匹配。已有字幕时不会重复下载；手动选字幕不受影响。")
             }
@@ -709,21 +710,21 @@ struct CinemaSettingsSection: View {
                                                      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) {
                 settingToggle("启用",
                               detail: "国际字幕库；未填 API Key 时不参与搜索",
-                              isOn: $settings.subtitleProviderOpenSubtitlesEnabled)
+                              isOn: Bindable(settings).subtitleProviderOpenSubtitlesEnabled)
                 settingField("API Key",
                              detail: "用于搜索字幕",
                              placeholder: "OpenSubtitles API Key",
-                             text: $settings.cinemaSubtitleAPIKey,
+                             text: Bindable(settings).cinemaSubtitleAPIKey,
                              secure: true,
                              reveal: $revealKey)
                 settingField("账号",
                              detail: "下载字幕时登录",
                              placeholder: "OpenSubtitles 用户名",
-                             text: $settings.cinemaSubtitleUsername)
+                             text: Bindable(settings).cinemaSubtitleUsername)
                 settingField("密码",
                              detail: "只存 macOS 钥匙串",
                              placeholder: "OpenSubtitles 密码",
-                             text: $settings.cinemaSubtitlePassword,
+                             text: Bindable(settings).cinemaSubtitlePassword,
                              secure: true,
                              divider: false)
                 settingActions {
@@ -752,11 +753,11 @@ struct CinemaSettingsSection: View {
                                                      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) {
                 settingToggle("启用",
                               detail: "国内中文字幕为主；搜索免费，下载需要访问令牌",
-                              isOn: $settings.subtitleProviderAssrtEnabled)
+                              isOn: Bindable(settings).subtitleProviderAssrtEnabled)
                 settingField("访问令牌",
                              detail: "assrt.net 用户中心获取",
                              placeholder: "32 位 Token",
-                             text: $settings.assrtSubtitleToken,
+                             text: Bindable(settings).assrtSubtitleToken,
                              secure: true,
                              reveal: $revealAssrt,
                              divider: false)
@@ -781,7 +782,7 @@ struct CinemaSettingsSection: View {
 
             settingsGroup("字幕样式", icon: "textformat.size", note: "所有视频默认值") {
                 settingRow("字号") {
-                    Picker("", selection: $settings.subtitleFontSize) {
+                    Picker("", selection: Bindable(settings).subtitleFontSize) {
                         ForEach([13.0, 15.0, 18.0, 21.0], id: \.self) { value in
                             Text("\(Int(value)) pt").tag(value)
                         }
@@ -790,7 +791,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 100)
                 }
                 settingRow("颜色") {
-                    Picker("", selection: $settings.subtitleColor) {
+                    Picker("", selection: Bindable(settings).subtitleColor) {
                         Text("白色").tag("white")
                         Text("黄色").tag("yellow")
                         Text("青色").tag("cyan")
@@ -801,7 +802,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 210)
                 }
                 settingRow("位置") {
-                    Picker("", selection: $settings.subtitlePosition) {
+                    Picker("", selection: Bindable(settings).subtitlePosition) {
                         Text("底部").tag("bottom")
                         Text("偏上").tag("lower")
                         Text("中间").tag("middle")
@@ -812,7 +813,7 @@ struct CinemaSettingsSection: View {
                 }
                 settingToggle("半透明底色",
                               detail: "深色底让字幕在亮画面上更清楚",
-                              isOn: $settings.subtitleBackground,
+                              isOn: Bindable(settings).subtitleBackground,
                               divider: false)
                 settingNote("播放器里还能临时调时间轴偏移；这里改的是所有视频的默认样式。")
             }
@@ -829,13 +830,13 @@ struct CinemaSettingsSection: View {
                               isOn: $resumePlayback)
                 settingToggle("播完自动连播",
                               detail: "按当前列表顺序播下一集",
-                              isOn: $settings.autoPlayNextVideo)
+                              isOn: Bindable(settings).autoPlayNextVideo)
                 settingToggle("默认循环播放",
                               detail: "单个视频结束后从头继续",
-                              isOn: $settings.loopVideoByDefault)
+                              isOn: Bindable(settings).loopVideoByDefault)
                 settingToggle("打开时静音",
                               detail: "播放中仍可用 M 键取消静音",
-                              isOn: $settings.muteVideoByDefault,
+                              isOn: Bindable(settings).muteVideoByDefault,
                               divider: false)
                 settingNote("进度每 10 秒保存一次，关闭播放器时强制保存。")
             }
@@ -843,11 +844,11 @@ struct CinemaSettingsSection: View {
             settingsGroup("画面与控制", icon: "rectangle.on.rectangle") {
                 settingToggle("按片源帧率切刷新率",
                               detail: "24p 片源切到 24Hz，减少 3:2 抖动；退出播放自动恢复",
-                              isOn: $settings.matchDisplayFrameRate)
+                              isOn: Bindable(settings).matchDisplayFrameRate)
                 settingRow("HDR 视频",
                            detail: settings.videoHDRMode.detail + " · 杜比视界 P5 "
                                + (VideoSupport.supportsLibplacebo ? "已就绪" : "未安装 libplacebo")) {
-                    Picker("", selection: $settings.videoHDRMode) {
+                    Picker("", selection: Bindable(settings).videoHDRMode) {
                         ForEach(VideoHDRMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
@@ -857,7 +858,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 220)
                 }
                 settingRow("快进 / 快退步长", detail: "网络资源里 ← / → 与 J / L 的跳转距离，连按或按住会加速") {
-                    Picker("", selection: $settings.videoSeekStep) {
+                    Picker("", selection: Bindable(settings).videoSeekStep) {
                         ForEach([1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { value in
                             Text("\(Int(value)) 秒").tag(value)
                         }
@@ -866,7 +867,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 100)
                 }
                 settingRow("播放控制条", detail: settings.videoControlPlacement.detail) {
-                    Picker("", selection: $settings.videoControlPlacement) {
+                    Picker("", selection: Bindable(settings).videoControlPlacement) {
                         ForEach(VideoControlPlacement.allCases) { placement in
                             Text(placement.title).tag(placement)
                         }
@@ -877,20 +878,20 @@ struct CinemaSettingsSection: View {
                 }
                 settingToggle("进度条悬停预览",
                               detail: "鼠标移到进度条上显示该时间点画面；关掉后只看时间",
-                              isOn: $settings.scrubPreviewEnabled,
+                              isOn: Bindable(settings).scrubPreviewEnabled,
                               divider: false)
             }
 
             settingsGroup("播放增强", icon: "slider.horizontal.3", note: "对播放器内所有视频生效") {
                 settingToggle("高倍速保持音调",
                               detail: "变速播放时用频谱算法保持人声；关闭后 2 倍速以上会明显快放",
-                              isOn: $settings.preservePitchAtSpeed)
+                              isOn: Bindable(settings).preservePitchAtSpeed)
                 settingToggle("音轨切换优化",
                               detail: "多条音轨装进同一会话，普通片源切换不重启转码；"
                                   + "HDR / 杜比视界为兼容播放会重建一次（约 1 秒）",
-                              isOn: $settings.instantAudioSwitch)
+                              isOn: Bindable(settings).instantAudioSwitch)
                 settingRow("音质与声道", detail: settings.audioDownmix.detail) {
-                    Picker("", selection: $settings.audioDownmix) {
+                    Picker("", selection: Bindable(settings).audioDownmix) {
                         ForEach(AudioDownmixMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
@@ -900,7 +901,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 180)
                 }
                 settingRow("转码编码", detail: settings.videoTranscodeMode.detail) {
-                    Picker("", selection: $settings.videoTranscodeMode) {
+                    Picker("", selection: Bindable(settings).videoTranscodeMode) {
                         ForEach(VideoTranscodeMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
@@ -910,7 +911,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 220)
                 }
                 settingRow("网络缓冲", detail: settings.videoBufferMode.detail) {
-                    Picker("", selection: $settings.videoBufferMode) {
+                    Picker("", selection: Bindable(settings).videoBufferMode) {
                         ForEach(VideoBufferMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
@@ -920,7 +921,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 260)
                 }
                 settingRow("默认音轨", detail: "打开多音轨影片时先选哪条；原声 = 源文件默认轨") {
-                    Picker("", selection: $settings.videoPreferredAudio) {
+                    Picker("", selection: Bindable(settings).videoPreferredAudio) {
                         Text("原声优先").tag("original")
                         Text("国语优先").tag("zh")
                         Text("英语优先").tag("en")
@@ -929,7 +930,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 130)
                 }
                 settingRow("默认字幕", detail: "自动 = 按内嵌中文轨挂载；关闭 = 不自动挂任何字幕") {
-                    Picker("", selection: $settings.videoPreferredSubtitle) {
+                    Picker("", selection: Bindable(settings).videoPreferredSubtitle) {
                         Text("自动匹配").tag("auto")
                         Text("不自动挂载").tag("off")
                     }
@@ -938,7 +939,7 @@ struct CinemaSettingsSection: View {
                 }
                 settingRow("跳过片头", detail: "剧集没有单独设置时用它兜底；0 = 不跳过") {
                     HStack(spacing: 6) {
-                        Stepper("", value: $settings.cinemaSkipIntroSeconds, in: 0...300, step: 15)
+                        Stepper("", value: Bindable(settings).cinemaSkipIntroSeconds, in: 0...300, step: 15)
                             .labelsHidden()
                         Text("\(settings.cinemaSkipIntroSeconds) 秒")
                             .font(.system(size: 10.5, design: .monospaced))
@@ -948,7 +949,7 @@ struct CinemaSettingsSection: View {
                 }
                 settingRow("跳过片尾", detail: "片尾自动标记已看并跳到下一集") {
                     HStack(spacing: 6) {
-                        Stepper("", value: $settings.cinemaSkipOutroSeconds, in: 0...300, step: 15)
+                        Stepper("", value: Bindable(settings).cinemaSkipOutroSeconds, in: 0...300, step: 15)
                             .labelsHidden()
                         Text("\(settings.cinemaSkipOutroSeconds) 秒")
                             .font(.system(size: 10.5, design: .monospaced))
@@ -958,16 +959,16 @@ struct CinemaSettingsSection: View {
                 }
                 settingToggle("记忆倍速",
                               detail: "退出播放器时记住当前倍速，下次打开沿用",
-                              isOn: $settings.videoRememberSpeed)
+                              isOn: Bindable(settings).videoRememberSpeed)
                 settingToggle("优先系统硬解",
                               detail: "关闭后强制走转封装 / 软解，个别显卡花屏时使用",
-                              isOn: $settings.videoPreferHardwareDecoding)
+                              isOn: Bindable(settings).videoPreferHardwareDecoding)
                 settingToggle("允许画中画",
                               detail: "关闭后播放器里隐藏画中画按钮",
-                              isOn: $settings.videoPiPEnabled)
+                              isOn: Bindable(settings).videoPiPEnabled)
                 settingToggle("系统媒体集成",
                               detail: "控制中心与键盘 / 耳机媒体键控制当前视频",
-                              isOn: $settings.systemMediaIntegration,
+                              isOn: Bindable(settings).systemMediaIntegration,
                               divider: false)
                 settingNote("音频延迟、内嵌字幕切换仍在播放器的「速度 / 字幕」菜单里临时调整。")
                 settingNote("网络缓冲只作用于云端 / WebDAV 等远端片源；本地盘与 SMB 不受影响。")
@@ -975,7 +976,7 @@ struct CinemaSettingsSection: View {
 
             settingsGroup("转码缓存", icon: "internaldrive", note: "本机临时分片") {
                 settingRow("缓存上限", detail: "超过上限先清理最旧的分片") {
-                    Picker("", selection: $settings.videoCacheLimitGB) {
+                    Picker("", selection: Bindable(settings).videoCacheLimitGB) {
                         ForEach([0, 5, 10, 20, 50, 100], id: \.self) { value in
                             Text(value == 0 ? "不限制" : "\(value) GB").tag(value)
                         }
@@ -996,7 +997,7 @@ struct CinemaSettingsSection: View {
                           icon: "hand.raised.fill",
                           status: settings.cinemaParentalLevel == .off ? ("已关闭", true) : ("已启用", true)) {
                 settingRow("允许的最高分级", detail: settings.cinemaParentalLevel.detail) {
-                    Picker("", selection: $settings.cinemaParentalLevel) {
+                    Picker("", selection: Bindable(settings).cinemaParentalLevel) {
                         ForEach(CinemaParentalLevel.allCases) { level in
                             Text(level.title).tag(level)
                         }
@@ -1118,17 +1119,17 @@ struct CinemaSettingsSection: View {
             settingsGroup("接口与镜像", icon: "network") {
                 settingField("TMDB 接口",
                              placeholder: "https://api.themoviedb.org/3",
-                             text: $settings.cinemaAPIBase)
+                             text: Bindable(settings).cinemaAPIBase)
                 settingField("图片地址",
                              placeholder: "https://image.tmdb.org/t/p",
-                             text: $settings.cinemaImageBase)
+                             text: Bindable(settings).cinemaImageBase)
                 settingField("豆瓣镜像",
                              detail: "豆瓣被限流时换成自建反代前缀",
                              placeholder: "https://api.douban.com",
-                             text: $settings.cinemaDoubanBase)
+                             text: Bindable(settings).cinemaDoubanBase)
                 settingRow("请求超时", detail: "豆瓣 / TMDB 搜索与详情的单次请求上限") {
                     HStack(spacing: 6) {
-                        Stepper("", value: $settings.cinemaRequestTimeout, in: 5...60, step: 5)
+                        Stepper("", value: Bindable(settings).cinemaRequestTimeout, in: 5...60, step: 5)
                             .labelsHidden()
                         Text("\(Int(settings.cinemaRequestTimeout)) 秒")
                             .font(.system(size: 10.5, design: .monospaced))
@@ -1137,7 +1138,7 @@ struct CinemaSettingsSection: View {
                     }
                 }
                 settingRow("日志等级", detail: "诊断日志详细程度，用于排查播放问题") {
-                    Picker("", selection: $settings.cinemaLogLevel) {
+                    Picker("", selection: Bindable(settings).cinemaLogLevel) {
                         Text("精简").tag("important")
                         Text("标准").tag("standard")
                         Text("详细").tag("verbose")
@@ -1164,7 +1165,7 @@ struct CinemaSettingsSection: View {
                 }
                 settingToggle("导出 NFO",
                               detail: "刮削完成后把结果写到本地视频同目录，供 Jellyfin / Emby 读取",
-                              isOn: $settings.cinemaExportNFO)
+                              isOn: Bindable(settings).cinemaExportNFO)
                 settingRow("立即导出", detail: "只处理本地 / SMB 文件，网盘跳过") {
                     Button("导出当前影院") {
                         let count = store.exportCinemaNFOIfEnabled(for: store.cinemaActiveScope)
@@ -1281,10 +1282,10 @@ struct CinemaSettingsSection: View {
         settingsGroup("行为", icon: "bolt.fill") {
             settingToggle("扫描完自动刮削",
                           detail: "网盘扫描结束后自动处理这个网盘的新视频",
-                          isOn: $settings.cinemaAutoScrape)
+                          isOn: Bindable(settings).cinemaAutoScrape)
             settingRow("刮削并发",
                        detail: "同时请求多个视频；网络较差时调低更稳") {
-                Picker("", selection: $settings.cinemaScrapeConcurrency) {
+                Picker("", selection: Bindable(settings).cinemaScrapeConcurrency) {
                     ForEach(1...6, id: \.self) { value in
                         Text("\(value)").tag(value)
                     }

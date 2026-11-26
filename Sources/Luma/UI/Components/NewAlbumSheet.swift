@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct NewAlbumSheet: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
 

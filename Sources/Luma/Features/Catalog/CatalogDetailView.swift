@@ -11,8 +11,8 @@ struct CatalogDetailView: View {
     /// 非空表示嵌在频道页里显示（不再弹窗）：点返回就回到频道列表。
     var onClose: (() -> Void)? = nil
 
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     private var isEmbedded: Bool { onClose != nil }
@@ -125,7 +125,7 @@ struct CatalogDetailView: View {
                                          onClose: closePerson,
                                          backTitle: "返回详情",
                                          showsInlineBack: false)
-                    .environmentObject(catalog)
+                    .environment(catalog)
                     .transition(.opacity)
             }
         }
@@ -842,7 +842,7 @@ struct CatalogDetailView: View {
                     .padding(.vertical, 2)
                     .background(accent.opacity(0.12), in: Capsule(style: .continuous))
                     .overlay {
-                        Capsule().strokeBorder(accent.opacity(0.24), lineWidth: 0.6)
+                        Capsule().strokeBorder(accent.opacity(0.24), lineWidth: LumaControlMetrics.hairline)
                     }
                 }
             }

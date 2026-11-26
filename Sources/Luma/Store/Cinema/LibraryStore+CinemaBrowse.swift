@@ -666,8 +666,7 @@ extension LibraryStore {
     /// 目录有变化：重新读一次图库清单，必要时自动刮削本地影院的新视频。
     func handleLocalCinemaDirectoryChange() async {
         // 这是一次完整重载：先停掉启动分片，避免它把旧分片追加到新结果后面。
-        libraryIndexTask?.cancel()
-        libraryIndexTask = nil
+        tasks.cancel(.libraryIndex)
         libraryIndexComplete = true
         if let data = metadataStore?.loadLibrary() {
             photos = data.photos

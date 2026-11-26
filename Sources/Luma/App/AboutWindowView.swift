@@ -4,7 +4,8 @@ import AppKit
 /// 菜单栏「关于拾光」：复用关于页的光之河动效，再补上版本与链接。
 /// 用独立小窗口替代系统默认 About 面板，让品牌叙事在菜单入口也成立。
 struct AboutWindowView: View {
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
+    @Environment(\.colorScheme) private var scheme
 
     private var versionText: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -47,13 +48,10 @@ struct AboutWindowView: View {
                                 .font(.system(size: 8.5, weight: .bold))
                         }
                         .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color.accentColor.opacity(0.12), in: Capsule())
-                        .overlay {
-                            Capsule().strokeBorder(Color.accentColor.opacity(0.24), lineWidth: 0.5)
-                        }
-                        .contentShape(Capsule())
+                        .lumaPill(fill: LumaInk.tintWash(.accentColor, scheme: scheme),
+                                  stroke: LumaInk.tintHairline(.accentColor, scheme: scheme),
+                                  horizontalPadding: 10,
+                                  verticalPadding: 5)
                     }
                     .buttonStyle(.plain)
                     .help("打开发布页")

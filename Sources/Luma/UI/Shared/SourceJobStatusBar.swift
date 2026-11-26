@@ -4,31 +4,28 @@ import LumaContentCore
 /// 侧边栏底部的后台任务条：网盘扫描、影院刮削、健康检测、内容识别、导入导出等统一在这里露出进度。
 /// 默认常驻：有任务时显示进度，空闲时也留一个任务记录入口；可收起成左侧的小胶囊。
 struct SourceJobStatusBar: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var showDetail = false
     /// 收起后只留左侧一个小胶囊，状态跨启动保留。
     @AppStorage("sidebar.taskBar.collapsed") private var collapsed = false
     @Environment(\.colorScheme) private var scheme
 
     /// 任务条自己叠在侧边栏材质上：暗色模式不能直接用 .secondary / .tertiary，否则和深色背景糊在一起。
-    private var secondaryInk: Color {
-        scheme == .dark ? Color.white.opacity(0.80) : Color.primary.opacity(0.66)
-    }
-    private var tertiaryInk: Color {
-        scheme == .dark ? Color.white.opacity(0.58) : Color.primary.opacity(0.45)
-    }
+    private var secondaryInk: Color { LumaInk.secondary(scheme) }
+    private var tertiaryInk: Color { LumaInk.tertiary(scheme) }
 
     var body: some View {
         // 读取 revision：任务进度变化（含后台线程上报）时触发重绘。
         let _ = store.sourceJobRevision
-        let jobs = store.activeSourceJobs
-        let recentChecks = store.recentSourceJobs(kind: .connectivity)
+        // 任务条与浮层共用一次取数：之前分别调 active / recent / recentChecks，
+        // 每次求值要做三遍过滤、合并与排序。
+        let feed = store.sourceJobFeed(finishedLimit: 1, checkLimit: 1)
 
         Group {
             if collapsed {
-                collapsedRow(jobs)
+                collapsedRow(jobs: feed.active)
             } else {
-                expandedRow(jobs: jobs, recentChecks: recentChecks)
+                expandedRow(feed: feed)
             }
         }
         .animation(.easeInOut(duration: 0.16), value: collapsed)
@@ -40,11 +37,10 @@ struct SourceJobStatusBar: View {
 
     // MARK: 展开态
 
-    private func expandedRow(jobs: [JobProgress],
-                             recentChecks: [JobProgress]) -> some View {
+    private func expandedRow(feed: SourceJobFeed) -> some View {
         HStack(spacing: 8) {
-            if let job = jobs.first {
-                activeButton(job: job, count: jobs.count)
+            if let job = feed.active.first {
+                activeButton(job: job, count: feed.active.count)
                 if job.isCancellable {
                     Button {
                         showDetail = false
@@ -58,7 +54,7 @@ struct SourceJobStatusBar: View {
                     .help("取消任务")
                 }
             } else {
-                idleButton(recentChecks: recentChecks)
+                idleButton(lastFinished: feed.finished.first, recentCheck: feed.checks.first)
             }
             collapseButton
         }
@@ -66,7 +62,8 @@ struct SourceJobStatusBar: View {
     }
 
     private func activeButton(job: JobProgress, count: Int) -> some View {
-        Button {
+        let style = JobKindStyle(job: job)
+        return Button {
             showDetail.toggle()
         } label: {
             HStack(spacing: 8) {
@@ -75,6 +72,10 @@ struct SourceJobStatusBar: View {
                 VStack(alignment: .leading, spacing: 2) {
                     // 任务条只占一行：标题保持完整，来源与读数在剩余空间里截断。
                     HStack(spacing: 4) {
+                        // 种类图标 + 颜色：扫描 / 刮削 / 导入在收起状态也能一眼分辨。
+                        Image(systemName: style.symbol)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(style.tint)
                         Text(job.title ?? job.kind.title)
                             .font(.system(size: 10.5, weight: .semibold))
                             .lineLimit(1)
@@ -97,20 +98,27 @@ struct SourceJobStatusBar: View {
                     }
                     .lineLimit(1)
                     if let fraction = job.fraction {
+                        // 进度条取任务种类色：与浮层里的卡片保持同一套视觉身份。
                         ProgressView(value: fraction)
                             .progressViewStyle(.linear)
-                            .tint(Color.accentColor)
+                            .tint(style.tint)
                             .frame(height: 3)
                             .background {
-                                Capsule().fill(Color.primary.opacity(scheme == .dark ? 0.24 : 0.10))
+                                Capsule().fill(LumaInk.fill(.strong, scheme: scheme))
                             }
                     }
                 }
                 Spacer(minLength: 4)
                 if count > 1 {
                     Text("+\(count - 1)")
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(tertiaryInk)
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.accentColor)
+                        .lineLimit(1)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .lumaPillSurface(fill: LumaInk.tintWash(.accentColor, scheme: scheme),
+                                         stroke: Color.clear,
+                                         lineWidth: 0)
                 }
             }
             .contentShape(Rectangle())
@@ -119,12 +127,12 @@ struct SourceJobStatusBar: View {
         .help("查看任务详情")
         .popover(isPresented: $showDetail, arrowEdge: .bottom) {
             SourceJobDetailPopover(isPresented: $showDetail)
-                .environmentObject(store)
+                .environment(store)
         }
     }
 
     /// 空闲态：默认就在，用户随时能翻任务记录、连接检查与失败重试。
-    private func idleButton(recentChecks: [JobProgress]) -> some View {
+    private func idleButton(lastFinished: JobProgress?, recentCheck: JobProgress?) -> some View {
         Button {
             showDetail.toggle()
         } label: {
@@ -135,7 +143,7 @@ struct SourceJobStatusBar: View {
                 Text("任务记录")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(secondaryInk)
-                Text(idleDetail(recentChecks: recentChecks))
+                Text(idleDetail(lastFinished: lastFinished, recentCheck: recentCheck))
                     .font(.system(size: 10))
                     .foregroundStyle(tertiaryInk)
                     .lineLimit(1)
@@ -150,16 +158,16 @@ struct SourceJobStatusBar: View {
         .help("查看任务记录")
         .popover(isPresented: $showDetail, arrowEdge: .bottom) {
             SourceJobDetailPopover(isPresented: $showDetail)
-                .environmentObject(store)
+                .environment(store)
         }
     }
 
-    private func idleDetail(recentChecks: [JobProgress]) -> String {
+    private func idleDetail(lastFinished: JobProgress?, recentCheck: JobProgress?) -> String {
         // 空闲态也给最近一条记录的线索：后台补录日历这类任务结束后也能看出跑过什么。
-        if let job = store.recentFinishedSourceJobs(limit: 1).first {
+        if let job = lastFinished {
             return job.title ?? compactSourceName(job.sourceID) ?? job.kind.title
         }
-        if let check = recentChecks.first, let name = compactSourceName(check.sourceID) {
+        if let check = recentCheck, let name = compactSourceName(check.sourceID) {
             return name
         }
         return "后台任务会显示在这里"
@@ -184,7 +192,7 @@ struct SourceJobStatusBar: View {
 
     /// 收起后停在左下角：一个小胶囊，有任务时显示转圈与数量。
     /// 点它先展开任务栏，再打开任务记录——浮层挂在贴窗口边缘的小胶囊上会失效。
-    private func collapsedRow(_ jobs: [JobProgress]) -> some View {
+    private func collapsedRow(jobs: [JobProgress]) -> some View {
         HStack(spacing: 6) {
             Button {
                 collapsed = false
@@ -214,8 +222,7 @@ struct SourceJobStatusBar: View {
                     }
                 }
                 .overlay {
-                    Capsule().strokeBorder(Color.primary.opacity(scheme == .dark ? 0.20 : 0.10),
-                                           lineWidth: 0.5)
+                    Capsule().strokeBorder(LumaInk.hairline(scheme), lineWidth: LumaControlMetrics.hairline)
                 }
                 .contentShape(Capsule())
             }
@@ -258,6 +265,125 @@ struct SourceJobStatusBar: View {
         }
         if id == .search { return "全库" }
         return nil
+    }
+}
+
+// MARK: - 任务种类的视觉身份
+
+/// 一个任务种类的图标与主题色。
+///
+/// 之前只有图标、且只在来源行里出现，一列任务看过去几乎一样。
+/// 现在任务条、进行中卡片、记录行共用这一份映射：同一种任务在哪都是同一个颜色 + 图标，
+/// 扫一眼就能区分「扫描 / 刮削 / 导入 / 整理」。
+private struct JobKindStyle {
+    var symbol: String
+    let tint: Color
+
+    init(kind: SourceJobKind) {
+        symbol = Self.symbol(for: kind)
+        tint = Self.tint(for: kind)
+    }
+
+    /// 标题里带「日历 / 健康」时优先用更具体的图标，其余按种类。
+    init(job: JobProgress) {
+        self.init(kind: job.kind)
+        if let title = job.title {
+            if title.contains("日历") { symbol = "calendar" }
+            else if title.contains("健康") { symbol = "waveform.path.ecg" }
+        }
+    }
+
+    private static func symbol(for kind: SourceJobKind) -> String {
+        switch kind {
+        case .scan: return "magnifyingglass.circle"
+        case .index: return "list.bullet.rectangle"
+        case .scrape: return "film.stack"
+        case .epg: return "calendar"
+        case .artwork: return "photo"
+        case .sync: return "arrow.triangle.2.circlepath"
+        case .analyze: return "sparkles"
+        case .healthCheck: return "waveform.path.ecg"
+        case .connectivity: return "network"
+        case .probe: return "antenna.radiowaves.left.and.right"
+        case .search: return "magnifyingglass"
+        case .ingest: return "square.and.arrow.down"
+        case .compress: return "arrow.down.right.and.arrow.up.left"
+        case .backup: return "externaldrive.badge.checkmark"
+        case .export: return "square.and.arrow.up"
+        case .download: return "arrow.down.circle"
+        case .cluster: return "person.2"
+        case .dedupe: return "square.on.square"
+        case .beauty: return "wand.and.stars"
+        case .places: return "mappin.and.ellipse"
+        case .metadata: return "doc.text.magnifyingglass"
+        case .assistant: return "bubble.left.and.text.bubble.right"
+        case .record: return "record.circle"
+        case .organize: return "folder.badge.gearshape"
+        }
+    }
+
+    /// 按任务性质分组配色：读库、刮削、计划、传输、体检、美化各一色。
+    private static func tint(for kind: SourceJobKind) -> Color {
+        switch kind {
+        case .scan, .index, .metadata, .organize:
+            return Color(red: 0.29, green: 0.60, blue: 1.00)   // 蓝：读库 / 索引 / 整理
+        case .scrape, .analyze, .cluster, .dedupe, .artwork, .places:
+            return Color(red: 0.63, green: 0.48, blue: 1.00)   // 紫：刮削 / 分析 / 归类
+        case .epg, .sync, .probe, .search, .connectivity:
+            return Color(red: 0.26, green: 0.78, blue: 0.75)   // 青：节目单 / 同步 / 检索
+        case .ingest, .export, .download, .record, .compress, .backup:
+            return Color(red: 1.00, green: 0.64, blue: 0.32)   // 橙：导入 / 导出 / 录制
+        case .healthCheck:
+            return Color(red: 0.36, green: 0.80, blue: 0.50)   // 绿：体检
+        case .beauty, .assistant:
+            return Color(red: 1.00, green: 0.50, blue: 0.72)   // 粉：美化 / 助手
+        }
+    }
+}
+
+/// 任务种类图标徽标：圆角方块 + 同色系描边，卡片与记录行共用。
+private struct JobKindBadge: View {
+    let style: JobKindStyle
+    var size: CGFloat = 26
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let corner = size * 0.32
+        RoundedRectangle(cornerRadius: corner, style: .continuous)
+            .fill(style.tint.opacity(scheme == .dark ? 0.24 : 0.15))
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(style.tint.opacity(scheme == .dark ? 0.38 : 0.22), lineWidth: 0.6)
+            }
+            .overlay {
+                Image(systemName: style.symbol)
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(style.tint)
+            }
+            .frame(width: size, height: size)
+    }
+}
+
+/// 只让「已耗时」这一小块每秒刷新。
+/// 之前 `TimelineView` 包住整个进行中列表，每秒把所有卡片连同扫描摘要与字符串格式化一起重算。
+private struct JobElapsedText: View {
+    let startedAt: Date?
+
+    @ViewBuilder
+    var body: some View {
+        if let startedAt {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack(spacing: 3) {
+                    Image(systemName: "timer")
+                        .font(.system(size: 8))
+                    Text(JobDurationText.format(context.date.timeIntervalSince(startedAt)))
+                        .font(.system(size: 9.5, design: .monospaced))
+                }
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .help("任务耗时")
+            }
+        }
     }
 }
 
@@ -311,38 +437,73 @@ private struct JobDayGroup: Identifiable {
     var id: Date { day }
 }
 
+/// 浮层里的扁平行。
+/// 记录最多 200 条，之前用嵌套 VStack 会一次性建出全部行（含日期格式化）；
+/// 摊平成一维列表交给 LazyVStack，才真正按需实例化。
+private enum JobFeedRow: Identifiable {
+    case section(String, String?)
+    case running(JobProgress)
+    case day(Date, Int)
+    case record(JobProgress, showDay: Bool)
+    case note(String, String)
+
+    var id: String {
+        switch self {
+        case .section(let title, _):
+            return "section-\(title)"
+        case .running(let job):
+            return "running-\(job.jobID.uuidString)"
+        case .day(let day, _):
+            return "day-\(day.timeIntervalSince1970)"
+        case .record(let job, _):
+            return "record-\(job.jobID.uuidString)"
+        case .note(let icon, let text):
+            return "note-\(icon)-\(text)"
+        }
+    }
+}
+
 /// 后台任务浮层：顶部状态概览 → 筛选 → 进行中任务 → 按天分组的记录。
 private struct SourceJobDetailPopover: View {
     @Binding var isPresented: Bool
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var pendingClear = false
     @State private var filter: JobRecordFilter = .all
 
     var body: some View {
         // 扫描计数等字段不在任务对象里，靠 revision 触发刷新。
         let _ = store.sourceJobRevision
-        let jobs = store.activeSourceJobs
-        let records = store.recentFinishedSourceJobs(limit: 200)
-            .filter { $0.kind != .connectivity }
-        let checks = store.recentSourceJobs(kind: .connectivity)
-        let needsScroll = jobs.count + records.count + checks.count > 4
+        // 一次取数：进行中 / 记录 / 连接检测都从这份结果里取，避免每帧重复合并排序。
+        let feed = store.sourceJobFeed(finishedLimit: 200)
+        // 连接检测单独成段，记录里不再重复出现。
+        let records = feed.finished.filter { $0.kind != .connectivity }
+        let rows = feedRows(feed, records: records)
 
-        VStack(alignment: .leading, spacing: 0) {
-            header()
+        return VStack(alignment: .leading, spacing: 0) {
+            header(feed)
             Divider().opacity(0.5)
-            filterBar(jobs: jobs.count, records: records)
+            filterBar(feed, records: records)
             Divider().opacity(0.5)
 
             // 条目不多时按内容高度自适应；记录较多时才固定高度并滚动。
-            if needsScroll {
+            if rows.count > 4 {
                 ScrollView {
-                    content(jobs: jobs, records: records, checks: checks)
-                        .padding(14)
+                    // 记录最多 200 条：LazyVStack 才按需实例化，之前 VStack 会一次建出全部行。
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(rows) { row in
+                            rowView(row)
+                        }
+                    }
+                    .padding(14)
                 }
                 .frame(height: 460)
             } else {
-                content(jobs: jobs, records: records, checks: checks)
-                    .padding(14)
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(rows) { row in
+                        rowView(row)
+                    }
+                }
+                .padding(14)
             }
         }
         .frame(width: 420)
@@ -354,6 +515,64 @@ private struct SourceJobDetailPopover: View {
         } message: {
             Text("只删除任务记录，不影响刮削结果、影片文件与当前连接状态。")
         }
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: JobFeedRow) -> some View {
+        switch row {
+        case .section(let title, let detail):
+            sectionHeader(title, detail: detail)
+                .padding(.top, 4)
+        case .running(let job):
+            runningCard(job)
+        case .day(let day, let count):
+            dayHeader(day, count: count)
+        case .record(let job, let showDay):
+            recordRow(job, showDay: showDay)
+        case .note(let icon, let text):
+            emptyHint(icon: icon, text: text)
+        }
+    }
+
+    // MARK: 取数
+
+    private func feedRows(_ feed: SourceJobFeed, records: [JobProgress]) -> [JobFeedRow] {
+        switch filter {
+        case .all:
+            var rows: [JobFeedRow] = []
+            if !feed.active.isEmpty {
+                rows.append(.section("进行中", nil))
+                rows.append(contentsOf: feed.active.map { .running($0) })
+            }
+            rows.append(contentsOf: recordRows(records, emptyText: "还没有任务记录"))
+            if !feed.checks.isEmpty {
+                rows.append(.section("最近连接检测", "\(feed.checks.count) 次"))
+                rows.append(contentsOf: feed.checks.map { .record($0, showDay: true) })
+            }
+            return rows
+        case .running:
+            guard !feed.active.isEmpty else {
+                return [.section("进行中", nil), .note("checkmark.seal", "当前没有进行中的任务")]
+            }
+            return [.section("进行中", nil)] + feed.active.map { .running($0) }
+        case .failed:
+            return recordRows(records.filter { $0.phase == .failed }, emptyText: "没有失败的记录")
+        case .cancelled:
+            return recordRows(records.filter { $0.phase == .cancelled }, emptyText: "没有已取消的记录")
+        }
+    }
+
+    private func recordRows(_ records: [JobProgress], emptyText: String) -> [JobFeedRow] {
+        var rows: [JobFeedRow] = [.section("任务记录", nil)]
+        guard !records.isEmpty else {
+            rows.append(.note("tray", emptyText))
+            return rows
+        }
+        for group in dayGroups(records) {
+            rows.append(.day(group.day, group.jobs.count))
+            rows.append(contentsOf: group.jobs.map { .record($0, showDay: false) })
+        }
+        return rows
     }
 
     /// 失败记录的重试入口：所有任务都按种类重新发起，不再单独维护影院队列。
@@ -420,87 +639,71 @@ private struct SourceJobDetailPopover: View {
         return { rerunSearch(keyword) }
     }
 
-    @ViewBuilder
-    private func content(jobs: [JobProgress],
-                         records: [JobProgress],
-                         checks: [JobProgress]) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            switch filter {
-            case .all:
-                if !jobs.isEmpty {
-                    runningSection(jobs)
-                }
-                recordsSection(records)
-                if !checks.isEmpty {
-                    checksSection(checks)
-                }
-            case .running:
-                runningSection(jobs)
-            case .failed:
-                recordsSection(records.filter { $0.phase == .failed },
-                               emptyText: "没有失败的记录")
-            case .cancelled:
-                recordsSection(records.filter { $0.phase == .cancelled },
-                               emptyText: "没有已取消的记录")
-            }
-        }
-    }
-
     // MARK: 进行中
 
-    private func runningSection(_ jobs: [JobProgress]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("进行中", detail: nil)
-            if jobs.isEmpty {
-                emptyHint(icon: "checkmark.seal", text: "当前没有进行中的任务")
-            } else {
-                // 每秒刷新一次：打开浮层期间耗时与预计剩余持续走动，不会像静态读数。
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(spacing: 8) {
-                        ForEach(jobs) { job in
-                            runningCard(job, now: context.date)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func runningCard(_ job: JobProgress, now: Date) -> some View {
-        // 网盘扫描有专门的摘要区（含预计剩余），耗时统一放在右上角。
+    private func runningCard(_ job: JobProgress) -> some View {
+        let style = JobKindStyle(job: job)
+        // 网盘扫描有专门的摘要区（含预计剩余）。
         let usesScanSummary: Bool = {
             guard job.kind == .scan, let mountID = job.sourceID.uuidValue else { return false }
             return store.cloudModel.scanMountID == mountID
         }()
-        let elapsed: String? = job.startedAt.map {
-            JobDurationText.format(now.timeIntervalSince($0))
-        }
         let title = (job.title ?? job.kind.title)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 9) {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 14, height: 14)
+        return HStack(alignment: .top, spacing: 10) {
+            // 左侧种类色带：整列卡片里一眼分出任务性质。
+            Capsule()
+                .fill(style.tint)
+                .frame(width: 3)
+                .padding(.vertical, 2)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(title)
-                            .font(.system(size: 12, weight: .semibold))
-                            .lineLimit(1)
-                            .help(title)
-                        pill(job.phase == .pending ? "等待中" : "进行中", tint: .accentColor)
-                        Spacer(minLength: 0)
-                    }
-                    sourceMeta(job)
+            JobKindBadge(style: style, size: 28)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .help(title)
+                    pill(job.phase == .pending ? "等待中" : "进行中", tint: style.tint)
+                    Spacer(minLength: 0)
                 }
 
-                Spacer(minLength: 4)
+                HStack(spacing: 5) {
+                    Text(job.kind.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(style.tint)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(sourceName(job.sourceID))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    JobElapsedText(startedAt: job.startedAt)
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
 
-                VStack(alignment: .trailing, spacing: 5) {
-                    if let elapsed { elapsedLabel(elapsed) }
-                    if job.isCancellable {
+                progressBlock(job, style: style)
+
+                if usesScanSummary {
+                    scanSummary(job)
+                } else if job.kind == .analyze {
+                    row("识别范围", analysisScope(job.sourceID))
+                }
+
+                if let message = job.message, !message.isEmpty {
+                    Text(message)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(message)
+                }
+
+                if job.isCancellable {
+                    HStack {
+                        Spacer(minLength: 0)
                         Button("取消") {
                             store.cancelSourceJob(job.jobID)
                             isPresented = false
@@ -509,62 +712,56 @@ private struct SourceJobDetailPopover: View {
                         .help("取消这个后台任务")
                     }
                 }
-                .frame(width: 84, alignment: .trailing)
             }
+        }
+        .padding(11)
+        .lumaCardSurface(tint: style.tint)
+    }
 
-            if let fraction = job.fraction {
-                VStack(spacing: 4) {
-                    ProgressView(value: fraction)
-                        .progressViewStyle(.linear)
-                        .tint(Color.accentColor)
-                    HStack(spacing: 6) {
-                        if let total = job.total {
-                            Text("\(job.completed.formatted()) / \(total.formatted())")
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        } else if job.completed > 0 {
-                            Text(job.kind == .analyze
-                                 ? "已识别 \(job.completed.formatted())"
-                                 : "已完成 \(job.completed.formatted())")
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                        Text("\(Int((fraction * 100).rounded()))%")
+    @ViewBuilder
+    private func progressBlock(_ job: JobProgress, style: JobKindStyle) -> some View {
+        if let fraction = job.fraction {
+            VStack(spacing: 4) {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .tint(style.tint)
+                HStack(spacing: 6) {
+                    if let total = job.total {
+                        Text("\(job.completed.formatted()) / \(total.formatted())")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    } else if job.completed > 0 {
+                        Text(job.kind == .analyze
+                             ? "已识别 \(job.completed.formatted())"
+                             : "已完成 \(job.completed.formatted())")
                             .font(.system(size: 9.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: 0)
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(style.tint)
                 }
-            } else if job.phase == .running {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .controlSize(.small)
             }
-
-            if usesScanSummary {
-                scanSummary(job)
-            } else if job.kind == .analyze {
-                row("识别范围", analysisScope(job.sourceID))
-            }
-
-            if let message = job.message, !message.isEmpty {
-                Text(message)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(message)
-            }
+        } else if job.phase == .running {
+            ProgressView()
+                .progressViewStyle(.linear)
+                .controlSize(.small)
+                .tint(style.tint)
         }
-        .padding(10)
-        .background(cardBackground(nil))
     }
 
     /// 网盘扫描的摘要：条目 / 已存在 / 新增 / 目录 / 预计剩余。
-    @ViewBuilder
+    /// 只有这一块需要每秒走动，所以 TimelineView 收在这里，不牵动其它卡片。
     private func scanSummary(_ job: JobProgress) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            scanSummaryBody(job, now: context.date)
+        }
+    }
+
+    private func scanSummaryBody(_ job: JobProgress, now: Date) -> some View {
         let model = store.cloudModel
-        VStack(spacing: 3) {
+        return VStack(spacing: 3) {
             row("本次条目", "\(model.scanMediaCount.formatted()) 条媒体")
             if model.scanBaselineMediaCount > 0 {
                 row("已存在", "\(model.scanBaselineMediaCount.formatted()) 条")
@@ -575,7 +772,7 @@ private struct SourceJobDetailPopover: View {
                 row("已写入索引", "\(model.scanIndexPersistedFolderCount.formatted()) 个目录")
             }
             if let started = model.scanStartedAt {
-                let elapsed = Date().timeIntervalSince(started)
+                let elapsed = now.timeIntervalSince(started)
                 let text: String = {
                     var text = durationText(elapsed)
                     if let fraction = job.fraction, fraction > 0.03, elapsed > 3 {
@@ -598,35 +795,6 @@ private struct SourceJobDetailPopover: View {
 
     // MARK: 任务记录
 
-    private func recordsSection(_ records: [JobProgress],
-                                emptyText: String = "还没有任务记录") -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("任务记录", detail: nil)
-            if records.isEmpty {
-                emptyHint(icon: "tray", text: emptyText)
-            } else {
-                ForEach(dayGroups(records)) { group in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Text(dayTitle(group.day))
-                                .font(.system(size: 9.5, weight: .medium))
-                                .foregroundStyle(.tertiary)
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.08))
-                                .frame(height: 0.5)
-                            Text("\(group.jobs.count) 条")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
-                        }
-                        ForEach(group.jobs) { job in
-                            recordRow(job)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// 一条任务记录：标题 → 来源 / 种类 → 结果，右侧固定给出时刻、耗时与操作。
     private func recordRow(_ job: JobProgress, showDay: Bool = false) -> some View {
         let ok = job.phase == .finished
@@ -640,11 +808,13 @@ private struct SourceJobDetailPopover: View {
         let message = job.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let skipped = job.kind == .scrape ? skippedCount(in: job.message) : nil
 
-        return HStack(alignment: .top, spacing: 9) {
+        return HStack(alignment: .top, spacing: 10) {
+            // 结果图标做成带底色的小圆：一列记录扫过去先看到「成功 / 失败 / 取消」。
             Image(systemName: symbol)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 14)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(tint.opacity(0.14)))
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -677,7 +847,15 @@ private struct SourceJobDetailPopover: View {
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(.tertiary)
                 if let elapsed = job.elapsedText {
-                    elapsedLabel(elapsed)
+                    HStack(spacing: 3) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 8))
+                        Text(elapsed)
+                            .font(.system(size: 9.5, design: .monospaced))
+                    }
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .help("任务耗时")
                 }
                 if job.phase == .failed, let retry = retryAction(for: job) {
                     Button("重试") { retry() }
@@ -692,16 +870,7 @@ private struct SourceJobDetailPopover: View {
             .frame(width: 84, alignment: .trailing)
         }
         .padding(10)
-        .background(cardBackground(ok ? nil : tint))
-    }
-
-    private func checksSection(_ checks: [JobProgress]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("最近连接检测", detail: "\(checks.count) 次")
-            ForEach(checks) { job in
-                recordRow(job, showDay: true)
-            }
-        }
+        .lumaCardSurface(tint: ok ? nil : tint)
     }
 
     /// 按天分组：同一天的记录共用一个日期标题，行内只显示时刻。
@@ -717,12 +886,27 @@ private struct SourceJobDetailPopover: View {
         return order.map { JobDayGroup(day: $0, jobs: grouped[$0] ?? []) }
     }
 
+    private func dayHeader(_ day: Date, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(dayTitle(day))
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.tertiary)
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 0.5)
+            Text("\(count) 条")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
     private func dayTitle(_ day: Date) -> String {
         DateText.relativeDay(day) ?? DateText.monthDaySpacedFormatter.string(from: day)
     }
 
     private func timeText(_ date: Date, showDay: Bool) -> String {
-        let time = date.formatted(date: .omitted, time: .shortened)
+        // 用缓存好的 formatter：记录最多 200 行，逐行 `date.formatted` 会现建 formatter。
+        let time = DateText.timeFormatter.string(from: date)
         guard showDay, !Calendar.current.isDateInToday(date) else { return time }
         let calendar = Calendar.current
         return "\(calendar.component(.month, from: date))/\(calendar.component(.day, from: date)) \(time)"
@@ -736,8 +920,9 @@ private struct SourceJobDetailPopover: View {
 
     // MARK: 顶部概览
 
-    private func header() -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func header(_ feed: SourceJobFeed) -> some View {
+        let failed = feed.finished.lazy.filter { $0.phase == .failed }.count
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.system(size: 12, weight: .semibold))
@@ -750,6 +935,23 @@ private struct SourceJobDetailPopover: View {
                     .help("清理全部任务记录")
             }
 
+            // 概览统计：先给「现在有几个在跑 / 有几个失败」，再往下才是明细。
+            if !feed.active.isEmpty || failed > 0 {
+                HStack(spacing: 6) {
+                    if !feed.active.isEmpty {
+                        statChip("\(feed.active.count) 个进行中",
+                                 symbol: "bolt.fill",
+                                 tint: .accentColor)
+                    }
+                    if failed > 0 {
+                        statChip("\(failed) 个失败",
+                                 symbol: "exclamationmark.triangle.fill",
+                                 tint: LumaBrand.coral)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+
             Rectangle()
                 .fill(LinearGradient(colors: [Color.accentColor.opacity(0.6), .clear],
                                      startPoint: .leading, endPoint: .trailing))
@@ -760,11 +962,18 @@ private struct SourceJobDetailPopover: View {
         .padding(.bottom, 10)
     }
 
-    private func filterBar(jobs: Int, records: [JobProgress]) -> some View {
-        HStack(spacing: 6) {
-            ForEach(JobRecordFilter.allCases) { item in
-                filterChip(item, count: count(for: item, jobs: jobs, records: records))
-            }
+    private func statChip(_ text: String, symbol: String, tint: Color) -> some View {
+        LumaBadge(text, systemImage: symbol, tint: tint, compact: true)
+    }
+
+    private func filterBar(_ feed: SourceJobFeed, records: [JobProgress]) -> some View {
+        let failed = records.lazy.filter { $0.phase == .failed }.count
+        let cancelled = records.lazy.filter { $0.phase == .cancelled }.count
+        return HStack(spacing: 6) {
+            filterChip(.all, count: feed.active.count + records.count)
+            filterChip(.running, count: feed.active.count)
+            filterChip(.failed, count: failed)
+            filterChip(.cancelled, count: cancelled)
             Spacer(minLength: 0)
             if let average = averageElapsed(records) {
                 HStack(spacing: 3) {
@@ -779,15 +988,6 @@ private struct SourceJobDetailPopover: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-    }
-
-    private func count(for item: JobRecordFilter, jobs: Int, records: [JobProgress]) -> Int {
-        switch item {
-        case .all: return jobs + records.count
-        case .running: return jobs
-        case .failed: return records.filter { $0.phase == .failed }.count
-        case .cancelled: return records.filter { $0.phase == .cancelled }.count
-        }
     }
 
     /// 已完成任务的平均耗时：让「快 / 慢」有个参照系。
@@ -809,18 +1009,7 @@ private struct SourceJobDetailPopover: View {
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(selected
-                                       ? Color.accentColor.opacity(0.16)
-                                       : Color.primary.opacity(0.05)))
-            .overlay {
-                Capsule().strokeBorder(selected
-                                       ? Color.accentColor.opacity(0.5)
-                                       : Color.clear,
-                                       lineWidth: 0.8)
-            }
-            .contentShape(Capsule())
+            .lumaChip(selected: selected)
         }
         .buttonStyle(.plain)
         .help("只看\(item.title)的任务")
@@ -841,11 +1030,13 @@ private struct SourceJobDetailPopover: View {
         }
     }
 
-    /// 来源 · 种类：同一行给出「哪个来源的什么任务」。
+    /// 来源 · 种类：同一行给出「哪个来源的什么任务」，图标按种类上色。
     private func sourceMeta(_ job: JobProgress) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbolName(for: job))
+        let style = JobKindStyle(job: job)
+        return HStack(spacing: 5) {
+            Image(systemName: style.symbol)
                 .font(.system(size: 9))
+                .foregroundStyle(style.tint)
             Text(sourceName(job.sourceID))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -857,25 +1048,7 @@ private struct SourceJobDetailPopover: View {
     }
 
     private func pill(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(tint.opacity(0.14)))
-            .lineLimit(1)
-    }
-
-    private func elapsedLabel(_ text: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "timer")
-                .font(.system(size: 8))
-            Text(text)
-                .font(.system(size: 9.5, design: .monospaced))
-        }
-        .foregroundStyle(.tertiary)
-        .lineLimit(1)
-        .help("任务耗时")
+        LumaBadge(text, tint: tint, compact: true)
     }
 
     private func emptyHint(icon: String, text: String) -> some View {
@@ -889,16 +1062,6 @@ private struct SourceJobDetailPopover: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 14)
-    }
-
-    private func cardBackground(_ accent: Color?) -> some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.primary.opacity(0.045))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(accent?.opacity(0.30) ?? Color.primary.opacity(0.06),
-                                  lineWidth: 0.6)
-            }
     }
 
     // MARK: 通用行
@@ -918,43 +1081,6 @@ private struct SourceJobDetailPopover: View {
                 .font(.system(size: 11, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-        }
-    }
-
-    /// 任务图标：优先按任务标题区分（例如「补录更新日历」用日历图标），再退回种类。
-    private func symbolName(for job: JobProgress) -> String {
-        if let title = job.title {
-            if title.contains("日历") { return "calendar" }
-            if title.contains("健康") { return "waveform.path.ecg" }
-        }
-        return symbolName(for: job.kind)
-    }
-
-    private func symbolName(for kind: SourceJobKind) -> String {
-        switch kind {
-        case .scan: return "magnifyingglass"
-        case .index: return "list.bullet.rectangle"
-        case .scrape: return "film.stack"
-        case .epg: return "calendar"
-        case .artwork: return "photo"
-        case .sync: return "arrow.triangle.2.circlepath"
-        case .analyze: return "sparkles"
-        case .healthCheck: return "waveform.path.ecg"
-        case .connectivity: return "network"
-        case .probe: return "antenna.radiowaves.left.and.right"
-        case .search: return "magnifyingglass"
-        case .ingest: return "square.and.arrow.down"
-        case .compress: return "arrow.down.right.and.arrow.up.left"
-        case .backup: return "externaldrive.badge.checkmark"
-        case .export: return "square.and.arrow.up"
-        case .download: return "arrow.down.circle"
-        case .cluster: return "person.2"
-        case .dedupe: return "square.on.square"
-        case .beauty: return "wand.and.stars"
-        case .places: return "mappin.and.ellipse"
-        case .metadata: return "doc.text.magnifyingglass"
-        case .assistant: return "bubble.left.and.text.bubble.right"
-        case .record: return "record.circle"
         }
     }
 

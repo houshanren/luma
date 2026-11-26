@@ -112,14 +112,4 @@ public enum ImportRules {
             ? "无法读取蓝光原盘：光盘结构不完整或已损坏。"
             : "无法读取蓝光原盘：\(firstLine)"
     }
-
-    /// EXIF 的 `yyyy:MM:dd HH:mm:ss`（不带时区，按相机本地时间解释）。
-    public static func parseEXIFDate(_ raw: String?, timeZone: TimeZone = .current) -> Date? {
-        guard let raw, !raw.isEmpty else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        formatter.timeZone = timeZone
-        return formatter.date(from: raw)
-    }
 }

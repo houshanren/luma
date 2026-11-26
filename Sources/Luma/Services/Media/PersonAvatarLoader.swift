@@ -2,52 +2,14 @@ import AppKit
 import ImageIO
 import LumaCore
 
-/// 人物 / 宠物头像的取图请求：优先官方裁切图；缺失时按关键人脸几何从
-/// 关键照片现算脸部特写（与官方「照片」的人物头像口径一致）；再退回整张缩略图。
-///
-/// 视图层只能在 `.task` 里异步取用——解码放进后台，主线程 body 里不再做
-/// 图片解码或按 ID 查库（大图库里这两件事都会让头像列表滚动时掉帧）。
-struct PersonAvatarRequest: Hashable {
-    let cacheKey: String
-    let cropData: Data?
-    let fallbackPhotoID: UUID?
-    /// 关键人脸几何（0-1 归一化：cx 相对图宽、cy 相对图高且原点在左下、size 相对图对角线）。
-    /// 官方图库里绝大多数人物没有现成裁切 BLOB，「照片」App 的头像就是按这组几何现算的。
-    let faceGeometry: (centerX: Double, centerY: Double, size: Double)?
-    /// 解码边长（像素，已收敛到固定档位）。
-    let maxPixel: CGFloat
-
-    init(identity: String, cropData: Data?, fallbackPhotoID: UUID?,
-         faceGeometry: (centerX: Double, centerY: Double, size: Double)? = nil, size: CGFloat) {
-        let bucket = ThumbnailSizing.bucket(for: size * ThumbnailPurpose.scale)
-        let geometryKey = faceGeometry
-            .map { String(format: "%.4f|%.4f|%.4f", $0.centerX, $0.centerY, $0.size) } ?? "-"
-        cacheKey = "\(identity)|\(bucket)|\(cropData?.count ?? 0)|\(fallbackPhotoID?.uuidString ?? "-")|\(geometryKey)"
-        self.cropData = cropData
-        self.fallbackPhotoID = fallbackPhotoID
-        self.faceGeometry = faceGeometry
-        maxPixel = CGFloat(bucket)
-    }
-
-    static func == (lhs: PersonAvatarRequest, rhs: PersonAvatarRequest) -> Bool {
-        lhs.cacheKey == rhs.cacheKey
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(cacheKey)
-    }
-}
-
 /// 脸部特写相对人脸框每边外扩 0.35（脸框 ×1.7），与本地聚类 `FaceClustering.cropFace`
 /// 的裁切观感一致，保证系统人物与本地图库人物的头像风格统一。
 private let faceCropExpansion: Double = 1.7
 
-/// 人物头像解码与缓存：同一人物按档位只解码一次，之后直接命中内存缓存。
-@MainActor
-enum PersonAvatarLoader {
-    private static let cache = MemoryImageCache(totalCostLimit: 64 * 1024 * 1024)
-
-    static func request(for person: SystemPersonInfo, size: CGFloat) -> PersonAvatarRequest {
+extension PersonAvatarRequest {
+    /// 系统图库人物：官方裁切图优先，缺失时用关键照片 + 人脸几何现算。
+    /// `SystemPersonInfo` 属于 Persistence，因此这个工厂留在 App 侧。
+    static func make(for person: SystemPersonInfo, size: CGFloat) -> PersonAvatarRequest {
         let geometry: (centerX: Double, centerY: Double, size: Double)?
         if let cx = person.faceCenterX, let cy = person.faceCenterY, let faceSize = person.faceSize {
             geometry = (cx, cy, faceSize)
@@ -55,25 +17,18 @@ enum PersonAvatarLoader {
             geometry = nil
         }
         return PersonAvatarRequest(identity: "system-\(person.id)",
-                                    cropData: person.cropData,
-                                    fallbackPhotoID: person.keyAssetID ?? person.assetIDs.first,
-                                    faceGeometry: geometry,
-                                    size: size)
+                                   cropData: person.cropData,
+                                   fallbackPhotoID: person.keyAssetID ?? person.assetIDs.first,
+                                   faceGeometry: geometry,
+                                   size: size)
     }
+}
 
-    static func request(for person: LocalPerson, size: CGFloat) -> PersonAvatarRequest {
-        PersonAvatarRequest(identity: "local-\(person.id.uuidString)",
-                            cropData: person.coverImageData,
-                            fallbackPhotoID: person.assetIDs.first,
-                            size: size)
-    }
-
-    static func request(for companion: PersonInsight.Companion, size: CGFloat) -> PersonAvatarRequest {
-        PersonAvatarRequest(identity: "companion-\(companion.id)",
-                            cropData: companion.coverData,
-                            fallbackPhotoID: companion.coverPhotoID,
-                            size: size)
-    }
+/// 人物头像解码与缓存：同一人物按档位只解码一次，之后直接命中内存缓存。
+/// 组件通过 `PersonAvatarRegistry` 注入取用，不直接依赖本类型。
+@MainActor
+enum PersonAvatarLoader {
+    private static let cache = MemoryImageCache(totalCostLimit: 64 * 1024 * 1024)
 
     static func cached(_ request: PersonAvatarRequest) -> NSImage? {
         cache.object(forKey: request.cacheKey as NSString)

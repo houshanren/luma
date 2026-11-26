@@ -228,9 +228,9 @@ struct TVSourceEndDropDelegate: DropDelegate {
 // MARK: - 相簿封面
 
 struct AlbumCoverView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(AppSettings.self) private var settings
     let album: Album
 
     private var coverPhoto: PhotoItem? {
@@ -262,7 +262,7 @@ struct AlbumCoverView: View {
 }
 
 struct SystemAlbumCoverView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let albumID: Int64
     @State private var photo: PhotoItem?
     @State private var loadedAlbumID: Int64?

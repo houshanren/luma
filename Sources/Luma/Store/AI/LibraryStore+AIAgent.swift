@@ -11,8 +11,7 @@ extension LibraryStore {
     // MARK: - 加载与保存
 
     func loadAIState() {
-        aiTask?.cancel()
-        aiTask = nil
+        tasks.cancel(.ai)
         aiIsResponding = false
         aiActivity = nil
         aiError = nil
@@ -48,8 +47,7 @@ extension LibraryStore {
     }
 
     func clearAIConversation() {
-        aiTask?.cancel()
-        aiTask = nil
+        tasks.cancel(.ai)
         aiIsResponding = false
         aiActivity = nil
         aiMessages = []
@@ -168,7 +166,7 @@ extension LibraryStore {
             }
         )
 
-        aiTask = Task { [weak self] in
+        tasks.adopt(.ai, Task { [weak self] in
             guard let self else { return }
             self.aiActivity = "正在理解当前范围"
             let startedAt = Date()
@@ -189,7 +187,7 @@ extension LibraryStore {
             }
             if Task.isCancelled {
                 self.aiIsResponding = false
-                self.aiTask = nil
+                self.tasks.finish(.ai)
                 return
             }
 
@@ -239,7 +237,7 @@ extension LibraryStore {
                     )
                     guard !Task.isCancelled else {
                         self.aiIsResponding = false
-                        self.aiTask = nil
+                        self.tasks.finish(.ai)
                         return
                     }
 
@@ -331,11 +329,11 @@ extension LibraryStore {
                 }
                 self.saveAIConversation()
                 self.aiIsResponding = false
-                self.aiTask = nil
+                self.tasks.finish(.ai)
             } catch {
                 if case AIError.cancelled = error {
                     self.aiIsResponding = false
-                    self.aiTask = nil
+                    self.tasks.finish(.ai)
                     return
                 }
                 self.aiError = error.localizedDescription
@@ -345,14 +343,13 @@ extension LibraryStore {
                                                      elapsed: Date().timeIntervalSince(startedAt)))
                 self.saveAIConversation()
                 self.aiIsResponding = false
-                self.aiTask = nil
+                self.tasks.finish(.ai)
             }
-        }
+        })
     }
 
     func stopAIResponse() {
-        aiTask?.cancel()
-        aiTask = nil
+        tasks.cancel(.ai)
         aiIsResponding = false
         aiActivity = nil
     }

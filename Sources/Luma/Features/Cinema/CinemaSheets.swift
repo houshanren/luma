@@ -12,7 +12,7 @@ struct CinemaCollectionSheet: View {
     let name: String
     var onOpenEntry: (CinemaEntry) -> Void = { _ in }
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var info: CinemaCollectionInfo?
 
@@ -258,7 +258,7 @@ struct CinemaCollectionSheet: View {
                                                  : Color.primary.opacity(0.06)))
             .overlay {
                 Capsule().strokeBorder(highlight ? LumaBrand.amber.opacity(0.30)
-                                                 : Color.primary.opacity(0.08), lineWidth: 0.6)
+                                                 : Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
     }
 
@@ -281,7 +281,7 @@ struct CinemaCollectionSheet: View {
 // MARK: - 通知中心（F4）
 
 struct CinemaNotificationSheet: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     var groups: [(String, [CinemaNotification])] {
@@ -368,17 +368,10 @@ struct CinemaNotificationSheet: View {
     }
 
     var emptyState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "bell.slash")
-                .font(.system(size: 26, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("还没有通知")
-                .font(.system(size: 12.5, weight: .medium))
-            Text("刮削完成、匹配失败和字幕下载都会归档到这里。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        LumaEmptyState(symbol: "bell.slash",
+                       title: "还没有通知",
+                       message: "刮削完成、匹配失败和字幕下载都会归档到这里。")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     func row(_ item: CinemaNotification) -> some View {
@@ -464,7 +457,7 @@ struct CinemaFolderDetailView: View {
     let onPlay: (CinemaEntry) -> Void
     let onOpenEntry: (CinemaEntry) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var folder: CinemaFolder
     /// 已经钻过的目录链，用来返回上一级。
@@ -531,7 +524,7 @@ struct CinemaFolderDetailView: View {
                 matchRequest = nil
                 refresh()
             }
-            .environmentObject(store)
+            .environment(store)
         }
     }
 
@@ -784,7 +777,7 @@ struct CinemaFolderDetailView: View {
 // MARK: - 家长控制解锁
 
 struct CinemaPINPromptSheet: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var pin = ""
     @State private var errorMessage: String?

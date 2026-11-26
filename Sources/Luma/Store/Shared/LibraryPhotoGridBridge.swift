@@ -1,5 +1,5 @@
-import Combine
 import SwiftUI
+import Observation
 import LumaUI
 
 /// 把 `LibraryStore` / `AppSettings` / `SelectionModel` 接到 LumaUI 的网格组件上。
@@ -14,7 +14,6 @@ final class LibraryPhotoGridBridge: ObservableObject {
     private let store: LibraryStore
     private let settings: AppSettings
     private let selection: SelectionModel
-    private var cancellables: Set<AnyCancellable> = []
     /// 上一次广播的网格参数快照：相同就不必再通知单元格重算。
     private var lastSnapshot: Snapshot?
 
@@ -69,17 +68,29 @@ final class LibraryPhotoGridBridge: ObservableObject {
             AnyView(PhotoContextMenu(photo: photo, actionIDs: ids))
         }
 
-        Publishers.Merge3(
-            store.objectWillChange.map { _ in () },
-            settings.objectWillChange.map { _ in () },
-            selection.objectWillChange.map { _ in () }
-        )
-        // objectWillChange 在值变更「之前」发出；挪到下一轮 RunLoop 再读，拿到的才是新值。
-        .receive(on: RunLoop.main)
-        .sink { [weak self] in self?.refresh() }
-        .store(in: &cancellables)
-
+        // Store / 设置 / 选择模型都已是 @Observable：用 Observation 追踪真正参与网格的参数，
+        // 不再「任何属性变化都转发一次」。每次变化后重新挂上追踪。
+        trackObservableState()
         refresh()
+    }
+
+    private func trackObservableState() {
+        withObservationTracking {
+            _ = store.thumbSize
+            _ = store.stackRevision
+            _ = selection.ids
+            _ = settings.smallCoverRadius
+            _ = settings.accentColor
+            _ = settings.metadata
+            _ = settings.photoOpenMode
+            _ = settings.motion
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.refresh()
+                self.trackObservableState()
+            }
+        }
     }
 
     private func refresh() {

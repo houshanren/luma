@@ -1,7 +1,9 @@
+import Observation
 import SwiftUI
 import AppKit
 
-final class AppSettings: ObservableObject {
+@Observable
+final class AppSettings {
     /// 全局唯一实例；服务层（如 LibraryStore）读取业务设置时使用，避免绕过设置模型。
     static let shared = AppSettings()
 
@@ -12,104 +14,104 @@ final class AppSettings: ObservableObject {
     /// 正在把图库里的值灌回属性时，跳过写回，避免无意义的重写。
     private var isApplyingLibraryScope = false
 
-    @Published var appearance: AppAppearance {
+    var appearance: AppAppearance {
         didSet { persistTheme(appearance.rawValue, for: SettingsKeys.appearance) }
     }
 
-    @Published var accent: AppAccent {
+    var accent: AppAccent {
         didSet { persistTheme(accent.rawValue, for: SettingsKeys.accent) }
     }
 
-    @Published var photoOpenMode: PhotoOpenMode {
+    var photoOpenMode: PhotoOpenMode {
         didSet { UserDefaults.standard.set(photoOpenMode.rawValue, forKey: SettingsKeys.photoOpenMode) }
     }
 
     /// 查看器的呈现方式（窗口内 / 全屏）。
-    @Published var viewerLayout: ViewerLayout {
+    var viewerLayout: ViewerLayout {
         didSet { UserDefaults.standard.set(viewerLayout.rawValue, forKey: SettingsKeys.viewerLayout) }
     }
 
-    @Published var showInfoOnOpen: Bool {
+    var showInfoOnOpen: Bool {
         didSet { UserDefaults.standard.set(showInfoOnOpen, forKey: SettingsKeys.showInfoOnOpen) }
     }
 
     /// 查看器底部是否显示缩略图胶片条。
-    @Published var viewerFilmstrip: Bool {
+    var viewerFilmstrip: Bool {
         didSet { UserDefaults.standard.set(viewerFilmstrip, forKey: SettingsKeys.viewerFilmstrip) }
     }
 
     /// 查看器是否用当前照片的模糊影像铺满舞台背景（关闭后为纯色，翻页更省资源）。
-    @Published var viewerBackdrop: Bool {
+    var viewerBackdrop: Bool {
         didSet { UserDefaults.standard.set(viewerBackdrop, forKey: SettingsKeys.viewerBackdrop) }
     }
 
-    @Published var motion: MotionPreset {
+    var motion: MotionPreset {
         didSet { UserDefaults.standard.set(motion.rawValue, forKey: SettingsKeys.motion) }
     }
 
-    @Published var cardCornerRadius: Double {
+    var cardCornerRadius: Double {
         didSet { UserDefaults.standard.set(cardCornerRadius, forKey: SettingsKeys.cardCornerRadius) }
     }
 
-    @Published var hoverLift: Bool {
+    var hoverLift: Bool {
         didSet { UserDefaults.standard.set(hoverLift, forKey: SettingsKeys.hoverLift) }
     }
 
     /// 新打开的图片列表（照片网格）默认每行几张；已单独调整过的页面保持各自记忆。
-    @Published var defaultGridColumns: Int {
+    var defaultGridColumns: Int {
         didSet { UserDefaults.standard.set(defaultGridColumns, forKey: SettingsKeys.defaultGridColumns) }
     }
 
     /// 相簿 / 媒体类型 / 场景 / 更多项目等卡片墙默认每行几个。
-    @Published var defaultCardColumns: Int {
+    var defaultCardColumns: Int {
         didSet { UserDefaults.standard.set(defaultCardColumns, forKey: SettingsKeys.defaultCardColumns) }
     }
 
-    @Published var autoPlayVideo: Bool {
+    var autoPlayVideo: Bool {
         didSet { UserDefaults.standard.set(autoPlayVideo, forKey: SettingsKeys.autoPlayVideo) }
     }
 
-    @Published var viewFullHDR: Bool {
+    var viewFullHDR: Bool {
         didSet { UserDefaults.standard.set(viewFullHDR, forKey: SettingsKeys.viewFullHDR) }
     }
 
     /// 视频默认以静音状态开始播放。
-    @Published var muteVideoByDefault: Bool {
+    var muteVideoByDefault: Bool {
         didSet { UserDefaults.standard.set(muteVideoByDefault, forKey: SettingsKeys.videoMuted) }
     }
 
     /// 视频播放结束后自动连播下一个视频（跳过照片）。
-    @Published var autoPlayNextVideo: Bool {
+    var autoPlayNextVideo: Bool {
         didSet { UserDefaults.standard.set(autoPlayNextVideo, forKey: SettingsKeys.autoPlayNextVideo) }
     }
 
     /// 视频默认循环播放。
-    @Published var loopVideoByDefault: Bool {
+    var loopVideoByDefault: Bool {
         didSet { UserDefaults.standard.set(loopVideoByDefault, forKey: SettingsKeys.videoLoop) }
     }
 
     /// 按片源帧率切换显示器刷新率：24p 片源优先 24Hz，减少 3:2 pulldown 抖动。
-    @Published var matchDisplayFrameRate: Bool {
+    var matchDisplayFrameRate: Bool {
         didSet { UserDefaults.standard.set(matchDisplayFrameRate, forKey: SettingsKeys.videoMatchDisplayRate) }
     }
 
     /// 高倍速播放时保持音调不变（频谱算法），关闭后在 2× 以上会出现「快放」失真。
-    @Published var preservePitchAtSpeed: Bool {
+    var preservePitchAtSpeed: Bool {
         didSet { UserDefaults.standard.set(preservePitchAtSpeed, forKey: SettingsKeys.videoPreservePitch) }
     }
 
     /// 音轨即时切换：多音轨在一次 HLS 会话里装好，切换只让播放器换轨。
-    @Published var instantAudioSwitch: Bool {
+    var instantAudioSwitch: Bool {
         didSet { UserDefaults.standard.set(instantAudioSwitch, forKey: SettingsKeys.videoInstantAudioSwitch) }
     }
 
     /// 多声道输出方式：自动保留源声道，或强制降混成立体声。
-    @Published var audioDownmix: AudioDownmixMode {
+    var audioDownmix: AudioDownmixMode {
         didSet { UserDefaults.standard.set(audioDownmix.rawValue, forKey: SettingsKeys.audioDownmix) }
     }
 
     /// 需要重编码时的目标编码：兼容 H.264 / 高效 HEVC / 低功耗 HEVC。
-    @Published var videoTranscodeMode: VideoTranscodeMode {
+    var videoTranscodeMode: VideoTranscodeMode {
         didSet {
             UserDefaults.standard.set(videoTranscodeMode.rawValue,
                                       forKey: SettingsKeys.videoTranscodeMode)
@@ -117,7 +119,7 @@ final class AppSettings: ObservableObject {
     }
 
     /// 画面显示方式：适应 / 填充 / 拉伸 / 原始像素。
-    @Published var videoFramingMode: VideoFramingMode {
+    var videoFramingMode: VideoFramingMode {
         didSet {
             UserDefaults.standard.set(videoFramingMode.rawValue,
                                       forKey: SettingsKeys.videoFramingMode)
@@ -125,7 +127,7 @@ final class AppSettings: ObservableObject {
     }
 
     /// 显示层比例预设：源比例 / 16:9 / 4:3 / 2.35:1 / 1:1。
-    @Published var videoAspectPreset: VideoAspectPreset {
+    var videoAspectPreset: VideoAspectPreset {
         didSet {
             UserDefaults.standard.set(videoAspectPreset.rawValue,
                                       forKey: SettingsKeys.videoAspectPreset)
@@ -133,46 +135,46 @@ final class AppSettings: ObservableObject {
     }
 
     /// 比例裁剪后的平移：-1...1，0 为居中。
-    @Published var videoPanX: Double {
+    var videoPanX: Double {
         didSet { UserDefaults.standard.set(videoPanX, forKey: SettingsKeys.videoPanX) }
     }
 
-    @Published var videoPanY: Double {
+    var videoPanY: Double {
         didSet { UserDefaults.standard.set(videoPanY, forKey: SettingsKeys.videoPanY) }
     }
 
     /// 本地 / SMB 视频打开时自动挂载中文字幕轨。
-    @Published var autoEmbeddedSubtitles: Bool {
+    var autoEmbeddedSubtitles: Bool {
         didSet { UserDefaults.standard.set(autoEmbeddedSubtitles, forKey: SettingsKeys.videoAutoEmbeddedSubtitles) }
     }
 
     /// 打开视频时自动载入同目录下的同名外挂字幕。
-    @Published var autoSiblingSubtitles: Bool {
+    var autoSiblingSubtitles: Bool {
         didSet { UserDefaults.standard.set(autoSiblingSubtitles, forKey: SettingsKeys.videoAutoSiblingSubtitles) }
     }
 
     /// 打开视频后按片名自动在线搜索并载入一条字幕。
-    @Published var autoOnlineSubtitles: Bool {
+    var autoOnlineSubtitles: Bool {
         didSet { UserDefaults.standard.set(autoOnlineSubtitles, forKey: SettingsKeys.videoAutoOnlineSubtitles) }
     }
 
     /// 把播放状态交给系统「正在播放」，支持控制中心与键盘媒体键。
-    @Published var systemMediaIntegration: Bool {
+    var systemMediaIntegration: Bool {
         didSet { UserDefaults.standard.set(systemMediaIntegration, forKey: SettingsKeys.videoSystemMediaIntegration) }
     }
 
     /// 进度条悬停 / 拖动时显示该时间点的画面预览。
-    @Published var scrubPreviewEnabled: Bool {
+    var scrubPreviewEnabled: Bool {
         didSet { UserDefaults.standard.set(scrubPreviewEnabled, forKey: SettingsKeys.videoScrubPreview) }
     }
 
     /// 视频快进 / 快退的步长（秒）：图库视频用 ↑ / ↓，网络资源用 ← / →。
-    @Published var videoSeekStep: Double {
+    var videoSeekStep: Double {
         didSet { UserDefaults.standard.set(videoSeekStep, forKey: SettingsKeys.videoSeekStep) }
     }
 
     /// 视频控制条的位置：底部悬浮，或融合进画面上方的顶栏。
-    @Published var videoControlPlacement: VideoControlPlacement {
+    var videoControlPlacement: VideoControlPlacement {
         didSet {
             UserDefaults.standard.set(videoControlPlacement.rawValue,
                                       forKey: SettingsKeys.videoControlPlacement)
@@ -180,21 +182,21 @@ final class AppSettings: ObservableObject {
     }
 
     /// HDR / 杜比视界片源的播放策略：自动 / 映射到 SDR / 保持 HDR。
-    @Published var videoHDRMode: VideoHDRMode {
+    var videoHDRMode: VideoHDRMode {
         didSet {
             UserDefaults.standard.set(videoHDRMode.rawValue, forKey: SettingsKeys.videoHDRMode)
         }
     }
 
     /// 网络缓冲档位：省流 / 均衡 / 流畅。默认流畅，优先保证连续播放。
-    @Published var videoBufferProfile: BufferProfile {
+    var videoBufferProfile: BufferProfile {
         didSet {
             UserDefaults.standard.set(videoBufferProfile.rawValue, forKey: SettingsKeys.videoBufferProfile)
         }
     }
 
     /// 远端弱网自适应：默认关闭；开启后网络变慢时在所选档位内临时降档。
-    @Published var videoAdaptiveBuffering: Bool {
+    var videoAdaptiveBuffering: Bool {
         didSet {
             UserDefaults.standard.set(videoAdaptiveBuffering, forKey: SettingsKeys.videoAdaptiveBuffering)
         }
@@ -213,57 +215,57 @@ final class AppSettings: ObservableObject {
     }
 
     /// 视频转码 / 边下边播缓存容量上限（GB）；超过后按最近最少使用淘汰。
-    @Published var videoCacheLimitGB: Int {
+    var videoCacheLimitGB: Int {
         didSet { UserDefaults.standard.set(videoCacheLimitGB, forKey: SettingsKeys.videoCacheLimitGB) }
     }
 
     /// 网络资源海报缓存上限（GB）：超限按最久未使用删到 90%。
-    @Published var posterCacheLimitGB: Int {
+    var posterCacheLimitGB: Int {
         didSet { UserDefaults.standard.set(posterCacheLimitGB, forKey: SettingsKeys.posterCacheLimitGB) }
     }
 
     /// 外挂字幕字号。
-    @Published var subtitleFontSize: Double {
+    var subtitleFontSize: Double {
         didSet { UserDefaults.standard.set(subtitleFontSize, forKey: SettingsKeys.subtitleFontSize) }
     }
 
     /// 外挂字幕是否显示半透明底色。
-    @Published var subtitleBackground: Bool {
+    var subtitleBackground: Bool {
         didSet { UserDefaults.standard.set(subtitleBackground, forKey: SettingsKeys.subtitleBackground) }
     }
 
     /// 外挂字幕颜色（white / yellow / cyan / green）。
-    @Published var subtitleColor: String {
+    var subtitleColor: String {
         didSet { UserDefaults.standard.set(subtitleColor, forKey: SettingsKeys.subtitleColor) }
     }
 
     /// 外挂字幕位置（bottom / lower / middle）。
-    @Published var subtitlePosition: String {
+    var subtitlePosition: String {
         didSet { UserDefaults.standard.set(subtitlePosition, forKey: SettingsKeys.subtitlePosition) }
     }
 
     /// 默认音轨：original（原声优先）/ zh（国语优先）/ en（英语优先）。
-    @Published var videoPreferredAudio: String {
+    var videoPreferredAudio: String {
         didSet { UserDefaults.standard.set(videoPreferredAudio, forKey: SettingsKeys.videoPreferredAudio) }
     }
 
     /// 默认字幕：auto（按内嵌中文轨自动挂载）/ off（不自动挂载）。
-    @Published var videoPreferredSubtitle: String {
+    var videoPreferredSubtitle: String {
         didSet { UserDefaults.standard.set(videoPreferredSubtitle, forKey: SettingsKeys.videoPreferredSubtitle) }
     }
 
     /// 退出播放器时记住倍速；下次打开沿用。
-    @Published var videoRememberSpeed: Bool {
+    var videoRememberSpeed: Bool {
         didSet { UserDefaults.standard.set(videoRememberSpeed, forKey: SettingsKeys.videoRememberSpeed) }
     }
 
     /// 上次使用的播放倍速（仅当「记忆倍速」开启时生效）。
-    @Published var videoLastSpeed: Double {
+    var videoLastSpeed: Double {
         didSet { UserDefaults.standard.set(videoLastSpeed, forKey: SettingsKeys.videoLastSpeed) }
     }
 
     /// 优先系统硬解；关闭后强制走转封装 / 软解，解决个别显卡花屏。
-    @Published var videoPreferHardwareDecoding: Bool {
+    var videoPreferHardwareDecoding: Bool {
         didSet {
             UserDefaults.standard.set(videoPreferHardwareDecoding,
                                       forKey: SettingsKeys.videoPreferHardwareDecoding)
@@ -271,74 +273,94 @@ final class AppSettings: ObservableObject {
     }
 
     /// 是否在播放器里提供画中画。
-    @Published var videoPiPEnabled: Bool {
+    var videoPiPEnabled: Bool {
         didSet { UserDefaults.standard.set(videoPiPEnabled, forKey: SettingsKeys.videoPiPEnabled) }
     }
 
     /// 全局跳过片头秒数：剧集没有单独设置时的兜底，0 表示不跳过。
-    @Published var cinemaSkipIntroSeconds: Int {
+    var cinemaSkipIntroSeconds: Int {
         didSet { UserDefaults.standard.set(cinemaSkipIntroSeconds, forKey: SettingsKeys.cinemaSkipIntroSeconds) }
     }
 
     /// 全局跳过片尾秒数。
-    @Published var cinemaSkipOutroSeconds: Int {
+    var cinemaSkipOutroSeconds: Int {
         didSet { UserDefaults.standard.set(cinemaSkipOutroSeconds, forKey: SettingsKeys.cinemaSkipOutroSeconds) }
     }
 
     /// 刮削请求超时（秒）：豆瓣 / TMDB 搜索与详情共用。
-    @Published var cinemaRequestTimeout: Double {
+    var cinemaRequestTimeout: Double {
         didSet { UserDefaults.standard.set(cinemaRequestTimeout, forKey: SettingsKeys.cinemaRequestTimeout) }
     }
 
     /// 日志详细程度：important / standard / verbose。
-    @Published var cinemaLogLevel: String {
+    var cinemaLogLevel: String {
         didSet { UserDefaults.standard.set(cinemaLogLevel, forKey: SettingsKeys.cinemaLogLevel) }
     }
 
     /// 刮削成功后把 NFO 写到同目录（仅本地 / SMB），默认关闭。
-    @Published var cinemaExportNFO: Bool {
+    var cinemaExportNFO: Bool {
         didSet { UserDefaults.standard.set(cinemaExportNFO, forKey: SettingsKeys.cinemaExportNFO) }
     }
 
     /// 「最近删除」自动清理的保留天数；0 表示不自动清理。（随图库保存）
-    @Published var trashRetentionDays: Int {
+    var trashRetentionDays: Int {
         didSet { persistLibraryInt(SettingsKeys.trashRetentionDays, trashRetentionDays) }
     }
 
     /// 导入时把文件夹末级目录创建为相簿。（随图库保存）
-    @Published var importCreateAlbumsFromFolders: Bool {
+    var importCreateAlbumsFromFolders: Bool {
         didSet { persistLibraryFlag(SettingsKeys.importCreateAlbums, importCreateAlbumsFromFolders) }
     }
 
     /// 导入时保留上层文件夹结构。（随图库保存）
-    @Published var importPreserveFolderStructure: Bool {
+    var importPreserveFolderStructure: Bool {
         didSet { persistLibraryFlag(SettingsKeys.importPreserveStructure, importPreserveFolderStructure) }
     }
 
     /// 导入时跳过字节完全相同的文件。（随图库保存）
-    @Published var importSkipExactDuplicates: Bool {
+    var importSkipExactDuplicates: Bool {
         didSet { persistLibraryFlag(SettingsKeys.importSkipDuplicates, importSkipExactDuplicates) }
     }
 
     /// 导入完成后重新校验目标文件哈希。（随图库保存）
-    @Published var importVerifyCopies: Bool {
+    var importVerifyCopies: Bool {
         didSet { persistLibraryFlag(SettingsKeys.importVerifyCopies, importVerifyCopies) }
     }
 
     /// 网格缩略图上显示的元数据。（随图库保存）
-    @Published var metadata: MetadataOptions {
+    var metadata: MetadataOptions {
         didSet { persistLibraryJSON(SettingsKeys.metadata, metadata) }
+    }
+
+    // MARK: 功能模块（随图库保存）
+
+    /// 模块开关跟着图库的元数据走：切换图库时入口与搜索结果一起变化。
+    /// 「图库」是基础模块，始终开启，不参与持久化。
+    var moduleCloud: Bool {
+        didSet { persistModuleFlag(SettingsKeys.moduleCloud, moduleCloud) }
+    }
+
+    var moduleCatalog: Bool {
+        didSet { persistModuleFlag(SettingsKeys.moduleCatalog, moduleCatalog) }
+    }
+
+    var moduleTelevision: Bool {
+        didSet { persistModuleFlag(SettingsKeys.showTelevision, moduleTelevision) }
+    }
+
+    var moduleCinema: Bool {
+        didSet { persistModuleFlag(SettingsKeys.moduleCinema, moduleCinema) }
     }
 
     // MARK: 影院刮削
 
     /// 刮削数据源的优先级：TMDB（官方 API）优先，豆瓣作为备用同时参与。
-    @Published var cinemaProvider: CinemaProvider {
+    var cinemaProvider: CinemaProvider {
         didSet { UserDefaults.standard.set(cinemaProvider.rawValue, forKey: SettingsKeys.cinemaProvider) }
     }
 
     /// 刮削源的尝试顺序：第一项就是首选源，设置页拖动后立即生效。
-    @Published var cinemaSourceOrder: [CinemaProvider] {
+    var cinemaSourceOrder: [CinemaProvider] {
         didSet {
             UserDefaults.standard.set(cinemaSourceOrder.map(\.rawValue),
                                       forKey: SettingsKeys.cinemaSourceOrder)
@@ -350,32 +372,32 @@ final class AppSettings: ObservableObject {
     }
 
     /// TMDB API Key（v3）或 Read Access Token（v4，以 eyJ 开头）。只写统一凭据保险库。
-    @Published var cinemaAPIKey: String {
+    var cinemaAPIKey: String {
         didSet { persistSecret(cinemaAPIKey, for: .tmdbAPIKey) }
     }
 
     /// 刮削语言，如 zh-CN / en-US / ja-JP。
-    @Published var cinemaLanguage: String {
+    var cinemaLanguage: String {
         didSet { UserDefaults.standard.set(cinemaLanguage, forKey: SettingsKeys.cinemaLanguage) }
     }
 
     /// TMDB API 地址，可替换为镜像 / 代理。
-    @Published var cinemaAPIBase: String {
+    var cinemaAPIBase: String {
         didSet { UserDefaults.standard.set(cinemaAPIBase, forKey: SettingsKeys.cinemaAPIBase) }
     }
 
     /// 海报与背景图地址前缀，默认 image.tmdb.org。
-    @Published var cinemaImageBase: String {
+    var cinemaImageBase: String {
         didSet { UserDefaults.standard.set(cinemaImageBase, forKey: SettingsKeys.cinemaImageBase) }
     }
 
     /// 进入影院或扫描完网盘后自动刮削新视频。
-    @Published var cinemaAutoScrape: Bool {
+    var cinemaAutoScrape: Bool {
         didSet { UserDefaults.standard.set(cinemaAutoScrape, forKey: SettingsKeys.cinemaAutoScrape) }
     }
 
     /// 刮削并发数：同时请求多个视频，默认 3；网络或片源较弱时可调低。
-    @Published var cinemaScrapeConcurrency: Int {
+    var cinemaScrapeConcurrency: Int {
         didSet {
             let clamped = min(6, max(1, cinemaScrapeConcurrency))
             UserDefaults.standard.set(clamped, forKey: SettingsKeys.cinemaScrapeConcurrency)
@@ -384,53 +406,53 @@ final class AppSettings: ObservableObject {
     }
 
     /// 豆瓣接口地址，可换成镜像 / 反代前缀。
-    @Published var cinemaDoubanBase: String {
+    var cinemaDoubanBase: String {
         didSet { UserDefaults.standard.set(cinemaDoubanBase, forKey: SettingsKeys.cinemaDoubanBase) }
     }
 
     /// 可选的豆瓣登录 Cookie，用于降低被限流的概率。只写统一凭据保险库。
-    @Published var cinemaDoubanCookie: String {
+    var cinemaDoubanCookie: String {
         didSet { persistSecret(cinemaDoubanCookie, for: .doubanCookie) }
     }
 
     /// TheTVDB API Key（v4）：作为第三顺位刮削源。只写统一凭据保险库。
-    @Published var cinemaTVDBKey: String {
+    var cinemaTVDBKey: String {
         didSet { persistSecret(cinemaTVDBKey, for: .tvdbKey) }
     }
 
     /// TheTVDB 订阅者 PIN，可选；普通 Key 留空即可。只写统一凭据保险库。
-    @Published var cinemaTVDBPin: String {
+    var cinemaTVDBPin: String {
         didSet { persistSecret(cinemaTVDBPin, for: .tvdbPIN) }
     }
 
     /// OpenSubtitles API Key：在线字幕搜索与下载。只写统一凭据保险库。
-    @Published var cinemaSubtitleAPIKey: String {
+    var cinemaSubtitleAPIKey: String {
         didSet { persistSecret(cinemaSubtitleAPIKey, for: .subtitleAPIKey) }
     }
 
     /// OpenSubtitles 账号（下载配额用）；账号与密码只写统一凭据保险库。
-    @Published var cinemaSubtitleUsername: String {
+    var cinemaSubtitleUsername: String {
         didSet { persistSecret(cinemaSubtitleUsername, for: .subtitleUsername) }
     }
 
-    @Published var cinemaSubtitlePassword: String {
+    var cinemaSubtitlePassword: String {
         didSet { persistSecret(cinemaSubtitlePassword, for: .subtitlePassword) }
     }
 
     /// Assrt（伪射手）访问令牌：国内字幕源，只写统一凭据保险库。
-    @Published var assrtSubtitleToken: String {
+    var assrtSubtitleToken: String {
         didSet { persistSecret(assrtSubtitleToken, for: .subtitleAssrtToken) }
     }
 
     /// 在线字幕来源开关：关掉后不再参与搜索与自动匹配。
-    @Published var subtitleProviderOpenSubtitlesEnabled: Bool {
+    var subtitleProviderOpenSubtitlesEnabled: Bool {
         didSet {
             UserDefaults.standard.set(subtitleProviderOpenSubtitlesEnabled,
                                       forKey: SettingsKeys.subtitleProviderOpenSubtitles)
         }
     }
 
-    @Published var subtitleProviderAssrtEnabled: Bool {
+    var subtitleProviderAssrtEnabled: Bool {
         didSet {
             UserDefaults.standard.set(subtitleProviderAssrtEnabled,
                                       forKey: SettingsKeys.subtitleProviderAssrt)
@@ -489,7 +511,7 @@ final class AppSettings: ObservableObject {
     }
 
     /// 家长控制档位：按分级限制影院可见内容。
-    @Published var cinemaParentalLevel: CinemaParentalLevel {
+    var cinemaParentalLevel: CinemaParentalLevel {
         didSet { UserDefaults.standard.set(cinemaParentalLevel.rawValue, forKey: SettingsKeys.cinemaParentalLevel) }
     }
 
@@ -607,6 +629,11 @@ final class AppSettings: ObservableObject {
             rawValue: defaults.object(forKey: SettingsKeys.cinemaParentalLevel) as? Int ?? 0
         ) ?? .off
         trashRetentionDays = defaults.object(forKey: SettingsKeys.trashRetentionDays) as? Int ?? 30
+        // 模块开关先取全局继承值；打开图库后由 reloadLibraryScopedValues() 换成该库自己的值。
+        moduleCloud = defaults.object(forKey: SettingsKeys.moduleCloud) as? Bool ?? true
+        moduleCatalog = defaults.object(forKey: SettingsKeys.moduleCatalog) as? Bool ?? true
+        moduleTelevision = defaults.object(forKey: SettingsKeys.showTelevision) as? Bool ?? true
+        moduleCinema = defaults.object(forKey: SettingsKeys.moduleCinema) as? Bool ?? true
         importCreateAlbumsFromFolders = defaults.object(forKey: SettingsKeys.importCreateAlbums) as? Bool ?? true
         importPreserveFolderStructure = defaults.object(forKey: SettingsKeys.importPreserveStructure) as? Bool ?? true
         importSkipExactDuplicates = defaults.object(forKey: SettingsKeys.importSkipDuplicates) as? Bool ?? true
@@ -648,6 +675,39 @@ final class AppSettings: ObservableObject {
         importVerifyCopies = libraryBool(SettingsKeys.importVerifyCopies, fallback: true)
         trashRetentionDays = libraryInt(SettingsKeys.trashRetentionDays, fallback: 30)
         metadata = libraryDecoded(SettingsKeys.metadata, as: MetadataOptions.self) ?? MetadataOptions()
+        // 功能模块开关也属于图库：没存过的库按「全部开启」起步，不继承上一个库的选择。
+        moduleCloud = libraryBool(SettingsKeys.moduleCloud, fallback: true)
+        moduleCatalog = libraryBool(SettingsKeys.moduleCatalog, fallback: true)
+        moduleTelevision = libraryBool(SettingsKeys.showTelevision, fallback: true)
+        moduleCinema = libraryBool(SettingsKeys.moduleCinema, fallback: true)
+    }
+
+    /// 读取模块开关：视图、搜索与启动恢复都从这里取，保证与当前图库一致。
+    func moduleEnabled(_ module: AppModule) -> Bool {
+        switch module {
+        case .library: return true
+        case .cloud: return moduleCloud
+        case .catalog: return moduleCatalog
+        case .television: return moduleTelevision
+        case .cinema: return moduleCinema
+        }
+    }
+
+    /// 写模块开关：落在当前图库自己的设置表里，换库后互不影响。
+    func setModuleEnabled(_ module: AppModule, _ value: Bool) {
+        switch module {
+        case .library: break
+        case .cloud: moduleCloud = value
+        case .catalog: moduleCatalog = value
+        case .television: moduleTelevision = value
+        case .cinema: moduleCinema = value
+        }
+    }
+
+    /// 模块卡片的开关绑定：设置页与建库向导共用。
+    func moduleBinding(_ module: AppModule) -> Binding<Bool> {
+        Binding(get: { [weak self] in self?.moduleEnabled(module) ?? true },
+                set: { [weak self] in self?.setModuleEnabled(module, $0) })
     }
 
     private func libraryBool(_ key: String, fallback value: Bool) -> Bool {
@@ -683,6 +743,16 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// 模块开关随图库保存；新建图库向导里还没有库时只记 UserDefaults，
+    /// 建库完成后由 `seedModulesForCurrentLibraryIfNeeded()` 带进新库。
+    private func persistModuleFlag(_ key: String, _ value: Bool) {
+        guard !isApplyingLibraryScope else { return }
+        if libraryWriter != nil, !defersSettingsToNewLibrary {
+            libraryWriter?(key, value ? "1" : "0")
+        }
+        UserDefaults.standard.set(value, forKey: key)
+    }
+
     private func persistLibraryJSON<T: Encodable>(_ key: String, _ value: T) {
         guard !isApplyingLibraryScope else { return }
         guard let data = try? JSONEncoder().encode(value) else { return }
@@ -694,14 +764,14 @@ final class AppSettings: ObservableObject {
     }
 
     /// 正在用「新建图库」向导配置一个还没有创建出来的库：
-    /// 此时改主题只记到 UserDefaults，不能写进当前还在使用的旧图库。
-    var defersThemeToNewLibrary = false
+    /// 此时改主题 / 模块开关只记到 UserDefaults，不能写进当前还在使用的旧图库。
+    var defersSettingsToNewLibrary = false
 
     /// 外观 / 强调色跟着当前图库保存：有图库时写进图库自己的设置表，
     /// 同时留一份到 UserDefaults，作为「还没设置过主题的库」的继承值。
     private func persistTheme(_ rawValue: String, for key: String) {
         guard !isApplyingLibraryScope else { return }
-        if libraryWriter != nil, !defersThemeToNewLibrary {
+        if libraryWriter != nil, !defersSettingsToNewLibrary {
             libraryWriter?(key, rawValue)
         }
         UserDefaults.standard.set(rawValue, forKey: key)
@@ -717,6 +787,17 @@ final class AppSettings: ObservableObject {
         }
         if reader(SettingsKeys.accent) == nil {
             writer(SettingsKeys.accent, accent.rawValue)
+        }
+    }
+
+    /// 刚切到的库还没存过模块开关时，把当前值写进去：
+    /// 新建库带走向导里选好的模块，升级上来的旧库也拿到一份显式记录。
+    func seedModulesForCurrentLibraryIfNeeded() {
+        guard let reader = libraryReader, let writer = libraryWriter else { return }
+        guard !isApplyingLibraryScope else { return }
+        for module in AppModule.allCases where !module.isLocked {
+            guard reader(module.storageKey) == nil else { continue }
+            writer(module.storageKey, moduleEnabled(module) ? "1" : "0")
         }
     }
 

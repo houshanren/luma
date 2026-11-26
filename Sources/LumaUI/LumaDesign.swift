@@ -23,6 +23,25 @@ package enum LumaMetrics {
     package static let sidebarCoverRadius: CGFloat = 4
 }
 
+/// 海报卡片共用的几何与描边：网络资源、影院、网络影院三处必须一致，
+/// 否则同一屏里三种卡片的圆角、描边与投影对不齐。
+package enum LumaPosterMetrics {
+    /// 封面圆角。
+    package static let cornerRadius: CGFloat = 12
+    /// 常态 / 悬停描边。
+    package static let borderWidth: CGFloat = 0.6
+    package static let hoverBorderWidth: CGFloat = 1.8
+    /// 常态 / 悬停投影。
+    package static let shadowRadius: CGFloat = 8
+    package static let hoverShadowRadius: CGFloat = 16
+    package static let shadowY: CGFloat = 3
+    package static let hoverShadowY: CGFloat = 8
+    /// 悬停动画时长。
+    package static let hoverDuration: Double = 0.16
+    /// 竖版海报宽高比（2:3）。
+    package static let portraitAspect: CGFloat = 2.0 / 3.0
+}
+
 /// 官网品牌色与渐变：只用于首屏、关于这类品牌面，不参与常规界面配色。
 /// 色值取自 `website/styles.css` 的 `--coral / --amber / --mint / --cyan / --violet / --pink`。
 package enum LumaBrand {

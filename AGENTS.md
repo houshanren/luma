@@ -11,7 +11,7 @@
 - Swift 5.9，最低 macOS 14，SwiftPM（`Package.swift`），**无第三方依赖**，仅链接系统 `libsqlite3`。
 - UI 全部 SwiftUI；必须依赖 AppKit 能力时才 `import AppKit`（`NSOpenPanel`/`NSSavePanel`/`NSWorkspace`/`NSImage` 等）。
 - 不引入 Combine 之外的响应式框架；状态由 `LibraryStore`（`ObservableObject` + `@Published`）统一承载。
-- 不引入资源目录（`.xcassets`）；图标在 `Resources/AppIcon.icns`，由 `Tools/make_icon.swift` 绘制 1024 PNG 后用 `iconutil` 打包。
+- 不引入资源目录（`.xcassets`）；图标在 `Resources/AppIcon.icns`，由 `Tools/design/make_icon.swift` 绘制 1024 PNG 后用 `iconutil` 打包。
 - 界面语言为简体中文，代码注释使用中文。
 
 ---
@@ -30,7 +30,7 @@ open Luma.app
   2. `open Luma.app` 后进程存活（不闪退）；
   3. 手动走一遍被改动的界面路径。
 - 纯逻辑（布局、档位等）改动需跑 `swift run LumaCoreChecks`；内容契约 / 数据层改动分别跑 `swift run LumaContentChecks` / `swift run LumaDataChecks`。断言失败会以非零码退出。命令行工具链没有 XCTest，新增纯逻辑优先放进对应库（`Sources/LumaCore` 等），断言写进 `Tests/<target>/Checks<领域>.swift` 并在该 target 的 `main.swift` 注册；写法见 `docs/development.md` §19。
-- 界面性能回归用 `python3 Tools/ui_perf.py`（应用内基准，输出 FPS / 慢帧 / 缩略图 p95）；需要 Instruments 时间线时用 `Tools/ui_trace.sh`（要求完整 Xcode 与 `xctrace`）。
+- 界面性能回归用 `python3 Tools/dev/ui_perf.py`（应用内基准，输出 FPS / 慢帧 / 缩略图 p95）；需要 Instruments 时间线时用 `Tools/dev/ui_trace.sh`（要求完整 Xcode 与 `xctrace`）。
 - 临时脚本放 `/tmp`，不要提交。
 - 若出现 `error: input file '...' was modified during the build`，说明有另一个构建/编辑进程在同时改动文件；等待数秒后重试，**不要**删除 `.build` 或中断他人构建。
 - 需要连通性调试时可临时起本地服务（如 WebDAV 模拟），但不要向仓库添加测试服务器代码。
@@ -387,7 +387,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 新增一个用户可调项必须**全部**完成：
 
-1. 先判断归属：视图状态、导入选项、最近删除保留期、系统图库载入上限、网格元数据显示、网盘收藏、智能助手配置与对话属于**图库级设置**（写当前图库的 SQLite）；外观、强调色、动效、查看器与视频播放等属于 **App 级偏好**（写 `UserDefaults`）。API Key、Cookie、账号密码、PIN 一律属于凭据，只能写统一凭据保险库 `LumaKeychainVault`。
+1. 先判断归属：视图状态、导入选项、最近删除保留期、系统图库载入上限、网格元数据显示、网盘收藏、智能助手配置与对话、五个功能模块开关属于**图库级设置**（写当前图库的 SQLite）；外观、强调色、动效、查看器与视频播放等属于 **App 级偏好**（写 `UserDefaults`）。API Key、Cookie、账号密码、PIN 一律属于凭据，只能写统一凭据保险库 `LumaKeychainVault`。
 2. `SettingsKeys` 增加键名（`settings.xxx`）；
 3. `AppSettings` 增加 `@Published` 属性：图库级用 `persistLibraryFlag` / `persistLibraryInt` / `persistLibraryJSON`，App 级继续写 `UserDefaults`；
 4. 图库级属性必须在 `AppSettings.reloadLibraryScopedValues()` 中读取（缺少键时给默认值），并在 `SettingsView` 对应的图库 Tab 或说明中标注「随图库保存」；
@@ -507,6 +507,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - [ ] 修改过的数据在重启后仍然存在（`save()` / schema 迁移验证）
 - [ ] 新增设置项有默认值、有持久化、有实际行为
 - [ ] 新增 UI 使用语义色、`settings.cardRadius` 与 `settings.motion`
+- [ ] 胶囊 / 卡片使用 `LumaSurfaces` 的 token 与组件（见 §18），没有手写描边宽度、内边距与胶囊组合
 - [ ] 新增快捷键已同步快捷键面板与 README
 - [ ] README / AGENTS 与实际实现一致（功能、限制、文件职责）
 - [ ] 无新增编译警告（尤其未使用变量、Sendable 捕获）
@@ -552,3 +553,29 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 **已验证的失败方案（不要回退）**
 - ❌ 在画面上方另叠一条玻璃胶囊：视觉上成为「工具栏 + 第二行」。
 - ❌ 把全部按钮平铺进工具栏：图标过小、互相挤压、系统蓝色 tint 与墨色混排。
+
+---
+
+## 18. 胶囊 / 卡片与 UI Token（强制）
+
+**唯一入口**：`Sources/LumaUI/LumaSurfaces.swift`（`Luma` 通过 `ModuleExports.swift` 的 `@_exported import` 直接可用）。
+
+- `LumaInk`：`primary / secondary / tertiary(scheme)`、`hairline(scheme)`、`fill(.faint…strong, scheme)`、`tintWash / tintHairline(tint, scheme)`、`onTint(tint)`。
+- `LumaControlMetrics`：胶囊内边距 8/3、筛选项 8/4、发丝线 0.6、强调线 0.8、卡片圆角 10、卡片内边距 10。
+- 组件与修饰器：`lumaChip(selected:tint:)`、`LumaBadge`、`lumaCardSurface(tint:raised:)`、`lumaGlassPill()`、`lumaPill(fill:stroke:...)`、`lumaPillSurface(fill:stroke:...)`。
+
+**硬规则**
+
+- ❌ 视图里手写 `Capsule().fill(...)` + `Capsule().strokeBorder(...)` 组合、手写 `0.5/0.6/0.8/1` 描边与 `5/1`、`8/4` 内边距。改用上面的 API。
+- ❌ 写字面透明度当颜色（`Color.primary.opacity(0.05)` 之类）；颜色只经 `LumaInk` 或传入的 `tint`。
+- ❌ 普通卡片 / 筛选项上 `.ultraThinMaterial`：材质只允许出现在压在照片、视频、工具栏上的少量浮层（`lumaGlassPill` / `lumaGlassCard`）。
+- ❌ 一个控件叠三层以上效果：最多「一层填充 + 一层描边 + 一层投影」。渐变与颜色用 `static` / `let`，不在 `body` 里新建。
+- ❌ 固定 `frame(width:)` 的胶囊 / 卡片：用 `lineLimit(1)` + `layoutPriority`，窄容器用 `ViewThatFits` 或收进 `Menu`。
+- 实底按钮的文字颜色必须用 `LumaInk.onTint(tint)`；浅强调色（金 / 薄荷）配白字是禁止的。
+
+**验收**
+
+- 浅色 / 深色、以及默认蓝 / 金 / 紫三种强调色各看一遍：胶囊洗底、描边、实底文字对比度。
+- 卡片与胶囊改动后跑一次 `python3 Tools/dev/ui_perf.py --scenes grid-square --seconds 3`，确认没有把材质或投影加到列表行里。
+
+**文档**：`docs/ui-design-system.md` §11 是完整规范；胶囊 / 卡片迁移进度记录在 `docs/architecture/refactor-status-2026-11.md` §H。

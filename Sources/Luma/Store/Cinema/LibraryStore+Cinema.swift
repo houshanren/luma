@@ -570,12 +570,12 @@ extension LibraryStore {
         // 同一个目标已经试过（成功或失败）：进度回调频率很高，不能每次都重来。
         if cinemaPrewarmTarget == next.id { return }
 
-        cinemaPrewarmTask?.cancel()
+        tasks.cancel(.cinemaPrewarm)
         discardPrewarmedCinemaStream()
         cinemaPrewarmTarget = next.id
         let photo = anyPhoto(id: next.file.photoID) ?? next.file.photoItem
         let trailer = next.subtitle
-        cinemaPrewarmTask = Task { [weak self] in
+        tasks.adopt(.cinemaPrewarm, Task { [weak self] in
             guard let self else { return }
             let source: URL
             var headers: [String: String] = [:]
@@ -667,14 +667,14 @@ extension LibraryStore {
                 session.stop()
                 Diagnostics.record("预热下一集失败 \(trailer)：\(error.localizedDescription)")
             }
-        }
+        })
     }
 
     /// 切集时取走预热流；超过 20 分钟视为直链可能过期，直接丢弃。
     func takePrewarmedCinemaStream(for photoID: UUID) -> CinemaPrewarmedStream? {
         guard let warm = cinemaPrewarmedStream, warm.photoID == photoID else { return nil }
         cinemaPrewarmedStream = nil
-        cinemaPrewarmTask = nil
+        tasks.finish(.cinemaPrewarm)
         cinemaPrewarmTarget = nil
         guard Date().timeIntervalSince(warm.createdAt) < 20 * 60 else {
             warm.session.stop()
@@ -684,8 +684,7 @@ extension LibraryStore {
     }
 
     func discardPrewarmedCinemaStream() {
-        cinemaPrewarmTask?.cancel()
-        cinemaPrewarmTask = nil
+        tasks.cancel(.cinemaPrewarm)
         cinemaPrewarmTarget = nil
         guard let warm = cinemaPrewarmedStream else { return }
         cinemaPrewarmedStream = nil

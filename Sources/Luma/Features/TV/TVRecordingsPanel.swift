@@ -3,7 +3,7 @@ import SwiftUI
 /// 夜航页底部的录制中心：定时录制、录制中、已完成，以及「追剧录」入口。
 /// 数据与录制任务都在 `IPTVBrowserModel` 里，视图只负责展示与触发。
 struct TVRecordingsPanel: View {
-    @EnvironmentObject private var tv: IPTVBrowserModel
+    @Environment(IPTVBrowserModel.self) private var tv
 
     private static let clock: DateFormatter = {
         let formatter = DateFormatter()

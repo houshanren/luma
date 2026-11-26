@@ -261,7 +261,7 @@ struct CinemaPosterDeck: View {
             .padding(.vertical, 3)
             .background(LumaBrand.amber.opacity(0.12), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(LumaBrand.amber.opacity(0.35), lineWidth: 0.6)
+                Capsule().strokeBorder(LumaBrand.amber.opacity(0.35), lineWidth: LumaControlMetrics.hairline)
             }
         }
         .buttonStyle(.plain)
@@ -373,7 +373,7 @@ struct CinemaRecommendationShelf: View {
     /// 豆瓣条目：只能外部打开。
     let onOpenExternal: (CinemaRecommendation) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     /// 悬停项：与演职员头像一致的抬起、琥珀描边、右上角 ↗ 角标。
     @State private var hovered: String?
     @State private var activeSource: CinemaRecommendationGroup.Source?

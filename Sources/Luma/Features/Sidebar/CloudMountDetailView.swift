@@ -6,9 +6,9 @@ struct CloudMountDetailView: View {
     /// 所属网盘实例：影院页也归属于它，不依赖当前 sidebarItem。
     let mountID: UUID
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(AppSettings.self) private var settings
 
     /// 网盘里只常用「影院」：媒体类型 / 更多项目 / 场景 / 相簿全部默认收起。
     @State private var collapsed: Set<String> = ["media", "more", "scenes", "albums"]

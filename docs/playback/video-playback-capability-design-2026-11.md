@@ -136,7 +136,7 @@
 
 打包与运行方式：
 
-- `build.sh` 优先复制 `Vendor/ffmpeg-dv/{bin,lib}` 到 `Contents/Resources`，并把 `VERSIONS.txt` 与 GPL 许可一并带入；找不到时调用 `Tools/make_vendor_runtime.sh` 现场生成，再退回静态包。
+- `build.sh` 优先复制 `Vendor/ffmpeg-dv/{bin,lib}` 到 `Contents/Resources`，并把 `VERSIONS.txt` 与 GPL 许可一并带入；找不到时调用 `Tools/build/make_vendor_runtime.sh` 现场生成，再退回静态包。
 - 动态库约 100 个；libplacebo 通过 MoltenVK 初始化 Vulkan，子进程需要 `VK_ICD_FILENAMES`。
 - 启动 2 秒后会后台跑一次最小 libplacebo 滤镜图，预热动态库、Vulkan 设备与着色器。
 
@@ -229,7 +229,7 @@
 
 实际采用「构建期打包」而不是「运行期下载增强包」：
 
-- `build.sh` 优先复制 `Vendor/ffmpeg-dv/{bin,lib}`（ffmpeg-full 9.0.2 + libplacebo + MoltenVK + 约 100 个 dylib）到 `Contents/Resources`；`Vendor/ffmpeg-dv` 缺失时调用 `Tools/make_vendor_runtime.sh` 从本机 Homebrew 现场生成。
+- `build.sh` 优先复制 `Vendor/ffmpeg-dv/{bin,lib}`（ffmpeg-full 9.0.2 + libplacebo + MoltenVK + 约 100 个 dylib）到 `Contents/Resources`；`Vendor/ffmpeg-dv` 缺失时调用 `Tools/build/make_vendor_runtime.sh` 从本机 Homebrew 现场生成。
 - 找不到 ffmpeg-full 时退回静态 8.0.git（zscale 可用，P5 会偏绿），并在设置页显示「未安装：杜比视界 P5 会偏绿，HDR10 / HLG 正常」。
 - 运行时查找顺序：App 内置 `Contents/Resources/bin/ffmpeg` → Homebrew `ffmpeg-full` → Homebrew `ffmpeg` → 系统路径。
 - libplacebo 走 Vulkan：`VK_ICD_FILENAMES` 指向内置 `lib/MoltenVK_icd.json`，由 `PlaybackEnvironment.apply(to:)` 注入所有 ffmpeg 子进程。

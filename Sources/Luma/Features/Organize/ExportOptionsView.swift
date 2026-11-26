@@ -3,7 +3,7 @@ import SwiftUI
 
 /// 导出设置：格式、质量、尺寸、文件名规则，对齐官方「文件 › 导出」的能力。
 struct ExportOptionsView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     private var count: Int { store.exportTargets.count }
@@ -14,6 +14,7 @@ struct ExportOptionsView: View {
     }
 
     var body: some View {
+        @Bindable var store = store
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("导出")

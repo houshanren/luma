@@ -4,7 +4,7 @@ import CoreLocation
 /// 系统图库的工具弹窗：拍摄信息、移动相簿到文件夹、新建相簿并加入、删除文件夹确认。
 /// 全部走 PhotoKit 写回「照片」，不直接改 Photos.sqlite。
 struct SystemToolsSheet: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let request: SystemToolsRequest
 
     var body: some View {
@@ -81,7 +81,7 @@ private struct ToolHeader: View {
 // MARK: - 拍摄信息
 
 private struct MetadataEditor: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let ids: Set<UUID>
 
     @State private var changeDate = true
@@ -177,7 +177,7 @@ private struct MetadataEditor: View {
 // MARK: - 移动到文件夹
 
 private struct FolderPicker: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let albumIDs: [Int64]
 
     @State private var query = ""
@@ -251,7 +251,7 @@ private struct FolderPicker: View {
 // MARK: - 新建相簿并加入
 
 private struct NewAlbumWithPhotos: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let ids: Set<UUID>
 
     @State private var name = ""
@@ -296,7 +296,7 @@ private struct NewAlbumWithPhotos: View {
 // MARK: - 删除文件夹确认
 
 private struct DeleteFolderConfirm: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let id: Int64
     let name: String
     let albumCount: Int
@@ -336,7 +336,7 @@ private struct DeleteFolderConfirm: View {
 // MARK: - 空相簿 / 空文件夹清理
 
 private struct EmptyCollectionsCleanup: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let albumIDs: [Int64]
     let folderIDs: [Int64]
 

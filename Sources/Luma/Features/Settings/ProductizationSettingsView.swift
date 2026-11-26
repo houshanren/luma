@@ -4,7 +4,7 @@ import AppKit
 /// 产品化：把「关于」「检查更新」「导出诊断」整合成一张卡片。
 /// 顶部是应用身份与更新状态，底部是维护动作；所有状态都在卡内完成反馈。
 struct ProductizationSettingsView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.colorScheme) private var scheme
 
     @State private var checking = false
@@ -135,12 +135,10 @@ struct ProductizationSettingsView: View {
                 .foregroundStyle(status.color)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4.5)
-        .background(status.color.opacity(0.12), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(status.color.opacity(0.24), lineWidth: 0.5)
-        }
+        .lumaPill(fill: LumaInk.tintWash(status.color, scheme: scheme),
+                  stroke: LumaInk.tintHairline(status.color, scheme: scheme),
+                  horizontalPadding: 9,
+                  verticalPadding: 4.5)
         .animation(.easeOut(duration: 0.2), value: status.title)
     }
 
@@ -163,13 +161,10 @@ struct ProductizationSettingsView: View {
                     .font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(Color.accentColor)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5.5)
-            .background(Color.accentColor.opacity(0.14), in: Capsule())
-            .overlay {
-                Capsule().strokeBorder(Color.accentColor.opacity(0.26), lineWidth: 0.5)
-            }
-            .contentShape(Capsule())
+            .lumaPill(fill: LumaInk.tintWash(.accentColor, scheme: scheme),
+                      stroke: LumaInk.tintHairline(.accentColor, scheme: scheme),
+                      horizontalPadding: 11,
+                      verticalPadding: 5.5)
         }
         .buttonStyle(.plain)
         .disabled(checking)
@@ -187,13 +182,10 @@ struct ProductizationSettingsView: View {
                     .font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5.5)
-            .background(Color.primary.opacity(0.06), in: Capsule())
-            .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-            }
-            .contentShape(Capsule())
+            .lumaPill(fill: LumaInk.fill(.quiet, scheme: scheme),
+                      stroke: LumaInk.hairline(scheme),
+                      horizontalPadding: 11,
+                      verticalPadding: 5.5)
         }
         .buttonStyle(.plain)
         .help("导出到桌面，便于附在问题反馈里")
@@ -218,9 +210,11 @@ struct ProductizationSettingsView: View {
                             .font(.system(size: 8.5, weight: .bold))
                     }
                     .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    .lumaPill(fill: LumaInk.tintWash(.accentColor, scheme: scheme),
+                              stroke: Color.clear,
+                              lineWidth: 0,
+                              horizontalPadding: 9,
+                              verticalPadding: 4)
                 }
                 .buttonStyle(.plain)
             }

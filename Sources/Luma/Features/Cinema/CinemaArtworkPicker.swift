@@ -57,7 +57,7 @@ struct CinemaArtworkPickerSheet: View {
     let entry: CinemaEntry
     let onPick: (String) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var candidates: [CinemaArtworkCandidate] = []
     @State private var loading = true

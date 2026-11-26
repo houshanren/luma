@@ -253,8 +253,13 @@ extension LibraryStore {
                 return
             }
             do {
-                let moved = try await PhotoKitBridge.extractAlbums(plan.albumIdentifiers,
-                                                                   intoFolder: plan.folderIdentifier)
+                let moved = try await runSystemLibraryJob(
+                    "提取 \(plan.albums.count) 个相簿到「\(plan.folderName)」",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.extractAlbums(plan.albumIdentifiers,
+                                                           intoFolder: plan.folderIdentifier)
+                }
                 systemAlbums = systemAlbums.map { album in
                     guard movingIDs.contains(album.id) else { return album }
                     return SystemAlbumInfo(id: album.id,
@@ -307,7 +312,12 @@ extension LibraryStore {
                 return
             }
             do {
-                try await PhotoKitBridge.deleteFolders(identifiers: identifiers)
+                try await runSystemLibraryJob(
+                    "清理「\(request.folderName)」下 \(ids.count) 个空文件夹",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.deleteFolders(identifiers: identifiers)
+                }
                 // 连子孙文件夹一起从内存移除：删顶层空文件夹会带走整棵空子树。
                 var removed = Set(ids)
                 var queue = ids
@@ -511,7 +521,12 @@ extension LibraryStore {
         Task {
             guard await prepareSystemLibraryWrite() else { return }
             do {
-                try await PhotoKitBridge.addAssets(targets, toAlbum: identifier)
+                try await runSystemLibraryJob(
+                    "加入 \(targets.count) 张到相簿「\(album.name)」",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.addAssets(targets, toAlbum: identifier)
+                }
                 var merged = album.assetIDs
                 for id in targets where !merged.contains(id) { merged.append(id) }
                 updateSystemAlbum(albumID, assetIDs: merged)
@@ -532,7 +547,12 @@ extension LibraryStore {
         Task {
             guard await prepareSystemLibraryWrite() else { return }
             do {
-                try await PhotoKitBridge.removeAssets(targets, fromAlbum: identifier)
+                try await runSystemLibraryJob(
+                    "从相簿「\(album.name)」移出 \(targets.count) 张",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.removeAssets(targets, fromAlbum: identifier)
+                }
                 updateSystemAlbum(albumID, assetIDs: album.assetIDs.filter { !ids.contains($0) })
                 showToast("已把 \(targets.count) 张移出「\(album.name)」")
             } catch {
@@ -552,7 +572,12 @@ extension LibraryStore {
         Task {
             guard await prepareSystemLibraryWrite() else { return }
             do {
-                try await PhotoKitBridge.moveAssets(targets, inAlbum: identifier, toTop: toTop)
+                try await runSystemLibraryJob(
+                    toTop ? "把 \(targets.count) 张移到相簿最前" : "把 \(targets.count) 张移到相簿最后",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.moveAssets(targets, inAlbum: identifier, toTop: toTop)
+                }
                 var order = album.assetIDs
                 let moving = order.filter { ids.contains($0) }
                 order.removeAll { ids.contains($0) }
@@ -629,10 +654,15 @@ extension LibraryStore {
         Task {
             guard await prepareSystemLibraryWrite() else { return }
             do {
-                try await PhotoKitBridge.moveAssets(targets,
-                                                    inAlbum: identifier,
-                                                    before: targetID,
-                                                    after: after)
+                try await runSystemLibraryJob(
+                    "调整相簿顺序（\(targets.count) 张）",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.moveAssets(targets,
+                                                        inAlbum: identifier,
+                                                        before: targetID,
+                                                        after: after)
+                }
                 // 写回成功后切到手动顺序展示，网格立即呈现新位置。
                 markSystemAlbumManualOrder(albumID)
                 refreshSystemStructureAfterOrganize(affectedAlbums: [albumID])
@@ -652,7 +682,12 @@ extension LibraryStore {
         Task {
             guard await prepareSystemLibraryWrite() else { return }
             do {
-                try await PhotoKitBridge.delete(assetIDs: targets)
+                try await runSystemLibraryJob(
+                    "移到「照片」最近删除（\(targets.count) 张）",
+                    failureMessage: { PhotoKitBridge.userMessage(for: $0) }
+                ) {
+                    try await PhotoKitBridge.delete(assetIDs: targets)
+                }
                 removeSystemPhotosFromMemory(ids)
                 for id in ids { systemOverlays[id] = nil }
                 selection.removeAll()

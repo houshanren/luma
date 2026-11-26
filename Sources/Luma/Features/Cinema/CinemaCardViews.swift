@@ -100,7 +100,7 @@ struct CinemaSeriesCard: View {
     var fillWidth: Bool = false
     let onOpen: () -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     /// 悬停状态留在卡片内部：只有这张卡重绘，不会带着整页聚合一起重算。
     @State private var hovered = false
     /// 右键「手动刮削」打开的选片面板。
@@ -234,7 +234,7 @@ struct CinemaSeriesCard: View {
                              folderHint: series.episodes.first?.folderHint) {
                 showMatchSheet = false
             }
-            .environmentObject(store)
+            .environment(store)
         }
         .sheet(item: $artworkRequest) { request in
             CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
@@ -265,7 +265,7 @@ struct CinemaSeriesHeroCard: View {
     var onPlay: (() -> Void)? = nil
     let onOpen: () -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var hover = false
     @State private var showMatchSheet = false
     @State private var artworkRequest: CinemaArtworkPickerRequest?
@@ -367,7 +367,7 @@ struct CinemaSeriesHeroCard: View {
                              folderHint: series.episodes.first?.folderHint) {
                 showMatchSheet = false
             }
-            .environmentObject(store)
+            .environment(store)
         }
         .sheet(item: $artworkRequest) { request in
             CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in

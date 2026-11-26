@@ -6,7 +6,7 @@ import MapKit
 /// 地点详情：地图感页头 + 地点摘要 + 旅行日志式的全部照片。
 /// 与人物详情共用滚动收缩与「摘要 / 全部」交互，但内容全部围绕地点：到访轨迹、四季、地标与坐标。
 struct PlaceDetailView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let place: PlaceCluster
     let photos: [PhotoItem]
@@ -74,7 +74,7 @@ struct PlaceDetailView: View {
 // MARK: - 页头
 
 private struct PlaceDetailHero: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let place: PlaceCluster
     let insight: PlaceInsight?
@@ -755,7 +755,7 @@ private func placeSeasonColor(_ name: String) -> Color {
 
 /// 「全部」：旅行日志式年份分段，每个年份带四季比例条与瀑布流拼贴。
 private struct PlaceAllPhotosView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let photos: [PhotoItem]
     let availableWidth: CGFloat

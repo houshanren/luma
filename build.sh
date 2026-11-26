@@ -126,12 +126,12 @@ fetch_probe() {
 # 优先打包带 libplacebo 的 ffmpeg-full：杜比视界 Profile 5 的 DOVI RPU 只有它能应用。
 # 找不到时退回原来的静态 ffmpeg（P5 会偏绿，其余 SDR / HDR10 照常）。
 # 优先使用 Vendor 里已生成的杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK + 全部 dylib）。
-# 缺失时调用 Tools/make_vendor_runtime.sh 从本机 Homebrew 现场生成一份；
+# 缺失时调用 Tools/build/make_vendor_runtime.sh 从本机 Homebrew 现场生成一份；
 # 都没有才退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
 DV_RUNTIME="Vendor/ffmpeg-dv"
 BUNDLED_DV=0
 if [ ! -x "$DV_RUNTIME/bin/ffmpeg" ]; then
-    sh Tools/make_vendor_runtime.sh >/dev/null 2>&1 || true
+    sh Tools/build/make_vendor_runtime.sh >/dev/null 2>&1 || true
 fi
 if [ -x "$DV_RUNTIME/bin/ffmpeg" ]; then
     echo "复制杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK）…"

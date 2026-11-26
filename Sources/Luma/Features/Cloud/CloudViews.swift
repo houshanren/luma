@@ -5,8 +5,8 @@ import LumaContentCore
 // MARK: - 连接 / 编辑网络存储
 
 struct CloudConnectSheet: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
 
     @State private var name = ""
     @State private var address = ""
@@ -428,9 +428,9 @@ struct CloudConnectSheet: View {
 struct CloudOverviewView: View {
     let section: CloudOverviewSection
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(AppSettings.self) private var settings
     /// 分类卡片墙的悬停项：与图库同一套抬升反馈。
     @State private var hoveredOverview: String?
 
@@ -621,8 +621,8 @@ struct CloudOverviewView: View {
 /// 网盘网格的空状态：扫描进度、目录错误与筛选无结果。
 /// 有照片时由 `GalleryView` 的统一网格渲染，这里只负责「没有内容」时的页面。
 struct CloudGridEmptyState: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
 
     private var isFiltering: Bool {
         store.cloudScope != .all
@@ -733,7 +733,7 @@ struct CloudGridEmptyState: View {
 /// 与系统图库同名同位置的入口里，网盘本身不提供的几项（最近编辑 / 最近删除 / 导入项目）。
 /// 页面沿用统一的空状态版式，说明原因并给出回到「全部项目」的入口，而不是把入口藏起来。
 struct CloudReadOnlyScopeView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let scope: CloudScope
 
     private var detail: String {
@@ -774,8 +774,8 @@ struct CloudReadOnlyScopeView: View {
 // MARK: - 重命名 / 新建文件夹
 
 struct CloudNameSheet: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
     let request: CloudNameRequest
     @State private var text: String
 
@@ -823,8 +823,8 @@ struct CloudNameSheet: View {
 // MARK: - 信息面板
 
 struct CloudMountInfoView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
 
     private var mount: CloudMount? {
         guard case .cloudMount(let id) = store.sidebarItem else { return nil }
@@ -896,8 +896,8 @@ struct CloudMountInfoView: View {
 
 /// 网盘人物：列表、卡片与人物详情（摘要 / 地图 / 全部影像）与系统图库共用同一套组件。
 struct CloudPeopleView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
     @State private var selectedPersonID: UUID?
     @State private var detailMode: PersonDetailMode = .summary
     @State private var insight: PersonInsight?
@@ -1055,35 +1055,16 @@ struct CloudPeopleView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 96, height: 96)
-                Image(systemName: "person.crop.circle.badge.questionmark")
-                    .font(.system(size: 42, weight: .light))
-                    .foregroundStyle(.secondary)
-            }
-            Text("端侧人物聚类")
-                .font(.system(size: 22, weight: .semibold))
-            Text("使用本机 Vision 检测当前网盘列表的人脸并聚类为人物。\n结果缓存在当前图库，不会上传或写回网盘。")
-                .font(.system(size: 12.5))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            Button {
-                store.scanCloudPeople()
-            } label: {
-                Label(store.cloudPeoplePendingCount > 0 ? "开始分析" : "当前列表已识别",
-                      systemImage: "wand.and.stars")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.top, 4)
+        LumaEmptyState(symbol: "person.crop.circle.badge.questionmark",
+                       title: "端侧人物聚类",
+                       message: "使用本机 Vision 检测当前网盘列表的人脸并聚类为人物。\n结果缓存在当前图库，不会上传或写回网盘。",
+                       actions: [LumaEmptyAction(title: store.cloudPeoplePendingCount > 0 ? "开始分析" : "当前列表已识别",
+                                                 symbol: "wand.and.stars",
+                                                 filled: true) {
+                           store.scanCloudPeople()
+                       }])
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .disabled(cloud.isClusteringPeople || store.cloudPeoplePendingCount == 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, 60)
     }
 
     // MARK: - 人物详情
@@ -1141,10 +1122,10 @@ struct CloudPeopleView: View {
             detailMode = .summary
             collapseProgress = 0
             insight = nil
-            let request = PersonAvatarLoader.request(for: person, size: 84)
-            heroAvatar = PersonAvatarLoader.cached(request)
+            let request = PersonAvatarRequest.make(for: person, size: 84)
+            heroAvatar = PersonAvatarRegistry.cached(request)
             if heroAvatar == nil {
-                heroAvatar = await PersonAvatarLoader.load(request, store: store)
+                heroAvatar = await PersonAvatarRegistry.load(request)
             }
             let loaded = store.cloudPersonInsight(for: person)
             if !Task.isCancelled, selectedPersonID == person.id {
@@ -1198,8 +1179,8 @@ struct CloudPeopleView: View {
 /// 网盘重复项目页：按「文件大小 + 像素尺寸」分组，只读展示。
 /// 网盘文件不能在本机合并，界面会提示到网盘 App 中处理。
 struct CloudDuplicatesView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     private var groups: [DuplicateGroup] { store.cloudDuplicateGroups }
 
@@ -1289,9 +1270,9 @@ struct CloudDuplicatesView: View {
 /// 网盘图库体检：对当前目录逐张取缩略图检查清晰度、归并相似连拍、统计过大视频。
 /// 全部在本机完成，结果缓存在当前图库的 `derived_reports`；网盘只读，因此只做检查与预览，不提供清理动作。
 struct CloudHealthView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(AppSettings.self) private var settings
 
     private var report: LibraryHealthReport? { cloud.healthReport }
 
@@ -1372,22 +1353,15 @@ struct CloudHealthView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "stethoscope")
-                .font(.system(size: 38, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("还没有体检结果")
-                .font(.system(size: 16, weight: .semibold))
-            Text("体检会用当前目录的缩略图评估清晰度，并顺带提取特征向量归并相似连拍。首次扫描需要逐张读取网盘缩略图。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 430)
-            Button("开始体检") { store.scanCloudHealth() }
-                .keyboardShortcut(.defaultAction)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 72)
+        LumaEmptyState(symbol: "stethoscope",
+                       title: "还没有体检结果",
+                       message: "体检会用当前目录的缩略图评估清晰度，并顺带提取特征向量归并相似连拍。首次扫描需要逐张读取网盘缩略图。",
+                       actions: [LumaEmptyAction(title: "开始体检",
+                                                 symbol: nil,
+                                                 filled: true,
+                                                 isDefaultAction: true) {
+                           store.scanCloudHealth()
+                       }])
     }
 
     private func summary(_ report: LibraryHealthReport) -> some View {

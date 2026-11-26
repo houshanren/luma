@@ -3,8 +3,8 @@ import LumaCore
 
 /// 智能美化推荐面板：按画面偏差分组列出可批量处理的照片，全部在本机用缩略图分析。
 struct BeautyRecommendView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     private var report: BeautyReport? { store.beautyReport }
     private var cloud: CloudBrowserModel { store.cloudModel }

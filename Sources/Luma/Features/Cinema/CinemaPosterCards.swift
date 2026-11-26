@@ -114,7 +114,7 @@ struct CinemaPosterCard: View {
     var onPlay: (() -> Void)? = nil
     var onDetail: (() -> Void)? = nil
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @AppStorage("cinema_show_rating_badge") private var showRatingBadge = true
     @AppStorage("cinema_show_format_badge") private var showFormatBadge = true
     /// 悬停状态留在卡片内部：只有这张卡重绘，不会带着整页聚合一起重算。
@@ -207,16 +207,19 @@ struct CinemaPosterCard: View {
                 .padding(7)
             }
             .modifier(CinemaWallCardSizing(fillWidth: fillWidth))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous)
                     .strokeBorder(hovered ? LumaBrand.amber.opacity(0.55) : Color.white.opacity(0.08),
-                                  lineWidth: hovered ? 1.2 : 0.5)
+                                  lineWidth: hovered ? LumaPosterMetrics.hoverBorderWidth
+                                                    : LumaPosterMetrics.borderWidth)
             }
             // 悬停只加深描边与投影，不放大：放大后描边溢出格子，外框和海报内容对不齐。
             .shadow(color: .black.opacity(hovered ? 0.26 : 0.14),
-                    radius: hovered ? 12 : 6, y: hovered ? 7 : 3)
-            .animation(.easeOut(duration: 0.16), value: hovered)
+                    radius: hovered ? LumaPosterMetrics.hoverShadowRadius
+                                    : LumaPosterMetrics.shadowRadius,
+                    y: hovered ? LumaPosterMetrics.hoverShadowY : LumaPosterMetrics.shadowY)
+            .animation(.easeOut(duration: LumaPosterMetrics.hoverDuration), value: hovered)
             .overlay(alignment: .bottomTrailing) {
                 if hovered {
                     HStack(spacing: 5) {
@@ -273,7 +276,7 @@ struct CinemaPosterCard: View {
         }
         .sheet(isPresented: $showMatchSheet) {
             CinemaMatchSheet(entry: entry) { showMatchSheet = false }
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(item: $artworkRequest) { request in
             CinemaArtworkPickerSheet(kind: request.kind, entry: request.entry) { url in
@@ -306,7 +309,7 @@ struct CinemaEntryContextMenu: View {
     var onManualMatch: () -> Void
     var onArtwork: (CinemaArtworkKind) -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         Button("播放") { onPlay() }
@@ -698,7 +701,7 @@ struct CinemaWideCard: View {
                     .padding(.vertical, 3)
                     .background(.black.opacity(0.42), in: Capsule())
                     .overlay {
-                        Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.6)
+                        Capsule().strokeBorder(.white.opacity(0.14), lineWidth: LumaControlMetrics.hairline)
                     }
             }
         }

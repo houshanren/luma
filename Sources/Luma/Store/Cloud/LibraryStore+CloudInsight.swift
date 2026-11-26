@@ -215,7 +215,7 @@ extension LibraryStore {
                 }
             )
         }
-        cloudModel.analysisTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudAnalysis, Task { [weak self] in
             guard let self else { return }
             var done = 0
             for photo in targets {
@@ -262,7 +262,7 @@ extension LibraryStore {
             let analysed = self.cloudModel.analysis.count
             self.cloudModel.isAnalyzing = false
             self.cloudModel.analysisProgress = 0
-            self.cloudModel.analysisTask = nil
+            self.cloudModel.tasks.finish(.cloudAnalysis)
             self.cloudScopeCountsCacheKey = nil
             self.cloudVisibleCacheKey = nil
             if Task.isCancelled {
@@ -272,17 +272,16 @@ extension LibraryStore {
                 if let jobID { self.finishSourceJob(jobID, message: "已识别 \(analysed) 张") }
                 self.showToast("内容识别完成，共识别 \(analysed) 张")
             }
-        }
+        })
     }
 
     func cancelCloudContentAnalysis() {
-        cloudModel.analysisTask?.cancel()
+        cloudModel.tasks.cancel(.cloudAnalysis)
     }
 
     /// 切换网盘或换库时清空识别结果与范围（识别结果只在内存，属于当前挂载）。
     func resetCloudInsight() {
-        cloudModel.analysisTask?.cancel()
-        cloudModel.analysisTask = nil
+        cloudModel.tasks.cancel(.cloudAnalysis)
         cloudModel.isAnalyzing = false
         cloudModel.analysisProgress = 0
         cloudModel.analysis = [:]

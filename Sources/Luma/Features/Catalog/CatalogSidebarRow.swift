@@ -8,8 +8,8 @@ struct CatalogSidebarRow: View {
     /// 正在把别的资源拖到这一行上方：画一条落点提示线。
     var isDropTarget: Bool = false
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     @State private var editingSource: CatalogSource?
 

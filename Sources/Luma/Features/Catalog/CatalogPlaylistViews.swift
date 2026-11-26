@@ -7,7 +7,7 @@ struct CatalogPlaylistDetailView: View {
     /// 非空表示嵌在片单页里展示：左上角给「返回」，不再用弹窗。
     var onClose: (() -> Void)? = nil
 
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
     @Environment(\.dismiss) private var dismiss
 
     @State private var nameDraft = ""
@@ -337,24 +337,15 @@ struct CatalogPlaylistDetailView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "rectangle.stack.badge.plus")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(Color.accentColor.opacity(0.85))
-            Text("片单还是空的")
-                .font(.system(size: 14, weight: .semibold))
-            Text("在任意源的卡片上右键「加入片单」，跨源收藏会汇总到这里。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-            Button("去资源里挑几部") {
-                catalog.setHubTab(.browse)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
+        LumaEmptyState(symbol: "rectangle.stack.badge.plus",
+                       title: "片单还是空的",
+                       message: "在任意源的卡片上右键「加入片单」，跨源收藏会汇总到这里。",
+                       actions: [LumaEmptyAction(title: "去资源里挑几部",
+                                                 symbol: nil,
+                                                 filled: true) {
+                           catalog.setHubTab(.browse)
+                       }])
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func commitRename() {
@@ -370,7 +361,7 @@ struct CatalogPlaylistMenu: View {
     let source: CatalogSource
     let item: CatalogItem
 
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     var body: some View {
         Menu("加入片单") {

@@ -7,6 +7,18 @@ import UniformTypeIdentifiers
 extension LibraryStore {
     // MARK: - 缓存
 
+    /// 退出前把所有登记过的后台任务一次收掉。
+    /// 之前任务字段散在各模型里，退出时没法穷举；现在每个模型都持有同一个任务中心，
+    /// 这里点名即可，漏掉某一类任务的情况不会再出现。
+    func cancelAllBackgroundTasks() {
+        tasks.cancelAll()
+        viewerModel.tasks.cancelAll()
+        cloudModel.tasks.cancelAll()
+        catalogModel.tasks.cancelAll()
+        tvModel.tasks.cancelAll()
+        networkCinemaModel.tasks.cancelAll()
+    }
+
     /// 目录总体积：纯文件系统遍历，故意做成 nonisolated，
     /// 让资源页这类「打开就要读数」的地方可以丢到后台算，不卡主线程。
     nonisolated static func directorySize(at url: URL) -> Int64 {
@@ -94,8 +106,7 @@ extension LibraryStore {
         }
         // 先让正在进行的扫描 / 索引写入作废，避免删完又被后台任务写回来。
         systemLoadToken &+= 1
-        systemAnalysisTask?.cancel()
-        systemAnalysisTask = nil
+        tasks.cancel(.systemAnalysis)
         // 关掉 SQLite 连接后再删文件，否则 WAL 里的内容会继续写进已删除的 inode。
         flushMetadata()
         metadataStore = nil
@@ -103,8 +114,7 @@ extension LibraryStore {
         for url in LibraryPaths.sidecarArtifacts(in: container) {
             try? fm.removeItem(at: url)
         }
-        libraryIndexTask?.cancel()
-        libraryIndexTask = nil
+        tasks.cancel(.libraryIndex)
         libraryIndexComplete = true
         metadataStore = try? MetadataStore(url: LibraryPaths.metadataFile)
         resetFaceClusterState()
@@ -129,13 +139,8 @@ extension LibraryStore {
 
     // MARK: - Toast
 
+    /// 提示条状态由 `ChromeModel` 承载，这里保留 Store 侧入口，调用点不用改。
     func showToast(_ message: String) {
-        toast = message
-        toastTask?.cancel()
-        toastTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_200_000_000)
-            guard !Task.isCancelled else { return }
-            self?.toast = nil
-        }
+        chrome.showToast(message)
     }
 }

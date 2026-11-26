@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 智能相簿编辑器：条件可自由组合，实时显示匹配数量。
 struct SmartAlbumEditorView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SmartAlbum
     @State private var matchCount = 0

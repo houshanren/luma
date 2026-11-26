@@ -7,8 +7,8 @@ import LumaContentCore
 /// 地址可一次粘贴多条 M3U / M3U8；文件支持本地 M3U 与拾光分享包，保存前逐条拉取校验。
 /// 本地文件会复制进图库，之后原文件被移动或删除都不影响播放。
 struct TVSourceWizardView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var tv: IPTVBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(IPTVBrowserModel.self) private var tv
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
 

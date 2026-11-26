@@ -3,8 +3,8 @@ import AppKit
 
 /// 智能助手面板：问答、图片理解、检索建议与图库工具操作。
 struct AIAssistantView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @Environment(\.dismiss) private var dismiss
 
     @FocusState private var inputFocused: Bool
@@ -1127,7 +1127,8 @@ struct AIAssistantView: View {
     // MARK: - 输入
 
     private var composer: some View {
-        VStack(spacing: 9) {
+        @Bindable var store = store
+        return VStack(spacing: 9) {
             if let error = store.aiError {
                 errorBanner(error)
             }

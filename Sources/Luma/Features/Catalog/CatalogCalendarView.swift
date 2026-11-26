@@ -7,7 +7,7 @@ import SwiftUI
 ///   鼠标悬停、滚动、动画都不会重算全表。
 /// - 单日条目默认只铺 24 条，其余用「显示更多」分批展开，避免一次创建上千个封面视图。
 struct CatalogCalendarView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     /// 可选的来源范围：网络影院只看影视源的更新；网络资源总览不传，等于只看资源站。
     var sourceScope: Set<UUID>? = nil
@@ -592,18 +592,9 @@ struct CatalogCalendarView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "calendar.badge.plus")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(Color.accentColor.opacity(0.85))
-            Text("还没有更新记录")
-                .font(.system(size: 15, weight: .semibold))
-            Text("浏览任意源的首页后，条目会按站点上架日期（没有日期时按首次看到）记进日历。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
+        LumaEmptyState(symbol: "calendar.badge.plus",
+                       title: "还没有更新记录",
+                       message: "浏览任意源的首页后，条目会按站点上架日期（没有日期时按首次看到）记进日历。")
     }
 
     // MARK: 日期工具

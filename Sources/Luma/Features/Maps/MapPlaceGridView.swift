@@ -5,7 +5,7 @@ import LumaCore
 /// 地图「网格」模式：按「地点 + 连续日期」把照片切成行程段，用卡片网格逐段展示。
 /// 与系统「照片」的地点网格一致：段头是城市、日期范围与「查看地点」入口，下面是该段照片。
 struct MapPlaceGridView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let photos: [PhotoItem]
     let availableWidth: CGFloat
     /// 视野指纹：换一片区域时即便照片数量相同也要重算行程段。

@@ -1368,6 +1368,68 @@ package enum DateText {
         return nil
     }
 
+    /// 前后三天的相对说法：大前天 / 前天 / 昨天 / 今天 / 明天 / 后天 / 大后天；超出范围返回 nil。
+    /// 节目单、回看表这类跨几天的列表用它，省掉每个页面各写一遍 `date(byAdding:)` 判断。
+    package static func relativeDayOffset(_ date: Date, calendar: Calendar = .current) -> String? {
+        let today = calendar.startOfDay(for: Date())
+        let target = calendar.startOfDay(for: date)
+        guard let days = calendar.dateComponents([.day], from: today, to: target).day,
+              abs(days) <= 3 else { return nil }
+        switch days {
+        case -3: return "大前天"
+        case -2: return "前天"
+        case -1: return "昨天"
+        case 0: return "今天"
+        case 1: return "明天"
+        case 2: return "后天"
+        case 3: return "大后天"
+        default: return nil
+        }
+    }
+
+    /// 宽星期（星期三）：按天分组的段落标题用。
+    package static let weekdayWideFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "EEEE"
+        return f
+    }()
+
+    /// 「今天 · 星期三」/「昨天 · 星期三」/「星期三」：按天分组时的段落标题。
+    package static func dayWithWeekday(_ date: Date, calendar: Calendar = .current) -> String {
+        let weekday = weekdayWideFormatter.string(from: date)
+        guard let relative = relativeDay(date, calendar: calendar) else { return weekday }
+        return "\(relative) · \(weekday)"
+    }
+
+    /// 相对时刻：刚刚 / N 分钟前 / N 小时前 / N 天前，超过一个月回到「yyyy年M月」。
+    package static func relativeMoment(_ date: Date, now: Date = Date()) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        if seconds < 60 { return "刚刚" }
+        if seconds < 3_600 { return "\(Int(seconds / 60)) 分钟前" }
+        if seconds < 86_400 { return "\(Int(seconds / 3_600)) 小时前" }
+        if seconds < 86_400 * 30 { return "\(Int(seconds / 86_400)) 天前" }
+        return monthFormatter.string(from: date)
+    }
+
+    /// 粗略天数差（按 24 小时折算，至少 1）：用于「上次打开是 N 天前」这类文案。
+    package static func daysSince(_ date: Date, now: Date = Date()) -> Int {
+        max(1, Int(now.timeIntervalSince(date) / 86_400))
+    }
+
+    /// 「11/26」：需要紧凑年份 + 斜杠的场景（筛选范围的起止日期）。
+    package static let slashDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy/M/d"
+        return f
+    }()
+
+    /// 「11月26日 星期三」：按天分段的标题。
+    package static func monthDayWeekday(_ date: Date) -> String {
+        "\(monthDayFormatter.string(from: date)) \(weekdayWideFormatter.string(from: date))"
+    }
+
     /// 顶栏副标题用的紧凑日期范围：同一天只显示一个日期，同年省略年份、同月省略月份与年份。
     package static func span(from start: Date, to end: Date) -> String {
         let calendar = Calendar.current

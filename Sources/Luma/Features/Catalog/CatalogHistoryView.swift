@@ -3,8 +3,8 @@ import SwiftUI
 /// 观看足迹：把「接着看」与按天回看的足迹合成一个独立页面。
 /// 从上到下是数据概览、接着看大卡、未看完横轨、这一周的柱状图和胶片时间轴。
 struct CatalogHistoryView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
 
     /// 可选的来源范围：网络影院只统计影视源的观看记录；网络资源总览不传，等于只看资源站。
     var sourceScope: Set<UUID>? = nil

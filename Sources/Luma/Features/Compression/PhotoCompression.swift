@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import CoreGraphics
 
 struct CompressionSheetView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     private var targets: [PhotoItem] {
@@ -170,7 +170,8 @@ struct CompressionSheetView: View {
     }
 
     private var options: some View {
-        ScrollView {
+        @Bindable var store = store
+        return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Text("压缩设置")
                     .font(.system(size: 11, weight: .semibold))

@@ -8,8 +8,8 @@ import AppKit
 /// 左侧是铭牌 / 返回与浏览控件，右侧是搜索与动作键，同一条面板的两端。
 /// 深色拉丝金属 + 琥珀指示灯 + 刻字标签，模拟高端放映机的操作面板。
 struct CinemaToolbarConsole: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var scheme
     @Environment(\.openSettings) private var openSettings
     @AppStorage(SettingsKeys.selectedTab) private var settingsTab: SettingsTab = .general
@@ -543,7 +543,7 @@ struct CinemaToolbarConsole: View {
             CinemaTypePanel(scope: scope) {
                 showTypePanel = false
             }
-            .environmentObject(store)
+            .environment(store)
         }
     }
 
@@ -742,7 +742,7 @@ struct CinemaToolbarConsole: View {
             CinemaFilterPanel(scope: scope) {
                 showFilter = false
             }
-            .environmentObject(store)
+            .environment(store)
         }
     }
 
@@ -1247,7 +1247,7 @@ private struct CinemaFilterPanel: View {
     let scope: CinemaScope
     let onClose: () -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     private var matchedEntries: [CinemaEntry] {
         store.cinemaEntries(for: scope).values.filter { $0.matched }
@@ -1582,7 +1582,7 @@ private struct CinemaTypePanel: View {
     let scope: CinemaScope
     let onClose: () -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     private var buckets: [CinemaTypeBucket] {
         store.cinemaAggregate(for: scope).types
@@ -1757,9 +1757,9 @@ struct CinemaTitlebarConsoleHost: NSViewRepresentable {
         private func makeRoot() -> AnyView {
             AnyView(
                 TitlebarConsoleRoot(openSettings: openSettings)
-                    .environmentObject(store)
-                    .environmentObject(settings)
-                    .environmentObject(viewer)
+                    .environment(store)
+                    .environment(settings)
+                    .environment(viewer)
             )
         }
 
@@ -1945,7 +1945,7 @@ struct CinemaTitlebarConsoleHost: NSViewRepresentable {
 /// 标题栏控制台的根视图：查看器 / 播放器 / 编辑器打开后，顶栏归查看器自己用，
 /// 影院控制台要一起让位，不能浮在照片或视频画面上。
 private struct TitlebarConsoleRoot: View {
-    @EnvironmentObject private var viewer: ViewerModel
+    @Environment(ViewerModel.self) private var viewer
     let openSettings: () -> Void
 
     private var suppressed: Bool {

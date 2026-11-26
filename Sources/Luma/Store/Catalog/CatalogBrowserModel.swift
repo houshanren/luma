@@ -1,3 +1,4 @@
+import Observation
 import Foundation
 import LumaContentCore
 
@@ -10,24 +11,25 @@ enum CatalogPlaylistPage: Equatable {
 /// 网络资源的浏览状态：源列表、当前分类、分页、详情、续看与播放请求。
 /// 资源属于「本机配置」而不是某个图库，因此用 UserDefaults 保存，切换图库不受影响。
 @MainActor
-final class CatalogBrowserModel: ObservableObject {
-    @Published private(set) var sources: [CatalogSource] = []
-    @Published var selectedSourceID: UUID?
-    @Published var section: CatalogSection = .home
-    @Published var categories: [CatalogCategory] = []
+@Observable
+final class CatalogBrowserModel {
+    private(set) var sources: [CatalogSource] = []
+    var selectedSourceID: UUID?
+    var section: CatalogSection = .home
+    var categories: [CatalogCategory] = []
     /// 站点热门标签：跨分类的额外筛选入口。
-    @Published var tags: [CatalogCategory] = []
-    @Published var sort: CatalogSort = .latest
+    var tags: [CatalogCategory] = []
+    var sort: CatalogSort = .latest
     /// 站点不支持服务端排序时，对当前已加载列表做的本页排序。
-    @Published var localSort: CatalogLocalSort?
+    var localSort: CatalogLocalSort?
 
-    @Published var items: [CatalogItem] = []
-    @Published var isLoading = false
-    @Published var isLoadingMore = false
-    @Published var hasMore = false
-    @Published var error: String?
+    var items: [CatalogItem] = []
+    var isLoading = false
+    var isLoadingMore = false
+    var hasMore = false
+    var error: String?
     /// 结构化错误：界面优先用它统一展示恢复动作。
-    @Published var sourceError: SourceError?
+    var sourceError: SourceError?
     /// 统一任务中心：健康检测、更新日历补录等跨源任务上报到这里。
     var jobCenter: SourceJobCenter?
     /// 任务进度变化回调；由 LibraryStore 接到 `sourceJobRevision`，触发界面刷新。
@@ -35,22 +37,22 @@ final class CatalogBrowserModel: ObservableObject {
     /// 任务结束后的归档回调：由 LibraryStore 接到 `archiveSourceJob`，写进任务记录。
     var onJobFinished: ((UUID) -> Void)?
     /// 列表当前展示的是缓存快照而不是最新请求结果时，记录快照时间（离线视图提示用）。
-    @Published var listSnapshotAt: Date?
+    var listSnapshotAt: Date?
     /// 本次刷新相对上次快照新出现的条目（key = "源 UUID|条目 id"）：
     /// 只在「以前缓存过这个列表」时计算，首次进入不会把整页都标成新上架。
-    @Published var freshItemKeys: Set<String> = []
+    var freshItemKeys: Set<String> = []
     /// 一次性操作结果（例如保存到图库），几秒后自动消失。
-    @Published var notice: String?
+    var notice: String?
     /// 正在下载到图库的条目 id：卡片据此显示转圈。
-    @Published var savingItemID: String?
+    var savingItemID: String?
 
-    @Published var detail: CatalogDetail?
+    var detail: CatalogDetail?
     /// 关闭播放器后要在频道页里恢复的内联详情条目。
-    @Published var pendingInlineItem: CatalogItem?
+    var pendingInlineItem: CatalogItem?
     /// 当前在频道页里内联展示的详情条目（nil = 列表）。
     /// 提到模型里是为了让窗口工具栏也能读到：返回按钮与详情标题融进顶栏胶囊。
     /// 写入时顺手落盘：退出应用后再打开，仍停在原来那一页详情。
-    @Published var inlineDetailItem: CatalogItem? {
+    var inlineDetailItem: CatalogItem? {
         didSet {
             guard oldValue?.id != inlineDetailItem?.id else { return }
             persistInlineDetail()
@@ -58,94 +60,94 @@ final class CatalogBrowserModel: ObservableObject {
     }
     /// 频道详情里叠开的人物 / 片商档案（nil = 停留在详情页）。
     /// 工具栏最左的返回按钮据此先退回详情，而不是直接跳出到频道列表。
-    @Published var detailPersonTarget: CatalogDetailPersonTarget?
+    var detailPersonTarget: CatalogDetailPersonTarget?
     /// 关注页里打开的人物 / 片商档案（nil = 停留在关注列表）。
-    @Published var followedProfile: CatalogFollowedPerson?
+    var followedProfile: CatalogFollowedPerson?
     /// 片单页里打开的片单详情（nil = 停留在片单列表）。
-    @Published var openPlaylistPage: CatalogPlaylistPage?
-    @Published var isLoadingDetail = false
-    @Published var detailError: String?
+    var openPlaylistPage: CatalogPlaylistPage?
+    var isLoadingDetail = false
+    var detailError: String?
 
-    @Published var searchText = ""
+    var searchText = ""
     /// 侧边栏点「搜索」时自增，频道页据此把焦点移入搜索框。
-    @Published var searchFocusToken = 0
-    @Published var progress: [String: CatalogProgress] = [:]
-    @Published var favorites: [String: CatalogFavorite] = [:]
+    var searchFocusToken = 0
+    var progress: [String: CatalogProgress] = [:]
+    var favorites: [String: CatalogFavorite] = [:]
     /// 手动标记已看的条目键（`sourceID|itemID`）：不写假的播放进度，足迹统计不受影响。
-    @Published var watchedKeys: Set<String> = []
+    var watchedKeys: Set<String> = []
     /// 当前展开的一级分类。同一个二级 id 可能挂在多个一级下（例如 XSZAV 的「無碼流出」），
     /// 必须记住用户实际点开的是哪个一级，不能按二级 id 反查（会命中第一个）。
-    @Published var activeTopCategoryID: String?
+    var activeTopCategoryID: String?
     /// 侧边栏分类图标：每个分类拿该分类第一张卡片封面当缩略图。
     /// key = "源 UUID|分类 id"，值只在 URL 变化时写盘。
-    @Published private(set) var categoryThumbs: [String: String] = [:]
-    @Published var playback: CatalogPlaybackRequest?
-    @Published var showWizard = false
+    private(set) var categoryThumbs: [String: String] = [:]
+    var playback: CatalogPlaybackRequest?
+    var showWizard = false
     /// 导入向导当前服务的域：从网络影院进入只接收影视源，从网络资源进入只接收资源站。
-    @Published var wizardDomain: CatalogDomain?
+    var wizardDomain: CatalogDomain?
 
     // MARK: 网络资源 2.0：发现 / 关注 / 健康度
     /// 每个源最近一次连通性检测的结果。
-    @Published var health: [UUID: CatalogSourceHealth] = [:]
+    var health: [UUID: CatalogSourceHealth] = [:]
     /// 最近一次检测的耗时（毫秒）与时间。
-    @Published var healthLatency: [UUID: Int] = [:]
-    @Published var healthCheckedAt: [UUID: Date] = [:]
+    var healthLatency: [UUID: Int] = [:]
+    var healthCheckedAt: [UUID: Date] = [:]
     /// 置顶的源：在总览卡片墙里排在最前。
-    @Published var pinnedSourceIDs: [UUID] = []
+    var pinnedSourceIDs: [UUID] = []
     /// 每个源置顶的常用分类（分类面板里排最前）。
-    @Published var pinnedCategoryIDs: [UUID: [String]] = [:]
+    var pinnedCategoryIDs: [UUID: [String]] = [:]
     /// 关注的分类（片商 / 题材）：总览页直接跳转。
-    @Published var followedCategories: [CatalogFollowedCategory] = []
+    var followedCategories: [CatalogFollowedCategory] = []
     /// 有新内容的源：总览卡片上显示红点，进入后清除。
-    @Published var newSourceIDs: Set<UUID> = []
+    var newSourceIDs: Set<UUID> = []
     /// 跨源「今日总榜」：各源第一页混排。按域分别缓存，互不覆盖。
-    @Published var spotlightByDomain: [CatalogDomain: [CatalogSpotlightItem]] = [:]
-    @Published var isSpotlightLoading = false
+    var spotlightByDomain: [CatalogDomain: [CatalogSpotlightItem]] = [:]
+    var isSpotlightLoading = false
     /// 总榜维度：最新 / 各源热榜 / 今天新增。
-    @Published var spotlightMode: CatalogSpotlightMode = .latest
-    @Published var spotlightHotByDomain: [CatalogDomain: [CatalogSpotlightItem]] = [:]
-    @Published var isSpotlightHotLoading = false
+    var spotlightMode: CatalogSpotlightMode = .latest
+    var spotlightHotByDomain: [CatalogDomain: [CatalogSpotlightItem]] = [:]
+    var isSpotlightHotLoading = false
     /// 「今天新增」的榜单结果：从更新日历派生，改数据时重算一次，
     /// 不在工具栏角标 / 榜单渲染时反复过滤 2400 条日历。
-    @Published var todaySpotlight: [CatalogSpotlightItem] = []
+    var todaySpotlight: [CatalogSpotlightItem] = []
     /// 跨源聚合搜索。
-    @Published var globalQuery = ""
-    @Published var globalResults: [CatalogGlobalResult] = []
+    var globalQuery = ""
+    var globalResults: [CatalogGlobalResult] = []
     /// 这批结果对应哪个查询词：输入新词时先不展示旧结果。
-    @Published var globalResultsKeyword = ""
-    @Published var isGlobalSearching = false
+    var globalResultsKeyword = ""
+    var isGlobalSearching = false
     /// 最近的跨源搜索词：搜索框聚焦且为空时展示。
-    @Published var recentSearches: [String] = []
+    var recentSearches: [String] = []
     /// 自然语言搜索的解析结果（展示成条件胶囊）。
-    @Published var globalQueryPlan: CatalogQueryPlan?
+    var globalQueryPlan: CatalogQueryPlan?
     /// 更新日历：本机第一次看到某条内容的日期（从开始使用起累积）。
-    @Published var calendarItems: [CatalogCalendarItem] = []
+    var calendarItems: [CatalogCalendarItem] = []
     /// 最近一次补录新进来的条目（`sourceID|itemID`）：日历里高亮并排最前。
-    @Published var calendarNewIDs: [String] = []
+    var calendarNewIDs: [String] = []
     /// 正在扫描各源首页，把今天新出现的条目补进日历。
-    @Published var isCalendarRefreshing = false
+    var isCalendarRefreshing = false
     /// 日历上次选中的日期（跨启动还原）。
-    @Published var calendarSelectedDay: Date?
+    var calendarSelectedDay: Date?
     /// 跨源自定义片单。
-    @Published var playlists: [CatalogPlaylist] = []
+    var playlists: [CatalogPlaylist] = []
     /// 聚合片单：按关键字跨源动态聚合。
-    @Published var smartPlaylists: [CatalogSmartPlaylist] = []
+    var smartPlaylists: [CatalogSmartPlaylist] = []
     /// 每个聚合片单最近一次的结果。
-    @Published var smartResults: [UUID: [CatalogGlobalResult]] = [:]
+    var smartResults: [UUID: [CatalogGlobalResult]] = [:]
     /// 每个聚合片单相对上一次结果新增的条目（`sourceID|itemID`）。
-    @Published var smartNewIDs: [UUID: [String]] = [:]
-    @Published var smartLoading: Set<UUID> = []
+    var smartNewIDs: [UUID: [String]] = [:]
+    var smartLoading: Set<UUID> = []
     /// 网络资源区当前分页：浏览 / 片单 / 更新日历。
-    @Published var hubTab: CatalogHubTab = .browse
+    var hubTab: CatalogHubTab = .browse
     /// 关注的女优 / 片商。
-    @Published var followedPeople: [CatalogFollowedPerson] = []
+    var followedPeople: [CatalogFollowedPerson] = []
     /// 关注页封面墙：每个人跨源聚合到的最新封面（最多 4 张），持久化避免每次重查。
-    @Published var followPosters: [String: [CatalogFollowPoster]] = [:]
+    var followPosters: [String: [CatalogFollowPoster]] = [:]
     /// 关注人物的聚合快照：打开档案先铺历史，再在后台刷新并标出新条目。
-    @Published var followAggregates: [String: CatalogFollowAggregate] = [:]
+    var followAggregates: [String: CatalogFollowAggregate] = [:]
     /// 正在查看的人物档案：按名字跨源聚合的结果。
-    @Published var personProfile: CatalogPersonProfile?
-    @Published var isPersonLoading = false
+    var personProfile: CatalogPersonProfile?
+    var isPersonLoading = false
 
     // 以下为发现功能的内部缓存（供 +Discovery 扩展使用）。
     var lastSeenTop: [UUID: String] = [:]
@@ -154,8 +156,6 @@ final class CatalogBrowserModel: ObservableObject {
     var spotlightHotLoadedDomains: Set<CatalogDomain> = []
     /// 当前正在补录哪个域的更新日历：两个域共用一套日历表，但扫描与节流各自独立。
     var calendarScanDomain: CatalogDomain?
-    var healthTask: Task<Void, Never>?
-    var globalSearchTask: Task<Void, Never>?
     var previewCache: [String: CatalogPreviewTarget] = [:]
     var previewMissAt: [String: Date] = [:]
     /// 同时只解析一个悬停预览：鼠标扫过网格时不再给站点打一串请求。
@@ -204,13 +204,12 @@ final class CatalogBrowserModel: ObservableObject {
     }
 
     private var page = 1
-    private var task: Task<Void, Never>?
+    /// 后台任务登记处：首屏加载、发现 / 搜索、日历补录、分类缩略图都走这里。
+    let tasks = StoreTaskCenter()
     /// 每次重新加载自增：迟到的请求不能覆盖用户已经切走的页面。
     private var requestToken = 0
     /// 详情请求的代次：快速点不同条目时，旧详情不能覆盖新条目、也不能提前清掉转圈。
     private var detailToken = 0
-    /// 更新日历的后台扫描任务：手动刷新时可以取消重来，不会卡在「正在补录」。
-    var calendarTask: Task<Void, Never>?
     /// 更新日历在统一任务中心的登记 id。
     var calendarJobID: UUID?
     /// 操作提示的自增标记：旧的自动消失任务不能清掉新提示。
@@ -228,7 +227,6 @@ final class CatalogBrowserModel: ObservableObject {
     private static let categoryThumbsKey = "catalog.categoryThumbs.v1"
     /// 本次启动已经为哪些源补过分类缩略图，避免反复请求站点。
     private var thumbAttemptedSources: Set<UUID> = []
-    private var thumbTask: Task<Void, Never>?
 
     private struct CachedPage {
         var page: CatalogPage
@@ -279,7 +277,7 @@ final class CatalogBrowserModel: ObservableObject {
         let savedInline = Self.savedInlineDetail()
         isLoadingLibraryState = true
         defer { isLoadingLibraryState = false }
-        task?.cancel()
+        tasks.cancel(.catalogPage)
         requestToken &+= 1
         sources = []
         selectedSourceID = nil
@@ -653,8 +651,7 @@ final class CatalogBrowserModel: ObservableObject {
             }
         guard !pending.isEmpty else { return }
 
-        thumbTask?.cancel()
-        thumbTask = Task { [weak self] in
+        tasks.adopt(.catalogThumb, Task { [weak self] in
             for entry in pending {
                 if Task.isCancelled { break }
                 guard let self, self.selectedSourceID == source.id else { break }
@@ -668,7 +665,7 @@ final class CatalogBrowserModel: ObservableObject {
                 else { continue }
                 self.storeThumb(cover, categoryID: entry.menu.id, sourceID: source.id)
             }
-        }
+        })
     }
 
     /// 按 id 在任何层级里找分类：优先二级分类，保证标题显示的是具体频道。
@@ -794,7 +791,7 @@ final class CatalogBrowserModel: ObservableObject {
     }
 
     private func openLocalSection(_ target: CatalogSection) {
-        task?.cancel()
+        tasks.cancel(.catalogPage)
         requestToken &+= 1
         section = target
         activeTopCategoryID = nil
@@ -847,7 +844,7 @@ final class CatalogBrowserModel: ObservableObject {
     }
 
     func reload() {
-        task?.cancel()
+        tasks.cancel(.catalogPage)
         requestToken &+= 1
         let token = requestToken
         isLoadingMore = false
@@ -898,9 +895,9 @@ final class CatalogBrowserModel: ObservableObject {
             items = []
             listSnapshotAt = nil
         }
-        task = Task { [weak self] in
+        tasks.adopt(.catalogPage, Task { [weak self] in
             await self?.load(page: 1, source: source, token: token)
-        }
+        })
     }
 
     func loadMore() {
@@ -908,9 +905,9 @@ final class CatalogBrowserModel: ObservableObject {
         isLoadingMore = true
         let next = page + 1
         let token = requestToken
-        task = Task { [weak self] in
+        tasks.adopt(.catalogPage, Task { [weak self] in
             await self?.load(page: next, source: source, token: token)
-        }
+        })
     }
 
     private func load(page: Int, source: CatalogSource, token: Int) async {

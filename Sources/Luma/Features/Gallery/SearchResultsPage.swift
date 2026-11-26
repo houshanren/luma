@@ -4,16 +4,18 @@ import AppKit
 /// 全局搜索结果页：只负责「标题 + 数据绑定 + 点击动作」，
 /// 检索调度与结果面板都在独立搜索模块里（SearchCenter / SearchScopeBar / SearchContent）。
 struct SearchResultsPage<PhotoContent: View>: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(AppSettings.self) private var settings
 
     let query: String
     @ViewBuilder var photoContent: () -> PhotoContent
 
     /// 模块关闭后，来源胶囊与结果一起消失，跨模块兜底入口也不再出现。
-    @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
-    @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
-    @AppStorage(SettingsKeys.showTelevision) private var televisionModule = true
+    /// 开关随当前图库保存，切换图库时一起变化。
+    private var catalogModule: Bool { settings.moduleCatalog }
+    private var cinemaModule: Bool { settings.moduleCinema }
+    private var televisionModule: Bool { settings.moduleTelevision }
 
     @StateObject private var center: SearchCenter
     /// 从详情页「返回搜索」带回来的筛选：等本轮检索排完再套上去，
@@ -52,8 +54,8 @@ struct SearchResultsPage<PhotoContent: View>: View {
                           photoGrid: photoContent,
                           onOpen: open,
                           emptyView: AnyView(emptyState))
-                .environmentObject(store)
-                .environmentObject(catalog)
+                .environment(store)
+                .environment(catalog)
         }
         .task(id: query) {
             center.setQuery(query)
@@ -178,48 +180,37 @@ struct SearchResultsPage<PhotoContent: View>: View {
 
     /// 全部来源都没有命中：保留跨模块兜底入口。
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("没有找到「\(trimmedQuery)」")
-                .font(.system(size: 14, weight: .semibold))
-            Text("可以换个更短的关键词，或直接到各个模块里搜索。")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            // 模块内搜索只属于这个模块：不再给出跨模块搜索入口，避免把别的域的内容带进来。
-            if store.searchScope == .global {
-                HStack(spacing: 10) {
-                    Button("在影院搜") {
-                        store.cinemaSearchSeed = trimmedQuery
-                        store.cinemaSearchVisible = true
-                        store.navigate(to: .cinema)
-                    }
-                    if catalogModule {
-                        Button("在网络资源搜") {
-                            catalog.globalQuery = trimmedQuery
-                            store.navigate(to: .catalogSources)
-                        }
-                    }
-                    if cinemaModule {
-                        Button("在网络影院搜") {
-                            store.networkCinemaSearchSeed = trimmedQuery
-                            store.navigate(to: .networkCinema)
-                        }
-                    }
-                    if televisionModule {
-                        Button("在网络电视搜") {
-                            tvModel.searchText = trimmedQuery
-                            store.navigate(to: .iptv)
-                        }
-                    }
-                }
-                .controlSize(.small)
-                .padding(.top, 4)
+        var actions: [LumaEmptyAction] = []
+        // 模块内搜索只属于这个模块：不再给出跨模块搜索入口，避免把别的域的内容带进来。
+        if store.searchScope == .global {
+            actions.append(LumaEmptyAction(title: "在影院搜", symbol: nil) {
+                store.cinemaSearchSeed = trimmedQuery
+                store.cinemaSearchVisible = true
+                store.navigate(to: .cinema)
+            })
+            if catalogModule {
+                actions.append(LumaEmptyAction(title: "在网络资源搜", symbol: nil) {
+                    catalog.globalQuery = trimmedQuery
+                    store.navigate(to: .catalogSources)
+                })
+            }
+            if cinemaModule {
+                actions.append(LumaEmptyAction(title: "在网络影院搜", symbol: nil) {
+                    store.networkCinemaSearchSeed = trimmedQuery
+                    store.navigate(to: .networkCinema)
+                })
+            }
+            if televisionModule {
+                actions.append(LumaEmptyAction(title: "在网络电视搜", symbol: nil) {
+                    tvModel.searchText = trimmedQuery
+                    store.navigate(to: .iptv)
+                })
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
+        return LumaEmptyState(symbol: "magnifyingglass",
+                              title: "没有找到「\(trimmedQuery)」",
+                              message: "可以换个更短的关键词，或直接到各个模块里搜索。",
+                              actions: actions)
     }
 
     private func open(_ hit: SearchHit) {

@@ -1,3 +1,4 @@
+import Observation
 import Foundation
 import Combine
 import LumaContentCore
@@ -5,28 +6,29 @@ import LumaContentCore
 /// 网络影院的数据：把已启用的影视源（苹果CMS）聚合到电影 / 电视剧 / 最近更新三页，
 /// 再用 TMDB 补齐海报、评分与简介。只读网络源，不改动「网络存储」的影院数据。
 @MainActor
-final class NetworkCinemaModel: ObservableObject {
-    @Published private(set) var items: [NetworkCinemaItem] = []
-    @Published private(set) var isLoading = false
-    @Published private(set) var error: String?
-    @Published private(set) var loadedAt: Date?
+@Observable
+final class NetworkCinemaModel {
+    private(set) var items: [NetworkCinemaItem] = []
+    private(set) var isLoading = false
+    private(set) var error: String?
+    private(set) var loadedAt: Date?
     /// TMDB 补全进度：nil 表示没在补全。
-    @Published private(set) var enrichmentProgress: (done: Int, total: Int)?
+    private(set) var enrichmentProgress: (done: Int, total: Int)?
     /// key = 归一化标题 + 电影/剧集，跨分页、跨来源共用。
-    @Published private(set) var enrichments: [String: NetworkCinemaEnrichment] = [:]
+    private(set) var enrichments: [String: NetworkCinemaEnrichment] = [:]
     /// TMDB 详情（演职员 / 片长 / 分级）缓存，按 tmdbID + 类型。
-    @Published private(set) var cinemaDetails: [String: CinemaDetails] = [:]
+    private(set) var cinemaDetails: [String: CinemaDetails] = [:]
     /// 豆瓣评分缓存，按条目缓存键。
-    @Published private(set) var doubanRatings: [String: Double] = [:]
+    private(set) var doubanRatings: [String: Double] = [:]
     /// 搜索结果：与当前分页独立，页面上用关键词结果替换主列表。
-    @Published private(set) var searchItems: [NetworkCinemaItem] = []
-    @Published private(set) var isSearching = false
-    @Published private(set) var searchError: String?
+    private(set) var searchItems: [NetworkCinemaItem] = []
+    private(set) var isSearching = false
+    private(set) var searchError: String?
     /// 下滑翻页：当前分页还有没有下一页、以及正在补页的状态。
-    @Published private(set) var canLoadMore = false
-    @Published private(set) var isLoadingMore = false
+    private(set) var canLoadMore = false
+    private(set) var isLoadingMore = false
     /// 本次刷新新出现的条目：与上次同一列表比对，卡片上打「刚上架 / 更新中」。
-    @Published private(set) var freshItemKeys: Set<String> = []
+    private(set) var freshItemKeys: Set<String> = []
 
     /// 统一任务中心：列表探测、资料补全、跨源搜索都登记在这里，左下角任务条可见。
     var jobCenter: SourceJobCenter?
@@ -34,18 +36,18 @@ final class NetworkCinemaModel: ObservableObject {
     var onJobChange: (() -> Void)?
     /// 任务结束时把记录写进持久化历史，由 `LibraryStore` 注入。
     var onJobFinished: ((UUID) -> Void)?
+    /// 网络影院侧后台任务登记处：列表加载、搜索、翻页都走这里。
+    let tasks = StoreTaskCenter()
 
     /// 同名影片的全部来源：主列表按标题只留一条，但播放源切换需要别的源上的同一部片。
     /// key = 归一化标题 + 电影/剧集。
-    @Published private(set) var variants: [String: [NetworkCinemaItem]] = [:]
+    private(set) var variants: [String: [NetworkCinemaItem]] = [:]
 
     private var misses = Set<String>()
     private var loadToken = 0
     private var searchToken = 0
     /// 资料补全单独一套令牌：取消补全不影响已经加载好的列表。
     private var enrichToken = 0
-    private var reloadTask: Task<Void, Never>?
-    private var searchTask: Task<Void, Never>?
     private var loadJobID: UUID?
     private var searchJobID: UUID?
     private var enrichJobID: UUID?
@@ -66,19 +68,17 @@ final class NetworkCinemaModel: ObservableObject {
     /// 具体源各分类上次见过的条目 id：用来判断这次刷新哪些是新增。
     private var focusedSeenIDs: [String: Set<String>] = [:]
     /// 源内真实搜索：关键词非 nil 时列表展示站点搜索结果，而不是分类页。
-    @Published private(set) var sourceSearchKeyword: String?
-    @Published private(set) var isSourceSearching = false
-    @Published private(set) var sourceSearchError: String?
+    private(set) var sourceSearchKeyword: String?
+    private(set) var isSourceSearching = false
+    private(set) var sourceSearchError: String?
     private var sourceSearchSource: CatalogSource?
     private var sourceSearchPage = 1
     private var sourceSearchHasMore = false
-    private var sourceSearchTask: Task<Void, Never>?
     private var sourceSearchToken = 0
     /// 进入搜索前的分类列表：清空搜索后原样恢复，不重复打接口。
     private var savedFocusedItems: [NetworkCinemaItem] = []
     private var savedFocusedCanLoadMore = false
     private var savedFocusedStream: FeedStream?
-    private var loadMoreTask: Task<Void, Never>?
     private var loadMoreToken = 0
     private var detailLoading = Set<String>()
     private var doubanLoading = Set<String>()
@@ -227,7 +227,7 @@ final class NetworkCinemaModel: ObservableObject {
         }
 
         cancelLoadMore()
-        reloadTask?.cancel()
+        tasks.cancel(.networkCinemaReload)
         cancelJob(loadJobID)
         loadJobID = nil
         cancelJob(enrichJobID)
@@ -237,9 +237,9 @@ final class NetworkCinemaModel: ObservableObject {
         let token = loadToken
         // 有快照时不要整页转圈：只在完全没有内容时显示载入中。
         isLoading = items.isEmpty
-        reloadTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaReload, Task { [weak self] in
             await self?.performReload(sources: sources, tab: tab, tmdb: tmdb, token: token)
-        }
+        })
     }
 
     /// 具体源内按站点原始分类浏览：`category` 为 nil 时读该源首页。
@@ -270,7 +270,7 @@ final class NetworkCinemaModel: ObservableObject {
             freshItemKeys = []
         }
         cancelLoadMore()
-        reloadTask?.cancel()
+        tasks.cancel(.networkCinemaReload)
         cancelJob(loadJobID)
         loadJobID = nil
         cancelJob(enrichJobID)
@@ -280,10 +280,10 @@ final class NetworkCinemaModel: ObservableObject {
         let token = loadToken
         isLoading = items.isEmpty
         error = nil
-        reloadTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaReload, Task { [weak self] in
             await self?.performFocusedReload(source: source, category: category,
                                              key: key, tmdb: tmdb, token: token)
-        }
+        })
     }
 
     private func performFocusedReload(source: CatalogSource,
@@ -383,8 +383,7 @@ final class NetworkCinemaModel: ObservableObject {
         isLoadingMore = true
         loadMoreToken &+= 1
         let token = loadMoreToken
-        loadMoreTask?.cancel()
-        loadMoreTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaLoadMore, Task { [weak self] in
             guard let self else { return }
             guard let provider = CatalogProviders.provider(for: stream.source.kind) else {
                 self.isLoadingMore = false
@@ -416,7 +415,7 @@ final class NetworkCinemaModel: ObservableObject {
             self.canLoadMore = page.hasMore
             self.isLoadingMore = false
             await self.enrich(items: Array(list.prefix(24)), tmdb: tmdb, token: self.loadToken)
-        }
+        })
     }
 
     // MARK: - 源内真实搜索
@@ -443,7 +442,7 @@ final class NetworkCinemaModel: ObservableObject {
             savedFocusedCanLoadMore = canLoadMore
             savedFocusedStream = focusedStream
         }
-        sourceSearchTask?.cancel()
+        tasks.cancel(.networkCinemaSourceSearch)
         sourceSearchToken &+= 1
         let token = sourceSearchToken
         sourceSearchSource = source
@@ -452,20 +451,19 @@ final class NetworkCinemaModel: ObservableObject {
         sourceSearchHasMore = false
         isSourceSearching = true
         sourceSearchError = nil
-        sourceSearchTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaSourceSearch, Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(420))
             guard !Task.isCancelled else { return }
             await self?.performFocusedSearch(source: source, keyword: trimmed,
                                              page: 1, append: false,
                                              tmdb: tmdb, token: token)
-        }
+        })
     }
 
     /// 清空搜索：恢复进入搜索前的分类列表，不重复打接口。
     func clearFocusedSearch() {
         guard sourceSearchKeyword != nil else { return }
-        sourceSearchTask?.cancel()
-        sourceSearchTask = nil
+        tasks.cancel(.networkCinemaSourceSearch)
         sourceSearchToken &+= 1
         isSourceSearching = false
         sourceSearchError = nil
@@ -488,8 +486,7 @@ final class NetworkCinemaModel: ObservableObject {
     /// 退出搜索但保留即将重新加载的列表（换分类 / 刷新时用）。
     private func discardFocusedSearch() {
         guard sourceSearchKeyword != nil else { return }
-        sourceSearchTask?.cancel()
-        sourceSearchTask = nil
+        tasks.cancel(.networkCinemaSourceSearch)
         sourceSearchToken &+= 1
         sourceSearchKeyword = nil
         sourceSearchSource = nil
@@ -590,11 +587,11 @@ final class NetworkCinemaModel: ObservableObject {
         let token = sourceSearchToken
         let next = sourceSearchPage + 1
         isLoadingMore = true
-        sourceSearchTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaSourceSearch, Task { [weak self] in
             await self?.performFocusedSearch(source: source, keyword: keyword,
                                              page: next, append: true,
                                              tmdb: tmdb, token: token)
-        }
+        })
     }
 
     private func performReload(sources: [CatalogSource],
@@ -712,8 +709,7 @@ final class NetworkCinemaModel: ObservableObject {
     }
 
     private func cancelLoadMore() {
-        loadMoreTask?.cancel()
-        loadMoreTask = nil
+        tasks.cancel(.networkCinemaLoadMore)
         loadMoreToken &+= 1
         isLoadingMore = false
     }
@@ -733,8 +729,7 @@ final class NetworkCinemaModel: ObservableObject {
         isLoadingMore = true
         loadMoreToken &+= 1
         let token = loadMoreToken
-        loadMoreTask?.cancel()
-        loadMoreTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaLoadMore, Task { [weak self] in
             guard let self else { return }
             var added: [NetworkCinemaItem] = []
             let wantTV = tab == .shows
@@ -801,7 +796,7 @@ final class NetworkCinemaModel: ObservableObject {
                               tmdb: tmdb,
                               token: self.loadToken,
                               registersJob: false)
-        }
+        })
     }
 
     /// 追加去重：同名条目只留先出现的一条，避免不同页重复铺同一部片。
@@ -828,10 +823,8 @@ final class NetworkCinemaModel: ObservableObject {
     /// 换图库：列表、搜索、TMDB 资料与分页快照都只属于上一个图库，
     /// 全部作废后按新图库自己的 SQLite 重新读一份缓存，避免旧库内容残留在内存里。
     func resetForLibrarySwitch() {
-        reloadTask?.cancel()
-        reloadTask = nil
-        searchTask?.cancel()
-        searchTask = nil
+        tasks.cancel(.networkCinemaReload)
+        tasks.cancel(.networkCinemaSearch)
         cancelLoadMore()
         cancelJob(loadJobID)
         cancelJob(searchJobID)
@@ -876,7 +869,7 @@ final class NetworkCinemaModel: ObservableObject {
     // MARK: - 搜索
 
     func clearSearch() {
-        searchTask?.cancel()
+        tasks.cancel(.networkCinemaSearch)
         cancelJob(searchJobID)
         searchJobID = nil
         searchToken &+= 1
@@ -897,7 +890,7 @@ final class NetworkCinemaModel: ObservableObject {
             clearSearch()
             return
         }
-        searchTask?.cancel()
+        tasks.cancel(.networkCinemaSearch)
         cancelJob(searchJobID)
         searchJobID = nil
         searchToken &+= 1
@@ -905,12 +898,12 @@ final class NetworkCinemaModel: ObservableObject {
         // 搜索替换列表：翻页游标与进行中的补页都停掉。
         cancelLoadMore()
         canLoadMore = false
-        searchTask = Task { [weak self] in
+        tasks.adopt(.networkCinemaSearch, Task { [weak self] in
             await self?.performSearch(sources: sources,
                                       keyword: keyword,
                                       tmdb: tmdb,
                                       token: token)
-        }
+        })
     }
 
     private func performSearch(sources: [CatalogSource],
@@ -1366,8 +1359,7 @@ final class NetworkCinemaModel: ObservableObject {
     /// 资源页「清理」：丢掉三页列表快照与 TMDB 补全，下次进入重新聚合。
     /// 播放进度、刮削结果与源配置都不是这类缓存，不会被清。
     func clearCaches() {
-        reloadTask?.cancel()
-        reloadTask = nil
+        tasks.cancel(.networkCinemaReload)
         cancelLoadMore()
         cancelJob(loadJobID)
         loadJobID = nil

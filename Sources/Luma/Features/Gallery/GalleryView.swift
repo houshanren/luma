@@ -32,11 +32,11 @@ struct TimelineScrollObserver: ViewModifier {
 }
 
 struct GalleryView: View {
-    @EnvironmentObject var store: LibraryStore
-    @EnvironmentObject var cloud: CloudBrowserModel
-    @EnvironmentObject var catalog: CatalogBrowserModel
-    @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var selectionModel: SelectionModel
+    @Environment(LibraryStore.self) var store
+    @Environment(CloudBrowserModel.self) var cloud
+    @Environment(CatalogBrowserModel.self) var catalog
+    @Environment(AppSettings.self) var settings
+    @Environment(SelectionModel.self) var selectionModel
     /// 图库总览的合计读数：标题与副标题直接读这一份，与页面内容同源。
     @EnvironmentObject var libraryAggregate: LibraryAggregateModel
     @AppStorage(LibraryHubTab.storageKey) var libraryHubTabRaw = LibraryHubTab.resources.rawValue
@@ -71,6 +71,9 @@ struct GalleryView: View {
     @State var olderLoadAnchor: UUID?
     /// 从年 / 月总览切回「所有照片」：网格是新建的，需要把视野拉回已加载窗口。
     @State var needsTimelineRestore = false
+    /// 视野落在虚拟占位区（还没取到这一段照片）：用来显示「正在定位…」提示，
+    /// 只在进入 / 离开占位时切换，不参与逐帧刷新。
+    @State var isInVirtualPlaceholder = false
     /// 位置页的搜索关键词：搜索框已移到顶部工具栏，状态放在这里与内容共享。
     @State var placesQuery = ""
     /// 滚动记账：只服务分页与顶栏日期范围计算，不参与渲染。
@@ -83,16 +86,6 @@ struct GalleryView: View {
     var lastTimelineJumpOffset: CGFloat {
         get { scrollBook.lastTimelineJumpOffset }
         nonmutating set { scrollBook.lastTimelineJumpOffset = newValue }
-    }
-
-    var lastTimelineContentHeight: CGFloat {
-        get { scrollBook.lastTimelineContentHeight }
-        nonmutating set { scrollBook.lastTimelineContentHeight = newValue }
-    }
-
-    var lastTimelineViewport: CGFloat {
-        get { scrollBook.lastTimelineViewport }
-        nonmutating set { scrollBook.lastTimelineViewport = newValue }
     }
 
     var lastForwardPreloadOffset: CGFloat {
@@ -411,6 +404,7 @@ struct GalleryView: View {
                 needsTimelineRestore = true
             }
             lastDateSpanOffset = .greatestFiniteMagnitude
+            isInVirtualPlaceholder = false
         }
         .onChange(of: store.sidebarItem) { _, _ in
             store.visibleDateSpanText = ""
@@ -420,6 +414,7 @@ struct GalleryView: View {
             needsTimelineRestore = true
             timelineGridReady = false
             lastTimelineJumpOffset = -1
+            isInVirtualPlaceholder = false
         }
         // 网盘的 sidebarItem 始终是 `.cloudMount`：切换范围 / 目录 / 总览时同样要重置网格状态。
         .onChange(of: cloudPageIdentity) { _, _ in
@@ -428,6 +423,7 @@ struct GalleryView: View {
             needsTimelineRestore = true
             timelineGridReady = false
             lastTimelineJumpOffset = -1
+            isInVirtualPlaceholder = false
         }
         .toolbar {
             // 影院控制台由 CinemaTitlebarConsoleHost 直接铺在标题栏上，
@@ -537,85 +533,7 @@ struct GalleryView: View {
             }
         }
         .overlay(alignment: .top) {
-            VStack(spacing: 8) {
-                if store.isImporting, let progress = store.importProgress {
-                    Button {
-                        store.requestImportPanel()
-                    } label: {
-                        HStack(spacing: 8) {
-                            ProgressView(value: progress.fraction)
-                                .progressViewStyle(.linear)
-                                .frame(width: 130)
-                            Text("导入中 \(progress.completed.formatted()) / \(progress.total.formatted())")
-                                .font(.system(size: 11, design: .monospaced))
-                            Image(systemName: "chevron.up")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .lumaGlassCapsule(shadow: false)
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help("打开导入窗口")
-                }
-
-                if store.isCloudScope, store.isCloudScanning {
-                    Button {
-                        store.stopCloudAlbumScan()
-                    } label: {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text("正在扫描网盘… 已扫描 \(store.cloudScanFolderCount.formatted()) 个文件夹")
-                                .font(.system(size: 11, design: .monospaced))
-                            Text("停止")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .lumaGlassCapsule(shadow: false)
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help("停止扫描")
-                }
-
-                if store.isLoadingSystemLibrary, store.isSystemScope {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.mini)
-                        Text(store.systemScanCount > 0
-                             ? "正在读取系统图库… \(store.systemScanCount.formatted()) 项"
-                             : "正在读取系统图库…")
-                            .font(.system(size: 11, design: .monospaced))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .lumaGlassCapsule(shadow: false)
-                }
-
-                if store.similarScope != nil {
-                    HStack(spacing: 8) {
-                        Image(systemName: "sparkle.magnifyingglass")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.accentColor)
-                        Text(store.sidebarTitle)
-                            .font(.system(size: 11))
-                        Button("完成") { store.clearSimilarScope() }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .lumaGlassCapsule(shadow: false)
-                    .help("退出相似照片范围")
-                }
-            }
-            // 顶部浮层要避开统一工具栏；否则进度胶囊会被标题栏裁掉一半。
-            .padding(.top, 56)
+            GalleryStatusOverlay()
         }
         .animation(settings.motion.overlay, value: store.showLibraryInfo)
         // 不再对 sidebarItem 套整页动画：切页是销毁 + 重建整棵内容树，
@@ -652,7 +570,5 @@ final class GalleryScrollBookkeeping {
     var lastDateSpanOffset: CGFloat = .greatestFiniteMagnitude
     var lastForwardPreloadOffset: CGFloat = -.greatestFiniteMagnitude
     var lastTimelineJumpOffset: CGFloat = -1
-    var lastTimelineContentHeight: CGFloat = 0
-    var lastTimelineViewport: CGFloat = 0
 }
 

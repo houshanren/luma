@@ -402,18 +402,16 @@ extension LibraryStore {
     /// 从 UI 启动刮削：任务被保存下来，用户可以在进度条上取消。
     func startCinemaScrape(for scope: CinemaScope, force: Bool = false) {
         guard !cinemaScrapeRunning else { return }
-        cinemaScrapeTask?.cancel()
-        cinemaScrapeTask = Task { [weak self] in
+        tasks.adopt(.cinemaScrape, Task { [weak self] in
             guard let self else { return }
             await self.scrapeCinema(for: scope, force: force)
-            self.cinemaScrapeTask = nil
-        }
+            self.tasks.finish(.cinemaScrape)
+        })
     }
 
     /// 取消正在进行的刮削：中断网络请求，并保留已经完成的结果。
     func cancelCinemaScrape() {
-        cinemaScrapeTask?.cancel()
-        cinemaScrapeTask = nil
+        tasks.cancel(.cinemaScrape)
         guard cinemaScrapeRunning else { return }
         cinemaScrapeRunning = false
         cinemaScrapeScope = nil

@@ -6,8 +6,8 @@ struct NetworkCinemaSidebarRow: View {
     let source: CatalogSource
     var isDropTarget: Bool = false
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     @State private var editingSource: CatalogSource?
 

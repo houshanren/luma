@@ -23,8 +23,8 @@ enum CloudScopeMode: String, CaseIterable, Identifiable {
 }
 
 struct CloudSetupWizardView: View {
-    @EnvironmentObject var store: LibraryStore
-    @EnvironmentObject var cloud: CloudBrowserModel
+    @Environment(LibraryStore.self) var store
+    @Environment(CloudBrowserModel.self) var cloud
 
     @State var flow: CloudWizardFlow?
     @State var step = 0

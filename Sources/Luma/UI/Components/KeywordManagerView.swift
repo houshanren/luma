@@ -2,8 +2,8 @@ import SwiftUI
 
 /// 关键词管理面板：查看已有层级关键词、为所选照片批量添加、按关键词筛选。
 struct KeywordManagerView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var selectionModel: SelectionModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(SelectionModel.self) private var selectionModel
     @Environment(\.dismiss) private var dismiss
     @State private var newKeyword = ""
 

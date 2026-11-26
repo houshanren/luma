@@ -257,7 +257,8 @@ extension LibraryStore {
     }
 
     /// 时间轴跳转：把分页窗口整体重定位到第 `rank` 张（0 = 最新一张）。
-    /// 只更新窗口内容与起始排名，滚动位置不变——界面按排名换算的虚拟占位高度会自然对齐。
+    /// 换页完成后会把视野落到新窗口中间那张，避免虚拟占位与真实窗口高度不成比例时
+    /// 停在窗口外面（表现就是一整屏空白）。
     func jumpTimelineWindow(toRank rank: Int) {
         // 本地图库：按偏移重新取一页，虚拟占位随 `windowStartOffset` 自动重新配平。
         if !isSystemPagedScope {
@@ -266,9 +267,11 @@ extension LibraryStore {
             guard total > 0 else { return }
             let pageSize = Self.windowPageSize
             let start = min(max(0, rank), max(0, total - pageSize))
-            guard start != windowStartOffset else { return }
+            // 窗口为空时即使排名没变也要重取：否则一次失败的取页会让网格永久空白。
+            guard start != windowStartOffset || windowPhotos.isEmpty else { return }
             let key = windowKeyValue.isEmpty ? "\(query.key)#\(contentRevision)" : windowKeyValue
-            loadWindow(query: query, key: key, start: start, limit: pageSize, replace: true)
+            loadWindow(query: query, key: key, start: start, limit: pageSize,
+                       replace: true, landOnCenter: true)
             return
         }
         guard let index = systemIndex, let query = systemPagedQuery else { return }
@@ -279,14 +282,18 @@ extension LibraryStore {
         // 索引模式：本地索引可以直接按偏移取一页，排名即偏移。
         if index.direct == nil {
             let key = systemWindowKey
-            systemWindowTask?.cancel()
+            tasks.cancel(.systemWindow)
             systemWindowQuery = query
             isSystemWindowLoading = true
-            systemWindowTask = Task { [weak self] in
+            tasks.adopt(.systemWindow, Task { [weak self] in
                 let page = await Task.detached(priority: .userInitiated) {
                     index.page(query, offset: start, limit: pageSize)
                 }.value
-                guard let self, !Task.isCancelled, self.systemWindowKey == key else { return }
+                guard let self else { return }
+                guard !Task.isCancelled, self.systemWindowKey == key else {
+                    if self.systemWindowKey == key { self.isSystemWindowLoading = false }
+                    return
+                }
                 self.isSystemWindowLoading = false
                 guard !page.isEmpty else { return }
                 self.systemWindowStart = start
@@ -297,7 +304,7 @@ extension LibraryStore {
                 self.hasLoadedSystemWindow = true
                 // 落在这一页中间：滚动位置与换页前的视野中心基本对齐，不会停在占位空白里。
                 self.timelineJumpLandingID = self.systemWindowPhotos[self.systemWindowPhotos.count / 2].id
-            }
+            })
             return
         }
         // 最旧的一页按升序直接取：日期插值会在顶部留下几张看不见的「更早照片」，
@@ -313,11 +320,11 @@ extension LibraryStore {
             pageQuery.endDate = date.addingTimeInterval(1)
         }
         let key = systemWindowKey
-        systemWindowTask?.cancel()
+        tasks.cancel(.systemWindow)
         // 换页后「继续加载更早」要沿用这次的日期上界，否则会从整库最新处重新取一页（内容重复）。
         systemWindowQuery = isOldestPage ? query : pageQuery
         isSystemWindowLoading = true
-        systemWindowTask = Task { [weak self] in
+        tasks.adopt(.systemWindow, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> ([PhotoItem], Int) in
                 if isOldestPage {
                     let oldest = index.page(pageQuery, offset: 0, limit: pageSize)
@@ -343,7 +350,7 @@ extension LibraryStore {
             self.hasLoadedSystemWindow = true
             // 占位高度只是按排名估算，真正落位交给网格滚到这一张，避免停在空白占位里。
             self.timelineJumpLandingID = self.systemWindowPhotos[self.systemWindowPhotos.count / 2].id
-        }
+        })
     }
 
     /// 网格滚动到末尾时加载下一页。
@@ -386,7 +393,7 @@ extension LibraryStore {
     func refreshViewerStripIfNeeded() {
         // 外部列表（地图 / 地点 / 卡片墙）与「相似照片」直接按整份列表翻页，不再单独取窗口片段。
         if !viewerContextPhotos.isEmpty || similarScope != nil {
-            viewerStripTask?.cancel()
+            tasks.cancel(.viewerStrip)
             viewerStrip = []
             viewerStripKey = nil
             return
@@ -398,8 +405,7 @@ extension LibraryStore {
             let key = "sys#\(query.key)#\(systemIndexSignature)#\(id.uuidString)"
             guard key != viewerStripKey else { return }
             viewerStripKey = key
-            viewerStripTask?.cancel()
-            viewerStripTask = Task { [weak self] in
+            tasks.adopt(.viewerStrip, Task { [weak self] in
                 let photos = await Task.detached(priority: .userInitiated) { () -> [PhotoItem] in
                     let radius = Self.viewerStripRadius
                     if let current = index.index(of: id, in: query) {
@@ -431,7 +437,7 @@ extension LibraryStore {
                 guard let self, !Task.isCancelled, self.viewerStripKey == key else { return }
                 let ordered = self.viewerUsesVisualTimelineOrder ? Array(photos.reversed()) : photos
                 self.viewerStrip = ordered.map { self.applySystemOverlay($0) }
-            }
+            })
             return
         }
         guard isPagedScope, let id = viewerID,
@@ -443,8 +449,7 @@ extension LibraryStore {
         let key = "\(query.key)#\(contentRevision)#\(id.uuidString)"
         guard key != viewerStripKey else { return }
         viewerStripKey = key
-        viewerStripTask?.cancel()
-        viewerStripTask = Task { [weak self] in
+        tasks.adopt(.viewerStrip, Task { [weak self] in
             let photos = await Task.detached(priority: .userInitiated) { () -> [PhotoItem] in
                 guard let index = store.index(of: id, in: query) else { return [] }
                 let total = store.summary(query).total
@@ -456,7 +461,7 @@ extension LibraryStore {
             }.value
             guard let self, !Task.isCancelled, self.viewerStripKey == key else { return }
             self.viewerStrip = self.viewerUsesVisualTimelineOrder ? Array(photos.reversed()) : photos
-        }
+        })
     }
 
     /// 年 / 月总览是否也可以走 SQL 分区。
@@ -486,11 +491,11 @@ extension LibraryStore {
         guard usesSQLOverview, let query = timelineQuery, let store = metadataStore else { return }
         let key = "\(query.key)#\(contentRevision)#\(grouping.rawValue)"
         guard key != overviewKeyValue else { return }
-        overviewTask?.cancel()
+        tasks.cancel(.overview)
         overviewKeyValue = key
         isOverviewLoading = true
         let grouping = self.grouping
-        overviewTask = Task { [weak self] in
+        tasks.adopt(.overview, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 () -> (buckets: [PhotoPeriodBucket], months: [PhotoMonthGroup]) in
                 switch grouping {
@@ -510,7 +515,7 @@ extension LibraryStore {
                 self.monthGroups = result.months
             }
             self.resolvePendingMonthScroll()
-        }
+        })
     }
 
     /// 从年总览点进某年时，等月份数据到手再定位到该年第一个月。
@@ -523,20 +528,27 @@ extension LibraryStore {
 
     // MARK: - 内部
 
-    private func loadWindow(query: PhotoQuery, key: String, start: Int, limit: Int, replace: Bool) {
+    private func loadWindow(query: PhotoQuery, key: String, start: Int, limit: Int,
+                            replace: Bool, landOnCenter: Bool = false) {
         guard let store = metadataStore else { return }
-        windowTask?.cancel()
+        tasks.cancel(.window)
         windowKeyValue = key
         windowQueryKey = query.key
         windowQuery = query
         isWindowLoading = true
-        windowTask = Task { [weak self] in
+        tasks.adopt(.window, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, [PhotoItem]) in
                 let summary = store.summary(query)
                 let page = store.page(query, offset: start, limit: limit)
                 return (summary, page)
             }.value
-            guard let self, !Task.isCancelled, self.windowKeyValue == key else { return }
+            guard let self else { return }
+            // 被新查询接管时由新查询负责收尾；只是被取消则必须自己复位标记，
+            // 否则 `isPagedWindowLoading` 会永久为真，时间轴跳转全部被挡住。
+            guard !Task.isCancelled, self.windowKeyValue == key else {
+                if self.windowKeyValue == key { self.isWindowLoading = false }
+                return
+            }
             self.isWindowLoading = false
             self.windowTotal = result.0.total
             self.windowVideos = result.0.videos
@@ -545,18 +557,23 @@ extension LibraryStore {
             self.windowRevision &+= 1
             self.hasLoadedWindow = true
             self.prefetchGridThumbnails(self.windowPhotos, newest: replace)
-        }
+            if landOnCenter, !self.windowPhotos.isEmpty {
+                // 虚拟占位按整库比例压缩、真实窗口不压缩，两者高度不成比例：
+                // 只靠排名换算会把视野留在窗口外，这里显式落到新窗口中间。
+                self.timelineJumpLandingID = self.windowPhotos[self.windowPhotos.count / 2].id
+            }
+        })
     }
 
     private func focusWindow(on photoID: UUID, query: PhotoQuery, key: String) {
         guard let store = metadataStore else { return }
-        windowTask?.cancel()
+        tasks.cancel(.window)
         windowKeyValue = key
         windowQueryKey = query.key
         windowQuery = query
         isWindowLoading = true
         let pageSize = Self.windowPageSize
-        windowTask = Task { [weak self] in
+        tasks.adopt(.window, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, Int, [PhotoItem]) in
                 let summary = store.summary(query)
                 let index = store.index(of: photoID, in: query) ?? 0
@@ -564,7 +581,11 @@ extension LibraryStore {
                 let page = store.page(query, offset: start, limit: pageSize)
                 return (summary, start, page)
             }.value
-            guard let self, !Task.isCancelled, self.windowKeyValue == key else { return }
+            guard let self else { return }
+            guard !Task.isCancelled, self.windowKeyValue == key else {
+                if self.windowKeyValue == key { self.isWindowLoading = false }
+                return
+            }
             self.isWindowLoading = false
             self.windowTotal = result.0.total
             self.windowVideos = result.0.videos
@@ -573,7 +594,7 @@ extension LibraryStore {
             self.windowRevision &+= 1
             self.hasLoadedWindow = true
             self.scrollTargetID = photoID
-        }
+        })
     }
 
     // MARK: - 系统图库索引窗口
@@ -731,18 +752,23 @@ extension LibraryStore {
 
     private func loadSystemWindow(query: SystemQuery, key: String, start: Int, limit: Int, replace: Bool) {
         guard let index = systemIndex else { return }
-        systemWindowTask?.cancel()
+        tasks.cancel(.systemWindow)
         systemWindowKey = key
         systemWindowQuery = query
         isSystemWindowLoading = true
-        systemWindowTask = Task { [weak self] in
+        tasks.adopt(.systemWindow, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, [PhotoItem]) in
                 // 接续加载时页查询带着日期上界，`summary` 会变成「上界以内」的数量：
                 // 总数只由首屏（整条查询）决定，追加时不再重算。
                 let summary = replace ? index.summary(query) : PhotoQuerySummary(total: 0, videos: 0)
                 return (summary, index.page(query, offset: start, limit: limit))
             }.value
-            guard let self, !Task.isCancelled, self.systemWindowKey == key else { return }
+            guard let self else { return }
+            // 被新查询接管时由新查询负责收尾；只是被取消则必须自己复位标记。
+            guard !Task.isCancelled, self.systemWindowKey == key else {
+                if self.systemWindowKey == key { self.isSystemWindowLoading = false }
+                return
+            }
             self.isSystemWindowLoading = false
             if replace {
                 self.systemWindowTotal = result.0.total
@@ -756,7 +782,7 @@ extension LibraryStore {
             self.systemWindowRevision &+= 1
             self.hasLoadedSystemWindow = true
             self.prefetchGridThumbnails(self.systemWindowPhotos, newest: replace)
-        }
+        })
     }
 
     /// 窗口落位后预取头部格子的缩略图：首屏立即可见，继续滚动时也已命中缓存。
@@ -778,12 +804,12 @@ extension LibraryStore {
     private func focusSystemWindow(on photoID: UUID, query: SystemQuery) {
         guard let index = systemIndex else { return }
         let key = "sys#\(query.key)#\(systemIndexSignature)"
-        systemWindowTask?.cancel()
+        tasks.cancel(.systemWindow)
         systemWindowKey = key
         systemWindowQuery = query
         isSystemWindowLoading = true
         let pageSize = Self.windowPageSize
-        systemWindowTask = Task { [weak self] in
+        tasks.adopt(.systemWindow, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, Int, [PhotoItem]) in
                 let summary = index.summary(query)
                 // 直连模式没有全局下标：按拍摄时间换算整库排名，再用日期界取一页，避免大 OFFSET。
@@ -800,7 +826,11 @@ extension LibraryStore {
                 let start = max(0, min(current - pageSize / 2, max(0, summary.total - pageSize)))
                 return (summary, start, index.page(query, offset: start, limit: pageSize))
             }.value
-            guard let self, !Task.isCancelled, self.systemWindowKey == key else { return }
+            guard let self else { return }
+            guard !Task.isCancelled, self.systemWindowKey == key else {
+                if self.systemWindowKey == key { self.isSystemWindowLoading = false }
+                return
+            }
             self.isSystemWindowLoading = false
             self.systemWindowTotal = result.0.total
             self.systemWindowVideos = result.0.videos
@@ -810,18 +840,18 @@ extension LibraryStore {
             self.systemWindowRevision &+= 1
             self.hasLoadedSystemWindow = true
             self.scrollTargetID = photoID
-        }
+        })
     }
 
     private func reloadSystemOverviewIfNeeded() {
         guard usesSQLOverview, let query = systemTimelineQuery, let index = systemIndex else { return }
         let key = "sys#\(query.key)#\(systemIndexSignature)#\(grouping.rawValue)#\(contentRevision)"
         guard key != overviewKeyValue else { return }
-        overviewTask?.cancel()
+        tasks.cancel(.overview)
         overviewKeyValue = key
         isOverviewLoading = true
         let grouping = self.grouping
-        overviewTask = Task { [weak self] in
+        tasks.adopt(.overview, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 () -> (buckets: [PhotoPeriodBucket], months: [PhotoMonthGroup]) in
                 switch grouping {
@@ -841,6 +871,6 @@ extension LibraryStore {
                 self.monthGroups = result.months
             }
             self.resolvePendingMonthScroll()
-        }
+        })
     }
 }

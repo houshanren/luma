@@ -5,7 +5,7 @@ import AppKit
 /// 直接在当前窗口粘贴新的凭据，校验通过后写回这个挂载并立刻刷新，
 /// 不新建挂载、不改接入范围，也不会动已扫描的内容。
 struct CloudCookieReauthView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let mount: CloudMount
 
     @Environment(\.dismiss) private var dismiss

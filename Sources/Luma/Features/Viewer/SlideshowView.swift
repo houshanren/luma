@@ -3,7 +3,7 @@ import AppKit
 
 /// 全窗口幻灯片：自动轮播、暂停、上一张/下一张与间隔设置。
 struct SlideshowView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     @AppStorage("slideshowInterval") private var interval: Double = 3
     @AppStorage("slideshowKenBurns") private var kenBurnsEnabled = true

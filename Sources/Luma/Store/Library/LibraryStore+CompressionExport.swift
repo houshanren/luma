@@ -21,7 +21,7 @@ extension LibraryStore {
             showToast("所选项目中没有可压缩的照片")
             return
         }
-        compressionEstimateTask?.cancel()
+        tasks.cancel(.compressionEstimate)
         compressionTargets = valid
         compressionEstimates = [:]
         compressionEstimating = false
@@ -30,7 +30,7 @@ extension LibraryStore {
     }
 
     func refreshCompressionEstimates() {
-        compressionEstimateTask?.cancel()
+        tasks.cancel(.compressionEstimate)
         let targets = compressionTargets
             .compactMap { photo(id: $0) }
             .sorted { $0.capturedAt > $1.capturedAt }
@@ -43,7 +43,7 @@ extension LibraryStore {
         compressionEstimating = true
         compressionEstimates = [:]
 
-        compressionEstimateTask = Task { [weak self] in
+        tasks.adopt(.compressionEstimate, Task { [weak self] in
             var results: [UUID: CompressionEstimate] = [:]
             for photo in targets {
                 if Task.isCancelled { return }
@@ -57,7 +57,7 @@ extension LibraryStore {
             }
             guard let self, !Task.isCancelled else { return }
             self.compressionEstimating = false
-        }
+        })
     }
 
     func startCompression() {
@@ -68,7 +68,7 @@ extension LibraryStore {
             .sorted { $0.capturedAt > $1.capturedAt }
         guard !targets.isEmpty else { return }
 
-        compressionEstimateTask?.cancel()
+        tasks.cancel(.compressionEstimate)
         isCompressing = true
         compressionCancelled = false
         var progress = CompressionProgress(total: targets.count,
@@ -85,7 +85,7 @@ extension LibraryStore {
             }
         )
 
-        compressionTask = Task { [weak self] in
+        tasks.adopt(.compression, Task { [weak self] in
             guard let self else { return }
             for (index, photo) in targets.enumerated() {
                 if self.compressionCancelled || Task.isCancelled { break }
@@ -146,12 +146,12 @@ extension LibraryStore {
             } else {
                 self.showToast("已压缩 \(progress.compressed) 张，节省 \(formatFileSize(progress.savedBytes))")
             }
-        }
+        })
     }
 
     func cancelCompression() {
         compressionCancelled = true
-        compressionTask?.cancel()
+        tasks.cancel(.compression)
     }
 
     func applyCompressionResult(photoID: UUID, result: CompressionResult) {

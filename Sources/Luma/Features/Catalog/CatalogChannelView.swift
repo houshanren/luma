@@ -131,9 +131,9 @@ extension View {
 struct CatalogChannelView: View {
     let sourceID: UUID
 
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
     /// 顶栏的放大 / 缩小滑杆写的是这个 thumbSize，内容区必须跟着它一起缩放。
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     /// 批量操作：⌘ 点选中的条目 id，底部浮出操作条。
     @State private var selectedIDs: Set<String> = []
@@ -157,7 +157,7 @@ struct CatalogChannelView: View {
                         catalog.inlineDetailItem = nil
                     }
                 }
-                .environmentObject(catalog)
+                .environment(catalog)
                 .transition(.opacity)
             } else {
                 channelList

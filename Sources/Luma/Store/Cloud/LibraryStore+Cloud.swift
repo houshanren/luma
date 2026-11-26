@@ -14,12 +14,9 @@ extension LibraryStore {
     func resetCloudStateForLibrarySwitch() {
         cloudLoadToken += 1
         cloudModel.scanLoadToken += 1
-        cloudModel.scanPublishTask?.cancel()
-        cloudModel.scanPublishTask = nil
-        cloudModel.metadataScanDelayTask?.cancel()
-        cloudModel.metadataScanDelayTask = nil
-        cloudModel.refreshLoopTask?.cancel()
-        cloudModel.refreshLoopTask = nil
+        cloudModel.tasks.cancel(.cloudScanPublish)
+        cloudModel.tasks.cancel(.cloudMetadataScanDelay)
+        cloudModel.tasks.cancel(.cloudRefreshLoop)
         cloudModel.isRestoringScan = false
         cloudMounts = []
         cloudFolders = []
@@ -270,8 +267,7 @@ extension LibraryStore {
         cloudModel.scope = .all
         cloudVisibleCacheKey = nil
         cloudScopeCountsCacheKey = nil
-        cloudModel.thumbnailPrefetchTask?.cancel()
-        cloudModel.thumbnailPrefetchTask = nil
+        cloudModel.tasks.cancel(.cloudThumbnailPrefetch)
         if let mountID = currentCloudMountID {
             presentCloudAlbumPhotos(mountID: mountID)
         }
@@ -299,8 +295,7 @@ extension LibraryStore {
             cloudModel.scanMediaFolder = [:]
             cloudModel.scanPhotoPaths = []
             cloudModel.scanFolderPaths = []
-            cloudModel.thumbnailPrefetchTask?.cancel()
-            cloudModel.thumbnailPrefetchTask = nil
+            cloudModel.tasks.cancel(.cloudThumbnailPrefetch)
             cloudModel.pendingPhotoUpdates.removeAll()
             cloudModel.metadataDirty = false
             cloudModel.featuresLoadedMountID = nil
@@ -388,15 +383,14 @@ extension LibraryStore {
 
     /// 停留在当前网盘 / 影院时，每 3 分钟合并做一次增量扫描；离开该挂载后自动结束。
     func startCloudIndexRefreshLoop(mountID: UUID) {
-        cloudModel.refreshLoopTask?.cancel()
-        cloudModel.refreshLoopTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudRefreshLoop, Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 180_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 guard self.currentCloudMountID == mountID else { return }
                 self.ensureCloudIndexFresh(for: mountID, maxAge: 120)
             }
-        }
+        })
     }
 
     /// 索引超过 `maxAge` 就做一次增量扫描；不满足时什么都不做。
@@ -543,10 +537,8 @@ extension LibraryStore {
     func beginCloudAlbumScan(mountID: UUID, forceFull: Bool = false) {
         guard let mount = cloudMount(for: mountID) else { return }
         cancelCloudAlbumScan()
-        cloudModel.scanPublishTask?.cancel()
-        cloudModel.scanPublishTask = nil
-        cloudModel.metadataScanDelayTask?.cancel()
-        cloudModel.metadataScanDelayTask = nil
+        cloudModel.tasks.cancel(.cloudScanPublish)
+        cloudModel.tasks.cancel(.cloudMetadataScanDelay)
         cloudModel.scanMountID = mountID
         if let oldJob = cloudModel.scanJobID {
             cancelSourceJob(oldJob)
@@ -641,8 +633,7 @@ extension LibraryStore {
             }
         }
         cloudModel.scanSnapshot = nil
-        cloudModel.thumbnailPrefetchTask?.cancel()
-        cloudModel.thumbnailPrefetchTask = nil
+        cloudModel.tasks.cancel(.cloudThumbnailPrefetch)
         cloudModel.selectedFolderPath = nil
         cloudError = nil
         cloudModel.needsCloudReauth = false
@@ -654,7 +645,7 @@ extension LibraryStore {
         cloudFolderTreeCacheKey = nil
         presentCloudAlbumPhotos(mountID: mountID)
 
-        cloudModel.scanTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudScan, Task { [weak self] in
             guard let self else { return }
             let result = await CloudScanner.scan(mount: mount, incremental: plan) { batch, folderCount, mediaCount in
                 self.ingestCloudAlbumBatch(batch,
@@ -664,7 +655,7 @@ extension LibraryStore {
             }
             guard !Task.isCancelled else { return }
             self.finishCloudAlbumScan(result: result, mountID: mountID)
-        }
+        })
     }
 
     /// 把上一轮完整扫描（SQLite 索引）转换成增量扫描计划；不满足条件时返回 nil（走全量）。
@@ -728,8 +719,7 @@ extension LibraryStore {
     }
 
     func cancelCloudAlbumScan() {
-        cloudModel.scanTask?.cancel()
-        cloudModel.scanTask = nil
+        cloudModel.tasks.cancel(.cloudScan)
         if let jobID = cloudModel.scanJobID {
             cancelSourceJob(jobID)
             cloudModel.scanJobID = nil
@@ -770,10 +760,8 @@ extension LibraryStore {
         metadataStore?.setSetting(Self.cloudDeepScanSettingKey(mountID), nil)
         guard cloudModel.scanMountID == mountID else { return }
         cancelCloudAlbumScan()
-        cloudModel.scanPublishTask?.cancel()
-        cloudModel.scanPublishTask = nil
-        cloudModel.metadataScanDelayTask?.cancel()
-        cloudModel.metadataScanDelayTask = nil
+        cloudModel.tasks.cancel(.cloudScanPublish)
+        cloudModel.tasks.cancel(.cloudMetadataScanDelay)
         cloudModel.scanPhotos = []
         cloudModel.scanFolders = []
         cloudModel.scanMediaFolder = [:]
@@ -795,10 +783,8 @@ extension LibraryStore {
     func stopCloudAlbumScan() {
         cancelCloudAlbumScan()
         guard cloudModel.scanPhase.isScanning else { return }
-        cloudModel.scanPublishTask?.cancel()
-        cloudModel.scanPublishTask = nil
-        cloudModel.metadataScanDelayTask?.cancel()
-        cloudModel.metadataScanDelayTask = nil
+        cloudModel.tasks.cancel(.cloudScanPublish)
+        cloudModel.tasks.cancel(.cloudMetadataScanDelay)
         cloudModel.scanPhase = .cancelled
         cloudModel.scanFolderCount = cloudModel.pendingScanFolderCount
         cloudModel.scanMediaCount = cloudModel.scanPhotos.count
@@ -930,10 +916,8 @@ extension LibraryStore {
     }
 
     func finishCloudAlbumScan(result: CloudScanner.Result, mountID: UUID) {
-        cloudModel.scanPublishTask?.cancel()
-        cloudModel.scanPublishTask = nil
-        cloudModel.metadataScanDelayTask?.cancel()
-        cloudModel.metadataScanDelayTask = nil
+        cloudModel.tasks.cancel(.cloudScanPublish)
+        cloudModel.tasks.cancel(.cloudMetadataScanDelay)
         // 完整扫完（未触顶、没有目录读取失败）才按扫描结果剔除网盘上已删除的项目。
         if !result.truncated, result.failedFolders == 0, result.folderCount > 0 {
             let seen = result.mediaPaths
@@ -978,7 +962,7 @@ extension LibraryStore {
             }
             cloudModel.scanJobID = nil
         }
-        cloudModel.scanTask = nil
+        cloudModel.tasks.finish(.cloudScan)
         cloudModel.scanSnapshot = nil
         // 扫描期间不再每批全量排序；结束时排一次，快照顺序稳定，省下每批 O(n log n)。
         cloudModel.scanPhotos.sort { $0.capturedAt > $1.capturedAt }
@@ -1003,11 +987,11 @@ extension LibraryStore {
         saveCloudAlbumSnapshot(mountID: mountID, complete: complete)
         // EXIF 与刮削都让路：先让网格与侧边栏稳定，再在空闲时补读元数据。
         // 刮削只由用户进入影院 / 显式点击触发，避免扫描结束后同时抢占网络与 CPU。
-        cloudModel.metadataScanDelayTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudMetadataScanDelay, Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard let self, !Task.isCancelled else { return }
             self.scanCloudMetadataIfNeeded()
-        }
+        })
         if result.truncated {
             showToast("已扫描 \(result.folderCount) 个文件夹，达到扫描上限；可在「相簿」里查看已扫描的目录")
         }
@@ -1027,15 +1011,15 @@ extension LibraryStore {
 
     /// 合并扫描进度：每 0.6 秒最多发布一次，避免每个目录都触发整页重算。
     func scheduleCloudScanProgressPublish(mountID: UUID) {
-        guard cloudModel.scanPublishTask == nil else { return }
-        cloudModel.scanPublishTask = Task { [weak self] in
+        guard !cloudModel.tasks.isRunning(.cloudScanPublish) else { return }
+        cloudModel.tasks.adopt(.cloudScanPublish, Task { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
             guard let self, !Task.isCancelled else { return }
-            self.cloudModel.scanPublishTask = nil
+            self.cloudModel.tasks.finish(.cloudScanPublish)
             guard self.cloudModel.scanMountID == mountID,
                   self.cloudModel.scanPhase.isScanning else { return }
             self.publishCloudScanProgress(mountID: mountID)
-        }
+        })
     }
 
     func publishCloudScanProgress(mountID: UUID) {

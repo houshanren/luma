@@ -38,7 +38,7 @@ extension LibraryStore {
                 Task { @MainActor in self?.cancelHashScan() }
             }
         )
-        hashScanTask = Task { [weak self] in
+        tasks.adopt(.hashScan, Task { [weak self] in
             guard let self else { return }
             let concurrency = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount))
             var index = 0
@@ -90,7 +90,7 @@ extension LibraryStore {
                 return
             }
             self.isScanningHashes = false
-            self.hashScanTask = nil
+            self.tasks.finish(.hashScan)
             self.refreshSimilarPhotoGroups()
             if Task.isCancelled {
                 self.cancelSourceJob(jobID)
@@ -98,12 +98,11 @@ extension LibraryStore {
                 self.finishSourceJob(jobID, message: "完成 · \(self.similarPhotoGroups.count) 组相似照片")
             }
             self.showToast("查重扫描完成：\(self.similarPhotoGroups.count) 组相似照片")
-        }
+        })
     }
 
     func cancelHashScan() {
-        hashScanTask?.cancel()
-        hashScanTask = nil
+        tasks.cancel(.hashScan)
         hashScanToken = UUID()
         isScanningHashes = false
     }

@@ -7,8 +7,8 @@ import LumaContentCore
 
 /// 官方「照片」图库里的文件夹：只展示下一层的子文件夹与相簿（与系统「照片」一致），只读。
 struct SystemFolderOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     /// 为空时展示系统图库根层（「相簿」分区总览）。
     var folderID: Int64? = nil
 
@@ -155,20 +155,11 @@ struct SystemFolderOverviewView: View {
     }
 
     var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "folder")
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text(folderID == nil ? "还没有相簿" : "这个文件夹是空的")
-                .font(.system(size: 17, weight: .semibold))
-            Text(folderID == nil
-                 ? "系统「照片」里还没有相簿或文件夹。"
-                 : "系统「照片」里还没有在这个文件夹下添加相簿。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 80)
+        LumaEmptyState(symbol: "folder",
+                       title: folderID == nil ? "还没有相簿" : "这个文件夹是空的",
+                       message: folderID == nil
+                           ? "系统「照片」里还没有相簿或文件夹。"
+                           : "系统「照片」里还没有在这个文件夹下添加相簿。")
     }
 
     // MARK: - 封面
@@ -398,7 +389,7 @@ struct SystemCoverLoader<Content: View>: View {
 
 /// 媒体类型总览：卡片墙展示各分类的数量与封面（侧边栏「媒体类型」分区头点开）。
 struct MediaTypesOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         let summary = store.mediaTypeSummary
@@ -425,7 +416,7 @@ struct MediaTypesOverviewView: View {
 
 /// 场景总览：卡片墙展示端侧识别出的场景分类（本地图库用落库结果，系统图库用内存结果）。
 struct ScenesOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         let summary = store.sceneSummary
@@ -476,8 +467,8 @@ struct CategoryOverviewView: View {
     var emptyActionTitle: String? = nil
     var emptyAction: (() -> Void)? = nil
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @State private var hoveredKey: String?
 
     /// 卡片墙每行列数：默认尺寸下 5 个，随工具栏缩放变化。
@@ -518,22 +509,14 @@ struct CategoryOverviewView: View {
     }
 
     var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: emptyIcon)
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text(emptyTitle)
-                .font(.system(size: 17, weight: .semibold))
-            Text(emptyMessage)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            if let emptyActionTitle, let emptyAction {
-                Button(emptyActionTitle, action: emptyAction)
-                    .padding(.top, 4)
-            }
+        var actions: [LumaEmptyAction] = []
+        if let emptyActionTitle, let emptyAction {
+            actions = [LumaEmptyAction(title: emptyActionTitle, symbol: nil, handler: emptyAction)]
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 80)
+        return LumaEmptyState(symbol: emptyIcon,
+                              title: emptyTitle,
+                              message: emptyMessage,
+                              actions: actions)
     }
 
     func card(_ entry: CategoryOverviewEntry, width: CGFloat) -> some View {
@@ -580,8 +563,8 @@ struct CategoryOverviewView: View {
 struct MoreItemsOverviewView: View {
     var system: Bool
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @State private var hoveredKey: String?
 
     struct Entry: Identifiable {
@@ -734,7 +717,7 @@ struct MoreItemsOverviewView: View {
 /// 系统图库「导入项目」：按官方导入会话（Photos.sqlite 的 `ZGENERICALBUM.ZKIND = 1506`）展示。
 /// 与媒体类型 / 场景总览共用同一套卡片墙，标题留给窗口工具栏，内容区不再重复大标题。
 struct ImportSessionsOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     var body: some View {
         let sessions = store.systemImportSessions
@@ -756,7 +739,7 @@ struct ImportSessionsOverviewView: View {
 
 /// 图库分区：资源 / 照片 / 收藏三个分页，都是「多个图库」的聚合视图，不预选任何图库。
 struct LibraryHubView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @EnvironmentObject private var aggregate: LibraryAggregateModel
     @AppStorage(LibraryHubTab.storageKey) private var tabRaw = LibraryHubTab.resources.rawValue
 
@@ -791,8 +774,8 @@ struct LibraryHubView: View {
 /// 图库资源：所有图库的合计读数 + 每个图库自己的体量卡片；不选中任何图库。
 /// 图库的切换、备份与清理也收在这里（设置里不再单独留「图库」分页）。
 struct LibraryResourcesView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var aggregate: LibraryAggregateModel
     @State private var hoveredPath: String?
     @State private var cacheSize: Int64 = 0
@@ -1308,7 +1291,7 @@ struct LibraryResourcesView: View {
                                    subtitle: settings.trashRetentionDays > 0
                                        ? "删除的照片超过 \(settings.trashRetentionDays) 天后，在启动时自动永久删除"
                                        : "不自动删除，需要手动清空最近删除") {
-                        Picker("", selection: $settings.trashRetentionDays) {
+                        Picker("", selection: Bindable(settings).trashRetentionDays) {
                             Text("7 天后").tag(7)
                             Text("30 天后").tag(30)
                             Text("90 天后").tag(90)

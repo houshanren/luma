@@ -39,8 +39,8 @@ struct SmartCollectionCard: Identifiable {
 }
 
 struct CollectionsView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @State private var hoveredID: String?
 
     var cards: [SmartCollectionCard] {
@@ -365,8 +365,8 @@ struct CollectionsView: View {
 }
 
 struct AlbumsOverviewView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     /// 非空时只展示该文件夹下的子文件夹与相簿（点侧边栏文件夹进入时使用）。
     var folderID: UUID? = nil
     @State private var namePrompt: NamePromptPayload?
@@ -428,7 +428,7 @@ struct AlbumsOverviewView: View {
         .animation(settings.motion.layout, value: store.albumDisplayStyle)
         .sheet(item: $namePrompt) { payload in
             NamePromptSheet(payload: payload)
-                .environmentObject(store)
+                .environment(store)
         }
     }
 
@@ -457,22 +457,14 @@ struct AlbumsOverviewView: View {
     }
 
     var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "rectangle.stack")
-                .font(.system(size: 40, weight: .ultraLight))
-                .foregroundStyle(.tertiary)
-            Text(folderID == nil ? "还没有相簿" : "这个文件夹是空的")
-                .font(.system(size: 17, weight: .semibold))
-            Text(folderID == nil
-                 ? "新建相簿，或导入文件夹时自动按目录创建。"
-                 : "可以在这个文件夹里新建相簿或子文件夹。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            Button("新建相簿") { namePrompt = .newAlbum(folderID: folderID) }
-                .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 80)
+        LumaEmptyState(symbol: "rectangle.stack",
+                       title: folderID == nil ? "还没有相簿" : "这个文件夹是空的",
+                       message: folderID == nil
+                           ? "新建相簿，或导入文件夹时自动按目录创建。"
+                           : "可以在这个文件夹里新建相簿或子文件夹。",
+                       actions: [LumaEmptyAction(title: "新建相簿", symbol: nil, filled: true) {
+                           namePrompt = .newAlbum(folderID: folderID)
+                       }])
     }
 
     /// 只展示当前层级的子文件夹：顶层的「所有相簿」是第 1 层，进入文件夹后逐层向下。

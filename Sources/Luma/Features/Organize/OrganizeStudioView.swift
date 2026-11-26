@@ -21,9 +21,9 @@ extension OrganizeDimension {
 /// 与「人物」「位置」「图库体检」保持一致：先看分布，再下钻到照片。
 /// 标题与维度切换在统一工具栏里（见 `GalleryView`），页面本身只留分布条与结果。
 struct OrganizeStudioView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
-    @EnvironmentObject private var selectionModel: SelectionModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
+    @Environment(SelectionModel.self) private var selectionModel
 
     /// nil 表示未筛选；评分 0 表示「未评分」；旗标 / 色标用枚举里的 `.none` 表示「未标记」。
     @State private var ratingPick: Int?
@@ -554,26 +554,17 @@ struct OrganizeStudioView: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                Image(systemName: hasPick ? "line.3.horizontal.decrease.circle" : dimension.icon)
-                    .font(.system(size: 22, weight: .light))
-                    .foregroundStyle(hasPick ? Color.secondary : Color.yellow)
-                Text(hasPick ? "没有匹配的照片" : "还没有整理过的照片")
-                    .font(.system(size: 13, weight: .semibold))
-            }
+            LumaEmptyState(symbol: hasPick ? "line.3.horizontal.decrease.circle" : dimension.icon,
+                           title: hasPick ? "没有匹配的照片" : "还没有整理过的照片",
+                           message: hasPick
+                               ? (dimension == .keyword ? "换一个关键词试试。" : "换一个星级、旗标或颜色试试。")
+                               : "评分、旗标、色标与关键词会自动汇总到这里。")
             if !hasPick {
-                Text("评分、旗标、色标与关键词会自动汇总到这里。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 7) {
                     hintRow("1", "在照片网格里右键任意照片，选择「评分 / 旗标 / 色标」。")
                     hintRow("2", "或在查看器的信息面板「整理」区块里逐项设置。")
                     hintRow("3", "设置完成后回到这里，分布与结果会实时更新。")
                 }
-            } else {
-                Text(dimension == .keyword ? "换一个关键词试试。" : "换一个星级、旗标或颜色试试。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
             }
         }
         .padding(18)
@@ -940,7 +931,7 @@ struct OrganizeStudioView: View {
             .padding(.vertical, 8)
             .background(.regularMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.6)
+                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
             }
             .shadow(color: .black.opacity(0.30), radius: 18, y: 8)
             .padding(.bottom, 18)

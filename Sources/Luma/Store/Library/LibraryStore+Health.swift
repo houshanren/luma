@@ -72,7 +72,7 @@ extension LibraryStore {
             }
         )
 
-        healthTask = Task { [weak self] in
+        tasks.adopt(.health, Task { [weak self] in
             guard let self else { return }
             var scores: [(UUID, Double)] = []
             var featureEntries: [(id: UUID, feature: Data)] = []
@@ -169,7 +169,7 @@ extension LibraryStore {
             self.isScanningHealth = false
             self.isFinalizingHealth = false
             self.healthScanProgress = 0
-            self.healthTask = nil
+            self.tasks.finish(.health)
             if paused {
                 self.cancelSourceJob(jobID)
                 self.showToast("已暂停，保留已检查的 \(scores.count.formatted()) 张结果")
@@ -180,7 +180,7 @@ extension LibraryStore {
                                      message: "完成 · \(blurry) 张模糊 · \(duplicates) 张相似备选")
                 self.showToast("体检完成：\(blurry) 张可能模糊，\(duplicates) 张相似备选")
             }
-        }
+        })
     }
 
     /// 扫描中刷新部分结果：只更新清晰度与已检查数量，相似连拍仍在最后统一归并。
@@ -203,7 +203,7 @@ extension LibraryStore {
 
     func cancelHealthScan() {
         guard isScanningHealth else { return }
-        healthTask?.cancel()
+        tasks.cancel(.health)
         // 让已检查的部分结果立即可用；后台任务会补齐相似连拍并落盘。
         isScanningHealth = false
         isFinalizingHealth = true
@@ -214,8 +214,7 @@ extension LibraryStore {
     /// 换库 / 断开连接时直接作废旧任务：不写回部分结果，避免落到新图库。
     func abortHealthScan() {
         healthScanToken = UUID()
-        healthTask?.cancel()
-        healthTask = nil
+        tasks.cancel(.health)
         isScanningHealth = false
         isFinalizingHealth = false
         healthScanProgress = 0

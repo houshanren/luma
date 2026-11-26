@@ -173,7 +173,7 @@ extension CinemaLibraryView {
         .padding(.vertical, 2.5)
         .background(Capsule().fill(Color.primary.opacity(0.045)))
         .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.6)
+            Capsule().strokeBorder(Color.primary.opacity(0.07), lineWidth: LumaControlMetrics.hairline)
         }
     }
 
@@ -207,7 +207,7 @@ extension CinemaLibraryView {
             .padding(.horizontal, 3)
             .background(.ultraThinMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.6)
+                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
             }
             .padding(.trailing, 6)
         }

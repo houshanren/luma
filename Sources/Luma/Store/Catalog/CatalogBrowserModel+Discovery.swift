@@ -135,19 +135,19 @@ extension CatalogBrowserModel {
         guard !targets.isEmpty else { return }
         for source in targets { health[source.id] = .checking }
 
-        healthTask?.cancel()
+        tasks.cancel(.catalogHealth)
         let jobSourceID: SourceID = domain == .networkCinema ? .networkCinema : .catalogHub
         let jobID = jobCenter?.begin(
             SourceJob(sourceID: jobSourceID,
                       kind: .healthCheck,
                       title: "检测 \(targets.count) 个\(domain.title)源"),
             cancel: { [weak self] in
-                Task { @MainActor in self?.healthTask?.cancel() }
+                Task { @MainActor in self?.tasks.cancel(.catalogHealth) }
             }
         )
         onJobChange?()
 
-        healthTask = Task { [weak self] in
+        tasks.adopt(.catalogHealth, Task { [weak self] in
             var online = 0
             var limited = 0
             var offline = 0
@@ -183,7 +183,7 @@ extension CatalogBrowserModel {
                                        message: "在线 \(online) · 需验证 \(limited) · 离线 \(offline)")
             }
             self.onJobChange?()
-        }
+        })
     }
 
     /// 供 `SourceSession` 使用的单源健康探测：结果与总览页的健康徽章同源。
@@ -401,7 +401,7 @@ extension CatalogBrowserModel {
 
     func searchAllSources() {
         let keyword = globalQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        globalSearchTask?.cancel()
+        tasks.cancel(.catalogGlobalSearch)
         guard !keyword.isEmpty else {
             globalResults = []
             globalQueryPlan = nil
@@ -418,14 +418,14 @@ extension CatalogBrowserModel {
         globalResults = local
         globalResultsKeyword = keyword
         isGlobalSearching = true
-        globalSearchTask = Task { [weak self] in
+        tasks.adopt(.catalogGlobalSearch, Task { [weak self] in
             let results = await self?.crossSourceSearch(keyword: siteKeyword, plan: plan) ?? []
             guard let self, !Task.isCancelled else { return }
             // 站点全部失败时保留本地命中，不要退回空态。
             self.globalResults = results.isEmpty ? local : results
             self.globalResultsKeyword = keyword
             self.isGlobalSearching = false
-        }
+        })
     }
 
     /// 记住最近搜索词：搜索框聚焦且为空时以胶囊展示，最多 8 条。
@@ -493,7 +493,7 @@ extension CatalogBrowserModel {
             globalResultsKeyword = trimmed
             isGlobalSearching = true
         }
-        globalSearchTask?.cancel()
+        tasks.cancel(.catalogGlobalSearch)
         let results = await crossSourceSearch(keyword: siteKeyword, plan: plan, perSourceLimit: 0)
         guard !Task.isCancelled else { return local }
         if updatesUI {
@@ -549,7 +549,7 @@ extension CatalogBrowserModel {
     }
 
     func clearGlobalSearch() {
-        globalSearchTask?.cancel()
+        tasks.cancel(.catalogGlobalSearch)
         globalResults = []
         globalResultsKeyword = ""
         globalQueryPlan = nil
@@ -895,8 +895,7 @@ extension CatalogBrowserModel {
         if isCalendarRefreshing {
             if calendarScanDomain == domain, !force { return }
             // 手动刷新或换域扫描都不能被上一轮卡住：取消旧扫描，重新来一轮。
-            calendarTask?.cancel()
-            calendarTask = nil
+            tasks.cancel(.catalogCalendar)
             if let calendarJobID { jobCenter?.cancel(calendarJobID) }
             if let calendarJobID { onJobFinished?(calendarJobID) }
             isCalendarRefreshing = false
@@ -925,12 +924,12 @@ extension CatalogBrowserModel {
                       kind: .sync,
                       title: domain == .networkCinema ? "补录影院日历" : "补录更新日历"),
             cancel: { [weak self] in
-                Task { @MainActor in self?.calendarTask?.cancel() }
+                Task { @MainActor in self?.tasks.cancel(.catalogCalendar) }
             }
         )
         calendarJobID = jobID
         onJobChange?()
-        calendarTask = Task { [weak self] in
+        tasks.adopt(.catalogCalendar, Task { [weak self] in
             var recorded = 0
             var step = 0
             var scannedSources = 0
@@ -1010,7 +1009,7 @@ extension CatalogBrowserModel {
             guard !Task.isCancelled else { return }
             CatalogStore.string(forKey: scanAtKey,
                                 value: String(Date().timeIntervalSince1970))
-        }
+        })
     }
 
     /// 日历扫描的节流时间戳：两个域各自独立，互不影响。

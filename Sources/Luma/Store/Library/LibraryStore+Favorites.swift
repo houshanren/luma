@@ -29,7 +29,7 @@ extension LibraryStore {
         if isSystemScope, systemIndex == nil, isLoadingSystemLibrary { return }
         let token = favoritesDigestToken
         if !force, favoritesDigest != nil, favoritesDigestLoadedToken == token { return }
-        favoritesDigestTask?.cancel()
+        tasks.cancel(.favoritesDigest)
         // 合并连续触发（启动阶段计数 / 识别回填会连续改动状态），避免上万条收藏反复重建。
         let debounce: UInt64 = force ? 0 : 350_000_000
 
@@ -58,7 +58,7 @@ extension LibraryStore {
             let isNative = isNativeContainer
             let people = favoritesPeopleSources()
             let cap = Self.favoritesDigestLimit
-            favoritesDigestTask = Task.detached(priority: .utility) { [weak self] in
+            tasks.adopt(.favoritesDigest, Task.detached(priority: .utility) { [weak self] in
                 if debounce > 0 {
                     try? await Task.sleep(nanoseconds: debounce)
                     if Task.isCancelled { return }
@@ -90,7 +90,7 @@ extension LibraryStore {
                           self.isFavoritesScope else { return }
                     self.applyFavoritesDigest(photos, digest: digest, token: token)
                 }
-            }
+            })
             return
         }
 
@@ -103,7 +103,7 @@ extension LibraryStore {
         }
         let people = favoritesPeopleSources()
         isLoadingFavoritesDigest = true
-        favoritesDigestTask = Task.detached(priority: .utility) { [weak self] in
+        tasks.adopt(.favoritesDigest, Task.detached(priority: .utility) { [weak self] in
             if debounce > 0 {
                 try? await Task.sleep(nanoseconds: debounce)
                 if Task.isCancelled { return }
@@ -114,7 +114,7 @@ extension LibraryStore {
                 guard let self, self.favoritesDigestToken == token else { return }
                 self.applyFavoritesDigest(source, digest: digest, token: token)
             }
-        }
+        })
     }
 
     /// 收藏按年份的快速总览：直接来自后台计数快照的月度收藏数（ZMOMENT 同源的收藏部分索引），
@@ -170,7 +170,7 @@ extension LibraryStore {
     private func applyFavoritesDigest(_ photos: [PhotoItem],
                                       digest: FavoritesDigest,
                                       token: String) {
-        favoritesDigestTask = nil
+        tasks.finish(.favoritesDigest)
         isLoadingFavoritesDigest = false
         favoritesDigestSource = photos
         favoritesDigest = digest

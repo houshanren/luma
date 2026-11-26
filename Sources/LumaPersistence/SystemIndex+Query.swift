@@ -692,14 +692,6 @@ package extension SystemIndex {
         return Date(timeIntervalSinceReferenceDate: raw)
     }
 
-    static func parseEXIFDate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        return formatter.date(from: value)
-    }
-
     static func trimmed(_ value: String?) -> String? {
         guard let value else { return nil }
         let result = value.trimmingCharacters(in: .whitespacesAndNewlines)

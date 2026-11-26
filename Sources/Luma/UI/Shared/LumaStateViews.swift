@@ -28,6 +28,8 @@ struct LumaEmptyState: View {
         case card
     }
 
+    @Environment(\.colorScheme) private var scheme
+
     let symbol: String
     let title: String
     var message: String = ""
@@ -67,21 +69,18 @@ struct LumaEmptyState: View {
                                 Text(action.title)
                                     .font(.system(size: 12, weight: .semibold))
                             }
-                            .foregroundStyle(action.filled ? Color.white : action.tint)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background {
-                                if action.filled {
-                                    Capsule().fill(action.tint)
-                                } else {
-                                    Capsule().fill(.ultraThinMaterial)
-                                }
-                            }
-                            .overlay {
-                                Capsule().strokeBorder(action.tint.opacity(action.filled ? 0 : 0.30),
-                                                       lineWidth: 0.8)
-                            }
-                            .contentShape(Capsule())
+                            .foregroundStyle(action.filled ? LumaInk.onTint(action.tint) : action.tint)
+                            .lumaPill(
+                                fill: action.filled
+                                    ? AnyShapeStyle(action.tint)
+                                    : AnyShapeStyle(.ultraThinMaterial),
+                                stroke: action.filled
+                                    ? AnyShapeStyle(Color.clear)
+                                    : AnyShapeStyle(LumaInk.tintHairline(action.tint, scheme: scheme)),
+                                lineWidth: LumaControlMetrics.border,
+                                horizontalPadding: 16,
+                                verticalPadding: 8
+                            )
                         }
                         .buttonStyle(.plain)
                         .modifier(LumaEmptyActionShortcut(isDefault: action.isDefaultAction))

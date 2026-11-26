@@ -20,7 +20,7 @@ struct CinemaDetailView: View {
     /// 顶栏「返回」：没有二级页时关闭整个详情。
     var onClose: () -> Void = {}
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @State private var activeSheet: CinemaDetailSheet?
     /// TMDB 详情补全后的条目（合集 / 演职员 / 预告 / 分级）。
     @State private var enriched: CinemaEntry?
@@ -116,7 +116,7 @@ struct CinemaDetailView: View {
                 CinemaMatchSheet(entry: entry) {
                     activeSheet = nil
                 }
-                .environmentObject(store)
+                .environment(store)
                 // 面板本身仍是影院暗色底，单独锁深色，避免浅色外观下白字压在深底上。
                 .environment(\.colorScheme, .dark)
             case .newList:
@@ -127,7 +127,7 @@ struct CinemaDetailView: View {
                 } onCancel: {
                     activeSheet = nil
                 }
-                .environmentObject(store)
+                .environment(store)
             }
         }
         .sheet(isPresented: $showCollection) {
@@ -136,7 +136,7 @@ struct CinemaDetailView: View {
                 showCollection = false
                 onOpenEntry(other)
             }
-            .environmentObject(store)
+            .environment(store)
             .environment(\.colorScheme, .dark)
         }
     }
@@ -465,7 +465,7 @@ struct CinemaDetailView: View {
             .frame(height: 22)
             .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
     }
@@ -541,7 +541,7 @@ struct CinemaDetailView: View {
             .padding(.vertical, 3)
             .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
     }

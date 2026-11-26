@@ -4,8 +4,8 @@ import AppKit
 @main
 struct LumaApp: App {
     @NSApplicationDelegateAdaptor(LumaAppDelegate.self) private var appDelegate
-    @StateObject private var store: LibraryStore
-    @StateObject private var settings = AppSettings.shared
+    @State private var store: LibraryStore
+    @State private var settings = AppSettings.shared
     /// 照片网格组件（LumaUI）的宿主：组件不依赖 Store / 设置，由这里统一桥接。
     @StateObject private var gridBridge: LibraryPhotoGridBridge
     /// 侧边栏可见性：菜单与工具栏按钮共用，收起后仍能重新打开。
@@ -14,11 +14,11 @@ struct LumaApp: App {
     @StateObject private var libraryAggregate = LibraryAggregateModel()
     /// 菜单栏「关于拾光」走独立品牌窗口，与设置里的关于共用同一套动效。
     @Environment(\.openWindow) private var openWindow
-    /// 模块开关：关掉的模块不再出现在「接入…」菜单里。
-    @AppStorage(SettingsKeys.moduleCloud) private var cloudModule = true
-    @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
-    @AppStorage(SettingsKeys.showTelevision) private var televisionModule = true
-    @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
+    /// 模块开关随当前图库保存：关掉的模块不再出现在「接入…」菜单里。
+    private var cloudModule: Bool { settings.moduleCloud }
+    private var catalogModule: Bool { settings.moduleCatalog }
+    private var televisionModule: Bool { settings.moduleTelevision }
+    private var cinemaModule: Bool { settings.moduleCinema }
 
     init() {
         // 数据层日志出口：Persistence 不依赖 App，由组合根把 Diagnostics 注入进去。
@@ -28,6 +28,10 @@ struct LumaApp: App {
         // 回忆影片的取图出口：功能 target 不依赖 ImageLoader，由组合根注入。
         MemoryFrameLoader.load = { photo, maxPixel in
             ImageLoader.displayImage(for: photo, maxPixel: maxPixel)
+        }
+        // 人物头像取图出口：组件只认注册表，解码与「按 ID 查库」留在这里。
+        PersonAvatarRegistry.cachedProvider = { request in
+            PersonAvatarLoader.cached(request)
         }
         // 组合根注入：Store 只依赖交互协议，AppKit 文件面板 / 弹窗实现留在视图层。
         let store = LibraryStore()
@@ -40,7 +44,11 @@ struct LumaApp: App {
                                                   store: store,
                                                   onQuick: onQuick)
         }
-        _store = StateObject(wrappedValue: store)
+        PersonAvatarRegistry.loadProvider = { [weak store] request in
+            guard let store else { return nil }
+            return await PersonAvatarLoader.load(request, store: store)
+        }
+        _store = State(wrappedValue: store)
         // 网格组件只认 PhotoGridHost：桥接一次，整棵视图树共用同一份。
         _gridBridge = StateObject(wrappedValue: LibraryPhotoGridBridge(store: store,
                                                                       settings: AppSettings.shared,
@@ -90,14 +98,15 @@ struct LumaApp: App {
         // 单窗口：不再允许新建第二个主窗口；关掉主窗口即退出（见 LumaAppDelegate）。
         Window("拾光", id: "main") {
             RootView()
-                .environmentObject(store)
-                .environmentObject(settings)
+                .environment(store)
+                .environmentObject(store.chrome)
+                .environment(settings)
                 .environmentObject(gridBridge.host)
-                .environmentObject(store.selectionModel)
-                .environmentObject(store.viewerModel)
-                .environmentObject(store.cloudModel)
-                .environmentObject(store.catalogModel)
-                .environmentObject(store.tvModel)
+                .environment(store.selectionModel)
+                .environment(store.viewerModel)
+                .environment(store.cloudModel)
+                .environment(store.catalogModel)
+                .environment(store.tvModel)
                 .environmentObject(sidebarChrome)
                 .environmentObject(libraryAggregate)
                 .frame(minWidth: 1080, minHeight: 660)
@@ -725,18 +734,18 @@ struct LumaApp: App {
                 .disabled(!store.isAlbumOverviewScope)
 
                 Menu("元数据") {
-                    Toggle("标题", isOn: $settings.metadata.title)
-                    Toggle("拍摄日期", isOn: $settings.metadata.capturedDate)
-                    Toggle("关键词", isOn: $settings.metadata.keywords)
-                    Toggle("已编辑", isOn: $settings.metadata.edited)
-                    Toggle("文件类型", isOn: $settings.metadata.fileType)
-                    Toggle("个人收藏", isOn: $settings.metadata.favorite)
-                    Toggle("位置", isOn: $settings.metadata.location)
-                    Toggle("相机", isOn: $settings.metadata.camera)
-                    Toggle("分辨率", isOn: $settings.metadata.resolution)
-                    Toggle("文件大小", isOn: $settings.metadata.fileSize)
-                    Toggle("来源", isOn: $settings.metadata.source)
-                    Toggle("视频时长", isOn: $settings.metadata.duration)
+                    Toggle("标题", isOn: Bindable(settings).metadata.title)
+                    Toggle("拍摄日期", isOn: Bindable(settings).metadata.capturedDate)
+                    Toggle("关键词", isOn: Bindable(settings).metadata.keywords)
+                    Toggle("已编辑", isOn: Bindable(settings).metadata.edited)
+                    Toggle("文件类型", isOn: Bindable(settings).metadata.fileType)
+                    Toggle("个人收藏", isOn: Bindable(settings).metadata.favorite)
+                    Toggle("位置", isOn: Bindable(settings).metadata.location)
+                    Toggle("相机", isOn: Bindable(settings).metadata.camera)
+                    Toggle("分辨率", isOn: Bindable(settings).metadata.resolution)
+                    Toggle("文件大小", isOn: Bindable(settings).metadata.fileSize)
+                    Toggle("来源", isOn: Bindable(settings).metadata.source)
+                    Toggle("视频时长", isOn: Bindable(settings).metadata.duration)
                 }
 
                 Divider()
@@ -747,7 +756,7 @@ struct LumaApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 .disabled(store.viewerID == nil)
 
-                Toggle("显示底部缩略图", isOn: $settings.viewerFilmstrip)
+                Toggle("显示底部缩略图", isOn: Bindable(settings).viewerFilmstrip)
                     .keyboardShortcut("t", modifiers: [.command, .option])
                     .disabled(store.viewerID == nil)
 
@@ -775,11 +784,11 @@ struct LumaApp: App {
 
         Window("导入", id: "import") {
             ImportSheetView()
-                .environmentObject(store)
-                .environmentObject(settings)
-                .environmentObject(store.selectionModel)
-                .environmentObject(store.viewerModel)
-                .environmentObject(store.cloudModel)
+                .environment(store)
+                .environment(settings)
+                .environment(store.selectionModel)
+                .environment(store.viewerModel)
+                .environment(store.cloudModel)
                 .tint(settings.accentColor)
                 .accentColor(settings.accentColor)
         }
@@ -790,7 +799,7 @@ struct LumaApp: App {
         // 打开期间主窗口整窗隐藏（含窗口框架），选定或取消后由 RootView 恢复。
         Window("选取图库", id: "libraryPicker") {
             LibraryPickerView()
-                .environmentObject(store)
+                .environment(store)
                 .tint(settings.accentColor)
                 .accentColor(settings.accentColor)
         }
@@ -799,7 +808,7 @@ struct LumaApp: App {
         // 关于：系统默认面板太素，这里换成带「光之河」动效的品牌窗口。
         Window("关于拾光", id: "about") {
             AboutWindowView()
-                .environmentObject(settings)
+                .environment(settings)
         }
         .defaultSize(width: 520, height: 500)
         .windowResizability(.contentSize)
@@ -807,11 +816,11 @@ struct LumaApp: App {
 
         Settings {
             SettingsView()
-                .environmentObject(store)
-                .environmentObject(settings)
-                .environmentObject(store.selectionModel)
-                .environmentObject(store.viewerModel)
-                .environmentObject(store.cloudModel)
+                .environment(store)
+                .environment(settings)
+                .environment(store.selectionModel)
+                .environment(store.viewerModel)
+                .environment(store.cloudModel)
         }
     }
 }

@@ -5,8 +5,8 @@ import Foundation
 /// 「值得重看」：先按人物 / 地点 / 场景 / 年份把旧照片拆成主体，
 /// 再用一张「今日重看」大图开场，进入某个主体后可以按时间正序 / 倒序重看。
 struct RevisitView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     @State private var insight: RevisitInsight?
     @State private var onlyUnseen = false
@@ -16,8 +16,17 @@ struct RevisitView: View {
     @State private var heroSeeded = false
     @State private var refreshToken = 0
 
-    private var reloadKey: String {
-        "\(store.visibleStateKey)|\(onlyUnseen)|\(refreshToken)"
+    /// 重新计算的键：可见集合指纹 + 只看未看过的 + 手动刷新计数。
+    private struct ReloadKey: Equatable {
+        let visible: VisibleStateKey
+        let onlyUnseen: Bool
+        let refreshToken: Int
+    }
+
+    private var reloadKey: ReloadKey {
+        ReloadKey(visible: store.visibleStateKey,
+                  onlyUnseen: onlyUnseen,
+                  refreshToken: refreshToken)
     }
 
     var body: some View {
@@ -236,8 +245,7 @@ struct RevisitView: View {
         guard let viewedAt = photo.viewedAt else {
             return "这张照片还没有在拾光里打开过"
         }
-        let days = max(1, Int(Date().timeIntervalSince(viewedAt) / 86_400))
-        return "上次打开是 \(days.formatted()) 天前"
+        return "上次打开是 \(DateText.daysSince(viewedAt).formatted()) 天前"
     }
 
     // MARK: 主体切换
@@ -389,32 +397,17 @@ struct RevisitView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 92, height: 92)
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 38, weight: .light))
-                    .foregroundStyle(.secondary)
-            }
-            Text("还没有值得重看的照片")
-                .font(.system(size: 18, weight: .semibold))
-            Text("这里会收录拍摄超过两年、且一年以上没有打开过的照片。\n照片多起来以后，会自动按人物、地点、场景与年份整理。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, 60)
+        LumaEmptyState(symbol: "clock.arrow.circlepath",
+                       title: "还没有值得重看的照片",
+                       message: "这里会收录拍摄超过两年、且一年以上没有打开过的照片。\n照片多起来以后，会自动按人物、地点、场景与年份整理。")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
 // MARK: - 主体卡片
 
 private struct RevisitSubjectCard: View {
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
 
     let subject: RevisitInsight.Subject
     let onOpen: () -> Void
@@ -512,8 +505,8 @@ private struct RevisitSubjectCard: View {
 // MARK: - 主体详情
 
 private struct RevisitSubjectDetailView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let subject: RevisitInsight.Subject
     let onBack: () -> Void

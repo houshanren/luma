@@ -3,7 +3,7 @@ import SwiftUI
 /// 网络资源区：资源 / 榜单 / 日历 / 足迹 / 片单 / 关注六个分页。
 /// 分页切换在窗口工具栏里（与标题同一行），内容区不再叠一条控制栏。
 struct CatalogHubView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
 
     var body: some View {
         Group {
@@ -38,7 +38,7 @@ struct CatalogHubView: View {
 
 /// 工具栏中区的分页胶囊：资源 / 榜单 / 日历 / 足迹 / 片单 / 关注。
 struct CatalogHubTabs: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
+    @Environment(CatalogBrowserModel.self) private var catalog
     @Namespace private var tabNamespace
 
     var body: some View {

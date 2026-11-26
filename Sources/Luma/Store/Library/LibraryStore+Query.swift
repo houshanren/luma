@@ -941,43 +941,43 @@ extension LibraryStore {
     }
 
     /// 影响 `visiblePhotos` 的状态指纹；筛选、排序、搜索等变化都会换 key。
-    var visibleStateKey: String {
-        var parts: [String] = []
-        parts.append(String(contentRevision))
-        parts.append(String(windowRevision))
-        parts.append(String(describing: sidebarItem))
-        parts.append(selectedKeyword ?? "")
-        parts.append(searchText)
-        parts.append(semanticSearchTags.joined(separator: "|"))
-        parts.append(searchScope.rawValue)
-        parts.append(String(analysisIndex.count))
-        parts.append(photoFilter.rawValue)
-        parts.append(keywordFilter ?? "")
-        parts.append(String(ratingFilter))
-        parts.append(flagFilter?.rawValue ?? "")
-        parts.append(colorLabelFilter?.rawValue ?? "")
-        parts.append(selectedPlace?.id ?? "")
-        parts.append(selectedPerson.map { String($0.id) } ?? "")
-        parts.append(sortKey.rawValue)
-        parts.append(String(sortAscending))
-        parts.append(String(cloudModel.revision))
-        parts.append(String(describing: cloudModel.scope))
-        parts.append(String(cloudModel.analysis.count))
-        parts.append(String(cloudModel.metadataRevision))
-        parts.append(String(cloudModel.people.count))
-        parts.append(String(isLoadingSystemLibrary))
-        // 端侧分析会改变搜索/场景/OCR 的命中结果，必须参与缓存失效（避免分析过程中反复重算全库）。
-        parts.append(String((searchText.isEmpty && !isAnalysisScope) ? 0 : analysisIndex.count))
-        // 系统图库的识别结果只在内存里，同样影响场景 / 包含文字范围。
-        parts.append(String(isSystemScope ? systemAnalysisIndex.count : 0))
-        parts.append(similarScope?.sourceID.uuidString ?? "")
-        parts.append(String(similarScope?.ids.count ?? 0))
-        parts.append(systemIndexSignature)
-        parts.append(String(systemWindowRevision))
-        parts.append(String(hasLoadedSystemWindow))
-        parts.append(selectedFavoriteBucket?.id ?? "")
-        parts.append(favoritesDigestLoadedToken)
-        return parts.joined(separator: "\u{1F}")
+    var visibleStateKey: VisibleStateKey {
+        VisibleStateKey(
+            contentRevision: contentRevision,
+            windowRevision: windowRevision,
+            sidebarItem: sidebarItem,
+            selectedKeyword: selectedKeyword,
+            searchText: searchText,
+            semanticSearchTags: semanticSearchTags,
+            searchScope: searchScope,
+            analysisCount: analysisIndex.count,
+            photoFilter: photoFilter,
+            keywordFilter: keywordFilter,
+            ratingFilter: ratingFilter,
+            flagFilter: flagFilter,
+            colorLabelFilter: colorLabelFilter,
+            selectedPlaceID: selectedPlace?.id,
+            selectedPersonID: selectedPerson?.id,
+            sortKey: sortKey,
+            sortAscending: sortAscending,
+            cloudRevision: cloudModel.revision,
+            cloudScope: cloudModel.scope,
+            cloudAnalysisCount: cloudModel.analysis.count,
+            cloudMetadataRevision: cloudModel.metadataRevision,
+            cloudPeopleCount: cloudModel.people.count,
+            isLoadingSystemLibrary: isLoadingSystemLibrary,
+            // 端侧分析会改变搜索/场景/OCR 的命中结果，必须参与缓存失效（避免分析过程中反复重算全库）。
+            searchAnalysisCount: (searchText.isEmpty && !isAnalysisScope) ? 0 : analysisIndex.count,
+            // 系统图库的识别结果只在内存里，同样影响场景 / 包含文字范围。
+            systemAnalysisCount: isSystemScope ? systemAnalysisIndex.count : 0,
+            similarSourceID: similarScope?.sourceID,
+            similarCount: similarScope?.ids.count ?? 0,
+            systemIndexSignature: systemIndexSignature,
+            systemWindowRevision: systemWindowRevision,
+            hasLoadedSystemWindow: hasLoadedSystemWindow,
+            favoriteBucketID: selectedFavoriteBucket?.id,
+            favoritesDigestToken: favoritesDigestLoadedToken
+        )
     }
 
     var visiblePhotos: [PhotoItem] {
@@ -1149,8 +1149,10 @@ extension LibraryStore {
 
     var sections: [PhotoSection] {
         // 分段需要遍历全部可见项，按指纹缓存，避免翻页/选中时反复分组。
-        let key = visibleStateKey + "\u{1E}" + grouping.rawValue
-            + "\u{1E}" + stackMode.rawValue + "#\(stackRevision)"
+        let key = SectionsCacheKey(visible: visibleStateKey,
+                                   grouping: grouping,
+                                   stackMode: stackMode,
+                                   stackRevision: stackRevision)
         if sectionsCacheKey == key { return sectionsCacheValue }
         let value = computeSections()
         sectionsCacheKey = key
@@ -1284,7 +1286,47 @@ extension LibraryStore {
     }
 
     func photo(id: UUID) -> PhotoItem? {
-        photos.first(where: { $0.id == id })
+        localPhoto(id: id)
+    }
+
+    /// 单张照片查询（本地图库）：先查索引；同一内容版本内累计到阈值后建索引，之后是 O(1)。
+    /// 索引由 `photos` 的 didSet 负责失效，批量接口与这里共用同一份索引。
+    func localPhoto(id: UUID) -> PhotoItem? {
+        if let index = localPhotoIndex { return index[id] }
+        localPhotoScanCount += 1
+        if localPhotoScanCount > Self.localPhotoIndexThreshold {
+            return buildLocalPhotoIndex()[id]
+        }
+        return photos.first(where: { $0.id == id })
+    }
+
+    /// 一次性建好本地照片索引（批量查询与阈值后的单张查询共用）。
+    @discardableResult
+    func buildLocalPhotoIndex() -> [UUID: PhotoItem] {
+        if let index = localPhotoIndex { return index }
+        var index: [UUID: PhotoItem] = [:]
+        index.reserveCapacity(photos.count)
+        for item in photos { index[item.id] = item }
+        localPhotoIndex = index
+        localPhotoScanCount = 0
+        return index
+    }
+
+    /// 单张照片查询（当前网盘目录）：条目多时按目录版本缓存索引，否则直接扫描。
+    func cloudPhoto(id: UUID) -> PhotoItem? {
+        let items = cloudPhotos
+        guard items.count > Self.cloudPhotoIndexThreshold else {
+            return items.first(where: { $0.id == id })
+        }
+        let revision = cloudModel.revision
+        if let cache = cloudPhotoIndexCache, cache.revision == revision {
+            return cache.index[id]
+        }
+        var index: [UUID: PhotoItem] = [:]
+        index.reserveCapacity(items.count)
+        for item in items { index[item.id] = item }
+        cloudPhotoIndexCache = (revision, index)
+        return index[id]
     }
 
     var viewerPhoto: PhotoItem? {
@@ -1383,10 +1425,7 @@ extension LibraryStore {
             }
         }
         guard let minDate, let maxDate else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy/M/d"
-        return "\(formatter.string(from: minDate)) – \(formatter.string(from: maxDate))"
+        return "\(DateText.slashDayFormatter.string(from: minDate)) – \(DateText.slashDayFormatter.string(from: maxDate))"
     }
 
     var geoPhotos: [PhotoItem] {

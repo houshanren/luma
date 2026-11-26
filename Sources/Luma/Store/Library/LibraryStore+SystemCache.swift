@@ -32,16 +32,16 @@ extension LibraryStore {
         if store.systemAnalysisAutoResume(path) {
             systemAnalysisAutoResume = true
         }
-        guard systemAnalysisIndex.isEmpty, systemAnalysisHydration == nil else { return }
+        guard systemAnalysisIndex.isEmpty, !tasks.isRunning(.systemAnalysisHydration) else { return }
 
         // 十万级图库同步在读回识别结果会在加载完成的瞬间卡住主线程（还会连带搬走所有特征向量）。
         // 这里放到后台线程读，只回填标签 / 文字；特征向量由体检 / 相似检索按需现算。
-        systemAnalysisHydration = Task { [weak self] in
+        tasks.adopt(.systemAnalysisHydration, Task { [weak self] in
             let rows = await Task.detached(priority: .userInitiated) {
                 store.loadSystemAnalysis(libraryPath: path)
             }.value
             guard let self else { return }
-            defer { self.systemAnalysisHydration = nil }
+            defer { self.tasks.finish(.systemAnalysisHydration) }
             guard self.isSystemScope, self.systemLibraryPath == path, !rows.isEmpty else { return }
             var index: [UUID: PhotoAnalysis] = [:]
             index.reserveCapacity(rows.count)
@@ -60,7 +60,7 @@ extension LibraryStore {
             self.contentRevision &+= 1
             // 之前没跑完的识别：缓存读回后再续跑，避免把已识别的照片重跑一遍。
             self.resumeSystemAnalysisIfNeeded()
-        }
+        })
     }
 
     /// 上次识别停下的查询偏移（关库 / 切库后从这里继续）。

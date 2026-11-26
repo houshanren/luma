@@ -221,7 +221,7 @@ struct ShortcutSettingsView: View {
         .frame(height: 22)
         .background(Color.accentColor.opacity(0.12), in: Capsule())
         .overlay {
-            Capsule().strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 0.8)
+            Capsule().strokeBorder(Color.accentColor.opacity(0.45), lineWidth: LumaControlMetrics.border)
         }
     }
 

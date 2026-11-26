@@ -12,12 +12,12 @@ final class SidebarChrome: ObservableObject {
 }
 
 struct RootView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var tv: IPTVBrowserModel
-    @EnvironmentObject private var viewer: ViewerModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(IPTVBrowserModel.self) private var tv
+    @Environment(ViewerModel.self) private var viewer
+    @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var sidebarChrome: SidebarChrome
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -34,10 +34,11 @@ struct RootView: View {
     @State private var windowFrameBeforeFullScreen: NSRect?
 
     var body: some View {
+        @Bindable var store = store
         ZStack {
             if store.needsLibrarySetup {
                 LibrarySetupView()
-                    .environmentObject(store)
+                    .environment(store)
                     .toolbar(.hidden, for: .windowToolbar)
                     .transition(.opacity)
             } else if store.libraryPickerOnLaunch {
@@ -56,8 +57,8 @@ struct RootView: View {
             // 删除前的确认卡片：盖在网格、查看器与编辑器之上，确认后才真正删除。
             if let request = store.pendingDeletion {
                 DeleteConfirmOverlay(request: request)
-                    .environmentObject(store)
-                    .environmentObject(settings)
+                    .environment(store)
+                    .environment(settings)
                     .transition(.opacity)
                     .zIndex(8)
             }
@@ -65,96 +66,96 @@ struct RootView: View {
             // 断开系统图库 / 网络存储前的确认卡片。
             if let request = store.pendingDisconnect {
                 DisconnectConfirmOverlay(request: request)
-                    .environmentObject(store)
-                    .environmentObject(settings)
+                    .environment(store)
+                    .environment(settings)
                     .transition(.opacity)
                     .zIndex(8)
             }
         }
-        .sheet(isPresented: $catalog.showWizard) {
+        .sheet(isPresented: Bindable(catalog).showWizard) {
             CatalogWizardView()
-                .environmentObject(catalog)
-                .environmentObject(store)
+                .environment(catalog)
+                .environment(store)
         }
-        .sheet(isPresented: $tv.showWizard) {
+        .sheet(isPresented: Bindable(tv).showWizard) {
             TVSourceWizardView()
-                .environmentObject(tv)
-                .environmentObject(store)
+                .environment(tv)
+                .environment(store)
         }
         .sheet(isPresented: $store.showNewAlbumSheet) {
             NewAlbumSheet()
-                .environmentObject(store)
+                .environment(store)
         }
         // 「新建图库」复用首次启动的建库流程（能力 → 位置并创建），
         // 不再另造一套表单；建好后立刻切到新图库。
         .sheet(isPresented: $store.showNewLibrarySheet) {
             LibrarySetupView(creatingAdditionalLibrary: true)
-                .environmentObject(store)
-                .environmentObject(settings)
+                .environment(store)
+                .environment(settings)
         }
         .sheet(isPresented: $store.showKeywordManager) {
             KeywordManagerView()
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(item: $store.systemToolsRequest) { request in
             SystemToolsSheet(request: request)
-                .environmentObject(store)
+                .environment(store)
         }
         // 命名弹窗由根视图统一呈现：⌘⇧N、侧边栏右键都写同一个状态，
         // 侧边栏收起时也要能弹出。
         .sheet(item: $store.namePrompt) { payload in
             NamePromptSheet(payload: payload)
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(isPresented: $store.showCompressionSheet) {
             CompressionSheetView()
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(isPresented: $store.showShortcutHelp) {
             ShortcutHelpView(showsCloseButton: true)
         }
         .sheet(isPresented: $store.showAIAssistant) {
             AIAssistantView()
-                .environmentObject(store)
-                .environmentObject(settings)
+                .environment(store)
+                .environment(settings)
         }
         .sheet(isPresented: $store.showBeautyPanel) {
             BeautyRecommendView()
-                .environmentObject(store)
-                .environmentObject(settings)
+                .environment(store)
+                .environment(settings)
         }
-        .sheet(isPresented: $cloud.showSheet) {
+        .sheet(isPresented: Bindable(cloud).showSheet) {
             CloudConnectSheet()
-                .environmentObject(store)
+                .environment(store)
         }
-        .sheet(isPresented: $cloud.showWizard) {
+        .sheet(isPresented: Bindable(cloud).showWizard) {
             CloudSetupWizardView()
-                .environmentObject(store)
+                .environment(store)
         }
         // Cookie / 令牌失效：原地重新登录，保存后自动刷新当前网盘。
-        .sheet(item: $cloud.reauthMount) { mount in
+        .sheet(item: Bindable(cloud).reauthMount) { mount in
             CloudCookieReauthView(mount: mount)
-                .environmentObject(store)
+                .environment(store)
         }
-        .sheet(item: $cloud.nameRequest) { request in
+        .sheet(item: Bindable(cloud).nameRequest) { request in
             CloudNameSheet(request: request)
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(item: $store.editingSmartAlbum) { album in
             SmartAlbumEditorView(album: album)
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(isPresented: $store.showBatchChangeSheet) {
             BatchChangeView()
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(isPresented: $store.showExportSheet) {
             ExportOptionsView()
-                .environmentObject(store)
+                .environment(store)
         }
         .sheet(isPresented: $store.showPhotoPicker) {
             PhotoPickerSheet()
-                .environmentObject(store)
+                .environment(store)
                 .frame(minWidth: 760, minHeight: 520)
         }
         // 相簿 / 网格右键「手动匹配…」：不用先进入影院，直接在当前窗口完成匹配。
@@ -162,7 +163,7 @@ struct RootView: View {
             CinemaMatchSheet(photos: request.photos) {
                 store.cinemaQuickMatch = nil
             }
-            .environmentObject(store)
+            .environment(store)
         }
         .onChange(of: store.showImportSheet) { _, visible in
             if visible {
@@ -448,22 +449,22 @@ struct RootView: View {
 
         if store.showSlideshow {
             SlideshowView()
-                .environmentObject(store)
+                .environment(store)
                 .transition(.opacity)
                 .zIndex(6)
         }
 
         if let trip = store.activeTrip {
             TripStoryView(trip: trip)
-                .environmentObject(store)
-                .environmentObject(settings)
+                .environment(store)
+                .environment(settings)
                 .transition(.opacity)
                 .zIndex(6.5)
         }
 
         if let memory = store.activeMemory {
             MemoryMovieView<LibraryStore>(memory: memory)
-                .environmentObject(store)
+                .environment(store)
                 .transition(.opacity)
                 .zIndex(7)
         }

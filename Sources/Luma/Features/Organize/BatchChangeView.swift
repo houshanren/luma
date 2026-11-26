@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 批量更改：一次修改所选项目的标题、拍摄日期与地点，对应官方「图像 › 批量更改」。
 struct BatchChangeView: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @State private var editTitle = false

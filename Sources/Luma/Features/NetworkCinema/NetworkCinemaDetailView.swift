@@ -69,9 +69,9 @@ private struct EpisodeLoadFailure {
 /// 下面是分集网格；网络影院独有的来源站点、原站入口与观看足迹并进同一张卡。
 struct NetworkCinemaDetailView: View {
     let entry: NetworkCinemaItem
-    @ObservedObject var model: NetworkCinemaModel
+    @Bindable var model: NetworkCinemaModel
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     @State private var detail: CatalogDetail?
     @State private var isLoading = true
@@ -455,7 +455,7 @@ struct NetworkCinemaDetailView: View {
             .frame(height: 22)
             .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
     }
@@ -492,7 +492,7 @@ struct NetworkCinemaDetailView: View {
             .padding(.vertical, 3)
             .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
     }
@@ -661,7 +661,7 @@ struct NetworkCinemaDetailView: View {
                 .frame(height: 30)
                 .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
                 .overlay {
-                    Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                    Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
                 }
             }
             .menuStyle(.borderlessButton)
@@ -706,7 +706,7 @@ struct NetworkCinemaDetailView: View {
         .frame(height: 30)
         .background(CinemaDetailTone.ink.opacity(0.06), in: Capsule())
         .overlay {
-            Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+            Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
         }
         .fixedSize()
         .help("来自 \(entry.source.name)")

@@ -3,8 +3,8 @@ import SwiftUI
 /// 我的关注：把关注的人物、片商与题材合成独立页面。
 /// 顶部是关注总览和海报扇面，下面按「新内容 / 人物 / 片商 / 题材」分区。
 struct CatalogFollowingView: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
 
     @State private var posters: [String: [FollowPoster]] = [:]
 
@@ -38,7 +38,7 @@ struct CatalogFollowingView: View {
                                          },
                                          backTitle: "返回关注",
                                          showsInlineBack: false)
-                    .environmentObject(catalog)
+                    .environment(catalog)
                     .transition(.opacity)
             } else {
                 list
@@ -245,19 +245,9 @@ struct CatalogFollowingView: View {
     // MARK: - 空态
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "star.circle")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(Color.accentColor.opacity(0.85))
-            Text("还没有关注")
-                .font(.system(size: 14, weight: .semibold))
-            Text("在详情页点演员 / 片商名字可以关注人物，分类菜单里可以关注题材。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 70)
+        LumaEmptyState(symbol: "star.circle",
+                       title: "还没有关注",
+                       message: "在详情页点演员 / 片商名字可以关注人物，分类菜单里可以关注题材。")
     }
 
     // MARK: - 通用

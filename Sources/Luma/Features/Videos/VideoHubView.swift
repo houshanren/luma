@@ -4,8 +4,8 @@ import AppKit
 // MARK: - 页面
 
 struct VideoHubView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     @State private var previewingID: UUID?
     @State private var collapsedGroups: Set<String> = []
@@ -564,24 +564,10 @@ struct VideoHubView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 88, height: 88)
-                Image(systemName: "video.slash")
-                    .font(.system(size: 30, weight: .light))
-                    .foregroundStyle(.secondary)
-            }
-            Text("还没有视频")
-                .font(.system(size: 17, weight: .semibold))
-            Text("导入视频，或连接包含视频的系统图库后，这里会按年份、时长、地点与人物自动整理。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        LumaEmptyState(symbol: "video.slash",
+                       title: "还没有视频",
+                       message: "导入视频，或连接包含视频的系统图库后，这里会按年份、时长、地点与人物自动整理。")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var filteredEmptyState: some View {
@@ -834,8 +820,8 @@ private struct VideoCard: View {
 
     @Binding var previewingID: UUID?
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     @State private var hovered = false
     @State private var hoverTask: Task<Void, Never>?

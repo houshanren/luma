@@ -14,7 +14,7 @@ struct CinemaMatchSheet: View {
     let folderHint: String?
     let onApplied: () -> Void
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     /// 两步：先选片，再给剧集排季集（参考芝杜的批量匹配流程）。

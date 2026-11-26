@@ -2,8 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ImportSheetView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var selectedIDs: Set<UUID> = []
     @State private var targetAlbumID: UUID?
@@ -334,7 +334,7 @@ struct ImportSheetView: View {
                     Divider()
                 }
 
-                Toggle(isOn: $settings.importCreateAlbumsFromFolders) {
+                Toggle(isOn: Bindable(settings).importCreateAlbumsFromFolders) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(store.isNativeContainer
                              ? "将最后一层文件夹创建为「照片」相簿"
@@ -349,7 +349,7 @@ struct ImportSheetView: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
 
-                Toggle(isOn: $settings.importPreserveFolderStructure) {
+                Toggle(isOn: Bindable(settings).importPreserveFolderStructure) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(store.isNativeContainer
                              ? "保留上层文件夹结构（「照片」文件夹）"
@@ -370,7 +370,7 @@ struct ImportSheetView: View {
 
                 Divider()
 
-                Toggle(isOn: $settings.importSkipExactDuplicates) {
+                Toggle(isOn: Bindable(settings).importSkipExactDuplicates) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("跳过完全重复的文件")
                             .font(.system(size: 12, weight: .medium))
@@ -386,7 +386,7 @@ struct ImportSheetView: View {
                 .controlSize(.small)
 
                 if !store.isNativeContainer {
-                    Toggle(isOn: $settings.importVerifyCopies) {
+                    Toggle(isOn: Bindable(settings).importVerifyCopies) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("导入后校验文件完整性")
                                 .font(.system(size: 12, weight: .medium))

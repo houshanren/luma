@@ -260,7 +260,7 @@ struct CinemaTrailerOverlay: View {
                                     in: Capsule())
                         .overlay {
                             if !active {
-                                Capsule().strokeBorder(trailerInk.opacity(0.08), lineWidth: 0.6)
+                                Capsule().strokeBorder(trailerInk.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
                             }
                         }
                     }

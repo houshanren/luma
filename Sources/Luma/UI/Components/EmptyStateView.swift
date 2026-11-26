@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct EmptyStateView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     private var trashRetentionMessage: String {
         settings.trashRetentionDays > 0

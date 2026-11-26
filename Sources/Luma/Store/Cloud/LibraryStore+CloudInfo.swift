@@ -53,7 +53,7 @@ extension LibraryStore {
                 }
             )
         }
-        cloudModel.metadataTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudMetadata, Task { [weak self] in
             guard let self else { return }
             var done = 0
             for photo in targets {
@@ -77,7 +77,7 @@ extension LibraryStore {
             self.flushCloudMetadata()
             self.cloudModel.isScanningMetadata = false
             self.cloudModel.metadataProgress = 0
-            self.cloudModel.metadataTask = nil
+            self.cloudModel.tasks.finish(.cloudMetadata)
             self.cloudModel.metadataRevision += 1
             self.cloudScopeCountsCacheKey = nil
             self.cloudVisibleCacheKey = nil
@@ -88,11 +88,11 @@ extension LibraryStore {
                     self.finishSourceJob(jobID, message: "已读取 \(done) 张")
                 }
             }
-        }
+        })
     }
 
     func cancelCloudMetadataScan() {
-        cloudModel.metadataTask?.cancel()
+        cloudModel.tasks.cancel(.cloudMetadata)
     }
 
     /// 按挂载类型读取文件头部的 EXIF（不下载整张原图）。
@@ -394,7 +394,7 @@ extension LibraryStore {
                 }
             )
         }
-        cloudModel.healthTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudHealth, Task { [weak self] in
             guard let self else { return }
             var scores: [(UUID, Double)] = []
             var features: [(id: UUID, feature: Data)] = []
@@ -432,7 +432,7 @@ extension LibraryStore {
             if Task.isCancelled {
                 self.cloudModel.isScanningHealth = false
                 self.cloudModel.healthScanProgress = 0
-                self.cloudModel.healthTask = nil
+                self.cloudModel.tasks.finish(.cloudHealth)
                 if let jobID { self.cancelSourceJob(jobID) }
                 return
             }
@@ -461,18 +461,17 @@ extension LibraryStore {
             self.persistCloudHealthReport(report)
             self.cloudModel.isScanningHealth = false
             self.cloudModel.healthScanProgress = 0
-            self.cloudModel.healthTask = nil
+            self.cloudModel.tasks.finish(.cloudHealth)
             if let jobID {
                 self.finishSourceJob(jobID,
                                      message: "完成 · \(report.blurry.count) 张模糊 · \(report.similarDuplicatePhotos.count) 张相似备选")
             }
             self.showToast("体检完成：\(report.blurry.count) 张可能模糊，\(report.similarDuplicatePhotos.count) 张相似备选")
-        }
+        })
     }
 
     func cancelCloudHealthScan() {
-        cloudModel.healthTask?.cancel()
-        cloudModel.healthTask = nil
+        cloudModel.tasks.cancel(.cloudHealth)
         cloudModel.isScanningHealth = false
         cloudModel.healthScanProgress = 0
     }
@@ -530,7 +529,7 @@ extension LibraryStore {
                 }
             )
         }
-        cloudModel.peopleTask = Task { [weak self] in
+        cloudModel.tasks.adopt(.cloudPeople, Task { [weak self] in
             guard let self else { return }
             var done = 0
             for photo in targets {
@@ -557,7 +556,7 @@ extension LibraryStore {
             }
             self.cloudModel.isClusteringPeople = false
             self.cloudModel.peopleProgress = 0
-            self.cloudModel.peopleTask = nil
+            self.cloudModel.tasks.finish(.cloudPeople)
             // 聚类结果与已扫描标记写入当前图库数据库，重开网盘不必重新跑一遍。
             if let mountID {
                 let paths = targets.compactMap(\.cloudPath)
@@ -573,11 +572,11 @@ extension LibraryStore {
                     self.finishSourceJob(jobID, message: "分析完成 · \(self.cloudPeople.count) 位人物")
                 }
             }
-        }
+        })
     }
 
     func cancelCloudPeopleScan() {
-        cloudModel.peopleTask?.cancel()
+        cloudModel.tasks.cancel(.cloudPeople)
     }
 
     /// 某位人物在当前网盘列表里的照片。
@@ -614,23 +613,20 @@ extension LibraryStore {
 
     /// 换挂载 / 换库 / 换目录时清空 EXIF、人物与派生缓存（内存），数据库缓存保留以便回填。
     func resetCloudDerivedData() {
-        cloudModel.metadataTask?.cancel()
-        cloudModel.metadataTask = nil
+        cloudModel.tasks.cancel(.cloudMetadata)
         cloudModel.isScanningMetadata = false
         cloudModel.metadataProgress = 0
         cloudModel.metadataScanned = []
         cloudModel.metadataRevision += 1
 
-        cloudModel.peopleTask?.cancel()
-        cloudModel.peopleTask = nil
+        cloudModel.tasks.cancel(.cloudPeople)
         cloudModel.isClusteringPeople = false
         cloudModel.peopleProgress = 0
         cloudModel.people = []
         cloudModel.peopleScanned = []
         cloudModel.viewedAt = [:]
 
-        cloudModel.healthTask?.cancel()
-        cloudModel.healthTask = nil
+        cloudModel.tasks.cancel(.cloudHealth)
         cloudModel.isScanningHealth = false
         cloudModel.healthScanProgress = 0
         cloudModel.healthReport = nil
@@ -639,8 +635,7 @@ extension LibraryStore {
         cloudModel.isLoadingCloudFeatures = false
         similarScope = nil
         if cloudModel.beautyReportIsCloud {
-            beautyTask?.cancel()
-            beautyTask = nil
+            tasks.cancel(.beauty)
             beautyReport = nil
             isScanningBeauty = false
             beautyScanProgress = 0

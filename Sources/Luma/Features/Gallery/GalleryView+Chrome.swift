@@ -154,10 +154,7 @@ extension GalleryView {
                 chipText(icon: "calendar", text: span)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6))
+        .lumaGlassPill()
         .help("这次导入的批次信息")
     }
 
@@ -375,6 +372,7 @@ extension GalleryView {
 
     @ViewBuilder
     var principalToolbarContent: some View {
+        @Bindable var store = store
         if isCloudMountScope {
             // 与拾光 / 系统图库同一套中间栏：总览与专用页面由窗口标题表达；
             // 普通照片列表显示年 / 月 / 所有照片分组，分类页显示对应上下文。
@@ -455,10 +453,7 @@ extension GalleryView {
 
     func chipPill(icon: String, text: String) -> some View {
         chipText(icon: icon, text: text)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6))
+            .lumaGlassPill()
     }
 
     /// 整理工作室的汇总：已评分 / 已选 / 已拒绝 / 有颜色，与「位置」的统计胶囊同一套语言。
@@ -473,10 +468,7 @@ extension GalleryView {
             chipDivider
             organizeStatItem("有颜色", stats.labeled, icon: "paintpalette.fill", tint: LumaBrand.violet)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6))
+        .lumaGlassPill()
         .help("当前图库的评分、旗标与色标汇总")
     }
 
@@ -524,10 +516,7 @@ extension GalleryView {
             chipText(icon: bucket.dimension == .person ? "person.crop.circle" : bucketIcon(bucket),
                      text: "\(bucket.title) · \(store.visibleCount.formatted()) 项")
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6))
+        .lumaGlassPill()
         .help("当前只显示该分类的收藏")
     }
 
@@ -548,10 +537,7 @@ extension GalleryView {
             chipText(icon: icon, text: text)
             trailing()
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.6))
+        .lumaGlassPill()
     }
 
     func chipText(icon: String, text: String) -> some View {
@@ -586,12 +572,10 @@ extension GalleryView {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.06), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
+        .lumaPill(fill: LumaInk.fill(.quiet, scheme: scheme),
+                  stroke: LumaInk.hairline(scheme),
+                  horizontalPadding: 10,
+                  verticalPadding: 5)
         .help("搜索地点")
     }
 
@@ -673,7 +657,8 @@ extension GalleryView {
     }
 
     private var searchFieldContent: some View {
-        HStack(spacing: 6) {
+        @Bindable var store = store
+        return HStack(spacing: 6) {
             Button {
                 isSearchFieldFocused = true
             } label: {
@@ -729,6 +714,7 @@ extension GalleryView {
 
     /// 影院顶栏搜索：与放映机控制台同一套内嵌屏质感，浅色下换成香槟白屏。
     var cinemaSearchField: some View {
+        @Bindable var store = store
         let dark = scheme == .dark
         let accent = dark ? LumaBrand.amber : Color(red: 0.62, green: 0.41, blue: 0.08)
         let primaryText = dark ? Color.white.opacity(0.92) : Color(white: 0.15)

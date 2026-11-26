@@ -187,9 +187,7 @@ private final class LibrarySearchProvider: SearchProviding {
     private func subtitle(for photo: PhotoItem) -> String {
         var parts: [String] = []
         if let city = photo.placeCity, !city.isEmpty { parts.append(city) }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy年M月d日"
-        parts.append(formatter.string(from: photo.capturedAt))
+        parts.append(DateText.dayFormatter.string(from: photo.capturedAt))
         return parts.joined(separator: " · ")
     }
 
@@ -600,11 +598,7 @@ private final class TelevisionSearchProvider: SearchProviding {
 
     /// 今天 / 明天 / 昨天，其余用「几月几日」：节目单跨好几天，只给时间会分不清哪天。
     private static func programDayLabel(_ date: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "今天" }
-        if calendar.isDateInTomorrow(date) { return "明天" }
-        if calendar.isDateInYesterday(date) { return "昨天" }
-        return date.formatted(.dateTime.month(.defaultDigits).day())
+        DateText.relativeDayOffset(date) ?? date.formatted(.dateTime.month(.defaultDigits).day())
     }
 
     private static func programBadge(_ program: TVEPGProgram,

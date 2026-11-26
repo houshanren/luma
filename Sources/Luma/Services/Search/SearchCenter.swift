@@ -31,7 +31,8 @@ final class SearchCenter: ObservableObject {
     private weak var store: LibraryStore?
     private let limit: Int
     private let debounceMilliseconds: Int
-    private var task: Task<Void, Never>?
+    /// 检索任务登记在统一任务中心，连续输入只保留最后一轮。
+    private let tasks = StoreTaskCenter()
     /// 同一页面复用同一个任务 ID：连续输入不会在任务记录里刷出一堆「搜索」。
     private let jobID = UUID()
 
@@ -64,7 +65,7 @@ final class SearchCenter: ObservableObject {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != query else { return }
         query = trimmed
-        task?.cancel()
+        tasks.cancel(.search)
         activeOrigin = nil
         activeCategory = nil
         guard !trimmed.isEmpty else {
@@ -78,12 +79,12 @@ final class SearchCenter: ObservableObject {
         isSearching = true
         // 搜索一开始（含防抖等待）就登记任务：左下角任务条立刻能看到这一轮检索。
         beginJob(keyword: trimmed, total: scopes.count)
-        task = Task { [weak self] in
+        tasks.adopt(.search, Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: UInt64(self.debounceMilliseconds) * 1_000_000)
             guard !Task.isCancelled else { return }
             await self.run(trimmed)
-        }
+        })
     }
 
     func setActiveSource(_ source: SearchSourceKind?) {
@@ -99,8 +100,7 @@ final class SearchCenter: ObservableObject {
 
     /// 离开页面 / 清空搜索：停掉检索，并把任务条上的搜索收尾。
     func cancel() {
-        task?.cancel()
-        task = nil
+        tasks.cancel(.search)
         isSearching = false
         searchingSources = []
         // 取消不写记录：连续输入会自动打断上一次检索，任务记录里不该堆一串「已取消」。

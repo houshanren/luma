@@ -2,9 +2,9 @@ import SwiftUI
 import AppKit
 
 struct SettingsView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(AppSettings.self) private var settings
 
     @State private var videoCacheSize: Int64 = 0
     @State private var aiKeyInput = ""
@@ -19,11 +19,11 @@ struct SettingsView: View {
     /// 当前分页；其它入口可先写入目标页再打开设置窗口。
     @AppStorage(SettingsKeys.selectedTab) private var selectedTab: SettingsTab = .general
     /// 侧边栏是否显示「网络电视」。关闭后整个入口隐藏，频道也不参与搜索。
-    @AppStorage(SettingsKeys.showTelevision) private var showTelevision = true
-    /// 其余模块开关：关闭后入口隐藏、搜索不再返回对应来源。
-    @AppStorage(SettingsKeys.moduleCloud) private var cloudModule = true
-    @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
-    @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
+    /// 模块开关随当前图库保存，切换图库时一起变化。
+    private var showTelevision: Bool { settings.moduleTelevision }
+    private var cloudModule: Bool { settings.moduleCloud }
+    private var catalogModule: Bool { settings.moduleCatalog }
+    private var cinemaModule: Bool { settings.moduleCinema }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -92,7 +92,7 @@ struct SettingsView: View {
             }
 
             Section("查看器") {
-                Picker("浏览方式", selection: $settings.viewerLayout) {
+                Picker("浏览方式", selection: Bindable(settings).viewerLayout) {
                     ForEach(ViewerLayout.allCases) { layout in
                         Text(layout.title).tag(layout)
                     }
@@ -101,31 +101,31 @@ struct SettingsView: View {
                 Text(settings.viewerLayout.detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("打开照片时显示信息面板", isOn: $settings.showInfoOnOpen)
+                Toggle("打开照片时显示信息面板", isOn: Bindable(settings).showInfoOnOpen)
                 Text("侧边信息面板会显示文件名、尺寸、相机参数与关键词。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("显示底部缩略图胶片条", isOn: $settings.viewerFilmstrip)
+                Toggle("显示底部缩略图胶片条", isOn: Bindable(settings).viewerFilmstrip)
                 Text("关闭后查看器只保留照片与工具栏，画面更沉浸；查看器工具栏里也能随时开关。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
 
-                Toggle("照片背景虚化", isOn: $settings.viewerBackdrop)
+                Toggle("照片背景虚化", isOn: Bindable(settings).viewerBackdrop)
                 Text("用当前照片的模糊影像铺满舞台，竖图两侧不再出现大片空白。关闭后改为纯色背景，翻页更省资源。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             Section("播放与画质") {
-                Toggle("自动播放视频", isOn: $settings.autoPlayVideo)
+                Toggle("自动播放视频", isOn: Bindable(settings).autoPlayVideo)
                 Text("打开视频时自动开始播放；关闭后需手动点击播放按钮。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("查看完整 HDR", isOn: $settings.viewFullHDR)
+                Toggle("查看完整 HDR", isOn: Bindable(settings).viewFullHDR)
                 Text("自动调整屏幕以显示照片的完整动态范围（HDR）。关闭后按标准 sRGB 显示。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Picker("HDR 视频", selection: $settings.videoHDRMode) {
+                Picker("HDR 视频", selection: Bindable(settings).videoHDRMode) {
                     ForEach(VideoHDRMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -147,7 +147,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Picker("多声道音频", selection: $settings.audioDownmix) {
+                Picker("多声道音频", selection: Bindable(settings).audioDownmix) {
                     ForEach(AudioDownmixMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -156,7 +156,7 @@ struct SettingsView: View {
                 Text(settings.audioDownmix.detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Picker("转码编码", selection: $settings.videoTranscodeMode) {
+                Picker("转码编码", selection: Bindable(settings).videoTranscodeMode) {
                     ForEach(VideoTranscodeMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -165,7 +165,7 @@ struct SettingsView: View {
                 Text(settings.videoTranscodeMode.detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Picker("网络缓冲", selection: $settings.videoBufferMode) {
+                Picker("网络缓冲", selection: Bindable(settings).videoBufferMode) {
                     ForEach(VideoBufferMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -177,19 +177,19 @@ struct SettingsView: View {
                 Text("只作用于云端 / WebDAV 等远端片源；本地盘与 SMB 不受影响。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("默认静音播放", isOn: $settings.muteVideoByDefault)
+                Toggle("默认静音播放", isOn: Bindable(settings).muteVideoByDefault)
                 Text("打开视频时先静音开始，播放后仍可用 M 键或音量按钮取消静音。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("默认循环播放", isOn: $settings.loopVideoByDefault)
+                Toggle("默认循环播放", isOn: Bindable(settings).loopVideoByDefault)
                 Text("视频播放结束后自动从头继续；开启后不会自动连播下一个。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("播放结束后自动连播", isOn: $settings.autoPlayNextVideo)
+                Toggle("播放结束后自动连播", isOn: Bindable(settings).autoPlayNextVideo)
                 Text("一个视频播完后按当前浏览顺序自动播放下一个视频（跳过照片），适合连续观看。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Picker("快进 / 快退步长", selection: $settings.videoSeekStep) {
+                Picker("快进 / 快退步长", selection: Bindable(settings).videoSeekStep) {
                     ForEach([1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0], id: \.self) { value in
                         Text("\(Int(value)) 秒").tag(value)
                     }
@@ -197,7 +197,7 @@ struct SettingsView: View {
                 Text("图库视频按 ↑ / ↓、网络资源按 ← / → 快进 / 快退，与 J / L 共用这个步长；连按或按住会逐级加速。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Picker("视频控制条", selection: $settings.videoControlPlacement) {
+                Picker("视频控制条", selection: Bindable(settings).videoControlPlacement) {
                     ForEach(VideoControlPlacement.allCases) { placement in
                         Text(placement.title).tag(placement)
                     }
@@ -209,20 +209,20 @@ struct SettingsView: View {
             }
 
             Section("字幕") {
-                Picker("字幕字号", selection: $settings.subtitleFontSize) {
+                Picker("字幕字号", selection: Bindable(settings).subtitleFontSize) {
                     ForEach([13.0, 15.0, 18.0, 21.0], id: \.self) { value in
                         Text("\(Int(value)) pt").tag(value)
                     }
                 }
-                Toggle("字幕背景", isOn: $settings.subtitleBackground)
-                Picker("字幕颜色", selection: $settings.subtitleColor) {
+                Toggle("字幕背景", isOn: Bindable(settings).subtitleBackground)
+                Picker("字幕颜色", selection: Bindable(settings).subtitleColor) {
                     Text("白色").tag("white")
                     Text("黄色").tag("yellow")
                     Text("青色").tag("cyan")
                     Text("绿色").tag("green")
                 }
                 .pickerStyle(.segmented)
-                Picker("字幕位置", selection: $settings.subtitlePosition) {
+                Picker("字幕位置", selection: Bindable(settings).subtitlePosition) {
                     Text("底部").tag("bottom")
                     Text("偏上").tag("lower")
                     Text("中间").tag("middle")
@@ -234,7 +234,7 @@ struct SettingsView: View {
             }
 
             Section("视频缓存") {
-                Picker("缓存上限", selection: $settings.videoCacheLimitGB) {
+                Picker("缓存上限", selection: Bindable(settings).videoCacheLimitGB) {
                     ForEach([0, 5, 10, 20, 50, 100], id: \.self) { value in
                         Text(value == 0 ? "不限制" : "\(value) GB").tag(value)
                     }
@@ -256,7 +256,7 @@ struct SettingsView: View {
             }
 
             Section("最近删除") {
-                Picker("保留时间", selection: $settings.trashRetentionDays) {
+                Picker("保留时间", selection: Bindable(settings).trashRetentionDays) {
                     Text("30 天").tag(30)
                     Text("90 天").tag(90)
                     Text("不自动清理").tag(0)
@@ -284,11 +284,11 @@ struct SettingsView: View {
             }
 
             Section("导入") {
-                Toggle("将最后一层文件夹创建为相簿", isOn: $settings.importCreateAlbumsFromFolders)
+                Toggle("将最后一层文件夹创建为相簿", isOn: Bindable(settings).importCreateAlbumsFromFolders)
                 Text("每个文件夹的最末一级目录会成为相簿名称。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Toggle("保留上层文件夹结构", isOn: $settings.importPreserveFolderStructure)
+                Toggle("保留上层文件夹结构", isOn: Bindable(settings).importPreserveFolderStructure)
                     .disabled(!settings.importCreateAlbumsFromFolders)
                 Text("上层目录会创建为可展开的文件夹；关闭后只保留末级相簿。")
                     .font(.system(size: 11))
@@ -322,14 +322,14 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onChange(of: showTelevision) { _, visible in
+        .onChange(of: settings.moduleTelevision) { _, visible in
             guard !visible else { return }
             store.tvModel.cancelLoading()
             leaveModuleIfNeeded()
         }
-        .onChange(of: cloudModule) { _, _ in leaveModuleIfNeeded() }
-        .onChange(of: catalogModule) { _, _ in leaveModuleIfNeeded() }
-        .onChange(of: cinemaModule) { _, _ in leaveModuleIfNeeded() }
+        .onChange(of: settings.moduleCloud) { _, _ in leaveModuleIfNeeded() }
+        .onChange(of: settings.moduleCatalog) { _, _ in leaveModuleIfNeeded() }
+        .onChange(of: settings.moduleCinema) { _, _ in leaveModuleIfNeeded() }
     }
 
     /// 关掉某个模块时，如果正停在它的页面上就退回图库，避免留下一个进不去的页面。
@@ -353,7 +353,7 @@ struct SettingsView: View {
     private var appearanceTab: some View {
         Form {
             Section("主题") {
-                Picker("外观", selection: $settings.appearance) {
+                Picker("外观", selection: Bindable(settings).appearance) {
                     ForEach(AppAppearance.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -399,7 +399,7 @@ struct SettingsView: View {
             }
 
             Section("动画效果") {
-                Picker("动效", selection: $settings.motion) {
+                Picker("动效", selection: Bindable(settings).motion) {
                     ForEach(MotionPreset.allCases) { preset in
                         Text(preset.title).tag(preset)
                     }
@@ -432,10 +432,10 @@ struct SettingsView: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
-                        Slider(value: $settings.cardCornerRadius, in: 0...28)
+                        Slider(value: Bindable(settings).cardCornerRadius, in: 0...28)
                     }
                 }
-                Toggle("卡片悬停时轻微放大", isOn: $settings.hoverLift)
+                Toggle("卡片悬停时轻微放大", isOn: Bindable(settings).hoverLift)
                 Text("应用于相簿、精选集、网盘文件夹与侧边栏封面。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -489,7 +489,8 @@ struct SettingsView: View {
     }
 
     private var browsingTab: some View {
-        Form {
+        @Bindable var store = store
+        return Form {
             Section("图片列表") {
                 VStack(alignment: .leading, spacing: 8) {
                     densityHeader("新页面默认", columns: settings.defaultGridColumns)
@@ -595,22 +596,22 @@ struct SettingsView: View {
                 .controlSize(.small)
 
                 metadataGroup(title: "基础信息") {
-                    Toggle("标题", isOn: $settings.metadata.title)
-                    Toggle("拍摄日期", isOn: $settings.metadata.capturedDate)
-                    Toggle("文件类型", isOn: $settings.metadata.fileType)
+                    Toggle("标题", isOn: Bindable(settings).metadata.title)
+                    Toggle("拍摄日期", isOn: Bindable(settings).metadata.capturedDate)
+                    Toggle("文件类型", isOn: Bindable(settings).metadata.fileType)
                 }
                 metadataGroup(title: "状态角标") {
-                    Toggle("个人收藏", isOn: $settings.metadata.favorite)
-                    Toggle("已编辑", isOn: $settings.metadata.edited)
-                    Toggle("视频时长", isOn: $settings.metadata.duration)
+                    Toggle("个人收藏", isOn: Bindable(settings).metadata.favorite)
+                    Toggle("已编辑", isOn: Bindable(settings).metadata.edited)
+                    Toggle("视频时长", isOn: Bindable(settings).metadata.duration)
                 }
                 metadataGroup(title: "参数与来源") {
-                    Toggle("相机", isOn: $settings.metadata.camera)
-                    Toggle("分辨率", isOn: $settings.metadata.resolution)
-                    Toggle("文件大小", isOn: $settings.metadata.fileSize)
-                    Toggle("关键词", isOn: $settings.metadata.keywords)
-                    Toggle("位置", isOn: $settings.metadata.location)
-                    Toggle("来源", isOn: $settings.metadata.source)
+                    Toggle("相机", isOn: Bindable(settings).metadata.camera)
+                    Toggle("分辨率", isOn: Bindable(settings).metadata.resolution)
+                    Toggle("文件大小", isOn: Bindable(settings).metadata.fileSize)
+                    Toggle("关键词", isOn: Bindable(settings).metadata.keywords)
+                    Toggle("位置", isOn: Bindable(settings).metadata.location)
+                    Toggle("来源", isOn: Bindable(settings).metadata.source)
                 }
 
                 Text("也可以在「显示 › 元数据」或工具栏的排序菜单里快速切换。")

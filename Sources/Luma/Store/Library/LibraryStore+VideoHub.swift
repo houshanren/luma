@@ -58,7 +58,7 @@ extension LibraryStore {
     private func startFullVideoHubLoad(token: String) {
         guard videoHubLoadingToken != token else { return }
         videoHubLoadingToken = token
-        videoHubLoadTask?.cancel()
+        tasks.cancel(.videoHubLoad)
         isVideoHubLoading = true
 
         if !isNativeContainer {
@@ -103,7 +103,7 @@ extension LibraryStore {
         query.viewedCutoff = nil
 
         let pageSize = 2000
-        videoHubLoadTask = Task { [weak self] in
+        tasks.adopt(.videoHubLoad, Task { [weak self] in
             let raw = await Task.detached(priority: .utility) {
                 var items: [PhotoItem] = []
                 var offset = 0
@@ -128,7 +128,7 @@ extension LibraryStore {
             self.isVideoHubLoading = false
             self.videoHubCacheToken = ""
             self.rebuildVideoHubData(from: all)
-        }
+        })
     }
 
     private func rebuildVideoHubData(from all: [PhotoItem]) {

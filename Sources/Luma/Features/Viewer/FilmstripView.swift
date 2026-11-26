@@ -71,7 +71,7 @@ struct FilmstripView: View {
 }
 
 struct FilmstripThumb: View {
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
     let photo: PhotoItem
     var height: CGFloat = 42
     let isCurrent: Bool

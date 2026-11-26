@@ -133,7 +133,7 @@ extension LibraryStore {
                 var next = current + queryStep
                 if next < 0 { next += visibleCount }
                 if next >= visibleCount { next -= visibleCount }
-                viewerIndexCache = ViewerIndexCache(key: pagedKey, id: target.id, index: next)
+                viewerIndexCache = ViewerIndexCache(key: .paged(pagedKey), id: target.id, index: next)
             } else {
                 viewerIndexCache = nil
             }
@@ -152,7 +152,7 @@ extension LibraryStore {
             var next = current + queryStep
             if next < 0 { next += visibleCount }
             if next >= visibleCount { next -= visibleCount }
-            viewerIndexCache = ViewerIndexCache(key: pagedKey, id: target.id, index: next)
+            viewerIndexCache = ViewerIndexCache(key: .paged(pagedKey), id: target.id, index: next)
             self.viewerID = target.id
             selection = [target.id]
             recordView(target.id)
@@ -167,7 +167,7 @@ extension LibraryStore {
         if next < 0 { next = items.count - 1 }
         if next >= items.count { next = 0 }
         let target = items[next]
-        viewerIndexCache = ViewerIndexCache(key: visibleStateKey, id: target.id, index: next)
+        viewerIndexCache = ViewerIndexCache(key: .visible(visibleStateKey), id: target.id, index: next)
         self.viewerID = target.id
         selection = [target.id]
         recordView(target.id)
@@ -198,7 +198,7 @@ extension LibraryStore {
         while index >= 0 && index < items.count {
             if items[index].isVideo {
                 let target = items[index]
-                viewerIndexCache = ViewerIndexCache(key: visibleStateKey, id: target.id, index: index)
+                viewerIndexCache = ViewerIndexCache(key: .visible(visibleStateKey), id: target.id, index: index)
                 viewerID = target.id
                 selection = [target.id]
                 recordView(target.id)
@@ -220,7 +220,7 @@ extension LibraryStore {
         while index >= 0 && index < items.count {
             if items[index].isVideo {
                 let target = items[index]
-                let key = isPagedScope ? pagedKey : visibleStateKey
+                let key: ViewerKey = isPagedScope ? .paged(pagedKey) : .visible(visibleStateKey)
                 viewerIndexCache = ViewerIndexCache(key: key, id: target.id, index: index)
                 self.viewerID = target.id
                 selection = [target.id]
@@ -447,7 +447,7 @@ extension LibraryStore {
     /// 优先用查询下标（分页 / 系统索引，与网格顺序和翻页一致），算不出时依次退回
     /// 已加载窗口 → 胶片条 → 可见列表 → 照片自身所属的完整范围。
     func viewerPosition(of id: UUID) -> (index: Int, total: Int) {
-        let key = visibleStateKey
+        let key = ViewerKey.visible(visibleStateKey)
         if let cache = viewerPositionCache, cache.key == key, cache.id == id {
             return (cache.index, cache.total)
         }
@@ -515,11 +515,11 @@ extension LibraryStore {
         // 「相似照片」是过滤后的固定集合：序号必须在集合内算，不能沿用整库下标。
         if similarScope != nil {
             guard let index = visiblePhotos.firstIndex(where: { $0.id == id }) else { return nil }
-            viewerIndexCache = ViewerIndexCache(key: visibleStateKey, id: id, index: index)
+            viewerIndexCache = ViewerIndexCache(key: .visible(visibleStateKey), id: id, index: index)
             return index
         }
         if isSystemPagedScope {
-            if let cache = viewerIndexCache, cache.key == pagedKey, cache.id == id {
+            if let cache = viewerIndexCache, cache.key == .paged(pagedKey), cache.id == id {
                 return cache.index
             }
             // 直连模式没有全局下标（一次 COUNT 会扫整库）：查看器都是从网格打开的，
@@ -532,18 +532,18 @@ extension LibraryStore {
                     return nil
                 }
                 let index = systemWindowStartRank + position
-                viewerIndexCache = ViewerIndexCache(key: pagedKey, id: id, index: index)
+                viewerIndexCache = ViewerIndexCache(key: .paged(pagedKey), id: id, index: index)
                 return index
             }
             guard let query = systemPagedQuery,
                   let index = systemIndex?.index(of: id, in: query) else {
                 return nil
             }
-            viewerIndexCache = ViewerIndexCache(key: pagedKey, id: id, index: index)
+            viewerIndexCache = ViewerIndexCache(key: .paged(pagedKey), id: id, index: index)
             return index
         }
         if isPagedScope {
-            if let cache = viewerIndexCache, cache.key == pagedKey, cache.id == id {
+            if let cache = viewerIndexCache, cache.key == .paged(pagedKey), cache.id == id {
                 return cache.index
             }
             // 必须以「当前查询」为准：窗口查询可能还是上一次范围的，拿它算序号会整体偏移。
@@ -551,19 +551,19 @@ extension LibraryStore {
                   let index = metadataStore?.index(of: id, in: query) else {
                 return nil
             }
-            viewerIndexCache = ViewerIndexCache(key: pagedKey, id: id, index: index)
+            viewerIndexCache = ViewerIndexCache(key: .paged(pagedKey), id: id, index: index)
             return index
         }
         let items = visiblePhotos
         if let cache = viewerIndexCache,
-           cache.key == visibleStateKey,
+           cache.key == .visible(visibleStateKey),
            cache.id == id,
            cache.index < items.count,
            items[cache.index].id == id {
             return cache.index
         }
         guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
-        viewerIndexCache = ViewerIndexCache(key: visibleStateKey, id: id, index: index)
+        viewerIndexCache = ViewerIndexCache(key: .visible(visibleStateKey), id: id, index: index)
         return index
     }
 

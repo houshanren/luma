@@ -32,7 +32,7 @@ enum PersonDetailMode: String, CaseIterable, Identifiable {
 /// 人物详情页头：大图封面 + 头像 + 名称 + 「摘要 / 全部」切换。
 /// `collapse` 由滚动距离驱动（0 = 展开，1 = 收起），滚动时整块收缩成一条紧凑栏。
 struct PersonDetailHero: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let name: String
     let subtitle: String
@@ -679,7 +679,7 @@ struct PersonStatCard: View {
 
 /// 同框人物的圆形头像。
 struct CompanionAvatar: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let companion: PhotoCompanion
     let size: CGFloat
@@ -687,7 +687,7 @@ struct CompanionAvatar: View {
     @State private var image: NSImage?
 
     private var request: PersonAvatarRequest {
-        PersonAvatarLoader.request(for: companion, size: size)
+        PersonAvatarRequest.make(for: companion, size: size)
     }
 
     var body: some View {
@@ -713,19 +713,19 @@ struct CompanionAvatar: View {
             Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8)
         }
         .task(id: request) {
-            if let cached = PersonAvatarLoader.cached(request) {
+            if let cached = PersonAvatarRegistry.cached(request) {
                 image = cached
                 return
             }
-            image = await PersonAvatarLoader.load(request, store: store)
+            image = await PersonAvatarRegistry.load(request)
         }
     }
 }
 
 /// 高光时刻卡片：大图 + 时间地点说明。人物与地点摘要共用。
 struct PhotoHighlightCard: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let photo: PhotoItem
     @State private var isHovering = false

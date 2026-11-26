@@ -12,7 +12,7 @@ struct CinemaPersonDetailView: View {
     var onOpenEntry: (CinemaEntry) -> Void = { _ in }
     var onPlay: (CinemaEntry) -> Void = { _ in }
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     enum Lane: String, CaseIterable, Identifiable {
         case library = "本库已有"
@@ -243,7 +243,7 @@ struct CinemaPersonDetailView: View {
             .frame(height: 24)
             .background(CinemaDetailTone.ink.opacity(0.07), in: Capsule())
             .overlay {
-                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: 0.6)
+                Capsule().strokeBorder(CinemaDetailTone.ink.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
         }
         .frame(width: 172, alignment: .top)
@@ -324,7 +324,7 @@ struct CinemaPersonDetailView: View {
                                                  : Color.primary.opacity(0.06)))
             .overlay {
                 Capsule().strokeBorder(highlight ? LumaBrand.amber.opacity(0.30)
-                                                 : Color.primary.opacity(0.08), lineWidth: 0.6)
+                                                 : Color.primary.opacity(0.08), lineWidth: LumaControlMetrics.hairline)
             }
     }
 
@@ -901,7 +901,7 @@ struct CinemaPersonSheet: View {
     let member: CinemaCastMember
     var onOpenEntry: (CinemaEntry) -> Void = { _ in }
 
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {

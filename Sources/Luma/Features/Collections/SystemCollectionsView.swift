@@ -3,8 +3,8 @@ import SwiftUI
 /// 系统「照片」图库自己的精选集：只读汇总当前系统图库里的收藏、视频、截屏等分类。
 /// 与拾光的「精选集」不同，这里不会切换当前图库，数据全部来自 `store.systemPhotos`。
 struct SystemCollectionsView: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     @State private var cards: [SystemCollectionSummary.Card] = []
     @State private var isBuilding = true

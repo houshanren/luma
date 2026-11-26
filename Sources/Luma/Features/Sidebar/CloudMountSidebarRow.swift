@@ -10,9 +10,9 @@ struct CloudMountSidebarRow: View {
     /// 哪个网盘的层级树是展开的：同一时间只保留一个，点别的接入会收起上一个。
     @Binding var expandedMountID: UUID?
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var cloud: CloudBrowserModel
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(CloudBrowserModel.self) private var cloud
+    @Environment(AppSettings.self) private var settings
 
     @State private var isHovering = false
     @State private var showRename = false

@@ -24,8 +24,8 @@ struct PersonMapPanel: View {
         func hash(into hasher: inout Hasher) { hasher.combine(key) }
     }
 
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
 
     let source: Source
     let name: String
@@ -133,7 +133,7 @@ struct PersonMapPanel: View {
         .padding(.vertical, 7)
         .background(.regularMaterial, in: Capsule())
         .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+            Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
         }
         .help("只统计 \(name) 带定位的照片")
     }
@@ -152,7 +152,7 @@ struct PersonMapPanel: View {
             .padding(.vertical, 7)
             .background(.regularMaterial, in: Capsule())
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: LumaControlMetrics.hairline)
             }
             .contentShape(Capsule())
         }
@@ -184,7 +184,7 @@ struct PersonMapPanel: View {
         }
         .padding(3)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: LumaControlMetrics.border))
         .animation(settings.motion.hover, value: style)
     }
 

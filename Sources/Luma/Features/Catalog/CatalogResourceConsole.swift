@@ -3,8 +3,8 @@ import SwiftUI
 /// 资源页的「资源统计 + 资源管理」控制台。
 /// 统计用拟物化的刻度盘、读数块与分段缓存条；管理直接内联在页面里，不再需要打开弹窗。
 struct CatalogResourceConsole: View {
-    @EnvironmentObject private var catalog: CatalogBrowserModel
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
 
     @State private var artworkStats: [CatalogArtworkStat] = []
     @State private var videoBytes: Int64 = 0

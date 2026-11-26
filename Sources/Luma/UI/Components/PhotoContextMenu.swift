@@ -6,8 +6,8 @@ import AppKit
 /// 菜单里的每一项都是 `LibraryStore` 的业务动作，所以实现留在 App 侧；
 /// 网格组件通过 `PhotoGridHost.contextMenu` 回调挂载，不直接依赖 Store。
 struct PhotoContextMenu: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var selectionModel: SelectionModel
+    @Environment(LibraryStore.self) private var store
+    @Environment(SelectionModel.self) private var selectionModel
     let photo: PhotoItem
     /// 右键目标：点击的项目在选区里时是整选区，否则只有这一项（由 `PhotoCell` 计算）。
     let actionIDs: Set<UUID>
@@ -383,7 +383,7 @@ struct PhotoContextMenu: View {
 
 /// 评分 / 旗标 / 色标的右键子菜单。系统图库作为当前图库时写入拾光叠加数据。
 struct PhotoMetadataMenu: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let photo: PhotoItem
     let actionIDs: Set<UUID>
 
@@ -448,7 +448,7 @@ struct PhotoMetadataMenu: View {
 /// 系统图库的「加入相簿」子菜单：与侧边栏同一棵树、同一排序（文件夹与相簿按图库原始顺序混排）。
 /// 空文件夹不展示，避免菜单里出现点不进去的分支。
 private struct SystemAlbumMenuItems: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let parent: Int64?
     let ids: Set<UUID>
@@ -490,7 +490,7 @@ private struct SystemAlbumMenuItems: View {
 
 /// 本地图库的「添加到相簿」子菜单：文件夹先于相簿，名称按本地排序，与侧边栏一致。
 private struct LocalAlbumMenuItems: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
 
     let parentFolderID: UUID?
     let ids: Set<UUID>

@@ -70,7 +70,7 @@ struct SourceEntryModeTab: View {
 /// 三类来源共用的「导出」入口：把当前这一类来源写成一个 JSON 分享文件。
 /// 导入统一收进「接入」面板，这里只负责导出，避免同一页面出现两套导入入口。
 struct SourceExportButton: View {
-    @EnvironmentObject private var store: LibraryStore
+    @Environment(LibraryStore.self) private var store
     let scope: SourceTransferScope
     /// 当前这一类来源的数量：为 0 时禁用。
     let count: Int

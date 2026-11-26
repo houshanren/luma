@@ -15,6 +15,8 @@ final class LibraryPhotoGridBridge: ObservableObject {
     private let settings: AppSettings
     private let selection: SelectionModel
     private var cancellables: Set<AnyCancellable> = []
+    /// 上一次广播的网格参数快照：相同就不必再通知单元格重算。
+    private var lastSnapshot: Snapshot?
 
     init(store: LibraryStore, settings: AppSettings, selection: SelectionModel) {
         self.store = store
@@ -81,14 +83,40 @@ final class LibraryPhotoGridBridge: ObservableObject {
     }
 
     private func refresh() {
-        host.thumbSize = store.thumbSize
-        host.smallCoverRadius = settings.smallCoverRadius
-        host.accentColor = settings.accentColor
-        host.metadata = settings.metadata
+        // 只有真正影响网格渲染的值变了才广播：Store 里还有几百个与网格无关的
+        // @Published（toast / 面板开关 / 浏览记录…），无条件转发会让每个可见单元格
+        // 都跟着重算一遍。堆叠与动效没有 Equatable，用各自的 token 参与比较。
+        let snapshot = Snapshot(thumbSize: store.thumbSize,
+                                smallCoverRadius: settings.smallCoverRadius,
+                                accentColor: settings.accentColor,
+                                metadata: settings.metadata,
+                                photoOpenMode: settings.photoOpenMode,
+                                selectedIDs: selection.ids,
+                                stackRevision: store.stackRevision,
+                                motion: settings.motion.rawValue)
+        guard snapshot != lastSnapshot else { return }
+        lastSnapshot = snapshot
+
+        host.thumbSize = snapshot.thumbSize
+        host.smallCoverRadius = snapshot.smallCoverRadius
+        host.accentColor = snapshot.accentColor
+        host.metadata = snapshot.metadata
         host.hoverAnimation = settings.motion.hover
         host.layoutAnimation = settings.motion.layout
-        host.photoOpenMode = settings.photoOpenMode
-        host.selectedIDs = selection.ids
+        host.photoOpenMode = snapshot.photoOpenMode
+        host.selectedIDs = snapshot.selectedIDs
         host.objectWillChange.send()
+    }
+
+    /// 参与「是否需要刷新」比较的快照。
+    private struct Snapshot: Equatable {
+        let thumbSize: Double
+        let smallCoverRadius: CGFloat
+        let accentColor: Color
+        let metadata: MetadataOptions
+        let photoOpenMode: PhotoOpenMode
+        let selectedIDs: Set<UUID>
+        let stackRevision: Int
+        let motion: String
     }
 }

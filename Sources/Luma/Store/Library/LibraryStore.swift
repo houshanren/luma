@@ -119,6 +119,9 @@ final class LibraryStore: ObservableObject {
     /// 堆叠分组计划缓存：键为可见集合指纹 + 模式，滚动 / 选中时直接命中。
     var stackPlanCacheKey = ""
     var stackPlanCache: StackPlan?
+    /// 堆叠角标表缓存：与 `stackPlan` 同键，网格 body 反复读取时不再重建字典。
+    var stackBadgesCacheKey = ""
+    var stackBadgesCache: [UUID: StackBadge] = [:]
     /// 「个人收藏」的浏览方式（全部 / 年 / 类型 / 地点 / 相机 / 人物），随当前图库保存；默认先看年份。
     @Published var favoritesViewMode: FavoritesViewMode = .years {
         didSet {

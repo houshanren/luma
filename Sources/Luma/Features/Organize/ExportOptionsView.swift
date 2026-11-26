@@ -9,7 +9,7 @@ struct ExportOptionsView: View {
     private var count: Int { store.exportTargets.count }
 
     private var hasVideosOnly: Bool {
-        let items = store.exportTargets.compactMap { store.anyPhoto(id: $0) }
+        let items = store.photos(forIDs: store.exportTargets)
         return !items.isEmpty && items.allSatisfy { $0.isVideo }
     }
 

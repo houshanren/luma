@@ -557,9 +557,6 @@ struct CatalogRankingView: View {
         let grouped = Dictionary(grouping: catalog.calendarItems.filter { inScope($0.sourceID) }) {
             calendar.startOfDay(for: $0.firstSeen)
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "EEEEE"
         return (0..<7).reversed().compactMap { offset in
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else {
                 return nil
@@ -567,7 +564,7 @@ struct CatalogRankingView: View {
             let isToday = calendar.isDateInToday(day)
             return RankingWeekBar(id: day,
                                   count: grouped[day]?.count ?? 0,
-                                  label: isToday ? "今" : formatter.string(from: day),
+                                  label: isToday ? "今" : DateText.weekdayFormatter.string(from: day),
                                   isToday: isToday)
         }
     }

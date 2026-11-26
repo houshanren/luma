@@ -343,9 +343,6 @@ struct CatalogHistoryView: View {
         let grouped = Dictionary(grouping: records) {
             calendar.startOfDay(for: $0.updatedAt)
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "EEEEE"
         return (0..<7).reversed().compactMap { offset in
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else {
                 return nil
@@ -353,7 +350,7 @@ struct CatalogHistoryView: View {
             let isToday = calendar.isDateInToday(day)
             return HistoryWeekBar(id: day,
                                   count: grouped[day]?.count ?? 0,
-                                  label: isToday ? "今" : formatter.string(from: day),
+                                  label: isToday ? "今" : DateText.weekdayFormatter.string(from: day),
                                   isToday: isToday)
         }
     }
@@ -569,7 +566,7 @@ struct CatalogHistoryView: View {
     }
 
     private func episodeText(_ record: CatalogProgress) -> String {
-        "第 \(record.episode) 集 · 已看 \(formatTime(record.seconds))"
+        "第 \(record.episode) 集 · 已看 \(formatDuration(record.seconds))"
     }
 
     private func remainingText(_ record: CatalogProgress) -> String {
@@ -587,18 +584,8 @@ struct CatalogHistoryView: View {
         return "\(minutes / 60) 小时 \(minutes % 60) 分"
     }
 
-    private func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let value = Int(seconds.rounded())
-        return "\(value / 60):" + String(format: "%02d", value % 60)
-    }
-
     private func dayLabel(_ day: Date) -> String {
-        if calendar.isDateInToday(day) { return "今天" }
-        if calendar.isDateInYesterday(day) { return "昨天" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "M月d日"
-        return formatter.string(from: day)
+        DateText.relativeDay(day, calendar: calendar) ?? DateText.monthDayFormatter.string(from: day)
     }
 
     private var weekStart: Date {
@@ -607,44 +594,25 @@ struct CatalogHistoryView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(LumaBrand.amber)
-                .frame(width: 64, height: 64)
-                .background(Color.accentColor.opacity(0.12), in: Circle())
-            Text("还没有观看记录")
-                .font(.system(size: 14, weight: .semibold))
-            Text(sourceScope == nil
-                 ? "在网络资源里播放任意一集，这里会记住进度并排成时间轴。"
-                 : "在网络影院的电影 / 电视剧里播放任意一集，这里会记住进度并排成时间轴。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-            if sourceScope == nil {
-                Button {
+        // 网络资源总览与网络影院共用一份空态，只是文案与跳转目标不同。
+        let isCinema = sourceScope != nil
+        return LumaEmptyState(
+            symbol: "clock.arrow.circlepath",
+            title: "还没有观看记录",
+            message: isCinema
+                ? "在网络影院的电影 / 电视剧里播放任意一集，这里会记住进度并排成时间轴。"
+                : "在网络资源里播放任意一集，这里会记住进度并排成时间轴。",
+            actions: [LumaEmptyAction(title: isCinema ? "去看电影" : "去网络资源看看",
+                                      symbol: isCinema ? "film" : "arrow.up.right",
+                                      filled: true) {
+                if isCinema {
+                    store.networkCinemaTab = .movies
+                } else {
                     catalog.setHubTab(.browse)
                     store.navigate(to: .catalogSources)
-                } label: {
-                    Label("去网络资源看看", systemImage: "arrow.up.right")
-                        .font(.system(size: 11, weight: .medium))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .padding(.top, 4)
-            } else {
-                Button {
-                    store.networkCinemaTab = .movies
-                } label: {
-                    Label("去看电影", systemImage: "film")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .padding(.top, 4)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 72)
+            }]
+        )
     }
 }
 

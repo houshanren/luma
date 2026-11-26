@@ -450,8 +450,9 @@ struct CinemaNotificationSheet: View {
     }
 
     func timeText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "M月d日 HH:mm"
+        let formatter = Calendar.current.isDateInToday(date)
+            ? DateText.timeFormatter
+            : DateText.monthDayClockFormatter
         return formatter.string(from: date)
     }
 }

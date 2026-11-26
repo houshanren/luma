@@ -63,25 +63,53 @@ struct GalleryView: View {
     /// 首次进入的滚动位置由 `.defaultScrollAnchor(.bottom)` 决定；落位前不能把 offset≈0 当成用户拖动。
     @State var timelineGridReady = false
     /// 上一次重定位窗口时的滚动位置，避免同一位置反复换页。
-    @State var lastTimelineJumpOffset: CGFloat = -1
     /// 落位确认：最后一次几何值 + 延时复查任务（宽度 / 侧边栏动画期间不能判定可换页）。
     @State var timelineAnchorReadyTask: Task<Void, Never>?
-    @State var lastTimelineContentHeight: CGFloat = 0
-    @State var lastTimelineViewport: CGFloat = 0
     /// 换页落地后的一小段静默期：系统滚动不算用户拖动，不能再次换页。
     @State var suppressTimelineJumpsUntil: TimeInterval = 0
     /// 向上接续加载更早一页时的锚点照片（追加完成后滚回它，视野不跳动）。
     @State var olderLoadAnchor: UUID?
-    /// 正序分页网格上一次预取时的滚动偏移，避免逐帧重复请求下一页。
-    @State var lastForwardPreloadOffset: CGFloat = -.greatestFiniteMagnitude
     /// 从年 / 月总览切回「所有照片」：网格是新建的，需要把视野拉回已加载窗口。
     @State var needsTimelineRestore = false
     /// 位置页的搜索关键词：搜索框已移到顶部工具栏，状态放在这里与内容共享。
     @State var placesQuery = ""
-    /// 顶栏日期范围：上次计算时的滚动偏移，避免逐帧重算。
-    @State var lastDateSpanOffset: CGFloat = .greatestFiniteMagnitude
-    /// 最近一次滚动偏移：单元格懒加载时也要用同一偏移重算日期范围。
-    @State var lastScrollOffset: CGFloat = 0
+    /// 滚动记账：只服务分页与顶栏日期范围计算，不参与渲染。
+    ///
+    /// 这些值在滚动过程中每一帧都会变。若放在 `@State` 里，每次赋值都会让
+    /// `GalleryView` 整体重新求值——几千张照片的相册会因此每帧重算整段网格布局，
+    /// 表现为「越往下翻越卡」。用引用类型持有后，更新只改字段、不触发视图刷新。
+    @State var scrollBook = GalleryScrollBookkeeping()
+
+    var lastTimelineJumpOffset: CGFloat {
+        get { scrollBook.lastTimelineJumpOffset }
+        nonmutating set { scrollBook.lastTimelineJumpOffset = newValue }
+    }
+
+    var lastTimelineContentHeight: CGFloat {
+        get { scrollBook.lastTimelineContentHeight }
+        nonmutating set { scrollBook.lastTimelineContentHeight = newValue }
+    }
+
+    var lastTimelineViewport: CGFloat {
+        get { scrollBook.lastTimelineViewport }
+        nonmutating set { scrollBook.lastTimelineViewport = newValue }
+    }
+
+    var lastForwardPreloadOffset: CGFloat {
+        get { scrollBook.lastForwardPreloadOffset }
+        nonmutating set { scrollBook.lastForwardPreloadOffset = newValue }
+    }
+
+    var lastDateSpanOffset: CGFloat {
+        get { scrollBook.lastDateSpanOffset }
+        nonmutating set { scrollBook.lastDateSpanOffset = newValue }
+    }
+
+    var lastScrollOffset: CGFloat {
+        get { scrollBook.lastScrollOffset }
+        nonmutating set { scrollBook.lastScrollOffset = newValue }
+    }
+
     /// 自定义搜索框的焦点（⌘F 由 store 发请求，这里负责真正聚焦）。
     @FocusState var isSearchFieldFocused: Bool
 
@@ -613,4 +641,18 @@ struct GalleryView: View {
 
 /// 相簿 / 文件夹的层级面包屑已抽成通用组件 `LumaBreadcrumbBar`（见 LumaDesign.swift），
 /// 网盘目录复用同一套外观。
+
+/// 画廊滚动的记账本：只保存「上一帧的偏移 / 高度」这类中间量。
+///
+/// 用引用类型而不是 `@State`，是因为这些字段在滚动时每帧都会写；
+/// 走 `@State` 会让 `GalleryView` 每帧重新求值，几万张照片的相册会明显掉帧。
+@MainActor
+final class GalleryScrollBookkeeping {
+    var lastScrollOffset: CGFloat = 0
+    var lastDateSpanOffset: CGFloat = .greatestFiniteMagnitude
+    var lastForwardPreloadOffset: CGFloat = -.greatestFiniteMagnitude
+    var lastTimelineJumpOffset: CGFloat = -1
+    var lastTimelineContentHeight: CGFloat = 0
+    var lastTimelineViewport: CGFloat = 0
+}
 

@@ -90,7 +90,7 @@ private struct MetadataEditor: View {
     @State private var latitude: String = ""
     @State private var longitude: String = ""
 
-    private var photos: [PhotoItem] { ids.compactMap { store.anyPhoto(id: $0) } }
+    private var photos: [PhotoItem] { store.photos(forIDs: ids) }
 
     private var parsedLocation: CLLocation? {
         guard changeLocation,

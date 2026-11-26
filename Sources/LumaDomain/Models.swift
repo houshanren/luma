@@ -1328,6 +1328,46 @@ package enum DateText {
         return f
     }()
 
+    /// 「11月26日」：列表、历史记录等只到日的场景。
+    package static let monthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M月d日"
+        return f
+    }()
+
+    /// 「11 月 26 日」：需要与正文留白区分的标题 / 生日等场景。
+    package static let monthDaySpacedFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M 月 d 日"
+        return f
+    }()
+
+    /// 「11月26日 14:05」：影院清单等需要日 + 分钟的场景。
+    package static let monthDayClockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M月d日 HH:mm"
+        return f
+    }()
+
+    /// 星期简写（周一 → 一）。固定中文，避免跟随系统语言变成 Mon。
+    package static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "EEEEE"
+        return f
+    }()
+
+    /// 「今天 / 昨天」，其它日期返回 nil：列表分组头、时间轴标签共用这一份判断，
+    /// 避免各页面各写一遍 `isDateInToday` + 文案。
+    package static func relativeDay(_ date: Date, calendar: Calendar = .current) -> String? {
+        if calendar.isDateInToday(date) { return "今天" }
+        if calendar.isDateInYesterday(date) { return "昨天" }
+        return nil
+    }
+
     /// 顶栏副标题用的紧凑日期范围：同一天只显示一个日期，同年省略年份、同月省略月份与年份。
     package static func span(from start: Date, to end: Date) -> String {
         let calendar = Calendar.current
@@ -1346,7 +1386,17 @@ package func formatFileSize(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
 }
 
+/// 时长：`m:ss`，超过一小时自动补 `h:mm:ss`。
+///
+/// 网格角标、播放器进度、历史记录都走这一个实现，避免各处再写一份补零逻辑。
 package func formatDuration(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds >= 0 else { return "0:00" }
     let total = Int(seconds.rounded())
-    return String(format: "%d:%02d", total / 60, total % 60)
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let secs = total % 60
+    if hours > 0 {
+        return String(format: "%d:%02d:%02d", hours, minutes, secs)
+    }
+    return String(format: "%d:%02d", minutes, secs)
 }

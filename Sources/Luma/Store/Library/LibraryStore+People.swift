@@ -1031,7 +1031,7 @@ extension LibraryStore {
         } else {
             ids = []
         }
-        return ids.compactMap { anyPhoto(id: $0) }
+        return photos(forIDs: ids)
             .filter { !$0.isCloud }
             .prefix(10)
             .map { LibraryPaths.sourceURL(for: $0) }
@@ -1041,7 +1041,7 @@ extension LibraryStore {
         if let viewerID, let photo = anyPhoto(id: viewerID) {
             return photo.isFavorite
         }
-        let selected = selection.compactMap { anyPhoto(id: $0) }
+        let selected = photos(forIDs: selection)
         return !selected.isEmpty && selected.allSatisfy { $0.isFavorite }
     }
 

@@ -481,9 +481,10 @@ struct DuplicatesView: View {
         .padding(.top, 6)
     }
 
+    @ViewBuilder
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            if system && (store.isLoadingSystemLibrary || store.isLoadingSystemDuplicates) {
+        if system && (store.isLoadingSystemLibrary || store.isLoadingSystemDuplicates) {
+            VStack(spacing: 10) {
                 ProgressView()
                     .controlSize(.large)
                 Text(store.isLoadingSystemDuplicates ? "正在分组重复项目…"
@@ -492,22 +493,17 @@ struct DuplicatesView: View {
                 Text("几万条重复标记会在后台比对，完成后自动列出结果。")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
-            } else {
-                Image(systemName: "square.on.square.dashed")
-                    .font(.system(size: 34, weight: .ultraLight))
-                    .foregroundStyle(.tertiary)
-                Text(system ? "没有检测到重复项目" : "没有重复项目")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(system
-                     ? "官方「照片」图库中没有找到重复副本。"
-                     : "当同一张照片被重复导入时，会在这里按组显示，并标出建议保留的版本。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.top, 100)
+        } else {
+            LumaEmptyState(symbol: "square.on.square.dashed",
+                           title: system ? "没有检测到重复项目" : "没有重复项目",
+                           message: system
+                               ? "官方「照片」图库中没有找到重复副本。"
+                               : "当同一张照片被重复导入时，会在这里按组显示，并标出建议保留的版本。")
+                .padding(.top, 60)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 100)
     }
 
     // MARK: - 合并确认

@@ -347,6 +347,33 @@ extension LibraryStore {
             ?? cloudPhotos.first(where: { $0.id == id })
     }
 
+    /// 批量取照片：按传入顺序返回存在的项。
+    ///
+    /// ID 少时逐个查；ID 多（全选、整批导出、AI 批量）时先建一次索引，
+    /// 否则循环里每次 `anyPhoto(id:)` 都要扫一遍全库，变成 O(k·n)。
+    func photos(forIDs ids: [UUID]) -> [PhotoItem] {
+        guard !ids.isEmpty else { return [] }
+        guard ids.count > 64 else { return ids.compactMap { anyPhoto(id: $0) } }
+        let index = photoLookupIndex()
+        return ids.compactMap { index[$0] ?? systemPhoto(id: $0) }
+    }
+
+    func photos(forIDs ids: Set<UUID>) -> [PhotoItem] {
+        guard !ids.isEmpty else { return [] }
+        guard ids.count > 64 else { return ids.compactMap { anyPhoto(id: $0) } }
+        let index = photoLookupIndex()
+        return ids.compactMap { index[$0] ?? systemPhoto(id: $0) }
+    }
+
+    /// 一次遍历建立 id → 照片映射；`photos` 优先于网盘快照，与 `anyPhoto(id:)` 的查找顺序一致。
+    private func photoLookupIndex() -> [UUID: PhotoItem] {
+        var index: [UUID: PhotoItem] = [:]
+        index.reserveCapacity(photos.count + cloudPhotos.count)
+        for item in cloudPhotos { index[item.id] = item }
+        for item in photos { index[item.id] = item }
+        return index
+    }
+
     /// 该 ID 是否属于当前系统图库（可能只在索引里，尚未加载进内存窗口）。
     func isSystemPhotoID(_ id: UUID) -> Bool {
         if systemPhotoIndex[id] != nil { return true }

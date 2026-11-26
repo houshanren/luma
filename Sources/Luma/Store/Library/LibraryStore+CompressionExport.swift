@@ -206,7 +206,7 @@ extension LibraryStore {
 
     /// 按当前导出设置，把所选项目写入指定文件夹。
     func performExport(to folder: URL) {
-        let items = exportTargets.compactMap { anyPhoto(id: $0) }
+        let items = photos(forIDs: exportTargets)
         guard !items.isEmpty else {
             showExportSheet = false
             return
@@ -382,7 +382,7 @@ extension LibraryStore {
 
     /// 在访达中显示多张照片（多选右键菜单使用）；云端项目需要先导出。
     func revealInFinder(ids: Set<UUID>) {
-        let urls = ids.compactMap { anyPhoto(id: $0) }
+        let urls = photos(forIDs: ids)
             .filter { !$0.isCloud }
             .map { LibraryPaths.exportURL(for: $0) }
         guard !urls.isEmpty else {

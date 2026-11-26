@@ -424,7 +424,7 @@ extension LibraryStore {
     }
 
     func copySelectionToPasteboard() {
-        let targets = commandTargetIDs.compactMap { anyPhoto(id: $0) }
+        let targets = photos(forIDs: commandTargetIDs)
         guard !targets.isEmpty else { return }
         let urls = targets.filter { !$0.isCloud }.map { LibraryPaths.exportURL(for: $0) as NSURL }
         guard !urls.isEmpty else {
@@ -602,7 +602,7 @@ extension LibraryStore {
 
     /// 打印所选项目（⌘P）：每张照片一页，等比缩放居中。
     func printCommand() {
-        let items = commandTargetIDs.compactMap { anyPhoto(id: $0) }
+        let items = photos(forIDs: commandTargetIDs)
         guard !items.isEmpty else {
             showToast("没有可打印的项目")
             return
@@ -643,7 +643,7 @@ extension LibraryStore {
     }
 
     func revealCommandTargetsInFinder() {
-        let targets = commandTargetIDs.compactMap { anyPhoto(id: $0) }
+        let targets = photos(forIDs: commandTargetIDs)
         guard !targets.isEmpty else { return }
         if targets.count == 1, let id = targets.first?.id {
             revealInFinder(id)

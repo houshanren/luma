@@ -613,7 +613,7 @@ extension LibraryStore {
             }
             return
         }
-        let items = ids.compactMap { anyPhoto(id: $0) }.filter { $0.isCloud }
+        let items = photos(forIDs: ids).filter { $0.isCloud }
         guard !items.isEmpty else { return }
 
         let deleteIndex = presentAlert(LibraryAlertRequest(

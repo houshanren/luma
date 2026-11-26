@@ -339,7 +339,7 @@ struct PhotoContextMenu: View {
     /// 相簿 / 网格里的影院操作：手动匹配、刮削、收藏与加入清单。
     @ViewBuilder
     private var cinemaMenu: some View {
-        let targets = actionIDs.compactMap { store.anyPhoto(id: $0) }.filter { $0.isVideo }
+        let targets = store.photos(forIDs: actionIDs).filter { $0.isVideo }
         if !targets.isEmpty {
             let entries = targets.compactMap { store.cinemaEntry(for: $0) }
             let allFavorite = targets.allSatisfy { store.cinemaUserState(for: $0.id).favorite }

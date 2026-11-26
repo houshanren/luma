@@ -718,10 +718,7 @@ private struct SourceJobDetailPopover: View {
     }
 
     private func dayTitle(_ day: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(day) { return "今天" }
-        if calendar.isDateInYesterday(day) { return "昨天" }
-        return "\(calendar.component(.month, from: day)) 月 \(calendar.component(.day, from: day)) 日"
+        DateText.relativeDay(day) ?? DateText.monthDaySpacedFormatter.string(from: day)
     }
 
     private func timeText(_ date: Date, showDay: Bool) -> String {

@@ -134,10 +134,7 @@ struct CatalogTalentLibraryView: View {
     )
 
     private static let birthdayLabel: String = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M 月 d 日"
-        return formatter.string(from: Date())
+        DateText.monthDaySpacedFormatter.string(from: Date())
     }()
 
     private static let todayBirthdays: [CatalogActressRecord] = {

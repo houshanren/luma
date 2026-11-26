@@ -645,9 +645,7 @@ struct CatalogCalendarView: View {
     }
 
     private func dayLabel(_ day: Date) -> String {
-        if calendar.isDateInToday(day) { return "今天" }
-        if calendar.isDateInYesterday(day) { return "昨天" }
-        return Self.dayLabelFormatter.string(from: day)
+        DateText.relativeDay(day, calendar: calendar) ?? Self.dayLabelFormatter.string(from: day)
     }
 
     private func shiftMonth(_ delta: Int) {

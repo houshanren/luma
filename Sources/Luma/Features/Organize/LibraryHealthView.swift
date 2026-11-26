@@ -82,22 +82,15 @@ struct LibraryHealthView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "stethoscope")
-                .font(.system(size: 38, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("还没有体检结果")
-                .font(.system(size: 16, weight: .semibold))
-            Text("体检会用缩略图评估清晰度，并结合端侧分析结果归并连拍。首次扫描需要逐张读取缩略图，稍等片刻。")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            Button("开始体检") { store.scanLibraryHealth() }
-                .keyboardShortcut(.defaultAction)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 72)
+        LumaEmptyState(symbol: "stethoscope",
+                       title: "还没有体检结果",
+                       message: "体检会用缩略图评估清晰度，并结合端侧分析结果归并连拍。首次扫描需要逐张读取缩略图，稍等片刻。",
+                       actions: [LumaEmptyAction(title: "开始体检",
+                                                 symbol: "stethoscope",
+                                                 filled: true,
+                                                 isDefaultAction: true) {
+                           store.scanLibraryHealth()
+                       }])
     }
 
     // MARK: - 总览与卡片

@@ -14,6 +14,8 @@ struct LumaEmptyAction: Identifiable {
     var symbol: String?
     var tint: Color = .accentColor
     var filled: Bool = false
+    /// 回车键触发的默认动作（例如「开始体检」）。
+    var isDefaultAction: Bool = false
     var handler: () -> Void
 }
 
@@ -82,6 +84,7 @@ struct LumaEmptyState: View {
                             .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
+                        .modifier(LumaEmptyActionShortcut(isDefault: action.isDefaultAction))
                     }
                 }
                 .padding(.top, 4)
@@ -104,6 +107,20 @@ private struct LumaEmptyStateContainer: ViewModifier {
                 .padding(.vertical, 52)
                 .padding(.horizontal, 24)
                 .lumaGlassCard(cornerRadius: 22)
+        }
+    }
+}
+
+/// 给空态的主动作挂回车快捷键（`keyboardShortcut` 只能挂在按钮上，无法带进 `LumaEmptyAction`）。
+private struct LumaEmptyActionShortcut: ViewModifier {
+    let isDefault: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isDefault {
+            content.keyboardShortcut(.defaultAction)
+        } else {
+            content
         }
     }
 }

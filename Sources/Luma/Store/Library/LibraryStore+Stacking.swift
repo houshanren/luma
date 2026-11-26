@@ -88,12 +88,18 @@ extension LibraryStore {
 
     func stackBadges() -> [UUID: StackBadge] {
         guard stackMode != .off else { return [:] }
+        // 与 `stackPlan` 同一份键缓存：网格每段 body 都会取这张表，逐次重建字典
+        // 在几千张的相册里是纯浪费（滚动 / 选中时键不变，直接命中）。
+        let key = visibleStateKey + "\u{1F}" + stackMode.rawValue
+        if stackBadgesCacheKey == key { return stackBadgesCache }
         let plan = stackPlan()
         var badges: [UUID: StackBadge] = [:]
         badges.reserveCapacity(plan.groups.count)
         for (id, group) in plan.groups {
             badges[id] = StackBadge(count: group.members.count, isBurst: group.isBurst)
         }
+        stackBadgesCacheKey = key
+        stackBadgesCache = badges
         return badges
     }
 

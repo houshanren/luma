@@ -204,7 +204,7 @@
 - `Services/Catalog/MadouCatalogProvider.swift`：麻豆社适配器（国产原创：麻豆 / 果冻 / 天美 / 星空 / 精东 / 91制片厂等）；WordPress 列表与分类、`?s=` 搜索；详情页内嵌 `dash.madou.club/share/<id>`，播放页给出带短时 token 的 m3u8。
 - `Services/Catalog/JavGGCatalogProvider.swift`：JavGG 适配器（KVS：`?from=N` 翻页、`/categories/`、`/search/`）；详情页直接给带 token 的 720p mp4，跟随 302 到 CDN 播放。
 - `Services/Catalog/CatalogClient.swift`：协议与源注册；`CatalogProviders.provider(for:)` 返回统一包了标题元数据补全的适配器，所有源共享同一套备注兜底。
-- `Services/Catalog/CatalogDatabase.swift`：网络资源的 SQLite 存储（`catalog_kv` / `catalog_progress` / `catalog_calendar` / `catalog_snapshots` / `catalog_artwork`），并负责旧 JSON 一次性导入与海报索引回填。
+- `Sources/LumaPersistence/CatalogDatabase.swift`：网络资源的 SQLite 存储（`catalog_kv` / `catalog_progress` / `catalog_calendar` / `catalog_snapshots` / `catalog_artwork`），并负责旧 JSON 一次性导入与海报索引回填。
 - `Services/Catalog/CatalogStore.swift`：存储门面：零散配置走键值表，进度与日历走按行读写。
 - `Services/Catalog/CatalogSnapshotStore.swift`：列表快照（按页一行，先渲染缓存、再后台刷新，LRU 交给 SQL）。
 - `Services/Catalog/CatalogMaintenance.swift`：缓存统计与清理、镜像表（管理界面已并入资源页控制台）。
@@ -251,4 +251,4 @@
 
 1. 跨源同片归并 + 选源播放（把 13 个源真正变成一个库）
 2. 详情页相关轨道（让浏览能继续下去，而不是每次回到列表）
-3. 共享相册 / 只读 Web 画廊（照片主线的信任与传播缺口，详见 `docs/luma-competitive-analysis-2026-11.md`）
+3. 共享相册 / 只读 Web 画廊（照片主线的信任与传播缺口，详见 `docs/product/luma-competitive-analysis-2026-11.md`）

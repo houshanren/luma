@@ -7,7 +7,7 @@
 | 版本 | v0.1 |
 | 日期 | 2026-11-22 |
 | 状态 | 建议稿，不改代码 |
-| 前置文档 | [产品元数据重构方案](file:///Users/lijialong/Documents/gitlab/photos/docs/metadata-refactor-plan.md)、[多模式内容框架评估](file:///Users/lijialong/Documents/gitlab/photos/docs/multi-mode-architecture-2026-11.md) |
+| 前置文档 | [产品元数据重构方案](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md)、[多模式内容框架评估](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/multi-mode-architecture-2026-11.md) |
 | 核心结论 | “统一”应发生在**源契约、内容契约、播放契约**三层，不发生在资产表与 `PhotoItem` 上；图库是唯一拥有写入会话的源，其余云盘 / 资源 / 影院 / 电视都是只读浏览源 |
 
 ---
@@ -724,12 +724,12 @@ struct SourceNavigationState {
 
 | 主题 | 位置 |
 | --- | --- |
-| 单库方案：概念模型 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/metadata-refactor-plan.md#L175-L189) |
-| 单库方案：统一表 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/metadata-refactor-plan.md#L325-L359) |
-| 单库方案：能力模型 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/metadata-refactor-plan.md#L388-L409) |
-| 单库方案：代码改造清单 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/metadata-refactor-plan.md#L719-L743) |
-| 单库方案：分阶段实施 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/metadata-refactor-plan.md#L789-L810) |
-| 前一篇：多模式评估 | [multi-mode-architecture-2026-11.md](file:///Users/lijialong/Documents/gitlab/photos/docs/multi-mode-architecture-2026-11.md) |
+| 单库方案：概念模型 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L175-L189) |
+| 单库方案：统一表 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L325-L359) |
+| 单库方案：能力模型 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L388-L409) |
+| 单库方案：代码改造清单 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L719-L743) |
+| 单库方案：分阶段实施 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L789-L810) |
+| 前一篇：多模式评估 | [multi-mode-architecture-2026-11.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/multi-mode-architecture-2026-11.md) |
 | 模式枚举 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Models.swift#L458-L591) |
 | 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Gallery/GalleryView.swift#L1343-L1449) |
 | 侧边栏分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L1311-L1447) |

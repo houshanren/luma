@@ -4,7 +4,7 @@
 - 范围：本地 / SMB / WebDAV / 网盘 四种来源，21 组视频编码 × 容器 × 音轨编码
 - 结论级别：已生成样片、已用 ffmpeg 9.0.2 + AVPlayer 实测；未实测项单列在第 8 节
 - 复现脚本：[media_matrix.py](file:///Users/lijialong/Documents/gitlab/photos/Tools/media_matrix.py)、[avplayer_probe.swift](file:///Users/lijialong/Documents/gitlab/photos/Tools/avplayer_probe.swift)
-- 原始数据：[summary.md](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/summary.md)、[facts.json](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/facts.json)、[hls.json](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/hls.json)、[seek.json](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/seek.json)、[transport.json](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/transport.json)
+- 原始数据：[summary.md](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/summary.md)、[facts.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/facts.json)、[hls.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/hls.json)、[seek.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/seek.json)、[transport.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/transport.json)
 
 > 本文只写两种事实：ffmpeg / ffprobe 的直接输出，以及 AVPlayer 公开 API 的返回值 + 实际起播（`rate=1`、播放时间推进）。没有装 mpv / VLC / IINA / Infuse，因此不写这四者的实测结论。
 
@@ -53,7 +53,7 @@
 
 ## 2. 组合矩阵（实测）
 
-完整 21 行见 [summary.md](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/summary.md#1-组合矩阵)，这里保留判定所需的关键列。
+完整 21 行见 [summary.md](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/summary.md#1-组合矩阵)，这里保留判定所需的关键列。
 
 | 文件 | 源 | 原生直读 | 最佳路径 | HLS 输出 | 首片 | AVPlayer 起播 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -239,7 +239,7 @@ ALAC 5.1 是一次边界验证：`copyableAudioCodecs` 按 codec 判定、不限
 | 06 DTS 5.1 MKV | → AC-3 | 6.0s / 3 片 | 63 | ready / rate=1 | `soun:ac-3` |
 | 16 双音轨 MKV | copy（master） | 6.0s / 3 片 | 94 | ready / rate=1 | 菜单 `English / Japanese` |
 
-结论：`-noaccurate_seek` 对 AC-3 / E-AC-3 直通与多音轨 master 同样成立，首片就有音频包；多音轨 `language:` 修复也在 seek 会话里生效。原始数据见 [seek.json](file:///Users/lijialong/Documents/gitlab/photos/docs/media-matrix/seek.json)。
+结论：`-noaccurate_seek` 对 AC-3 / E-AC-3 直通与多音轨 master 同样成立，首片就有音频包；多音轨 `language:` 修复也在 seek 会话里生效。原始数据见 [seek.json](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/media-matrix/seek.json)。
 
 ### 4.8 真实 SMB 片源复核（群晖 DiskStation）
 
@@ -292,7 +292,7 @@ SMB 顺序读 10 秒 4K 内容只需 77–160ms，带宽不是瓶颈；两个 MP
 
 默认目标已从 AC-3 640k 改为 **E-AC-3 1536k**；多声道 AAC 目标从 384k 提到 512k；离线转码从 160k 提到 512k（立体声模式 256k + 2ch）。
 
-边界：**7.1 源仍会下混到 5.1**——ffmpeg 的 `eac3` / `ac3` 编码器都不接受 7.1，而 AVPlayer 又不能直通 DTS-HD / TrueHD，这是当前管线唯一无法避免的声道损失；5.1 及以下音轨在能直通时一律原样保留。
+边界：**7.1 源仍会下混到 5.1**——ffmpeg 的 `eac3` / `ac3` 编码器接受 7.1 输入但会静默下混成 5.1(side)（2026-11-26 用 9.0.2 / 8.0.git 复核，ffprobe 均为 `channels=6`），而 AVPlayer 又不能直通 DTS-HD / TrueHD，这是当前管线唯一无法避免的声道损失；5.1 及以下音轨在能直通时一律原样保留。
 
 ---
 
@@ -420,10 +420,12 @@ ffmpeg -y -v error -i input \
 | 真实 WebDAV / NAS（含自签名证书、断连重连） | 已测：真实 WebDAV 服务（自签名证书、断连重连）复核通过；SMB 见 4.8（5 片真实片源） |
 | 真实 SMB 共享 | 已测（5 片：DV/TrueHD 7.1、DTS-HD 5.1、4K60、MP4）；断连重连已随本轮 WebDAV 复核一并覆盖 |
 | E-AC-3 JOC（Atmos）对象层是否保留 | 未测；未生成 JOC 样片 |
-| E-AC-3 7.1 直通 | 未测；ffmpeg 的 `eac3` 编码器不支持 7.1（`Specified channel layout '7.1' is not supported`），样片无法生成；多声道边界改用 ALAC 5.1 验证 |
+| E-AC-3 7.1 直通 | 无法生成样片：内置 ffmpeg（9.0.2 与 8.0.git 都已复核）会把 7.1 输入静默下混成 5.1(side)，ffprobe 输出 `channels=6 / channel_layout=5.1(side)`，不报错；多声道边界改用 ALAC 5.1 验证 |
 | 杜比视界 P5 / P8 / P7 | 未测；本机无 DV 样片（设计文档 T8 是另一批素材） |
 | 扬声器实际出声 | 未测；只验证轨道装载 + 分片包数 + 播放推进 |
 | mpv / VLC / IINA / Infuse 的表现 | 未安装，未测，不写结论 |
+
+> 2026-11-26 复核内置二进制：`Vendor/ffmpeg-dv/bin/ffmpeg` = 9.0.2（ffmpeg-full，含 `libplacebo` 滤镜）；`Vendor/ffmpeg/ffmpeg` = 8.0.git（martin-riedl 静态构建，有 `libzimg`、无 `libplacebo`）；两者都带 `hevc_videotoolbox`。
 
 ---
 

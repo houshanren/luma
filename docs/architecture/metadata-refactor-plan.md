@@ -410,7 +410,7 @@ struct LibraryCapabilities {
 
 ### 4.7 PhotoKit 能力与全部操作明细
 
-> 本机实测结果见 [PhotoKit 边界本机测试结果](file:///Users/lijialong/Documents/gitlab/photos/docs/photokit-boundary-test-results.md)。实测确认：收藏、日期、坐标、编辑、相簿、文件夹、导入、删除到最近删除都可用；但 **PhotoKit 隐藏后资产会从所有 PhotoKit 查询中消失，无法通过 PhotoKit 取消隐藏**，需要产品重新决策。
+> 本机实测结果见 [PhotoKit 边界本机测试结果](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/photokit-boundary-test-results.md)。实测确认：收藏、日期、坐标、编辑、相簿、文件夹、导入、删除到最近删除都可用；但 **PhotoKit 隐藏后资产会从所有 PhotoKit 查询中消失，无法通过 PhotoKit 取消隐藏**，需要产品重新决策。
 
 先给结论：
 

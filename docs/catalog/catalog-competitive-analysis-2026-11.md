@@ -4,7 +4,7 @@
 | --- | --- |
 | 版本 | v1.0 |
 | 日期 | 2026-11-21 |
-| 对比基线 | 当前代码（Luma 1.3.0 线）与 `docs/catalog-v2.md` |
+| 对比基线 | 当前代码（Luma 1.3.0 线）与 `docs/catalog/catalog-v2.md` |
 | 竞品资料截止 | 2026-11 公开资料 |
 | 对比范围 | 跨源内容浏览、追更、整理与播放（不评价具体站点内容） |
 | 文档性质 | 功能覆盖与产品建议，不是逐项实测评测 |
@@ -72,7 +72,7 @@
 
 ### 1.2 证据来源
 
-- 拾光侧：当前代码（`Services/Catalog/*`、`Store/CatalogBrowserModel*`、`Features/Catalog/*`）与 `docs/catalog-v2.md`。
+- 拾光侧：当前代码（`Services/Catalog/*`、`Store/CatalogBrowserModel*`、`Features/Catalog/*`）与 `docs/catalog/catalog-v2.md`。
 - 竞品侧：2026-11 公开官网、文档与发布说明，见文末「资料来源」。
 - 本文不声称对竞品做过逐项实测；`◐ / ○` 的判断以公开能力说明为准。
 

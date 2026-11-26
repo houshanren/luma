@@ -812,7 +812,7 @@ score = 语言排名权重 + 来源权重 + forced 权重 + default 权重
 
 | 编号 | 待验证项 | 方法 | 影响 | 状态 |
 | --- | --- | --- | --- | --- |
-| T1 | AVPlayer 对 fMP4 HLS 中 AC-3 / E-AC-3 的支持 | 生成 10s 片段，`AVPlayerItem` 检查 `audioOptions` 与实际出声 | 决定 AC-3 直通默认开关 | 已通过（轨道层面）：`itemTracks` 显示 `soun:ac-3` / `soun:ec-3` 且起播；见 [组合实测](file:///Users/lijialong/Documents/gitlab/photos/docs/video-media-matrix-2026-11.md) |
+| T1 | AVPlayer 对 fMP4 HLS 中 AC-3 / E-AC-3 的支持 | 生成 10s 片段，`AVPlayerItem` 检查 `audioOptions` 与实际出声 | 决定 AC-3 直通默认开关 | 已通过（轨道层面）：`itemTracks` 显示 `soun:ac-3` / `soun:ec-3` 且起播；见 [组合实测](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/video-media-matrix-2026-11.md) |
 | T2 | E-AC-3 JOC（Atmos）元数据是否在 fMP4 中保留 | `ffprobe` 看 `profile` / side data；AVPlayer 实际输出 | 决定 Atmos 是否宣传为支持 | 待实测 |
 | T3 | `hevc_videotoolbox main10` 在目标 Mac 上的编码速度 | 4K HDR 样片 `-benchmark` | 决定性能 / 低功耗档默认编码器 | 待实测 |
 | T4 | `-hwaccel videotoolbox` + `hwdownload` 的净收益 | 同一 4K 样片对比软解 | 决定是否默认开启硬解 | 待实测 |
@@ -838,7 +838,7 @@ score = 语言排名权重 + 来源权重 + forced 权重 + default 权重
 | 2026-11-22 | T8 实测：AVPlayer 保留 DV RPU；DV P5 在 HDR 屏改为保留 remux；zscale 前置 `setparams` 修复；补 4K60 / HDR10 / 1080i / 音频样片基线；AC-3 / E-AC-3 直通白名单同步 |
 | 2026-11-22 | 网络缓冲三档落地：省流 / 均衡 / 流畅，默认流畅；前向缓冲、readrate、提前量、Range 预取全部由档位驱动，设置页可切换 |
 | 2026-11-22 | 远端缓冲自适应：按 Range 实测吞吐 + 生成领先量降档，恢复后升回设置档位；带冷却与滞回，本地盘 / SMB 不参与 |
-| 2026-11-22 | 组合实测后的修复：hev1 原生直读判定；多音轨 `LANGUAGE`；离线转码真实帧率；单音轨直通无音轨回退；`HTTPByteRange` 后缀 / HEAD；SDR 屏拒绝 HDR 缓存；播放中缓存不被容量清理删除；详见 [组合实测](file:///Users/lijialong/Documents/gitlab/photos/docs/video-media-matrix-2026-11.md) |
+| 2026-11-22 | 组合实测后的修复：hev1 原生直读判定；多音轨 `LANGUAGE`；离线转码真实帧率；单音轨直通无音轨回退；`HTTPByteRange` 后缀 / HEAD；SDR 屏拒绝 HDR 缓存；播放中缓存不被容量清理删除；详见 [组合实测](file:///Users/lijialong/Documents/gitlab/photos/docs/playback/video-media-matrix-2026-11.md) |
 | 2026-11-22 | 边界复核修复：上游 206 缺 `Content-Range` 不再把分片长度当总长；ffmpeg 非零退出不再被误判为源失败（保留 remux→transcode 降级）；缓存 SDR 判定改用播放器内生效的 HDR 策略；ffmpeg stderr 落盘失败改为 `nullDevice`；`stop()` 改用 `wasServingCache`；§4 音频状态与实测对齐（AC-3 / E-AC-3 / ALAC 直通、DTS/TrueHD→AC-3） |
 | 2026-11-22 | 音频逐轨策略 + 降混：`AudioPlaybackPlan` 逐条决定 copy / AC-3 / AAC，混合编码同会话（实测 master CODECS 为 `ac-3,mp4a.40.2`）；新增「自动 / 立体声」降混开关。转码编码可选 H.264 / HEVC / 低功耗 HEVC（实测 1080p60 4s 素材：H.264 1.92s、HEVC 3.49s、HEVC 低功耗 1.79s；HEVC fMP4 HLS 输出 `hvc1` / Main10 / `yuv420p10le`）。字幕偏好收尾：外挂候选按语言排序、在线搜索语言参数、forced / default 识别、按影片记忆手动选择；缓存键升至 v5 |
 | 2026-11-22 | 画面比例与显示方式：`VideoFramingGeometry` 纯几何布局；适应 / 填充 / 拉伸 / 原始像素 1:1；比例预设 16:9 / 4:3 / 2.35:1 / 1:1 + 上下左右平移与居中；控制条与顶栏共用画面菜单，A 键仍切适应 / 填充；布局断言全部通过 |

@@ -473,7 +473,7 @@ v1.1 之后的代码新增了影院、网络电视、网络资源三条产品线
 | 网络电视 | 录制 | ○ | 未做 |
 | 网络资源 | 多站点聚合、关注、演员 / 机构资料库 | ✅ | 本地 SQLite 资料库 + 多站点适配 |
 
-> 影院 UI 规范与 35 屏 mock 见 `docs/cinema-poster-wall/index.html`；IPTV 竞品与方案见 `docs/iptv-competitor-report-2026-11.html`。
+> 影院 UI 规范与 35 屏 mock 见 `docs/design/cinema-poster-wall/index.html`；IPTV 竞品与方案见 `docs/product/iptv-competitor-report-2026-11.html`。
 
 ---
 

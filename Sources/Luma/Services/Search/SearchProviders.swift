@@ -499,8 +499,8 @@ private final class TelevisionSearchProvider: SearchProviding {
         }
         // 检索词归一：「上海电视台」「上海频道」都按「上海」找，避免把台名后缀当成必须命中的字样。
         let tokens = TVSearchQuery.tokens(keyword)
-        // 节目单可能还没从磁盘垫进内存：搜索时顺手补一次，不阻塞频道结果。
-        tv.hydrateEPGFromCache()
+        // 节目单可能还没从磁盘垫进内存：先等它加载完再检索，否则节目结果一定是空的。
+        await tv.ensureEPGFromCache()
         // 磁盘里也没有节目单：顺带排一次网络更新，节目结果下一轮搜索才能命中。
         // 上一次更新失败时不再自动重试，避免每敲一个字就重新下载一遍。
         if tv.epgPrograms.isEmpty, tv.epgError == nil {
@@ -536,7 +536,23 @@ private final class TelevisionSearchProvider: SearchProviding {
         }
         // 节目单同样参与检索：一档节目占一条结果，点开按直播 / 回看处理。
         // 不做条数截断：频道与节目都返回全部命中。
-        let programEntries = tv.searchPrograms(keyword: keyword, limit: 0)
+        var programEntries = tv.searchPrograms(keyword: keyword, limit: 0)
+        var seenPrograms = Set(programEntries.map { "\($0.channel.id)|\($0.program.id)" })
+        // 台名命中时顺带带上这台的节目单：节目名里通常没有台名，
+        // 只按节目名搜的话，「东方卫视」永远看不到它今天播什么。
+        // 每台取正在播 + 接下来两档，已经按节目名命中的不重复。
+        let now = Date()
+        for entry in sorted where entry.rank <= 1 {
+            let upcoming = tv.programs(for: entry.channel)
+                .filter { $0.end > now }
+                .prefix(3)
+            for program in upcoming {
+                let signature = "\(entry.channel.id)|\(program.id)"
+                guard seenPrograms.insert(signature).inserted else { continue }
+                programEntries.append((channel: entry.channel, program: program))
+            }
+            if programEntries.count >= 60 { break }
+        }
         let channelHits = sorted.map { entry -> SearchHit in
             let channel = entry.channel
             var subtitle = [tv.playlistName(for: channel.playlistID), channel.group]

@@ -43,9 +43,14 @@ struct CatalogWizardView: View {
 
     // MARK: - 任务中心
 
+    /// 当前入口属于哪个接入渠道：影院源归网络影院，其余归资源聚合。
+    private var entryChannel: AccessChannel {
+        entryDomain == .networkCinema ? .cinema : .resource
+    }
+
     /// 任务中心里的来源：网络资源归到资源聚合源，影视源归到网络影院。
     private var ingestSourceID: SourceID {
-        entryDomain == .networkCinema ? .networkCinema : .catalogHub
+        entryChannel == .cinema ? .networkCinema : .catalogHub
     }
 
     private var ingestJobTitle: String {
@@ -96,21 +101,17 @@ struct CatalogWizardView: View {
         }
     }
 
-    private struct Check: Identifiable {
-        enum State: Equatable { case ok, failed }
-        let id = UUID()
-        var text: String
-        var state: State
-    }
-
     /// 一次导入可能包含多个站点：每个地址保留自己的解析结果与校验项。
     private struct ImportedSource: Identifiable {
         let id = UUID()
         var address: String
         var source: CatalogSource?
-        var checks: [Check] = []
+        var checks: [ValidationCheck] = []
 
-        var failed: Bool { source == nil || checks.contains { $0.state == .failed } }
+        /// 校验报告与各模块共用同一层语义：失败阻止入库，警告只提示。
+        var report: ValidationReport { ValidationReport(checks) }
+        var issues: [ValidationCheck] { report.issues }
+        var failed: Bool { source == nil || report.blocksImport }
         var name: String { source?.name ?? "无法解析" }
     }
 
@@ -663,15 +664,21 @@ struct CatalogWizardView: View {
                 }
                 Spacer(minLength: 0)
             }
-            let visible = showAllChecks ? entry.checks : entry.checks.filter { $0.state == .failed }
+            let visible = showAllChecks ? entry.checks : entry.issues
             ForEach(visible) { check in
+                let tint = check.level == .ok
+                    ? Color.secondary
+                    : (check.level == .warning ? Color.orange : Color.red)
+                let icon = check.level == .ok
+                    ? "checkmark"
+                    : (check.level == .warning ? "exclamationmark.triangle.fill" : "xmark")
                 HStack(spacing: 6) {
-                    Image(systemName: check.state == .ok ? "checkmark" : "xmark")
+                    Image(systemName: icon)
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(check.state == .ok ? Color.secondary : Color.red)
+                        .foregroundStyle(tint)
                     Text(check.text)
                         .font(.system(size: 10.5))
-                        .foregroundStyle(check.state == .ok ? Color.secondary : Color.red)
+                        .foregroundStyle(tint)
                         .lineLimit(2)
                 }
                 .padding(.leading, 19)
@@ -818,8 +825,8 @@ struct CatalogWizardView: View {
             } catch {
                 results.append(ImportedSource(address: address,
                                               source: nil,
-                                              checks: [Check(text: error.localizedDescription,
-                                                             state: .failed)]))
+                                              checks: [ValidationCheck(text: error.localizedDescription,
+                                                                       level: .failed)]))
             }
             if results.count >= 60 { break }
         }
@@ -874,7 +881,7 @@ struct CatalogWizardView: View {
                 progressText = "正在读取配置并验证站点…"
             }
             reportIngestProgress(completed: index, total: total, message: progressText)
-            let checks: [Check]
+            let checks: [ValidationCheck]
             if source.kind == .maccms {
                 checks = await validateHomeOnly(source)
             } else {
@@ -947,10 +954,10 @@ struct CatalogWizardView: View {
     }
 
     /// 三项校验：首页、详情分集、封面解密。返回的失败项会禁用该条的添加。
-    private func validate(_ source: CatalogSource) async -> [Check] {
-        var checks: [Check] = [
-            Check(text: "配置可访问，站点：\(source.name)", state: .ok),
-            Check(text: "解析到 \(source.categories.count) 个分类", state: .ok)
+    private func validate(_ source: CatalogSource) async -> [ValidationCheck] {
+        var checks: [ValidationCheck] = [
+            ValidationCheck(text: "配置可访问，站点：\(source.name)", level: .ok),
+            ValidationCheck(text: "解析到 \(source.categories.count) 个分类", level: .ok)
         ]
         CatalogTrust.setTrusted(source.host, source.trustsInsecureCertificate)
 
@@ -959,8 +966,8 @@ struct CatalogWizardView: View {
                 throw CatalogError.unsupportedProvider
             }
             let home = try await provider.home(source: source)
-            checks.append(Check(text: "首页解析 \(home.items.count) 条",
-                                state: home.items.isEmpty ? .failed : .ok))
+            checks.append(ValidationCheck(text: "首页解析 \(home.items.count) 条",
+                                         level: home.items.isEmpty ? .failed : .ok))
 
             // 首页第一条可能是纯图文榜单：往后找一条真正带播放器的条目来验证详情与封面。
             var checked: (item: CatalogItem, detail: CatalogDetail)?
@@ -973,28 +980,36 @@ struct CatalogWizardView: View {
             }
 
             if let checked {
-                checks.append(Check(text: "详情页解析 \(checked.detail.episodes.count) 个视频",
-                                    state: .ok))
+                checks.append(ValidationCheck(text: "详情页解析 \(checked.detail.episodes.count) 个视频",
+                                             level: .ok))
                 let cover = checked.item.coverURL.isEmpty
                     ? checked.detail.item.coverURL : checked.item.coverURL
                 if cover.isEmpty {
-                    checks.append(Check(text: "卡片没有封面地址", state: .failed))
+                    checks.append(ValidationCheck(text: "卡片没有封面地址", level: .failed))
                 } else {
-                    _ = try await provider.coverData(source: source, urlString: cover)
-                    checks.append(Check(text: "封面加载成功", state: .ok))
+                    do {
+                        _ = try await provider.coverData(source: source, urlString: cover)
+                        checks.append(ValidationCheck(text: "封面加载成功", level: .ok))
+                    } catch {
+                        // 站点会把 UGC 头像当封面，或 CDN 已经撤掉某张图：封面缺失不影响入库。
+                        Diagnostics.record("导入校验 封面失败 \(source.name) \(cover)：\(error.localizedDescription)")
+                        checks.append(ValidationCheck(text: "封面加载失败：\(error.localizedDescription)（不影响添加）",
+                                                      level: .warning))
+                    }
                 }
             } else if !home.items.isEmpty {
-                checks.append(Check(text: "前几条都没有可播放的视频，可能站点结构已变化",
-                                    state: .failed))
+                checks.append(ValidationCheck(text: "前几条都没有可播放的视频，可能站点结构已变化",
+                                              level: .failed))
             }
         } catch {
-            checks.append(Check(text: error.localizedDescription, state: .failed))
+            Diagnostics.record("导入校验失败 \(source.name)[\(source.kind.rawValue)]：\(error.localizedDescription)")
+            checks.append(ValidationCheck(text: error.localizedDescription, level: .failed))
         }
         return checks
     }
 
     /// 苹果CMS 批量导入的轻量校验：只探测首页，避免一次配置打几十个详情 / 封面请求。
-    private func validateHomeOnly(_ source: CatalogSource) async -> [Check] {
+    private func validateHomeOnly(_ source: CatalogSource) async -> [ValidationCheck] {
         CatalogTrust.setTrusted(source.host, source.trustsInsecureCertificate)
         do {
             guard let provider = CatalogProviders.provider(for: source.kind) else {
@@ -1002,12 +1017,12 @@ struct CatalogWizardView: View {
             }
             let home = try await provider.home(source: source)
             return [
-                Check(text: "接口可访问：\(source.name)", state: .ok),
-                Check(text: "首页解析 \(home.items.count) 条",
-                      state: home.items.isEmpty ? .failed : .ok)
+                ValidationCheck(text: "接口可访问：\(source.name)", level: .ok),
+                ValidationCheck(text: "首页解析 \(home.items.count) 条",
+                                level: home.items.isEmpty ? .failed : .ok)
             ]
         } catch {
-            return [Check(text: error.localizedDescription, state: .failed)]
+            return [ValidationCheck(text: error.localizedDescription, level: .failed)]
         }
     }
 

@@ -96,6 +96,76 @@ enum CloudCredentials {
     }
 }
 
+// MARK: - Cookie 轮换
+
+/// 服务端用 `Set-Cookie` 轮换会话 Cookie（夸克 `__puus` / `__pus`、115 的 `UID` / `CID` 等）。
+/// 统一在这里合并回钥匙串：不写回的话，下一次请求仍带旧值，很快就会被判成未登录。
+enum CloudCookieRotation {
+    /// 把响应里轮换的 Cookie 合并进已保存的 Cookie；有变化才写钥匙串。
+    static func persist(from response: HTTPURLResponse,
+                        original: String,
+                        mountID: UUID?) {
+        guard let mountID, let url = response.url else { return }
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, element in
+            if let key = element.key as? String, let value = element.value as? String {
+                result[key] = value
+            }
+        }
+        let cookies = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
+        guard !cookies.isEmpty else { return }
+        let now = Date()
+        var updated = normalize(original)
+        for cookie in cookies {
+            // 已过期 / 被服务端删除的 Cookie 从组合里摘掉，避免继续带着失效值。
+            if let expires = cookie.expiresDate, expires < now {
+                updated = remove(cookie: cookie.name, from: updated)
+            } else {
+                updated = merge(cookie: cookie.name, value: cookie.value, into: updated)
+            }
+        }
+        guard updated != normalize(original), !updated.isEmpty else { return }
+        CloudCredentials.setPassword(updated, for: mountID)
+    }
+
+    /// 用户从 DevTools 复制的 Cookie 可能带 "Cookie:" 前缀、换行或多段，统一整理成一行。
+    static func normalize(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.lowercased().hasPrefix("cookie:") {
+            text = String(text.dropFirst("cookie:".count))
+        }
+        let parts = text
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return parts.joined(separator: "; ")
+    }
+
+    static func merge(cookie name: String, value: String, into cookie: String) -> String {
+        var pairs = split(cookie)
+        if let index = pairs.firstIndex(where: { $0.0 == name }) {
+            pairs[index] = (name, value)
+        } else {
+            pairs.append((name, value))
+        }
+        return pairs.map { "\($0.0)=\($0.1)" }.joined(separator: "; ")
+    }
+
+    static func remove(cookie name: String, from cookie: String) -> String {
+        let pairs = split(cookie).filter { $0.0 != name }
+        return pairs.map { "\($0.0)=\($0.1)" }.joined(separator: "; ")
+    }
+
+    private static func split(_ cookie: String) -> [(String, String)] {
+        cookie.split(separator: ";").compactMap { part in
+            let piece = part.trimmingCharacters(in: .whitespaces)
+            guard !piece.isEmpty else { return nil }
+            let comps = piece.split(separator: "=", maxSplits: 1)
+            return (String(comps[0]), comps.count > 1 ? String(comps[1]) : "")
+        }
+    }
+}
+
 // MARK: - 缓存路径
 
 enum CloudPaths {

@@ -29,7 +29,8 @@ open Luma.app
   1. `./build.sh debug` 退出码为 0；
   2. `open Luma.app` 后进程存活（不闪退）；
   3. 手动走一遍被改动的界面路径。
-- 纯逻辑（布局、档位等）改动需跑 `swift run LumaCoreChecks`，断言失败会以非零码退出。命令行工具链没有 XCTest，新增纯逻辑优先放进 `Sources/LumaCore` 并在 `Tests/LumaCoreChecks/main.swift` 补断言。
+- 纯逻辑（布局、档位等）改动需跑 `swift run LumaCoreChecks`；内容契约 / 数据层改动分别跑 `swift run LumaContentChecks` / `swift run LumaDataChecks`。断言失败会以非零码退出。命令行工具链没有 XCTest，新增纯逻辑优先放进对应库（`Sources/LumaCore` 等），断言写进 `Tests/<target>/Checks<领域>.swift` 并在该 target 的 `main.swift` 注册；写法见 `docs/development.md` §19。
+- 界面性能回归用 `python3 Tools/ui_perf.py`（应用内基准，输出 FPS / 慢帧 / 缩略图 p95）；需要 Instruments 时间线时用 `Tools/ui_trace.sh`（要求完整 Xcode 与 `xctrace`）。
 - 临时脚本放 `/tmp`，不要提交。
 - 若出现 `error: input file '...' was modified during the build`，说明有另一个构建/编辑进程在同时改动文件；等待数秒后重试，**不要**删除 `.build` 或中断他人构建。
 - 需要连通性调试时可临时起本地服务（如 WebDAV 模拟），但不要向仓库添加测试服务器代码。
@@ -52,79 +53,116 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - **唯一路径入口**：`LibraryPaths`（本地）与 `CloudPaths`（网盘缓存）。除 `LibraryPaths.systemThumbs` 外，任何路径都不得在视图层拼接。
 - **视图 → Store 单向调用**：Store 不持有任何 View；跨视图通信通过 Store 的 `@Published` 状态（如 `viewerID`、`showLibraryPicker`）。
 
+### 分层依赖规则
+
+依赖方向固定为：`Features → Store → Services（UseCases → Infrastructure）→ Persistence（MetadataStore / SystemIndex / TVDatabase / CatalogDatabase）→ SQLite / 文件 / 网络`。`Domain` 与 `LumaCore` 不依赖上层。
+
+- `LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` 是独立 SwiftPM target：Domain 只依赖 `LumaCore` / `PlaybackCore` / `LumaContentCore`，不得 import AppKit / SwiftUI，也不得引用 Store / Services；Persistence 只依赖 Domain 与这三个基础库；AI 只依赖 Domain，执行侧（需要 `LibraryStore`）留在 App；UI 只依赖 Domain，只放设计 token、通用视图修饰器与拖放 / 键盘 / 窗口胶水。四者都不得依赖 Store / Services / 功能模块。
+- 跨 target 的 API 必须显式标注 `public`，同一 package 内可标注 `package`（`LumaUI` 采用 `package`）；struct 还要写显式 init。`Luma` 通过 `App/ModuleExports.swift` 的 `@_exported import` 统一转发，普通文件不需要重复 import。
+- 需要 App 能力（日志、模型资源路径）时由组合根注入（`PersistenceLog.sink`、`PhotoTagCatalog.resourceResolver`），不要在 Domain / Persistence 里反向引用 App 类型。
+
+- `Features` 不得直接使用 `MetadataStore`、`SystemIndex`、`SQLiteDatabase`、`PhotoKitBridge`、`WebDAVClient` 或 `URLSession`；系统媒体读取走 Store 包装（如 `systemOriginalImageData(for:)` / `systemVideoAsset(for:)`）。
+- `Features` 不得直接写文件或拼接数据库路径；只读总览类逻辑放 `Services/Library/LibraryOverviewService` 这类服务里。
+- `Store` 不得创建 `NSOpenPanel` / `NSSavePanel` / `NSAlert`；用户交互统一经注入的 `LibraryUserInteraction`（`UI/Shared/AppKitLibraryUserInteraction` 由视图层注入）。
+- 新增 `Services` 代码不得 `import SwiftUI`；`NSViewRepresentable` 等界面组件只能放 `Features/`、`LumaUI/` 或 `UI/Components/`。
+- `Domain` 只放可序列化模型；新增模型不得 `import AppKit`，`NSImage` 只允许出现在展示层类型里。
+- 数据库行类型（如 `MetadataStore.CloudIndexFolderRow`）不得直接暴露给视图；需要展示时先在 `Domain` 定义 DTO（`CloudIndexState` / `AssetOverlay` 已迁到 `Domain`）。
+
 ### 文件职责
 
-完整目录清册见 `docs/development.md` §4（`Sources/Luma` 的 7 个一级目录逐文件列出）。下面只列关键文件：
+完整目录清册见 `docs/development.md` §4（`Sources/Luma` 的 5 个一级目录逐文件列出，`LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` 单列）。下面只列关键文件：
 
 | 文件 | 职责 | 不要放什么 |
 | --- | --- | --- |
-| `Store/LibraryStore.swift` | 存储属性、初始化、持久化 | 具体绘制、Core Image 渲染细节 |
-| `Store/LibraryStore+*.swift` | 按领域拆分的查询/组织/导入/系统图库/网盘等方法扩展 | 新的存储属性（extension 不能声明） |
-| `Store/SelectionModel.swift` / `ViewerModel.swift` / `CloudBrowserModel.swift` | 选择、查看器、网盘浏览状态，独立 `ObservableObject` | 图库内容状态、业务规则 |
-| `Store/LibraryStore+Paging.swift` | 大图库分页窗口：加载、追加、定位、查看器胶片条 | SQL 拼接、视图绘制 |
-| `Store/LibraryStore+Undo.swift` | 图库级撤销 / 重做栈：最近 30 步内存快照、⌘Z 与 Edit 菜单入口 | 文件系统删除、永久删除、导入、编辑器调整历史 |
-| `Store/LibraryStore+Intelligence.swift` | 端侧场景/OCR 分析编排、场景统计、相似照片范围 | 直接调用 Vision 请求（放 `PhotoIntelligence`） |
-| `Store/LibraryStore+Health.swift` | 图库体检扫描、相似连拍分组、模糊与大视频统计、「值得重看」 | 视图绘制、直接解码原图 |
-| `Domain/SceneTags.swift` | 场景目录 `SceneCatalog`、`PhotoAnalysis`、中文检索词表 | Vision/IO、视图状态 |
-| `Domain/LibraryHealth.swift` | 图库体检结果模型（模糊项、相似组、大视频） | 扫描逻辑、IO |
-| `Domain/Duplicates.swift` | 重复组模型与检测 / 推荐保留算法（纯计算） | IO、视图状态、数据库 |
+| `Store/Library/LibraryStore.swift` | 存储属性、初始化、持久化 | 具体绘制、Core Image 渲染细节 |
+| `Store/<领域>/LibraryStore+*.swift` | 按领域拆分的查询/组织/导入/系统图库/网盘等方法扩展（`AI` / `Catalog` / `Cinema` / `Cloud` / `Library` / `Shared` / `TV`） | 新的存储属性（extension 不能声明） |
+| `Store/Library/SelectionModel.swift` / `Store/Library/ViewerModel.swift` / `Store/Cloud/CloudBrowserModel.swift` | 选择、查看器、网盘浏览状态，独立 `ObservableObject` | 图库内容状态、业务规则 |
+| `Store/Library/LibraryStore+Paging.swift` | 大图库分页窗口：加载、追加、定位、查看器胶片条 | SQL 拼接、视图绘制 |
+| `Store/Library/LibraryStore+Undo.swift` | 图库级撤销 / 重做栈：最近 30 步内存快照、⌘Z 与 Edit 菜单入口 | 文件系统删除、永久删除、导入、编辑器调整历史 |
+| `Store/Library/LibraryStore+Intelligence.swift` | 端侧场景/OCR 分析编排、场景统计、相似照片范围 | 直接调用 Vision 请求（放 `PhotoIntelligence`） |
+| `Store/Library/LibraryStore+Health.swift` | 图库体检扫描、相似连拍分组、模糊与大视频统计、「值得重看」 | 视图绘制、直接解码原图 |
+| `LumaDomain/SceneTags.swift` | 场景目录 `SceneCatalog`、`PhotoAnalysis`、中文检索词表 | Vision/IO、视图状态 |
+| `LumaDomain/LibraryHealth.swift` | 图库体检结果模型（模糊项、相似组、大视频） | 扫描逻辑、IO |
+| `LumaDomain/Duplicates.swift` | 重复组模型与检测 / 推荐保留算法（纯计算） | IO、视图状态、数据库 |
 | `Features/Gallery/DuplicatesView.swift` | 重复项目页（本地合并 / 系统图库隐藏与拷贝、总览统计、分组卡片、建议保留标注、确认） | 重复检测算法、SQL、路径拼接 |
 | `Services/Media/PhotoIntelligence.swift` | Vision 分类 / OCR / 特征向量提取与归一化 | 业务规则、UI、数据库写入 |
 | `Services/Media/PhotoQuality.swift` | 缩略图清晰度评估（拉普拉斯方差） | 缓存策略、业务规则 |
 | `Services/Media/PhotoBeauty.swift` | 缩略图 256×256 采样亮度/色彩/清晰度，调用 `BeautyAdvisor` 出建议 | 阈值与业务规则（放 LumaCore）、UI |
 | `Services/Media/PersonPalette.swift` | 人物照片缩略图平均色采样与色调归纳（色彩气质） | 业务规则、视图状态、持久化 |
 | `Services/Media/PersonAvatarLoader.swift` | 人物 / 宠物头像的取图请求、后台解码与内存缓存 | 视图状态、业务规则 |
-| `Domain/PersonInsight.swift` | 人物摘要派生模型：年度/时段/地点/同框/高光与画像文案 | IO、SQL、视图状态 |
-| `Domain/PlaceInsight.swift` | 地点摘要派生模型：到访轨迹/四季/时段/地标/坐标与足迹文案 | IO、SQL、视图状态 |
+| `LumaDomain/PersonInsight.swift` | 人物摘要派生模型：年度/时段/地点/同框/高光与画像文案 | IO、SQL、视图状态 |
+| `LumaDomain/PlaceInsight.swift` | 地点摘要派生模型：到访轨迹/四季/时段/地标/坐标与足迹文案 | IO、SQL、视图状态 |
 | `Features/People/PersonInsightViews.swift` | 人物详情页头（摘要 / 全部切换）、摘要卡片、高光与色彩展示 | 数据聚合、SQL、路径拼接 |
 | `Features/Maps/PlaceDetailView.swift` | 地点详情：地图感页头、到访轨迹、四季、地标、旅行日志式照片墙 | 数据聚合、SQL、路径拼接 |
-| `Domain/RevisitInsight.swift` | 「值得重看」派生模型：按人物 / 地点 / 场景 / 年份拆主体，最久未打开排序、年份分层与摘要文案 | IO、SQL、视图状态 |
+| `LumaDomain/RevisitInsight.swift` | 「值得重看」派生模型：按人物 / 地点 / 场景 / 年份拆主体，最久未打开排序、年份分层与摘要文案 | IO、SQL、视图状态 |
 | `Features/Revisit/RevisitView.swift` | 值得重看总览（今日重看、主体切换、只看未打开、时光碎片）与主体详情（封面叙事、年份筛选、排序、框选） | 数据聚合、SQL、路径拼接 |
-| `Store/LibraryStore+Revisit.swift` | 当前范围（拾光 / 系统图库 / 网盘）的重看照片与主体拆分入口 | 视图绘制、SQL 拼接 |
-| `Store/LibraryStore+Beauty.swift` | 智能美化：扫描推荐分组、批量渲染美化副本、应用前确认 | 视图绘制、SQL 拼接 |
-| `Store/LibraryStore+Deletion.swift` | 删除生命周期：资产文件产物与数据库痕迹的统一清理、软删除脱离相簿、删除确认请求 | 视图绘制、单独的删除流程分支 |
+| `Store/Library/LibraryStore+Revisit.swift` | 当前范围（拾光 / 系统图库 / 网盘）的重看照片与主体拆分入口 | 视图绘制、SQL 拼接 |
+| `Store/Library/LibraryStore+Beauty.swift` | 智能美化：扫描推荐分组、批量渲染美化副本、应用前确认 | 视图绘制、SQL 拼接 |
+| `Store/Library/LibraryStore+Deletion.swift` | 删除生命周期：资产文件产物与数据库痕迹的统一清理、软删除脱离相簿、删除确认请求 | 视图绘制、单独的删除流程分支 |
 | `Features/Gallery/DeleteConfirmView.swift` | 删除确认卡片（扇形缩略图预览、数量与类型拆分、可撤销/不可撤销的按钮与默认键）与断开连接确认卡片 | 删除逻辑、路径拼接 |
-| `Domain/BeautyRecommendation.swift` | 美化候选、分组与报告模型 | 扫描逻辑、IO |
+| `LumaDomain/BeautyRecommendation.swift` | 美化候选、分组与报告模型 | 扫描逻辑、IO |
 | `Features/Organize/BeautyRecommendView.swift` | 智能美化推荐面板（分组卡片、查看、一键美化） | 扫描算法、路径拼接 |
 | `Features/Editor/EditState+Beauty.swift` | 把美化建议按强度叠加到 `EditState` | 视图状态、扫描 |
-| `Domain/AIAgentModels.swift` | 智能助手提供商、配置、对话与检索建议模型 | 网络请求、Keychain、视图状态 |
-| `Services/AI/AIProviderClient.swift` | OpenAI 兼容的 chat/completions 请求与错误映射 | 业务规则、UI、持久化 |
-| `Services/AI/AILibraryContext.swift` | 当前范围快照 → 提示词、检索建议解析 | 直接读数据库、发送请求 |
-| `Services/AI/AIImageEncoder.swift` | 发送前把照片压成长边 1024 的 JPEG data URL | 保存图片、修改图库 |
-| `Services/AI/AILibraryTools.swift` | 工具定义（搜索/相簿/收藏/关键词/选中）与参数解析 | 直接改图库、弹窗确认 |
-| `Services/AI/AILibraryCinemaTools.swift` | 影院工具定义（浏览/播放/个人状态/清单/维护）与确认文案 | 直接改图库、弹窗确认 |
-| `Services/AI/AIKeychain.swift` | 智能助手 API Key 的读写（转调统一凭据保险库，旧条目一次性迁移） | 直接调用 `SecItem*`、把 Key 写入数据库或日志 |
-| `Services/Shared/KeychainAccess.swift` | 全应用唯一直接调用 Security.framework 的入口（读取 / 写入 / ACL） | 在业务代码里拼钥匙串查询 |
-| `Services/Shared/LumaKeychainVault.swift` | 统一凭据保险库：所有业务凭据存一个钥匙串条目，进程内缓存 + 旧条目一次性迁移 | 每次启动重复读旧条目、逐功能弹授权 |
-| `Store/LibraryStore+AIAgent.swift` | 智能助手状态、请求编排、对话持久化、检索建议应用 | 直接拼接 HTTP 请求（放 `AIProviderClient`） |
-| `Store/LibraryStore+AITools.swift` | 工具执行与写操作确认；只调用现有 Store 方法 | 绕过 `save()`、直接写 SQLite |
-| `Store/LibraryStore+AICinemaTools.swift` | 影院工具执行：检索、播放、收藏 / 想看 / 评分、清单、忽略、元数据刷新、跳过片头、观看记录 | 绕过 `LibraryStore` 直接写文件或数据库 |
+| `LumaDomain/AIAgentModels.swift` | 智能助手提供商、配置、对话与检索建议模型 | 网络请求、Keychain、视图状态 |
+| `LumaAI/AIChatProvider.swift` | 模型后端契约与请求消息 | 具体 HTTP 协议、业务工具 |
+| `LumaAI/AICapability.swift` | 模型能力位与后端描述（对话 / 工具 / 视觉 / 生成 / 本地） | 具体厂商判断散落到调用点 |
+| `LumaAI/AITool.swift` | 工具 provider 契约、执行结果与注册表 | 业务执行细节 |
+| `Services/AI/Integrations/AIIntegration.swift` | MCP / 技能 / 快捷指令的统一接入契约 | 直接改图库或播放状态 |
+| `LumaAI/OpenAICompatibleProvider.swift` | OpenAI 兼容的 chat/completions 请求与错误映射 | 业务规则、UI、持久化 |
+| `LumaAI/AIChatProviderFactory.swift` | 配置 → 模型后端的唯一工厂 | 业务分支 |
+| `LumaAI/AILibraryContext.swift` | 当前范围快照 → 提示词、检索建议解析 | 直接读数据库、发送请求 |
+| `Services/AI/Media/AIImageEncoder.swift` | 发送前把照片压成长边 1024 的 JPEG data URL | 保存图片、修改图库 |
+| `LumaAI/AILibraryTools.swift` | 图库基础工具定义（搜索/浏览/相簿/文件夹/图片与视频）、参数解析、写操作白名单、风险判定与确认文案兜底 | 直接改图库、弹窗确认 |
+| `LumaAI/AILibraryCatalogTools.swift` | 网络资源工具定义、写操作白名单与确认文案 | 直接改图库、发送请求 |
+| `LumaAI/AILibraryCinemaTools.swift` | 影院工具定义（浏览/检索/播放/个人状态/清单/维护/刮削匹配）、写操作白名单与确认文案 | 直接改图库、弹窗确认 |
+| `LumaAI/AILibraryNetworkCinemaTools.swift` | 网络影院工具定义（聚合列表/跨源搜索/续看/播放） | 直接改图库、发送请求 |
+| `LumaAI/AILibraryTVTools.swift` | 网络电视工具定义、写操作白名单与确认文案 | 直接改图库、播放状态 |
+| `Services/AI/Tools/AIToolProviders.swift` | 各业务域 provider 的工具定义与执行分派 | 图库基础工具 |
+| `Services/AI/Media/AIKeychain.swift` | 智能助手 API Key 的读写（转调统一凭据保险库，旧条目一次性迁移） | 直接调用 `SecItem*`、把 Key 写入数据库或日志 |
+| `Services/Infrastructure/KeychainAccess.swift` | 全应用唯一直接调用 Security.framework 的入口（读取 / 写入 / ACL） | 在业务代码里拼钥匙串查询 |
+| `Services/Infrastructure/LumaKeychainVault.swift` | 统一凭据保险库：所有业务凭据存一个钥匙串条目，进程内缓存 + 旧条目一次性迁移 | 每次启动重复读旧条目、逐功能弹授权 |
+| `Store/AI/LibraryStore+AIAgent.swift` | 智能助手状态、请求编排、对话持久化、检索建议应用 | 直接拼接 HTTP 请求（走 `AIChatProviderFactory` + `AIChatProvider`） |
+| `Store/AI/LibraryStore+AIContext.swift` | 候选照片、当前范围快照与影院快照的组装（`AIContextBuilder` 的输入） | 发送请求、执行工具、写库 |
+| `Store/AI/LibraryStore+AITools.swift` | 工具执行与写操作确认；只调用现有 Store 方法 | 绕过 `save()`、直接写 SQLite |
+| `Store/AI/LibraryStore+AISearch.swift` | 跨来源统一检索工具（复用 `SearchProviders`）与助手查询的语义标签扩展 | 复制一套检索规则、读写界面搜索状态 |
+| `Store/AI/LibraryStore+AICinemaTools.swift` | 影院工具执行：检索、播放、收藏 / 想看 / 评分、清单、忽略、元数据刷新、跳过片头、观看记录 | 绕过 `LibraryStore` 直接写文件或数据库 |
 | `Features/AI/AIAssistantView.swift` | 智能助手面板（对话、照片引用、检索建议） | 网络与持久化细节 |
 | `Features/Organize/LibraryHealthView.swift` | 图库体检页（指标、卡片、相似组预览、清理入口） | 扫描算法、路径拼接 |
 | `Features/Maps/FootprintPlaybackView.swift` | 足迹回放覆盖层：统一时钟、连续跟随镜头、同步光点、胶片质感 HUD 与控制台 | 站点聚类、视觉匀速与巡航帧计算（放 `LumaCore/FootprintPlayback`） |
-| `Domain/CloudInsight.swift` | 网盘分类范围 `CloudScope`、分类计数与按文件名的截屏识别 | IO、Vision、视图状态 |
+| `LumaDomain/CloudInsight.swift` | 网盘分类范围 `CloudScope`、分类计数与按文件名的截屏识别 | IO、Vision、视图状态 |
 | `Services/Cloud/CloudEXIF.swift` | 网盘照片头部 EXIF 解析（拍摄时间 / 相机 / 镜头 / 曝光 / GPS）与 JPEG TIFF 回退解析 | 网络请求、UI、数据库 |
-| `Store/LibraryStore+CloudInfo.swift` | 网盘 EXIF 扫描编排、地图 / 位置 / 人物 / 值得重看 / 重复项目 / 相似检索 / 图库体检派生 | 视图绘制、SQL、写网盘 |
-| `Store/LibraryStore+CloudInsight.swift` | 网盘分类筛选、端侧识别编排与计数缓存 | 视图绘制、SQL |
+| `Store/Cloud/LibraryStore+CloudInfo.swift` | 网盘 EXIF 扫描编排、地图 / 位置 / 人物 / 值得重看 / 重复项目 / 相似检索 / 图库体检派生 | 视图绘制、SQL、写网盘 |
+| `Store/Cloud/LibraryStore+CloudInsight.swift` | 网盘分类筛选、端侧识别编排与计数缓存 | 视图绘制、SQL |
 | `Features/Sidebar/CloudMountDetailView.swift` | 打开中网盘的「媒体类型 / 场景 / 更多项目」入口与各自的收起状态 | 网络请求、筛选算法 |
-| `Domain/PhotoQuery.swift` | 可下推的范围/筛选/排序描述与 `SidebarItem` 映射 | SQL、IO |
-| `Services/Library/MetadataStore+Query.swift` | `PhotoQuery` → SQL：count / page / index / neighbor / 索引提示 | UI、业务规则 |
+| `LumaDomain/PhotoQuery.swift` | 可下推的范围/筛选/排序描述与 `SidebarItem` 映射 | SQL、IO |
+| `LumaPersistence/MetadataStore+Query.swift` | `PhotoQuery` → SQL：count / page / index / neighbor / 索引提示 | UI、业务规则 |
 | `Sources/LumaCore/` | 无 UI 依赖的纯算法：网格布局、缩略图档位、美化建议（`BeautyAdvisor`）、足迹站点与连续巡航编排（`FootprintPlayback`）、票据 / 证件文字判定（`DocumentText`）、地标就近匹配（`LandmarkCatalog`） | 任何 AppKit/SwiftUI/模型 IO |
-| `Services/Library/LibraryPaths.swift` | 图库与系统路径的唯一入口 | 业务规则、UI |
+| `Sources/LumaDomain/` | 独立 target：可序列化模型、查询描述、派生 DTO、格式与坐标判定（`Models` / `PhotoQuery` / `VideoFormats` / `PlaceSupport`） | IO、SQL、AppKit/SwiftUI、Store/Services 引用 |
+| `Sources/LumaPersistence/` | 独立 target：SQLite 封装、图库元数据、系统图库索引、电视 / 资源站库表与路径入口 | Store/Services/UI、App 的 `Diagnostics`（日志走 `PersistenceLog` 注入） |
+| `Sources/LumaAI/` | 独立 target：模型后端契约、OpenAI 兼容实现、提示词上下文、工具定义与注册表 | 需要 `LibraryStore` 的执行代码（留在 `Services/AI` / `Store/AI`） |
+| `Sources/LumaUI/` | 独立 target：设计 token（`LumaMetrics` / `LumaBrand`）、磨砂 / 环境光等通用视图修饰器、拖放 / 键盘 / 窗口胶水 | Store / 业务状态、具体页面视图 |
+| `LumaUI/LumaDesign.swift` | 环境光背景、磨砂卡片 / 胶囊、行高亮、面包屑与品牌色 | 业务状态、页面级布局 |
+| `LumaUI/ViewSupport.swift` | 通用视图修饰器（`searchableIf`）与颜色 / 标记的展示色 | 业务规则 |
+| `LumaPersistence/LibraryPaths.swift` | 图库与系统路径的唯一入口 | 业务规则、UI |
+| `LumaPersistence/CatalogPaths.swift` | 网络资源海报缓存路径（挂在 `LibraryPaths.overlayRoot` 下） | 业务规则、视图状态 |
+| `Services/Library/LibraryOverviewService.swift` | 多图库总览的只读汇总（系统图库 / 其它 App 图库） | 视图状态、弹窗 |
+| `Store/Library/LibraryStore+SystemMedia.swift` | 系统「照片」原图 / 视频的 Store 只读包装 | 直接调用 PhotoKit 的视图代码 |
+| `UI/Shared/LibraryInteraction.swift` | 文件面板与确认弹窗的协议、请求模型 | AppKit 实现、业务规则 |
+| `UI/Shared/AppKitLibraryUserInteraction.swift` | `LibraryUserInteraction` 的 AppKit 实现，由视图层注入 | 业务规则、数据库 |
 | `Services/Import/ImportService.swift` | 导入、缩略图生成、预览缩略图 | 业务规则（由 Store 决定） |
 | `Services/Media/ImageLoader.swift` | 缩略图/显示图解码与内存缓存 | 视图状态 |
-| `Services/Library/MetadataStore.swift` | SQLite schema 与读写 | 直接访问文件系统 |
-| `Services/Library/MetadataStore+DerivedCache.swift` | 跨范围派生缓存表（`system_analysis` / `derived_reports` / `cloud_assets` / `cloud_people`）的读写与清理 | 业务规则、视图状态 |
-| `Domain/CacheRecords.swift` | 网盘缓存行模型与派生报告缓存键 | IO、数据库 |
-| `Store/LibraryStore+SystemCache.swift` | 系统图库识别 / 特征缓存的回填、落库与签名失效 | 视图绘制、SQL |
-| `Store/LibraryStore+CloudCache.swift` | 网盘 EXIF / 识别 / 特征 / 查看记录的落库与目录回填、网盘体检报告缓存 | 视图绘制、SQL、网络请求 |
+| `LumaPersistence/MetadataStore.swift` | SQLite schema 与读写 | 直接访问文件系统 |
+| `LumaPersistence/MetadataStore+DerivedCache.swift` | 跨范围派生缓存表（`system_analysis` / `derived_reports` / `cloud_assets` / `cloud_people`）的读写与清理 | 业务规则、视图状态 |
+| `LumaDomain/CacheRecords.swift` | 网盘缓存行模型与派生报告缓存键 | IO、数据库 |
+| `Store/Library/LibraryStore+SystemCache.swift` | 系统图库识别 / 特征缓存的回填、落库与签名失效 | 视图绘制、SQL |
+| `Store/Cloud/LibraryStore+CloudCache.swift` | 网盘 EXIF / 识别 / 特征 / 查看记录的落库与目录回填、网盘体检报告缓存 | 视图绘制、SQL、网络请求 |
 | `Services/Media/PhotoKitBridge.swift` | 系统「照片」图库的真实写入（PhotoKit 编辑 / 删除 / 相簿 / 收藏隐藏 / 文件夹验证）与权限申请 | 业务规则、UI、直接改 `Photos.sqlite` |
-| `Store/LibraryStore+SystemAlbums.swift` | 系统图库相簿增删改、照片加入移出与手动排序、写回前校验与内存同步 | 视图绘制、SQL、直接改 `Photos.sqlite` |
-| `Domain/Models.swift` | 纯数据模型与枚举 | 网络/IO |
+| `Store/Library/LibraryStore+SystemAlbums.swift` | 系统图库相簿增删改、照片加入移出与手动排序、写回前校验与内存同步 | 视图绘制、SQL、直接改 `Photos.sqlite` |
+| `LumaDomain/Models.swift` | 纯数据模型与枚举 | 网络/IO |
 | `Features/Gallery/GalleryView.swift` | 网格容器、工具栏、拖放与框选 | 文件写入、缩略图解码细节 |
 | `Features/Gallery/PhotoGrids.swift` | 正方形/瀑布流网格布局 | 业务规则 |
-| `Components/PhotoCell.swift` | 网格单元格（选择、悬停、拖放、右键菜单） | 缩略图解码细节（复用 `PhotoThumbnailLoader`）、路径拼接 |
-| `Components/PhotoThumbnailView.swift` | `PhotoThumbnailView` / `PhotoThumbnailLoader`：所有缩略图取图 | 业务规则、视图状态 |
+| `UI/Components/PhotoCell.swift` | 网格单元格（选择、悬停、拖放、右键菜单） | 缩略图解码细节（复用 `PhotoThumbnailLoader`）、路径拼接 |
+| `UI/Components/PhotoThumbnailView.swift` | `PhotoThumbnailView` / `PhotoThumbnailLoader`：所有缩略图取图 | 业务规则、视图状态 |
 | `Features/Viewer/InfoPanelView.swift` | 查看器信息面板 + `PhotoInfoContent`（网格浮动信息卡共用同一份完整字段） | 另一套独立的详情字段（新字段只改这里） |
 | `Features/Cloud/CloudWizard*.swift` | 网盘接入向导：根视图 + 各接入方式的步骤视图与动作扩展 | 网盘协议实现、凭据持久化 |
 | `Features/Gallery/TimelineOverviewView.swift` | 年/月总览卡片 | 数据分组规则（复用 `store.sections`） |
@@ -135,25 +173,23 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 - **单文件 2000 行是硬上限（含注释与空行）。** 新代码不得让文件超过 2000 行。
 - 超过 2000 行时先按职责拆分，再继续加功能。优先拆法：
-  1. 纯模型 / 纯算法 / 解析器 → `Domain/` 或 `Services/`；
+  1. 纯模型 / 纯算法 / 解析器 → `LumaDomain/` 或 `Services/`；
   2. 可独立复用的视图块 → 同 Feature 下的 `*View.swift` / `*Card.swift`；
   3. 状态与动作 → 独立 `ObservableObject` 或 Store 扩展；
   4. 最后才保留一个只负责组装的主文件。
 - 现有超限文件不要求一次性重写；每次触碰时必须至少做到“不再增加行数”，并把本次新增逻辑放进新文件。拆分是行为保持重构，必须单独提交，不和功能改动混在一起。
-- 当前超限清单（2026-11-22，按优先级逐步处理）：
+- 当前超限清单（2026-11-26，按优先级逐步处理）：
 
 | 文件 | 行数 | 首选拆法 |
 | --- | ---: | --- |
-| `Features/Cinema/CinemaLibraryView.swift` | 10088 | 海报墙 / 详情 / 剧集 / 筛选 / 任务 / 设置拆成独立视图 |
-| `Features/Viewer/VideoPlayback.swift` | 3476 | 播放编排、字幕、音频、诊断、UI 覆盖层分文件 |
-| `Features/Gallery/GalleryView.swift` | 3384 | 时间轴、网格、搜索、工具栏、拖放分文件 |
-| `Store/LibraryStore+Cinema.swift` | 3207 | 刮削、播放、进度、清单、作用域拆扩展文件 |
-| `Features/Catalog/CatalogChannelView.swift` | 3021 | 频道页、详情、卡片、筛选、工具栏分文件 |
-| `Features/Collections/CollectionsView.swift` | 2805 | 精选集总览、详情、卡片分文件 |
-| `Services/Library/SystemIndex+Direct.swift` | 2673 | 查询、映射、同步拆文件 |
-| `Store/LibraryStore+Cloud.swift` | 2240 | 扫描、目录、播放、缓存、维护拆扩展文件 |
-| `Features/Viewer/PhotoViewer.swift` | 2106 | 画面、HUD、控制条、手势、键盘分文件 |
-| `Services/Library/SystemIndex.swift` | 2042 | 建库、增量同步、查询拆文件 |
+| `Features/TV/TVHubView.swift` | 6584 | 频道网格 / 多画面 / 详情 / 录制 / 设置拆成独立视图 |
+| `Features/Viewer/VideoPlayback.swift` | 4573 | 播放编排、字幕、音频、诊断、UI 覆盖层分文件 |
+| `Features/Viewer/PhotoViewer.swift` | 2872 | 画面、HUD、控制条、手势、键盘分文件 |
+| `Store/TV/IPTVBrowserModel.swift` | 2503 | 目录同步、频道组织、EPG、播放状态拆扩展 |
+| `Features/Editor/PhotoEditor.swift` | 2365 | 画布、工具栏、裁剪、调整、导出分文件 |
+| `Features/Cloud/CloudStoragesCinemaView.swift` | 2272 | 浏览、详情、列表、播放入口分文件 |
+| `Store/Library/LibraryStore+SystemLibrary.swift` | 2242 | 连接 / 断开、目录同步、相簿与索引回填拆扩展文件 |
+| `Features/Sidebar/SidebarView.swift` | 2230 | 分区、行模型、拖放、折叠状态、工具面板分文件 |
 
 ---
 
@@ -166,21 +202,21 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
   3. 旧库升级通过 `addColumnIfNeeded("assets", "列名", "类型")` 补列，禁止让用户重建图库；
   4. 用已有图库启动一次，确认历史数据仍在。
 - 一次性迁移逻辑（旧目录 → 分片目录、旧 JSON → SQLite）写在 `LibraryPaths`/`MetadataStore` 的迁移方法中，必须幂等。
-- 删除记录必须走 `LibraryStore.purgeAssetArtifacts(_:)` + `purgeAssetMetadata(_:)`（`Store/LibraryStore+Deletion.swift`）：原图、实况照片配对视频、缩略图 / 快速缩略图、编辑渲染结果、压缩备份、转码缓存、网盘缩略图一并删除并 `ImageLoader.invalidate(photo:)`；数据库侧由 `MetadataStore.removeAssetDerivedData(_:)` 清掉 `asset_analysis` / `person_assets` / `scanned_faces` / `asset_overlays` 与没有照片的空人物，相簿成员与封面由 `detachFromAlbums(_:)` 处理（软删除同样要脱离相簿）。永久删除与「最近删除」过期清理共用这一份清单，不要在两处各写一套。
+- 删除记录必须走 `LibraryStore.purgeAssetArtifacts(_:)` + `purgeAssetMetadata(_:)`（`Store/Library/LibraryStore+Deletion.swift`）：原图、实况照片配对视频、缩略图 / 快速缩略图、编辑渲染结果、压缩备份、转码缓存、网盘缩略图一并删除并 `ImageLoader.invalidate(photo:)`；数据库侧由 `MetadataStore.removeAssetDerivedData(_:)` 清掉 `asset_analysis` / `person_assets` / `scanned_faces` / `asset_overlays` 与没有照片的空人物，相簿成员与封面由 `detachFromAlbums(_:)` 处理（软删除同样要脱离相簿）。永久删除与「最近删除」过期清理共用这一份清单，不要在两处各写一套。
 - 端侧智能分析结果写在 `asset_analysis` 表（`asset_id` 主键 + `labels` / `text` / `feature` BLOB / `updated_at`），只允许经 `MetadataStore.saveAnalysis(_:)` / `removeAnalysis(_:)` 写入；内存里的 `analysisIndex` 只保留标签与文字，特征向量按需从数据库读，禁止把向量塞进 `PhotoItem`。删除照片时由 `purgeAssetMetadata(_:)` 同步清理 `removeAssetDerivedData(_:)` 与 `analysisIndex`。
 - 场景匹配统一走 `SceneCatalog.matches(_:analysis:photo:)`（内部先调 `PhotoAnalysis.belongs(to:)`：比 Vision 标签，再比 `SceneCategory.keywords` 的 OCR 关键词；票据、证件靠文字判定）。`PhotoIntelligence` 会在 `labels` 里追加合成标签 `qrcode` / `barcode`（`VNDetectBarcodesRequest`）、`idphoto`（单人脸 + 竖幅/方幅 + 居中的启发式）、`invoice` / `idcard`（`LumaCore/DocumentText` 的发票特征词与身份证校验位规则），二维码 / 条码载荷以「二维码：/条码：」前缀并入 `text` 供搜索；翻拍类照片先用 `VNDetectDocumentSegmentationRequest` 裁出文档区域再 OCR（占画面不足 15% 不裁切）。「名胜古迹」额外接受地理位置命中：`SceneCatalog.matches(_:analysis:photo:)` 在标签 / 关键词都没命中时，用 `LumaCore/LandmarkCatalog` 按 EXIF 坐标就近匹配内置地标表，没有坐标再用 POI / 城市 / 区县文字匹配；地标表只用于归类与展示地标名，不联网、不落库。新增识别项后由「重新分析全部照片…」（`reanalyzeIntelligence()`）覆盖历史结果，不要在视图层另写匹配规则。
 - 「最近查看」写在 `assets.viewed_at`，由 `LibraryStore.recordView(_:)` → `MetadataStore.setViewedAt(_:date:)` 单行更新（不要为一次打开触发全量 `save()`）；系统图库的 `viewedAt` 只来自 `Photos.sqlite`，不写回。
 - 图库级撤销 / 重做（`LibraryStore+Undo`）：可逆的元数据变更在 `save()` 之后必须调用 `recordUndo(_:beforePhotos:beforeAlbums:beforeFolders:)` 记录修改前的快照；撤销 / 重做只回填内存快照再 `save()`，不得调用会重新记录撤销的公开方法。撤销栈只在内存里保留最近 30 步，切换图库时由 `resetUndoHistory()` 清空；永久删除、清空最近删除、导入、编辑与压缩不进入撤销栈。`⌘Z` / `⇧⌘Z` 统一走 `performUndoCommand()` / `performRedoCommand()`（文本输入中转发给系统文本框，编辑器内由编辑器自己的调整历史处理）。
 - 「图库体检」是**派生视图**：扫描结果放在 `healthReport`（内存）并**写入当前图库的 `derived_reports`**（key = `local|health` / `system|<图库路径>|health` / `cloud|<挂载>|<目录>|health`），打开页面时由 `restoreCachedHealthReportIfNeeded()` / `restoreCloudDerivedReports` 回填；判定阈值集中在 `LibraryHealthTuning`，不要散落到视图里。系统图库复用 `scanLibraryHealth`，从 `systemLoadedPhotos`（索引模式为当前窗口）用缩略图检查，结果标记 `healthReportScopeTag = "system"` 并按 `systemCacheSignature` 失效；网盘体检复用 `PhotoQuality.sharpness(cgImage:)` 与 `LibraryStore.buildSimilarGroups`，只检查当前目录（最多 500 张），并提供 `CloudHealthView`。只有官方「照片」图库作为当前图库时（`canDeleteSystemPhotos`），才允许经 PhotoKit 把相似备选移入「照片」的最近删除。
-- 「值得重看」同样是**派生视图**：候选照片来自 `LibraryStore+Health.revisitPhotos`（阈值由 `LibraryHealthTuning` 决定），主体拆分、最久未打开排序、年份分层与摘要文案全部由 `Domain/RevisitInsight` 在打开页面时纯内存计算，不落库、不上传；视图只读 `Subject` 上预先算好的字段，不在 `body` 里遍历照片。人物主体来自本地人脸聚类或系统 / 网盘已有结果，地点主体复用 `PlaceClusterBuilder.clusters`，场景主体只取 `revisitSceneIDs` 里的回忆型分类。
-- 「重复项目」同样是派生视图：分组与推荐保留项由 `Domain/Duplicates.swift` 纯计算，结果按 `contentRevision` 缓存到 `duplicateGroups`，不落库（计算来自本地 `assets`，无需缓存）。合并必须走 `LibraryStore.mergeDuplicateGroup` / `mergeAllDuplicateGroups`：保留一个版本、汇总收藏 / 关键词 / 标题 / 地点 / 相簿关系（含相簿封面），其余副本移入最近删除（可恢复）；批量合并只 `save()` 一次，禁止在视图层直接改 `photos` 或逐组调用 `delete`。系统图库复用同一视图（`.systemDuplicates`），分组来自 `systemDuplicateGroups`（补充官方 `isDuplicateItem` 标记），副本只能经 `hideSystemDuplicateCopies` / `hideAllSystemDuplicateCopies` 写 `asset_overlays` 隐藏、`importSystemDuplicateKeep` 拷贝到拾光，或（官方库作为当前图库时）经 PhotoKit 移入「照片」最近删除；额外连接的系统图库仍不可删除。
+- 「值得重看」同样是**派生视图**：候选照片来自 `LibraryStore+Health.revisitPhotos`（阈值由 `LibraryHealthTuning` 决定），主体拆分、最久未打开排序、年份分层与摘要文案全部由 `LumaDomain/RevisitInsight` 在打开页面时纯内存计算，不落库、不上传；视图只读 `Subject` 上预先算好的字段，不在 `body` 里遍历照片。人物主体来自本地人脸聚类或系统 / 网盘已有结果，地点主体复用 `PlaceClusterBuilder.clusters`，场景主体只取 `revisitSceneIDs` 里的回忆型分类。
+- 「重复项目」同样是派生视图：分组与推荐保留项由 `LumaDomain/Duplicates.swift` 纯计算，结果按 `contentRevision` 缓存到 `duplicateGroups`，不落库（计算来自本地 `assets`，无需缓存）。合并必须走 `LibraryStore.mergeDuplicateGroup` / `mergeAllDuplicateGroups`：保留一个版本、汇总收藏 / 关键词 / 标题 / 地点 / 相簿关系（含相簿封面），其余副本移入最近删除（可恢复）；批量合并只 `save()` 一次，禁止在视图层直接改 `photos` 或逐组调用 `delete`。系统图库复用同一视图（`.systemDuplicates`），分组来自 `systemDuplicateGroups`（补充官方 `isDuplicateItem` 标记），副本只能经 `hideSystemDuplicateCopies` / `hideAllSystemDuplicateCopies` 写 `asset_overlays` 隐藏、`importSystemDuplicateKeep` 拷贝到拾光，或（官方库作为当前图库时）经 PhotoKit 移入「照片」最近删除；额外连接的系统图库仍不可删除。
 - 「智能美化」同样是派生视图：推荐分组放在 `beautyReport`（内存）并写入 `derived_reports`（`local|beauty` / `system|<图库路径>|beauty` / `cloud|<挂载>|<目录>|beauty`），换库时由 `resetBeautyState()` 清空内存；阈值与调整量集中在 `LumaCore/BeautyAdvisor`，App 侧 `PhotoBeauty` 只负责采样。网盘范围用 `cloudThumbnail` + `PhotoBeauty.advice(image:)` 扫描（`CloudBrowserModel.beautyReportIsCloud` 标记来源），批量应用走 `applyCloudBeauty`：下载/读取原图 → 同一套 `EditState.beautified` + `PhotoRenderer` → 作为新照片导入当前图库，网盘文件不变。系统图库用 `scanSystemBeautyCandidates` 采样（`beautyReportIsSystem` 标记来源）；应用有两种出口：`applySystemBeauty` 从官方原图渲染后经 `ImportService.importFile` 另存到拾光，或（官方库作为当前图库时）`applyBeautyToSystemOriginals` 经 PhotoKit 写回原图并在「照片」里保留可撤销的调整。来源标记必须参与推荐面板的过期判断，禁止跨范围复用扫描结果。
-- 「人物摘要」同样是派生视图：年度轨迹、时段偏好、地点、同框人物与「色彩气质」都由 `Domain/PersonInsight` 在打开人物时从可见照片派生，不落库、不上传；本地图库在内存里计算，系统图库索引模式必须走 `SystemIndex.personInsight(_:)` 的 SQL 聚合，禁止为了摘要把整库照片读入内存。高光照片只读取缩略图，色彩采样最多 10 张。
+- 「人物摘要」同样是派生视图：年度轨迹、时段偏好、地点、同框人物与「色彩气质」都由 `LumaDomain/PersonInsight` 在打开人物时从可见照片派生，不落库、不上传；本地图库在内存里计算，系统图库索引模式必须走 `SystemIndex.personInsight(_:)` 的 SQL 聚合，禁止为了摘要把整库照片读入内存。高光照片只读取缩略图，色彩采样最多 10 张。
 - 本地人脸聚类只有 `startFaceClustering()`（增量：只处理不在 `scannedFaceIDs` 里的照片）与 `resetFaceAnalysis()`（清空扫描记录与聚类后从头跑）两个入口；剩余量由 `pendingFacePhotoCount` 提供并按内容版本缓存，禁止在视图里自己遍历 `photos` 统计。重新识别必须换 `faceClusterToken` 作废旧任务的收尾写回，否则旧任务会把旧结果覆盖回来。系统图库的人物只能经 `refreshSystemPeople()` 重新读取官方结果，不得调用本地聚类。
 - 「人物」总览的聚合筛选（`PeopleGroupFilter`：全部 / 已命名 / 待命名 / 宠物）只做展示筛选，选择存当前图库的 `SettingsKeys.peopleFilter`；分节依据 `SystemPersonInfo.isUnnamed` / `isPet` 与 `LocalPerson.isUnnamed`，不要在视图里另写命名规则。「全部」必须平铺展示、不按命名状态分节；只有点选某一项后才收窄集合，筛选为空显示对应空状态。
 - 「个人收藏」的浏览方式（`FavoritesViewMode`：全部 / 年 / 类型 / 地点 / 相机 / 人物）只做展示层：状态存 `SettingsKeys.favoritesViewMode`，汇总数据由 `LibraryStore+Favorites` 一次载入完整收藏列表后交给 `FavoritesDigestBuilder` 生成。相机维度必须经 `CameraBrand.detect` 按品牌聚合，品牌配色与设备插画只放在 `FavoritesDigestView`（`brandColors` / `BrandDeviceArt`），不要在 Domain 里引入 SwiftUI；地点按城市、人物只统计已命名。点分类卡片设置 `selectedFavoriteBucket` 下钻，`computeVisiblePhotos` 会从 `favoritesDigestSource` 过滤并关闭分页；顶栏用 `clearFavoritesBucket()` 返回当前维度。系统图库索引模式最多载入 30,000 条收藏。
-- 「地点摘要」与人物摘要共用页面交互与高光 / 色彩组件，但统计独立：`Domain/PlaceInsight` 只基于该地点聚类里的照片（到访轨迹、四季、时段、POI 地标、坐标），同框人物来自本地人脸聚类或系统图库已有结果；同样不落库、不上传，照片列表直接使用聚类快照，避免受分页窗口与当前筛选影响。
-- 网盘分类浏览同样是**派生视图**：范围枚举与计数模型在 `Domain/CloudInsight.swift`，筛选在 `LibraryStore+CloudInsight`，端侧识别结果放在 `CloudBrowserModel.analysis`（内存）并写入 `cloud_assets`（`mount_id + path`，同一行还存 EXIF / 特征 / 查看记录）；切换挂载、断开连接或换库时必须调用 `resetCloudInsight()` 清空内存，断开挂载时由 `removeCloudMount` 清理该挂载的 `cloud_assets` / `cloud_people` / 派生报告。网盘文件**带有 EXIF**：拍摄时间、相机、镜头、曝光与 GPS 由 `Services/Cloud/CloudEXIF` 读取文件头部解析（SMB 直接读挂载文件，WebDAV 走 `Range: bytes=0-262143`，官方网盘用直链 + Range），结果写回当前 `cloudPhotos` 的 `PhotoItem` 与 `cloudDirectoryCache`（内存）并落 `cloud_assets`；进入目录时由 `hydrateCloudCache` 按「路径 + 文件大小」校验后回填。媒体类型仍按扩展名/文件名推断（截屏走 `CloudMediaNaming.looksLikeScreenshot`），不要把文件名推断说成相机元数据。
+- 「地点摘要」与人物摘要共用页面交互与高光 / 色彩组件，但统计独立：`LumaDomain/PlaceInsight` 只基于该地点聚类里的照片（到访轨迹、四季、时段、POI 地标、坐标），同框人物来自本地人脸聚类或系统图库已有结果；同样不落库、不上传，照片列表直接使用聚类快照，避免受分页窗口与当前筛选影响。
+- 网盘分类浏览同样是**派生视图**：范围枚举与计数模型在 `LumaDomain/CloudInsight.swift`，筛选在 `LibraryStore+CloudInsight`，端侧识别结果放在 `CloudBrowserModel.analysis`（内存）并写入 `cloud_assets`（`mount_id + path`，同一行还存 EXIF / 特征 / 查看记录）；切换挂载、断开连接或换库时必须调用 `resetCloudInsight()` 清空内存，断开挂载时由 `removeCloudMount` 清理该挂载的 `cloud_assets` / `cloud_people` / 派生报告。网盘文件**带有 EXIF**：拍摄时间、相机、镜头、曝光与 GPS 由 `Services/Cloud/CloudEXIF` 读取文件头部解析（SMB 直接读挂载文件，WebDAV 走 `Range: bytes=0-262143`，官方网盘用直链 + Range），结果写回当前 `cloudPhotos` 的 `PhotoItem` 与 `cloudDirectoryCache`（内存）并落 `cloud_assets`；进入目录时由 `hydrateCloudCache` 按「路径 + 文件大小」校验后回填。媒体类型仍按扩展名/文件名推断（截屏走 `CloudMediaNaming.looksLikeScreenshot`），不要把文件名推断说成相机元数据。
 - 智能美化只生成渲染副本（与编辑器同一条 `commit` 管线：`Luma/resources/renders/` + `editRecipe` + `editVersion` + `ImageLoader.invalidate`），绝不覆盖原图；已编辑照片从原图重建编辑点后再叠加建议，不能丢弃用户已有调整。系统图库可经 PhotoKit 把美化结果作为可撤销调整写回原图（`applyBeautyToSystemOriginals`），这仍然不是覆盖原文件。
 - 跨范围派生缓存（系统图库识别 / 特征、体检与美化报告、网盘 EXIF / 分析 / 人物 / 查看记录）必须落当前图库的 `Luma.sqlite`：`system_analysis`（按 `library_path`）、`derived_reports`（按范围 key + signature）、`cloud_assets`（按 `mount_id + path`）、`cloud_people` / `cloud_person_assets`（按 `mount_id`）。缓存必须带失效条件：系统图库用 `systemCacheSignature`（图库路径）比对 `system_analysis_signature|<path>`，不一致时 `purgeSystemCache` + `removeDerivedReports(prefix:)`；照片增删不会让整库识别缓存作废；网盘按「远端文件大小」校验，断开挂载时 `purgeCloudAssets` / `purgeCloudPeople` / `removeDerivedReports`。禁止把这些缓存写进 Apple 的目录、`Photos.sqlite` 或网盘。
 - 系统图库的真实写入只能经 `PhotoKitBridge`（`PHPhotoLibrary.performChanges` + `PHContentEditingOutput` / `deleteAssets` / 相簿与文件夹的 ChangeRequest），且必须 `canWriteSystemOriginals` / `canDeleteSystemPhotos` / `canManageSystemAlbums`（`isSystemScope && isNativeContainer`）为真；由 Photos 自己更新原图与它的数据库。禁止直接以 SQL 改 `Photos.sqlite`，也禁止对额外连接的系统图库做真实写入。
@@ -190,21 +226,31 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 ### 智能助手（AI）
 
 - 配置写当前图库的 `settings`（`ai_config`），对话写 `ai_conversation`；两者都是 **per-library** 数据，切换图库时由 `loadAIState()` 重新读取。API Key 只能经 `AIKeychain` / `LumaKeychainVault` 写统一凭据保险库（旧版 service `com.baymax.luma.ai` 的条目只读取一次后迁入），禁止写入数据库、`UserDefaults`、日志或对话内容。
-- 请求只能经 `AIProviderClient`（OpenAI 兼容 `chat/completions`）发出，不引入第三方 SDK；新增提供商只增加 `AIProvider` 的默认 Base URL / 模型与设置项。
+- 模型请求只能经 `AIChatProvider` 契约发出，统一由 `AIChatProviderFactory` 选择后端；当前默认实现是 OpenAI 兼容的 `OpenAICompatibleChatProvider`。不引入第三方 SDK；新增提供商只增加 `AIProvider` 的默认 Base URL / 模型与设置项。
+- AI 代码按层组织，新增能力不得把厂商判断、工具执行和界面状态混在一个文件：
+  - `LumaAI` target：`AIChatProvider` / `AICapability` / `AITool` 契约与注册表、`AIChatProviderFactory` 与 `OpenAICompatibleChatProvider` 后端、`AILibraryContext` 提示词上下文，以及 `AILibraryTools` 系列工具定义；
+  - `Services/AI/`：需要 App 能力的胶水——`Integrations/AIIntegration`、`Media/AIImageEncoder` / `AIKeychain`、`Tools/AIToolProviders`（按业务域分派执行）；
+  - `Store/AI/`：图库状态、请求编排、上下文组装（`LibraryStore+AIContext`）与各业务域工具执行；
+  - `Features/AI/`：面板与交互，不碰网络请求、工具审批与持久化。
+- 新增业务域工具时，实现一个 `AIToolProvider` 并注册到 `LibraryStore.aiToolRegistry`（或在 `AIToolProviders` 增加工厂），同时补齐工具定义、写操作白名单、确认文案；不要往 `executeAITool` 中央 switch 里堆新 case。
+- MCP / 技能 / 快捷指令等外部能力必须实现 `AIIntegration` 并通过 `LibraryStore.registerAIIntegration(_:)` 注册；只允许把自己的能力转成 `AIToolProvider`，并通过 `systemPromptAdditions` 补充提示词。写操作仍走统一审批与 `LibraryStore` 方法，禁止直接改数据库、原图或播放状态。未真正可用的外部能力不得在界面伪装成已接入。
+- 图像理解、图像生成、视频生成、本地模型等新能力先扩展 `AICapability` 与 `AIChatProvider`/独立能力协议，再由设置与界面按能力位决定入口；禁止在调用点散落 `if provider == ...`。
 - 提示词只能由 `AIContextBuilder` 组装：当前范围摘要 + 最多 40 张候选照片的元数据/本地 Vision 标签/OCR；禁止把整个 `photos` 数组或文件路径序列化给模型。
 - 图片默认不发送。开启「图片理解」后，只能经 `AIImageEncoder` 压成长边约 1024 的 JPEG（单次最多 6 张），跳过 RAW、视频与云端照片；不得上传原图。
-- 智能助手可通过工具修改图库，工具分为九类：
-  - 检索：`search_photos` / `list_albums` / `list_folders` / `list_videos`
+- 智能助手可通过工具修改图库，工具分为十二类：
+  - 检索：`search_photos` / `unified_search` / `get_photo_info` / `list_keywords` / `list_people` / `library_overview` / `list_albums` / `list_folders` / `list_videos`
   - 浏览：`navigate` / `select_photos` / `open_photo`
   - 相簿：`create_albums` / `add_photos_to_album` / `remove_photos_from_album` / `rename_album` / `delete_album` / `move_album` / `set_album_cover`
   - 文件夹：`create_folder` / `rename_folder` / `delete_folder`
-  - 图片与视频：`set_favorite` / `set_hidden` / `add_keywords` / `remove_keywords` / `set_title`
+  - 图片与视频：`set_favorite` / `set_hidden` / `set_rating` / `set_flag` / `set_color_label` / `add_keywords` / `remove_keywords` / `set_title`
   - 压缩：`compress_photos`
   - 美化：`beautify_photos`
   - 最近删除：`trash_photos` / `restore_photos`
   - 影院：`list_cinema_items` / `list_cinema_scopes` / `cinema_tree` / `search_cinema_library` / `list_cinema_series` / `list_cinema_lists` / `list_cinema_activity` / `navigate_cinema` / `play_cinema` / `search_cinema_candidates` / `apply_cinema_match` / `scrape_cinema` / `match_cinema` / `update_cinema_state` / `manage_cinema_list` / `ignore_cinema` / `restore_cinema_ignored` / `refresh_cinema_metadata` / `set_cinema_intro_skip` / `manage_cinema_progress`
   - 网络资源：`list_catalog_sources` / `search_catalog` / `catalog_new_today` / `list_catalog_following` / `list_catalog_watchlist` / `browse_catalog` / `play_catalog_item` / `set_catalog_watchlist` / `follow_catalog_person`
-- 工具定义与参数解析集中在 `AILibraryTools`（含 `AILibraryCinemaTools` 的影院扩展；`writeToolNames` / `describe`），执行在 `LibraryStore+AITools` / `LibraryStore+AICinemaTools`；新增工具必须同时补齐定义、写操作白名单、确认文案、执行分支与 README/官网说明。
+  - 网络影院：`list_network_cinema_sources` / `list_network_cinema` / `search_network_cinema` / `network_cinema_history` / `play_network_cinema`
+  - 网络电视：`list_tv_sources` / `list_tv_channels` / `get_tv_guide` / `play_tv_channel` / `favorite_tv_channel` / `navigate_tv`
+- 每个业务域一个定义文件，自带工具定义、写操作白名单与确认文案：`LumaAI/AILibraryTools.swift`（图库基础 + 参数解析/风险判定/`describe` 兜底）、`AILibraryCatalogTools.swift`、`AILibraryCinemaTools.swift`、`AILibraryNetworkCinemaTools.swift`、`AILibraryTVTools.swift`。执行分派在 `Services/AI/Tools/AIToolProviders.swift`（`AIToolProvider.handles` 由定义列表推导，不再另写名字集合）；图库基础工具执行在 `LibraryStore+AITools.swift`，网络资源与影院工具分别拆在 `LibraryStore+AIToolsCatalog.swift` / `LibraryStore+AIToolsCinema.swift`，影院个人状态在 `LibraryStore+AICinemaTools.swift`，网络影院在 `LibraryStore+AINetworkCinemaTools.swift`，电视在 `LibraryStore+AITVTools.swift`。新增工具必须同时补齐定义、写操作白名单、确认文案、provider 执行与 README/官网说明。
 - 所有写操作必须先经用户确认，再调用 `LibraryStore` 现有方法并 `save()`；禁止直接写 SQLite、删除或编辑原图、导入，禁止写官方 `Photos.sqlite`（官方库只允许 `asset_overlays` 的收藏 / 隐藏 / 关键词等补充元数据）。
 - 工具参数里的照片 ID 必须验证为当前图库中真实存在且未删除的项目；工具失败或用户取消时，必须把失败结果回传给模型，不能伪造成功。模型回答不得声称未通过工具完成的操作已执行。
 - 智能助手不提供永久删除（`trash_photos` 只移入最近删除，可用 `restore_photos` 恢复）、导入、编辑原图与改文件能力，也不支持在只读来源写入。
@@ -275,7 +321,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | 相簿 / 文件夹 | ✅ 可增删改 | ✅ 相簿可增删改、照片可加入移出与手动排序；文件夹只读（待验证） | ✅ 按目录浏览 | 系统图库通过 PhotoKit 写回，需要官方库作为当前库；新建相簿后重新载入索引；网盘只读目录，WebDAV 仅额外支持新建文件夹与上传。 |
 | 收藏 / 隐藏 / 关键词 / 查看时间 | ✅ | ✅ 收藏 / 隐藏经 PhotoKit 写回「照片」，关键词与查看时间写 `asset_overlays` | 仅收藏（`cloud_favorites`，写在当前图库） | 额外连接的系统图库、SMB 与官方网盘一律只读；写回失败时收藏 / 隐藏退回 `asset_overlays`。 |
 | 场景 / 包含文字（端侧识别） | ✅ 结果落 `asset_analysis`，可重复分析 | ✅ 结果落 `system_analysis`（按图库路径），内存 `systemAnalysisIndex` 即时刷新 | ✅ 结果落 `cloud_assets`（按挂载 + 路径），内存 `CloudBrowserModel.analysis` 即时刷新 | 系统图库在后台持续识别（索引分页 200 张/次，结果逐张出现，可停止）；网盘每次 120 张。两者都只写当前图库的 `Luma.sqlite`；禁止写 `Photos.sqlite` 或网盘。**打开图库默认不识别**：只有用户本次运行中主动点过「识别照片内容…」且未手动停止时（`systemAnalysisAutoResume`），重新载入后才会对新增照片续跑。 |
-| 值得重看（`revisit`） | ✅ | ✅ 只读派生（`LibraryHealthTuning` 阈值） | ✅ 只读派生 | 先按「拍摄超过两年 + 一年以上未打开」筛出候选，再由 `Domain/RevisitInsight` 按人物 / 地点 / 场景 / 年份拆主体（人物需共同出现 ≥2 张、地点 ≥2 张、场景 ≥3 张），年份分层与未打开计数在派生时算好，视图只展示；网盘用 EXIF 拍摄时间 + 本机查看记录（`cloud_assets.viewed_at` / `CloudBrowserModel.viewedAt`，不写网盘）判定，入口在「更多项目」。 |
+| 值得重看（`revisit`） | ✅ | ✅ 只读派生（`LibraryHealthTuning` 阈值） | ✅ 只读派生 | 先按「拍摄超过两年 + 一年以上未打开」筛出候选，再由 `LumaDomain/RevisitInsight` 按人物 / 地点 / 场景 / 年份拆主体（人物需共同出现 ≥2 张、地点 ≥2 张、场景 ≥3 张），年份分层与未打开计数在派生时算好，视图只展示；网盘用 EXIF 拍摄时间 + 本机查看记录（`cloud_assets.viewed_at` / `CloudBrowserModel.viewedAt`，不写网盘）判定，入口在「更多项目」。 |
 | 图库体检（模糊 / 相似连拍 / 过大视频） | ✅ | ✅ 只读预览；官方库作当前库时可移入「照片」最近删除 | ✅ 只读预览 | 系统图库用官方 derivative / 缓存缩略图检查当前已载入照片（索引模式为当前窗口），结果落 `derived_reports`；网盘对当前目录缩略图逐张检查（最多 500 张），结果同样落 `derived_reports` 并按目录回填。网盘不提供清理动作；系统图库的清理只经 PhotoKit。 |
 | 重复项目 | ✅ 可合并 | ✅ 隐藏副本 / 拷贝保留版本 / PhotoKit 移入「照片」最近删除 | ✅ 只读 | 网盘按「文件大小 + 像素尺寸」在内存分组，只展示与提示，不在本机合并网盘文件。 |
 | 相似检索 | ✅ 特征库 | ✅ 特征落 `system_analysis`，结果进入 `similarScope` | ✅ 特征落 `cloud_assets`，结果进入 `similarScope` | 系统图库与网盘都对缩略图现算 `PhotoIntelligence.feature`（最多 80 张），结果按范围过滤浏览；系统图库索引模式只比较当前窗口。 |
@@ -317,14 +363,14 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 年总览：每年一张拼图卡片（最多 4 张照片），点击 `openMonths(of:)`；月总览：按月分段、按天卡片，点击 `openAllPhotos(at:)` 定位。大图库改用 `store.yearBuckets` / `store.monthGroups`（SQL 分区，最多 4 张样本 + 真实总数），不要为了总览遍历全部照片。
 - 网格尺寸只能由 `store.thumbSize`（`LibraryStore.thumbSizeRange` = 56…360，`didSet` 已夹紧）与容器宽度推导；不要写死像素。
 - 卡片圆角用 `settings.cardRadius`，小封面用 `settings.smallCoverRadius`；悬停用 `settings.hoverLift` 与 `settings.motion.hover`；页面级动画用 `settings.motion.layout/overlay`。`RoundedRectangle` 统一 `.continuous`。
-- 颜色使用语义色（`.primary`/`.secondary`/`.quaternary`/`.background`/`.bar`）或 `Color.accentColor`，禁止硬编码 RGB（图标绘制脚本除外）。唯一例外是品牌面（建库首屏、关于）：可用 `LumaDesign.LumaBrand` 里的官网品牌色与渐变，常规界面不得引用。
+- 颜色使用语义色（`.primary`/`.secondary`/`.quaternary`/`.background`/`.bar`）或 `Color.accentColor`，禁止硬编码 RGB（图标绘制脚本除外）。唯一例外是品牌面（建库首屏、关于）：可用 `LumaBrand` 里的官网品牌色与渐变，常规界面不得引用。
 - 强调色统一由 `AppSettings.accentColor` 下发：根视图（`RootView`）、设置窗口与导入窗口同时应用 `.tint(...)` 与 `.accentColor(...)`，前者负责控件、后者让 `Color.accentColor`（选中框、高亮、强调文字、渐变）解析成同一颜色。新增强调色用途一律写 `Color.accentColor`，不要在视图里直接写 `Color.purple` / `.blue` 等固定色，否则会和用户选择的强调色分叉。
 - 大列表必须使用 `LazyVStack`/`LazyVGrid`/`List`；单元格使用固定 `frame`，避免布局抖动。
 - 总览页（相簿 / 场景 / 媒体类型 / 更多项目等）不再在内容区重复大标题：页面标题与返回层级统一由窗口工具栏（`store.sidebarTitle` + `store.navigationParent`）展示，内容区只保留数量、显示方式与新建等操作。卡片网格按可用宽度均分列宽（`GridItem(.flexible())` + 计算列数），默认铺满窗口；更多项目的卡片封面统一走 `LibraryStore.moreItemsCover(for:)`（系统索引库查 SQL，本地库先命中先返回，按内容版本缓存）。
 - 文件夹卡片封面统一用 `FolderMosaicImage`：2×2 四宫格，每张图占 25%，不足 4 张留浅色占位，只有 1 张时铺满；封面从文件夹子树里的相簿各取前几张汇总（本地图库 `folderPhotosMap`、系统图库 `folderPhotos`），列表视图仍用单张封面。
 - 系统图库的「相簿」总览必须按 `systemChildren(of:)` 的混排顺序渲染（文件夹与相簿按 `sortIndex` / `Z_PK` 交错），不要先排全部文件夹再排全部相簿，否则与侧边栏顺序不一致。
 - 侧边栏的相簿 / 文件夹行：文件夹按 `level` 每级缩进 14pt（顶层 8pt），相簿行留出同样的箭头列宽与间隙，保证相簿封面与文件夹图标同列；箭头列固定 12pt、与图标之间只留 3pt（`folderChevronWidth` / `folderChevronGap`），不要再用行间距把图标推远。「固定」区第一层不再为箭头列预留缩进，与其它固定项左对齐。文件夹行只用强调色文件夹图标——曾试过给文件夹加载照片缩略图，展开 / 滚动侧边栏时缩略图解码会把主线程压满，已回退，不要改回去。
-- 查看器里的动图统一交给 `Components/AnimatedImageView`（`NSImageView.animates = true`）播放，打开即循环、切图从头播放，不要在 SwiftUI `Image` 里自行计时；取图走 `ImageLoader.animatedImage(for:)`（本地原图）或 `LibraryStore.cloudAnimatedImage(for:)`（网盘先下载完整文件，限 80MB）；已编辑照片是静态渲染结果，`PhotoItem.playsAnimation` 已排除。
+- 查看器里的动图统一交给 `UI/Components/AnimatedImageView`（`NSImageView.animates = true`）播放，打开即循环、切图从头播放，不要在 SwiftUI `Image` 里自行计时；取图走 `ImageLoader.animatedImage(for:)`（本地原图）或 `LibraryStore.cloudAnimatedImage(for:)`（网盘先下载完整文件，限 80MB）；已编辑照片是静态渲染结果，`PhotoItem.playsAnimation` 已排除。
 - 查看器画面角标：`isRAWFile` / `isPortraitCapture` / 实况照片在照片左上角显示「RAW」「人像」「实况」胶囊（实况可点击原位播放），`hasLocation` 的照片在右上角显示地图图钉（点按打开信息面板）；已命名人物由 `LibraryStore.personNames(for:)` 反查，名字胶囊排在角标下方（最多 3 个 + `+N`）。角标按实际显示尺寸贴在照片本体上，不落在竖图 / 宽图两侧的留白里；放大或实况播放时隐藏，不参与缩放拖拽，嵌入与全屏共用同一套位置。
 
 ---
@@ -363,7 +409,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - 网盘照片网格不得再自建：`GalleryView` 的 `.cloudMount` 分支只负责分派，普通照片列表直接复用 `photoContent`（同一套网格、顶部栏、空态与预取）；分类总览走 `CloudOverviewView`，人物 / 位置 / 关键词 / 体检 / 重复项目 / 地图走各自的网盘专用页面，图库整理复用 `OrganizeStudioView`（数据源切到 `cloudPhotos`），最近编辑 / 最近删除 / 导入项目走 `CloudReadOnlyScopeView`。`isTimelineScope` 只对网盘「全部项目」根页面为真，目录相簿、媒体类型、最近保存与「更多项目」照片页都是普通网格；`setCloudScope` / `selectCloudFolder` 与 `navigate(to:)` 共用 `clearTransientBrowsingState()`，换范围时清理选择、搜索与筛选。
 - 网盘侧边栏的分区收起状态必须放在 `CloudMountDetailView` **自己的 `@State`** 里，挂载行的展开箭头用 `SidebarView.collapsedCloudMounts`（每个网盘独立，`cloudMountRow` 的箭头与名称是两个并排按钮，不能把 Button 套进 Button）。把收起状态放到外层 `@State` + `ForEach` 闭包里曾出现「点了收起条目还在」的问题，不要改回去。
 - 网盘场景 / 图内文字识别：只允许经 `LibraryStore.analyzeCloudContent()` 触发，逐张用 `cloudThumbnail(for:)` 取缩略图后调用 `PhotoIntelligence.analyze(cgImage:)`，每次最多 120 张、可取消；结果写 `CloudBrowserModel.analysis` 并经 `saveCloudAnalysis` 落 `cloud_assets`，搜索与信息面板通过 `LibraryStore+Intelligence` 的回退读取，禁止写入 `asset_analysis` 或网盘。进入目录时由 `hydrateCloudCache` 回填，远端文件大小变化即作废。
-- 网盘 EXIF：解析集中在 `Services/Cloud/CloudEXIF`，只读文件头部（`probeRange` = 前 256KB；SMB 用 `SMBClient.fileURL` 读本地挂载文件，WebDAV 用 `WebDAVClient.data(path:byteRange:)`，官方网盘用 `CloudService.stream` 直链 + Range），禁止为读 EXIF 下载整张原图；JPEG 截断数据回退到内置 TIFF/IFD 解析（GPS 三个 RATIONAL、日期、Make/Model/Lens、曝光参数）。编排在 `Store/LibraryStore+CloudInfo.swift`：目录载入后自动读取前 200 张（`cloudMetadataPageSize`），可取消、可「继续读取」，结果写回 `PhotoItem` 与 `cloudDirectoryCache`（内存）并经 `saveCloudEXIF` 落 `cloud_assets`；换挂载 / 换库只清内存，断开挂载才 `purgeCloudAssets`。
+- 网盘 EXIF：解析集中在 `Services/Cloud/CloudEXIF`，只读文件头部（`probeRange` = 前 256KB；SMB 用 `SMBClient.fileURL` 读本地挂载文件，WebDAV 用 `WebDAVClient.data(path:byteRange:)`，官方网盘用 `CloudService.stream` 直链 + Range），禁止为读 EXIF 下载整张原图；JPEG 截断数据回退到内置 TIFF/IFD 解析（GPS 三个 RATIONAL、日期、Make/Model/Lens、曝光参数）。编排在 `Store/Cloud/LibraryStore+CloudInfo.swift`：目录载入后自动读取前 200 张（`cloudMetadataPageSize`），可取消、可「继续读取」，结果写回 `PhotoItem` 与 `cloudDirectoryCache`（内存）并经 `saveCloudEXIF` 落 `cloud_assets`；换挂载 / 换库只清内存，断开挂载才 `purgeCloudAssets`。
 - 网盘地图 / 位置：`geoPhotos` 在 `isCloudScope` 时返回 `cloudGeoPhotos`，`PhotoMapView` / `PlaceStatisticsView` 原样复用；缺少地名时由 `resolveMissingCloudPlacesIfNeeded()` 用本机逆地理编码补齐（写 `PlaceCache.json`，不写网盘）。
 - 网盘人物：`scanCloudPeople()` 逐张 `cloudThumbnail` → `FaceClusterEngine.analyze(cgImage:assetID:)` → `assign`，结果同时写 `CloudBrowserModel.people` 与 `cloud_people` / `cloud_person_assets`（`markCloudPeopleScanned` 记录已扫描路径），打开挂载时由 `loadCloudCacheForMount` 回填；页面为 `CloudPeopleView`，禁止调用本地 `startFaceClustering()`（它依赖本地缩略图与数据库）。人物列表与详情必须与系统图库共用 `PeoplePersonCardShell`、`PersonDetailHero`、`PersonInsightSummaryView` / `PersonMapPanel(source: .cloud)` 与 `PersonAvatarLoader`：卡片尺寸、筛选、悬停、摘要 / 地图 / 全部影像三档在同一套组件内实现，不要另写卡片或详情页。
 - 网盘重复项目：`cloudDuplicateGroups` 用 `DuplicateDetector.groups(from:)` 纯内存计算，页面 `CloudDuplicatesView` 只读展示并提示到网盘 App 合并；不得调用 `mergeDuplicateGroup` 或删除网盘文件。
@@ -400,7 +446,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 - 所有面向用户的文案为简体中文；使用 SF Symbols 图标，尺寸与项目现有风格一致（`font(.system(size:))`）。
 - 可点击控件提供 `.help("…")` 说明；有默认动作的弹窗按钮使用 `.keyboardShortcut(.defaultAction)`。
-- 危险操作必须二次确认，统一走 `Store/LibraryStore+Deletion.swift` 的确认请求与 `Features/Gallery/DeleteConfirmView.swift` 的确认卡片：移到最近删除（`confirmDelete`）、永久删除（`confirmPermanentDelete`）、清空最近删除（`confirmEmptyTrash`）都先设置 `pendingDeletion`，由卡片展示扇形缩略图预览、数量与「照片 / 视频」拆分，确认后 `performPendingDeletion()` 才真正执行。不可撤销的卡片默认按钮是「取消」（回车不会误删），可撤销的「移到最近删除」默认按钮是确认。破坏性菜单项使用 `role: .destructive`，禁止绕过卡片直接调 `delete` / `deletePermanently`（智能助手已有自己的确认流程除外）。断开系统图库 / 网络存储同样走确认卡片（`confirmRemoveSystemLibrary` / `confirmRemoveCloudMount` → `pendingDisconnect`），文案必须写明「不删除原始数据」或「只清理本机缓存」。
+- 危险操作必须二次确认，统一走 `Store/Library/LibraryStore+Deletion.swift` 的确认请求与 `Features/Gallery/DeleteConfirmView.swift` 的确认卡片：移到最近删除（`confirmDelete`）、永久删除（`confirmPermanentDelete`）、清空最近删除（`confirmEmptyTrash`）都先设置 `pendingDeletion`，由卡片展示扇形缩略图预览、数量与「照片 / 视频」拆分，确认后 `performPendingDeletion()` 才真正执行。不可撤销的卡片默认按钮是「取消」（回车不会误删），可撤销的「移到最近删除」默认按钮是确认。破坏性菜单项使用 `role: .destructive`，禁止绕过卡片直接调 `delete` / `deletePermanently`（智能助手已有自己的确认流程除外）。断开系统图库 / 网络存储同样走确认卡片（`confirmRemoveSystemLibrary` / `confirmRemoveCloudMount` → `pendingDisconnect`），文案必须写明「不删除原始数据」或「只清理本机缓存」。
 - 新增快捷键必须同步 `ShortcutHelpView`（`Features/Viewer/ShortcutHelpView.swift`）与 `README.md` 快捷键表。
 - 空状态、错误状态都要有文案（参考 `EmptyStateView`、`ToastView`）。
 - 需要把一组强控制并入窗口工具栏时，按 §17：控制必须落在窗口工具栏，具体展示形态按功能场景自行决定。

@@ -414,6 +414,12 @@ enum AliyunOAuth {
         add("default_drive_id", "默认盘")
         add("resource_drive_id", "资源库")
         add("backup_drive_id", "备份盘")
+        let keys = ["default_drive_id", "resource_drive_id", "backup_drive_id"].filter {
+            guard let id = object[$0] as? String else { return false }
+            return !id.isEmpty
+        }.joined(separator: ",")
+        let summary = result.map { "\($0.label)=\($0.id)" }.joined(separator: ", ")
+        Diagnostics.record("阿里云盘(开放平台) 盘字段=\(keys.isEmpty ? "-" : keys) 盘=\(summary.isEmpty ? "-" : summary)")
         return result
     }
 
@@ -886,12 +892,39 @@ enum CloudService {
             }
             return try await client.list(path: containerID)
         case .aliyun:
-            let token = try await accessToken(for: mount)
+            // 扫码模式只有一个盘时直接展开真实根目录；多个盘才显示虚拟盘列表。
+            if mount.authMode == .webQR, containerID.isEmpty {
+                let token = try await AliyunWebDrive.accessToken(for: mount)
+                let drives = try await AliyunWebDrive.drives(accessToken: token)
+                guard !drives.isEmpty else {
+                    throw CloudOAuthError.api("未获取到网盘信息")
+                }
+                if drives.count == 1, let drive = drives.first {
+                    return try await AliyunWebDrive.list(driveID: drive.id,
+                                                         parentID: "root",
+                                                         accessToken: token)
+                }
+                return drives.map {
+                    CloudEntry(path: "\($0.id)|root",
+                               name: $0.label,
+                               isDirectory: true,
+                               size: 0,
+                               modifiedAt: nil,
+                               contentType: nil)
+                }
+            }
             let parsed = AliyunOAuth.splitPath(containerID, fallbackDrive: mount.remoteDriveID)
             guard let driveID = parsed?.drive ?? mount.remoteDriveID, !driveID.isEmpty else {
                 throw CloudOAuthError.api("缺少网盘 ID，请重新授权")
             }
             let parentID = parsed?.fileID ?? "root"
+            if mount.authMode == .webQR {
+                let token = try await AliyunWebDrive.accessToken(for: mount)
+                return try await AliyunWebDrive.list(driveID: driveID,
+                                                    parentID: parentID,
+                                                    accessToken: token)
+            }
+            let token = try await accessToken(for: mount)
             return try await AliyunOAuth.list(driveID: driveID,
                                               parentID: parentID,
                                               accessToken: token)
@@ -905,7 +938,8 @@ enum CloudService {
                                              mountID: mount.id)
         case .pan115:
             return try await Pan115Drive.list(cookie: try pan115Cookie(for: mount),
-                                              folderID: containerID)
+                                              folderID: containerID,
+                                              mountID: mount.id)
         }
     }
 
@@ -963,6 +997,9 @@ enum CloudService {
             }
 
         case .aliyun:
+            if mount.authMode == .webQR {
+                throw CloudOAuthError.api("扫码接入为只读模式，删除请到阿里云盘 App 操作")
+            }
             let token = try await accessToken(for: mount)
             guard let target = AliyunOAuth.splitPath(photo.cloudPath ?? photo.cloudRemoteID,
                                                      fallbackDrive: mount.remoteDriveID) else {
@@ -991,7 +1028,9 @@ enum CloudService {
             guard let fid = photo.cloudPath, !fid.isEmpty else {
                 throw CloudOAuthError.api("缺少 115 文件 ID")
             }
-            try await Pan115Drive.delete(fids: [fid], cookie: try pan115Cookie(for: mount))
+            try await Pan115Drive.delete(fids: [fid],
+                                         cookie: try pan115Cookie(for: mount),
+                                         mountID: mount.id)
         }
     }
 
@@ -1034,20 +1073,27 @@ enum CloudService {
             let headers = ["User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 Luma/1.0",
                            "Referer": "https://www.alipan.com/"]
-            // 优先原始文件：CDN 直链支持 Range，MKV 等容器可以边下边播且保留原始画质；
-            // 官方转码 m3u8 目前只对部分清晰度返回地址，作为「禁止下载」时的兜底。
+            // 扫码模式用网页端接口取地址，其余走开放平台。
+            let isWeb = mount.authMode == .webQR
             do {
-                let url = try await AliyunOAuth.downloadURL(driveID: driveID,
-                                                            fileID: fileID,
-                                                            accessToken: token)
+                let url = isWeb
+                    ? try await AliyunWebDrive.downloadURL(driveID: driveID,
+                                                           fileID: fileID,
+                                                           accessToken: token)
+                    : try await AliyunOAuth.downloadURL(driveID: driveID,
+                                                        fileID: fileID,
+                                                        accessToken: token)
                 return CloudStreamResource(url: url, headers: headers)
             } catch {
-                guard photo.isVideo,
-                      let hls = try? await AliyunOAuth.videoURL(driveID: driveID,
-                                                                fileID: fileID,
-                                                                accessToken: token) else {
-                    throw error
-                }
+                guard photo.isVideo else { throw error }
+                let hls = isWeb
+                    ? try? await AliyunWebDrive.videoURL(driveID: driveID,
+                                                         fileID: fileID,
+                                                         accessToken: token)
+                    : try? await AliyunOAuth.videoURL(driveID: driveID,
+                                                      fileID: fileID,
+                                                      accessToken: token)
+                guard let hls else { throw error }
                 return CloudStreamResource(url: hls, headers: headers, isHLS: true)
             }
         case .baidu:
@@ -1089,7 +1135,9 @@ enum CloudService {
                 throw CloudOAuthError.api("缺少文件标识（pickcode），请刷新该目录后重试")
             }
             let cookie = try pan115Cookie(for: mount)
-            let primaryURL = try await Pan115Drive.downloadURL(pickCode: pickCode, cookie: cookie)
+            let primaryURL = try await Pan115Drive.downloadURL(pickCode: pickCode,
+                                                               cookie: cookie,
+                                                               mountID: mount.id)
             let primaryHeaders = Pan115Drive.downloadHeaders(cookie: cookie)
             guard photo.isVideo else {
                 return CloudStreamResource(url: primaryURL, headers: primaryHeaders)
@@ -1104,7 +1152,8 @@ enum CloudService {
             Diagnostics.record("115 直链被 CDN 拒绝，改用浏览器 UA 重试 host=\(primaryURL.host ?? "-")")
             if let alternateURL = try? await Pan115Drive.downloadURL(pickCode: pickCode,
                                                                      cookie: cookie,
-                                                                     userAgent: browserUA) {
+                                                                     userAgent: browserUA,
+                                                                     mountID: mount.id) {
                 let alternateHeaders = Pan115Drive.downloadHeaders(cookie: cookie, userAgent: browserUA)
                 if await Pan115Drive.isReachable(url: alternateURL, headers: alternateHeaders) {
                     return CloudStreamResource(url: alternateURL, headers: alternateHeaders)
@@ -1130,6 +1179,10 @@ enum CloudService {
     }
 
     static func accessToken(for mount: CloudMount) async throws -> String {
+        // 阿里云盘扫码模式：令牌来自网页登录，续期走 auth.aliyundrive.com。
+        if mount.kind == .aliyun, mount.authMode == .webQR {
+            return try await AliyunWebDrive.accessToken(for: mount)
+        }
         // 阿里云盘的 Cookie 模式：用 refresh_token 换开放平台令牌，不走自建应用。
         if mount.kind == .aliyun, mount.authMode == .cookie {
             return try await aliyunCookieToken(for: mount).accessToken
@@ -1229,8 +1282,17 @@ enum CloudSetupBrowser {
         case .aliyunCookie:
             let token = try await AliyunCookieAuth.token(from: cookie)
             if containerID.isEmpty {
-                // 阿里云盘一个账号最多三个盘：先当作虚拟根目录列出。
-                return try await AliyunOAuth.drives(accessToken: token.accessToken).map {
+                let drives = try await AliyunOAuth.drives(accessToken: token.accessToken)
+                guard !drives.isEmpty else {
+                    throw CloudOAuthError.api("未获取到网盘信息")
+                }
+                // 单盘直接展开真实根目录，避免把盘名误显示成网盘里的子目录。
+                if drives.count == 1, let drive = drives.first {
+                    return try await AliyunOAuth.list(driveID: drive.id,
+                                                      parentID: "root",
+                                                      accessToken: token.accessToken)
+                }
+                return drives.map {
                     CloudEntry(path: "\($0.id)|root",
                                name: $0.label,
                                isDirectory: true,

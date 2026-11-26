@@ -366,7 +366,7 @@ struct GalleryView: View {
         // 分页胶囊本身已表明当前模块，五个总览页不再单独写窗口标题。
         .navigationTitle(isWindowedViewing || showsCinemaConsole
                          || isLibraryHubScope || isCatalogHubScope || isCloudStoragesHubScope
-                         || isNetworkCinemaScope || isTVHubScope
+                         || isNetworkCinemaScope || isCatalogScope || isTVHubScope
                          ? "" : displayTitle)
         // 影院 / 电视 / 各总览分页的读数由标题右侧的读数条承担，这里不再叠一行纯文字。
         .navigationSubtitle(isWindowedViewing || isVideoHubScope || isCatalogScope
@@ -464,10 +464,14 @@ struct GalleryView: View {
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if isCatalogScope {
-                        // 源内搜索已并入中区舱体；详情模式下右侧动作也让位给返回 / 播放。
-                        if catalog.inlineDetailItem == nil {
-                            galleryActionPill
+                        // 与网络影院站点页同一套顶栏：右侧只留智能助手，不再放照片动作胶囊；
+                        // 统一搜索（照片 / 影片 / 频道 / 资源）保持常驻。
+                        if !toolbarCompact {
+                            GalleryToolbarPill {
+                                assistantButton
+                            }
                         }
+                        gallerySearchField
                     } else {
                         primaryActionToolbarContent
                     }

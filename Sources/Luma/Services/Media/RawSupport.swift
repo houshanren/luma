@@ -2,23 +2,21 @@ import Foundation
 import CoreGraphics
 import CoreImage
 import ImageIO
+import LumaCore
 import UniformTypeIdentifiers
 
 /// RAW 专用解码：优先使用 Core Image 的 CIRAWFilter（可控制高光恢复与缩放），
 /// 失败时回退到 ImageIO 的完整解码。
 enum RawFormats {
-    static let extensions: Set<String> = [
-        "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf",
-        "orf", "rw2", "raw", "rwl", "pef", "srw", "x3f", "3fr", "fff", "iiq",
-        "mef", "mos", "mrw", "erf", "kdc", "dcr", "gpr", "srw"
-    ]
+    /// 扩展名白名单由 `ImportRules` 统一维护，导入判定与测试共用。
+    static let extensions: Set<String> = ImportRules.rawExtensions
 
     static func isRaw(_ url: URL) -> Bool {
         isRaw(name: url.lastPathComponent)
     }
 
     static func isRaw(name: String) -> Bool {
-        extensions.contains((name as NSString).pathExtension.lowercased())
+        ImportRules.isRawExtension((name as NSString).pathExtension)
     }
 
     /// RAW 的 UTI（部分系统 UTI 未声明为 image，导入时单独放行）。

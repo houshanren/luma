@@ -34,6 +34,9 @@ struct TVHubView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
+            // 进入网络电视就按当前上限淘汰一次：台标 / 截帧 / 节目单的
+            // 上限与保留天数不应只在「电视源」页生效。
+            TVStorageCenter.pruneIfNeeded()
             // 不再强制落到某个源：没有焦点时频道页展示所有源聚合的频道墙。
             tv.refreshIfNeeded()
         }
@@ -227,8 +230,7 @@ private struct TVChannelsView: View {
 
     @State private var showMultiview = false
     @State private var showSubscriptions = false
-    /// 全频直播下按源筛选：只过滤这一页的频道，不改侧边栏焦点。
-    @State private var sourceFilterID: UUID?
+    @State private var collapsedGroups: Set<String> = []
 
     private let columns = [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14, alignment: .top)]
 
@@ -250,35 +252,36 @@ private struct TVChannelsView: View {
         }
         .onChange(of: tv.focusedPlaylistID) { _, _ in
             // 侧边栏已经指定了源时，页内的源筛选没有意义，清掉避免「两个源」互相打架。
-            sourceFilterID = nil
+            tv.channelSourceFilterID = nil
         }
     }
 
     /// 页内源筛选后的分区：保留原来的分组与排序，只把别的源剔掉。
-    private var sections: [(group: String, channels: [TVChannel])] {
-        guard let sourceFilterID else { return tv.groupedChannels }
+    private var sourceSections: [(group: String, channels: [TVChannel])] {
+        guard let sourceFilterID = tv.channelSourceFilterID else { return tv.groupedChannels }
         return tv.groupedChannels.compactMap { section in
             let list = section.channels.filter { $0.playlistID == sourceFilterID }
             return list.isEmpty ? nil : (group: section.group, channels: list)
         }
     }
 
-    /// 顶栏读数只数一遍，不为了一个数字把频道重新分组。
-    private var displayedChannelCount: Int {
-        guard let sourceFilterID else { return tv.visibleChannels.count }
-        return tv.visibleChannels.reduce(0) { count, channel in
-            count + (channel.playlistID == sourceFilterID ? 1 : 0)
+    /// 频道墙只摆能播的直播源：所有线路都试过仍抓不到画面的频道先隐藏，
+    /// 顶部显示失效数量，网络恢复后一键重试。
+    private var sections: [(group: String, channels: [TVChannel])] {
+        sourceSections.compactMap { section in
+            let list = section.channels.filter { tv.probeState(for: $0.id) != .unavailable }
+            return list.isEmpty ? nil : (group: section.group, channels: list)
         }
     }
 
     /// 全频直播下按源筛选：菜单里列出每个源与频道数，选中后这一页只看该源。
     private var sourceFilterMenu: some View {
-        let active = sourceFilterID != nil
+        let active = tv.channelSourceFilterID != nil
         return Menu {
             Button {
-                sourceFilterID = nil
+                tv.channelSourceFilterID = nil
             } label: {
-                if sourceFilterID == nil {
+                if tv.channelSourceFilterID == nil {
                     Label("全部源", systemImage: "checkmark")
                 } else {
                     Text("全部源")
@@ -288,10 +291,10 @@ private struct TVChannelsView: View {
             ForEach(tv.playlists) { playlist in
                 let count = tv.channels.filter { $0.playlistID == playlist.id }.count
                 Button {
-                    sourceFilterID = playlist.id
+                    tv.channelSourceFilterID = playlist.id
                 } label: {
                     let title = "\(shortSourceName(playlist.name)) · \(count)"
-                    if sourceFilterID == playlist.id {
+                    if tv.channelSourceFilterID == playlist.id {
                         Label(title, systemImage: "checkmark")
                     } else {
                         Text(title)
@@ -327,7 +330,7 @@ private struct TVChannelsView: View {
     }
 
     private var sourceFilterLabel: String {
-        guard let sourceFilterID,
+        guard let sourceFilterID = tv.channelSourceFilterID,
               let playlist = tv.playlists.first(where: { $0.id == sourceFilterID })
         else { return "全部源" }
         return shortSourceName(playlist.name)
@@ -341,7 +344,6 @@ private struct TVChannelsView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                TVLiveBadge(compact: true)
                 Text(currentSourceName)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
@@ -372,10 +374,6 @@ private struct TVChannelsView: View {
                 Spacer(minLength: 0)
                 headerActions
                 densitySwitch
-                Text("\(displayedChannelCount) 个频道")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize()
             }
 
             if let message = tv.error, !message.isEmpty, !tv.channels.isEmpty {
@@ -578,6 +576,8 @@ private struct TVChannelsView: View {
 
     @ViewBuilder
     private var content: some View {
+        // 分区过滤要扫全部频道：一次 body 求值里只算一次，下面分支复用同一份结果。
+        let groups = sections
         if tv.isLoading, tv.channels.isEmpty {
             VStack(spacing: 10) {
                 ProgressView()
@@ -603,48 +603,35 @@ private struct TVChannelsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if sections.isEmpty {
-            Text("这个源在当前筛选下没有频道")
+        } else if groups.isEmpty {
+            Text(sourceSections.isEmpty
+                 ? "这个源在当前筛选下没有频道"
+                 : "当前频道全部失效，已从频道墙隐藏。检查网络 / 代理后点顶部「重试」。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if density == .list {
-            channelList
+            channelList(groups: groups)
         } else {
-            let numbers = Dictionary(uniqueKeysWithValues: tv.channelsForFocusedSource.enumerated().map {
-                ($0.element.id, $0.offset + 1)
-            })
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         Color.clear
                             .frame(height: 0)
                             .id("tv-top")
-                        ForEach(sections, id: \.group) { section in
+                        ForEach(groups, id: \.group) { section in
                             VStack(alignment: .leading, spacing: 10) {
-                                HStack(spacing: 8) {
-                                    Capsule(style: .continuous)
-                                        .fill(TVBrand.signal)
-                                        .frame(width: 3, height: 12)
-                                    Text(section.group)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                    Text("\(section.channels.count)")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(.tertiary)
-                                    Rectangle()
-                                        .fill(TVBrand.hairline)
-                                        .frame(height: 0.8)
-                                }
-                                LazyVGrid(columns: columns, spacing: 14) {
+                                sectionHeader(section)
+                                if !collapsedGroups.contains(section.group) { LazyVGrid(columns: columns, spacing: 14) {
                                     ForEach(section.channels) { channel in
-                                        TVChannelTile(channel: channel,
-                                                      number: numbers[channel.id] ?? 0,
-                                                      isPlaying: playingChannelID == channel.id) {
-                                            store.openTVChannel(channel)
-                                        }
+                                        TVChannelTile(store: store,
+                                                      tv: tv,
+                                                      channel: channel,
+                                                      number: tv.channelNumber(for: channel),
+                                                      isPlaying: playingChannelID == channel.id)
+                                            .equatable()
                                     }
-                                }
+                                } }
                             }
                         }
                     }
@@ -664,25 +651,15 @@ private struct TVChannelsView: View {
     }
 
     /// 列表密度：14–18 行/屏，固定列用于快速扫台；不显示渐变与阴影，保证长列表滚动。
-    private var channelList: some View {
+    private func channelList(groups: [(group: String, channels: [TVChannel])]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     Color.clear.frame(height: 0).id("tv-top")
-                    ForEach(sections, id: \.group) { section in
+                    ForEach(groups, id: \.group) { section in
                         VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: 8) {
-                                Capsule(style: .continuous)
-                                    .fill(TVBrand.signal)
-                                    .frame(width: 3, height: 10)
-                                Text(section.group)
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("\(section.channels.count)")
-                                    .font(.system(size: 9.5, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
-                                Rectangle().fill(TVBrand.hairline).frame(height: 0.8)
-                            }
-                            VStack(spacing: 1) {
+                            sectionHeader(section)
+                            if !collapsedGroups.contains(section.group) { VStack(spacing: 1) {
                                 ForEach(section.channels) { channel in
                                     TVChannelRow(channel: channel,
                                                  number: tv.channelNumber(for: channel),
@@ -690,7 +667,7 @@ private struct TVChannelsView: View {
                                         store.openTVChannel(channel)
                                     }
                                 }
-                            }
+                            } }
                         }
                     }
                 }
@@ -704,6 +681,25 @@ private struct TVChannelsView: View {
             .onChange(of: tv.groupingMode) { _, _ in scrollToTop(proxy) }
             .onChange(of: tv.searchText) { _, _ in scrollToTop(proxy) }
         }
+    }
+
+    private func sectionHeader(_ section: (group: String, channels: [TVChannel])) -> some View {
+        let collapsed = collapsedGroups.contains(section.group)
+        return Button {
+            if collapsed { collapsedGroups.remove(section.group) } else { collapsedGroups.insert(section.group) }
+        } label: {
+            HStack(spacing: 8) {
+                Capsule(style: .continuous).fill(TVBrand.signal).frame(width: 3, height: 10)
+                Text(section.group)
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(section.channels.count)")
+                    .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(.tertiary)
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                Rectangle().fill(TVBrand.hairline).frame(height: 0.8)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain).help(collapsed ? "展开\(section.group)" : "收起\(section.group)")
     }
 
     private func scrollToTop(_ proxy: ScrollViewProxy) {
@@ -730,256 +726,6 @@ private struct TVChannelsView: View {
             return "还没有最近观看。打开一个频道后会出现在这里。"
         }
         return "这个电视源还没有频道，去「源库」分页点一下检测。"
-    }
-}
-
-/// 频道卡片：16:9 信号面板 + 台标 + LIVE / 画质角标；悬停时描边发光并浮起。
-private struct TVChannelTile: View {
-    @EnvironmentObject private var tv: IPTVBrowserModel
-    let channel: TVChannel
-    let number: Int
-    let isPlaying: Bool
-    let onPlay: () -> Void
-
-    @State private var hovered = false
-    @State private var preview: NSImage?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    /// 开启「减少动态效果」时不做悬停放大 / 浮起。
-    private var lift: Bool { hovered && !reduceMotion }
-
-    var body: some View {
-        Button(action: onPlay) {
-            VStack(spacing: 0) {
-                panel
-                footer
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(hovered ? TVBrand.surfaceHover : TVBrand.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(borderColor, lineWidth: borderWidth)
-            )
-            .shadow(color: (hovered || isPlaying) && !reduceMotion ? TVBrand.wave.opacity(0.22) : TVBrand.shadow,
-                    radius: (hovered || isPlaying) && !reduceMotion ? 14 : 8,
-                    y: (hovered || isPlaying) && !reduceMotion ? 6 : 4)
-            .scaleEffect(lift ? 1.015 : 1)
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .opacity(tv.probeState(for: channel.id) == .unavailable ? 0.74 : 1)
-        .onHover { value in
-            withAnimation(.easeOut(duration: 0.16)) { hovered = value }
-        }
-        .contextMenu {
-            Button(isPlaying ? "重新打开" : "播放") { onPlay() }
-            Button(tv.isFavorite(channel) ? "取消收藏" : "收藏") {
-                tv.toggleFavorite(channel)
-            }
-            Button("重试取帧") { tv.retryPreview(for: channel) }
-        }
-        .help("\(channel.name) · \(tv.playlistName(for: channel.playlistID))")
-        .task(id: channel.id) {
-            await tv.requestPreview(for: channel)
-        }
-        .task(id: previewKey) {
-            guard tv.probeState(for: channel.id) == .available else { return }
-            if let image = await TVPreviewCache.shared.image(for: channel.id) {
-                withAnimation(.easeOut(duration: 0.2)) { preview = image }
-            }
-        }
-    }
-
-    private var previewKey: String {
-        "\(channel.id)#\(tv.probeState(for: channel.id).rawValue)"
-    }
-
-    private var borderColor: Color {
-        if isPlaying { return TVBrand.wave }
-        if hovered { return TVBrand.wave.opacity(0.55) }
-        return TVBrand.stroke
-    }
-
-    private var borderWidth: CGFloat {
-        isPlaying ? 1.4 : (hovered ? 1 : 0.7)
-    }
-
-    private var panel: some View {
-        ZStack {
-            LinearGradient(colors: [TVBrand.cardTop, TVBrand.cardBottom],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-            if let preview {
-                // 抓到的实时画面铺满面板，台标缩成左下角小徽标。
-                Color.clear
-                    .overlay {
-                        Image(nsImage: preview)
-                            .resizable()
-                            .scaledToFill()
-                    }
-                    .clipped()
-                LinearGradient(colors: [.black.opacity(0.42), .clear, .black.opacity(0.55)],
-                               startPoint: .top, endPoint: .bottom)
-            } else {
-                RadialGradient(colors: [TVBrand.wave.opacity(hovered ? 0.20 : 0.10), .clear],
-                               center: .top, startRadius: 4, endRadius: 220)
-                TVLogoImage(urlString: channel.logoURL,
-                            size: CGSize(width: 130, height: 62))
-                    .shadow(color: TVBrand.logoShadow, radius: 6, y: 2)
-                    .scaleEffect(hovered ? 1.03 : 1)
-            }
-
-            VStack {
-                HStack(alignment: .top) {
-                    TVLiveBadge()
-                    Spacer(minLength: 0)
-                    if tv.isFavorite(channel) || hovered {
-                        Image(systemName: tv.isFavorite(channel) ? "star.fill" : "star")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(tv.isFavorite(channel) ? TVBrand.gold : Color.white.opacity(0.75))
-                            .shadow(color: TVBrand.gold.opacity(0.5), radius: 4)
-                    }
-                    if let quality = channel.qualityLabel {
-                        qualityPill(quality)
-                    }
-                }
-                Spacer(minLength: 0)
-                HStack(alignment: .bottom) {
-                    if preview != nil {
-                        TVLogoImage(urlString: channel.logoURL,
-                                    size: CGSize(width: 56, height: 22))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 3)
-                            .background(TVBrand.previewScrim,
-                                        in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    }
-                    Spacer(minLength: 0)
-                    ZStack {
-                        Circle()
-                            .fill(TVBrand.wave)
-                            .frame(width: 30, height: 30)
-                            .shadow(color: TVBrand.wave.opacity(0.5), radius: 8)
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(TVBrand.onWave)
-                    }
-                    .opacity(hovered || isPlaying ? 1 : 0)
-                    .scaleEffect(hovered || isPlaying ? 1 : 0.85)
-                }
-            }
-            .padding(9)
-        }
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 14,
-                                          bottomLeadingRadius: 0,
-                                          bottomTrailingRadius: 0,
-                                          topTrailingRadius: 14,
-                                          style: .continuous))
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .center, spacing: 7) {
-                Text(String(format: "%02d", number))
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(TVBrand.wave)
-                    .frame(minWidth: 22, alignment: .leading)
-                Text(channel.name)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let current = tv.currentProgram(for: channel) {
-                    Text(clock(current.start))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize()
-                }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary.opacity(hovered ? 1 : 0.55))
-            }
-
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 5, height: 5)
-                if let current = tv.currentProgram(for: channel) {
-                    Text(current.title)
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 3)
-                    Text("\(clock(current.start)) – \(clock(current.end))")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize()
-                } else {
-                    Text(tv.isLoadingEPG ? "正在读取节目单…" : "暂无节目单")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-
-            progressBar
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-    }
-
-    @ViewBuilder
-    private var progressBar: some View {
-        if let current = tv.currentProgram(for: channel) {
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(TVBrand.hairline)
-                    Capsule(style: .continuous)
-                        .fill(TVBrand.wave)
-                        .frame(width: max(0, proxy.size.width * programProgress(current)))
-                }
-            }
-            .frame(height: 2)
-            .padding(.top, 1)
-        }
-    }
-
-    private var statusColor: Color {
-        if isPlaying { return TVBrand.wave }
-        switch tv.probeState(for: channel.id) {
-        case .available: return TVBrand.success
-        case .probing: return TVBrand.gold
-        case .unavailable: return TVBrand.signal
-        case .idle: return Color.secondary.opacity(0.5)
-        }
-    }
-
-    private func programProgress(_ program: TVEPGProgram) -> Double {
-        let total = max(1, program.duration)
-        return min(max(Date().timeIntervalSince(program.start) / total, 0), 1)
-    }
-
-    private func clock(_ date: Date) -> String {
-        Self.clockFormatter.string(from: date)
-    }
-
-    private static let clockFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
-
-    private func qualityPill(_ quality: String) -> some View {
-        let style = TVBrand.qualityStyle(quality)
-        return Text(quality)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
-            .foregroundStyle(style.fg)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(style.bg, in: Capsule(style: .continuous))
     }
 }
 
@@ -1058,9 +804,7 @@ private struct TVChannelRow: View {
                     .frame(width: 72)
             }
 
-            Circle()
-                .fill(statusColor)
-                .frame(width: 6, height: 6)
+            statusPill
                 .help(probeHelp)
         }
         .padding(.leading, 8)
@@ -1082,6 +826,36 @@ private struct TVChannelRow: View {
         }
         .buttonStyle(.plain)
         .help(tv.isFavorite(channel) ? "取消收藏" : "收藏频道")
+    }
+
+    /// 列表行的可播性：不可播放用红色胶囊直接写明，避免只看到一个看不出含义的小圆点。
+    @ViewBuilder
+    private var statusPill: some View {
+        switch tv.probeState(for: channel.id) {
+        case .available:
+            Text("可播放")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(TVBrand.success)
+        case .unavailable:
+            HStack(spacing: 2.5) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 8, weight: .bold))
+                Text("不可播放")
+                    .font(.system(size: 8.5, weight: .bold))
+            }
+            .foregroundStyle(TVBrand.signal)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2.5)
+            .background(TVBrand.signal.opacity(0.14), in: Capsule(style: .continuous))
+        case .probing:
+            Text("检测中")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(TVBrand.gold)
+        case .idle:
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+        }
     }
 
     @ViewBuilder
@@ -3105,6 +2879,10 @@ private struct TVOverviewView: View {
     @State private var epgDraft = ""
     /// 拖动源时的落点行：画一条提示线。
     @State private var dropTargetID: UUID?
+    /// 直播缓存统计：进入页面或清理后刷新。
+    @State private var cacheStats: [TVCacheStat] = []
+    @State private var cacheBusy: TVCacheKind?
+    @State private var cacheTick = 0
 
     var body: some View {
         ScrollView {
@@ -3115,11 +2893,21 @@ private struct TVOverviewView: View {
                 } else {
                     sourceList
                 }
+                liveCacheSection
             }
             .padding(.horizontal, 26)
             .padding(.top, 18)
             .padding(.bottom, 48)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task(id: cacheTick) {
+            TVStorageCenter.pruneIfNeeded()
+            cacheStats = TVStorageCenter.stats(
+                probeRecords: tv.probeStates.count + tv.probeReports.count,
+                sourceCount: tv.playlists.count)
+        }
+        .onChange(of: tv.playlists.count) { _, _ in
+            cacheTick += 1
         }
         .alert("重命名电视源", isPresented: Binding(get: { renamingID != nil },
                                               set: { if !$0 { renamingID = nil } })) {
@@ -3316,6 +3104,182 @@ private struct TVOverviewView: View {
                                    tv.showWizard = true
                                }
                            ])
+        }
+    }
+
+    // MARK: - 直播缓存
+
+    /// 直播电视产生的各类缓存：逐项列出数量与占用，可单独清理，
+    /// 台标 / 截帧可设体积上限，节目单可设保留天数，超出后自动淘汰。
+    private var liveCacheSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("直播缓存")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("\(cacheStats.count) 项")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 8)
+                if cacheBusy != nil {
+                    ProgressView().controlSize(.mini)
+                }
+                Button("全部清理") {
+                    clearAllLiveCaches()
+                }
+                .controlSize(.small)
+                .disabled(cacheBusy != nil)
+                .help("清理除本地 M3U 之外的全部直播缓存")
+            }
+            Text("刷新源、抓节目单与截帧留下的缓存；清理不会删除电视源。")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+
+            if !cacheStats.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(cacheStats) { stat in
+                        liveCacheRow(stat)
+                        if stat.id != cacheStats.last?.id {
+                            Divider()
+                                .opacity(0.25)
+                                .padding(.leading, 43)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(.regularMaterial)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
+                )
+            }
+        }
+    }
+
+    private func liveCacheRow(_ stat: TVCacheStat) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: stat.symbol)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(TVBrand.wave)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stat.title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(stat.detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let policy = stat.policy {
+                    Text(policy)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Text(stat.sizeText)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            limitMenu(for: stat.kind)
+
+            if stat.canClear {
+                Button("清理") { clearLiveCache(stat.kind) }
+                    .controlSize(.small)
+                    .disabled(cacheBusy != nil)
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func limitMenu(for kind: TVCacheKind) -> some View {
+        switch kind {
+        case .logos:
+            limitPicker(options: TVStorageCenter.logoLimitOptions,
+                        current: TVStorageCenter.logoLimitMB,
+                        unit: "MB",
+                        help: "台标缓存上限") { value in
+                TVStorageCenter.setLogoLimitMB(value)
+                cacheTick += 1
+            }
+        case .previews:
+            limitPicker(options: TVStorageCenter.previewLimitOptions,
+                        current: TVStorageCenter.previewLimitMB,
+                        unit: "MB",
+                        help: "画面截帧上限") { value in
+                TVStorageCenter.setPreviewLimitMB(value)
+                cacheTick += 1
+            }
+        case .epg:
+            limitPicker(options: TVStorageCenter.epgRetentionOptions,
+                        current: TVStorageCenter.epgRetentionDays,
+                        unit: "天",
+                        help: "节目单保留天数") { value in
+                TVStorageCenter.setEPGRetentionDays(value)
+                cacheTick += 1
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func limitPicker(options: [Int],
+                             current: Int,
+                             unit: String,
+                             help: String,
+                             onPick: @escaping (Int) -> Void) -> some View {
+        Menu {
+            ForEach(options, id: \.self) { value in
+                Button {
+                    onPick(value)
+                } label: {
+                    if value == current {
+                        Label(limitTitle(value, unit: unit), systemImage: "checkmark")
+                    } else {
+                        Text(limitTitle(value, unit: unit))
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
+    }
+
+    private func limitTitle(_ value: Int, unit: String) -> String {
+        value > 0 ? "\(value) \(unit)" : "不限"
+    }
+
+    private func clearLiveCache(_ kind: TVCacheKind) {
+        guard cacheBusy == nil else { return }
+        cacheBusy = kind
+        Task {
+            await TVStorageCenter.clear(kind, model: tv)
+            cacheBusy = nil
+            cacheTick += 1
+        }
+    }
+
+    private func clearAllLiveCaches() {
+        guard cacheBusy == nil else { return }
+        cacheBusy = .channels
+        Task {
+            await TVStorageCenter.clearAll(model: tv)
+            cacheBusy = nil
+            cacheTick += 1
         }
     }
 
@@ -5518,7 +5482,6 @@ private struct TVTonightView: View {
                           emptyText: "这段时间没有人物 / 纪实类节目；节目单更新后会自动出现。",
                           now: now)
                 TVRecordingsPanel()
-                rulesPanel
             }
             .padding(.horizontal, 26)
             .padding(.top, 20)
@@ -5606,7 +5569,7 @@ private struct TVTonightView: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $rulesShown, arrowEdge: .top) {
-            TVTonightRulesCard(compact: true)
+            TVTonightRulesCard()
                 .padding(16)
                 .frame(width: 400)
         }
@@ -6507,12 +6470,6 @@ private struct TVTonightView: View {
         }
     }
 
-    // MARK: 规则
-
-    private var rulesPanel: some View {
-        TVTonightRulesCard(compact: false)
-    }
-
     // MARK: 小件
 
     private func sectionTitle(symbol: String, tint: Color,
@@ -6564,9 +6521,8 @@ private struct TVTonightView: View {
     }()
 }
 
-/// 推荐规则说明：页面底部平铺一版，右上角「推荐规则」弹层用紧凑版。
+/// 右上角「推荐规则」弹层。
 private struct TVTonightRulesCard: View {
-    var compact: Bool
 
     private struct Rule: Identifiable {
         let symbol: String
@@ -6597,21 +6553,15 @@ private struct TVTonightRulesCard: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 10 : 13) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 Image(systemName: "wand.and.stars")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(TVBrand.wave)
                 Text("夜航推荐规则")
-                    .font(.system(size: compact ? 13.5 : 16, weight: .semibold))
-                Spacer(minLength: 0)
-                if !compact {
-                    Text("直播页的两条货架与本页共用同一套规则")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
+                    .font(.system(size: 13.5, weight: .semibold))
             }
-            VStack(alignment: .leading, spacing: compact ? 8 : 11) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(rules) { rule in
                     HStack(alignment: .top, spacing: 9) {
                         Image(systemName: rule.symbol)
@@ -6621,27 +6571,14 @@ private struct TVTonightRulesCard: View {
                             .padding(.top, 1)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(rule.title)
-                                .font(.system(size: compact ? 12 : 13, weight: .semibold))
+                                .font(.system(size: 12, weight: .semibold))
                             Text(rule.detail)
-                                .font(.system(size: compact ? 11 : 12))
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-            }
-        }
-        .padding(compact ? 0 : 18)
-        .background {
-            if !compact {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(TVBrand.surface)
-            }
-        }
-        .overlay {
-            if !compact {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(TVBrand.stroke, lineWidth: 0.6)
             }
         }
     }

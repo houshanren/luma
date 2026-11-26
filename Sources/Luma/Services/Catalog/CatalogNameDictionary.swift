@@ -124,7 +124,7 @@ enum CatalogNameDictionary {
         let rows = (try? database.query("""
             SELECT id, name, name_ja, name_en, aliases, region, birth_date, age,
                    age_asof, height_cm, bust, waist, hips, cup, work_count, tags,
-                   summary, description, image_url, avatar_base64, source_url, source
+                   summary, description, image_url, has_avatar, source_url, source
             FROM actresses
             ORDER BY COALESCE(work_count, -1) DESC, name
             """)) ?? []
@@ -150,7 +150,7 @@ enum CatalogNameDictionary {
                 summary: row["summary"]?.string,
                 description: row["description"]?.string,
                 imageURL: row["image_url"]?.string,
-                avatarBase64: row["avatar_base64"]?.string,
+                hasAvatar: row["has_avatar"]?.bool ?? false,
                 sourceURL: row["source_url"]?.string,
                 source: row["source"]?.string ?? ""
             )
@@ -161,7 +161,7 @@ enum CatalogNameDictionary {
         guard let database = openDatabase() else { return [] }
         let rows = (try? database.query("""
             SELECT id, name, name_en, aliases, region, kind, work_count, summary,
-                   logo_url, avatar_base64, website, source_url, source
+                   logo_url, has_avatar, website, source_url, source
             FROM studios
             ORDER BY COALESCE(work_count, -1) DESC, name
             """)) ?? []
@@ -177,7 +177,7 @@ enum CatalogNameDictionary {
                 workCount: row["work_count"]?.int,
                 summary: row["summary"]?.string,
                 imageURL: row["logo_url"]?.string,
-                avatarBase64: row["avatar_base64"]?.string,
+                hasAvatar: row["has_avatar"]?.bool ?? false,
                 website: row["website"]?.string,
                 sourceURL: row["source_url"]?.string,
                 source: row["source"]?.string ?? ""
@@ -288,9 +288,15 @@ struct CatalogActressRecord: Identifiable, Hashable {
     var summary: String?
     var description: String?
     var imageURL: String?
-    var avatarBase64: String?
+    /// 主表 `has_avatar` 标志：列表过滤用它，不必取大文本。
+    var hasAvatar: Bool
     var sourceURL: String?
     var source: String
+
+    /// 头像 base64：头像已拆到独立表 `person_avatars`，展示时按 id 单条取。
+    var avatarBase64: String? {
+        hasAvatar ? CatalogAvatarStore.personBase64(id) : nil
+    }
 
     var regionTitle: String { CatalogRegion.title(for: region) }
 
@@ -319,10 +325,16 @@ struct CatalogStudioRecord: Identifiable, Hashable {
     var workCount: Int?
     var summary: String?
     var imageURL: String?
-    var avatarBase64: String?
+    /// 主表 `has_avatar` 标志：列表过滤用它，不必取大文本。
+    var hasAvatar: Bool
     var website: String?
     var sourceURL: String?
     var source: String
+
+    /// 头像 base64：头像已拆到独立表 `studio_avatars`，展示时按 id 单条取。
+    var avatarBase64: String? {
+        hasAvatar ? CatalogAvatarStore.studioBase64(id) : nil
+    }
 
     var regionTitle: String { CatalogRegion.title(for: region) }
 

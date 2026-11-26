@@ -415,7 +415,6 @@ struct PhotoViewerView: View {
                             .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.6)
                     }
                     .fixedSize()
-                    .help("正在播放：\(entry.title)")
 
                 VStack(spacing: 1) {
                     // 工具栏给的实际宽度只有 GeometryReader 拿得到（偏好值传不出 ToolbarItem），
@@ -438,7 +437,7 @@ struct PhotoViewerView: View {
             .padding(.horizontal, 10)
             .padding(.top, 4)
             .padding(.bottom, 0)
-            .frame(minWidth: 520, maxWidth: 640)
+            .frame(minWidth: 520, maxWidth: 640).offset(y: -3)
         } else if let context = catalogContext(for: photo) {
             // 网络资源（网页源）：海报 + 片名 + 来源站点 + 分集号 + 队列 / 下一集，
             // 与直播舱、影院舱共用同一套信息语言与分级收放规则。
@@ -448,7 +447,6 @@ struct PhotoViewerView: View {
                                     cornerRadius: 3)
                     .frame(width: 20, height: 27)
                     .fixedSize()
-                    .help("正在播放：\(context.item.title)")
 
                 VStack(spacing: 1) {
                     GeometryReader { proxy in
@@ -469,7 +467,7 @@ struct PhotoViewerView: View {
             .padding(.horizontal, 10)
             .padding(.top, 4)
             .padding(.bottom, 0)
-            .frame(minWidth: 520, maxWidth: 640)
+            .frame(minWidth: 520, maxWidth: 640).offset(y: -3)
         } else {
             // 工具栏本身已经有一层玻璃胶囊：这里不再叠自己的背景，只保留内容。
             VStack(spacing: 0) {
@@ -2272,6 +2270,9 @@ struct PhotoViewerView: View {
             return true
         }
         if ShortcutStore.matches(event, .viewerInfo) {
+            // 视频播放时 I 属于播放信息（VideoPlayerStage 自己处理），
+            // 这里不能抢成照片「信息」侧栏。
+            guard !photo.isVideo else { return false }
             viewer.showInfoPanel.toggle()
             return true
         }
@@ -2692,16 +2693,18 @@ private struct TVToolbarDeck: View {
                          lineIndex: Int,
                          lineCount: Int) -> some View {
         Menu {
-            ForEach(Array((channel?.streamLines ?? []).enumerated()), id: \.offset) { index, url in
-                Button {
-                    _ = store.selectTVLine(index, for: photo.id)
-                } label: {
-                    let title = "线路 \(index + 1) · \(protocolLabel(of: url, channel: channel))"
-                    if index == lineIndex {
-                        Label(title, systemImage: "checkmark")
-                    } else {
-                        Text(title)
+            ForEach(store.tvLineGroups(for: photo.id)) { group in
+                Section {
+                    ForEach(group.lines) { line in
+                        Button {
+                            _ = store.selectTVLine(url: line.url, for: photo.id)
+                        } label: {
+                            let title = "\(line.title) · \(protocolLabel(of: line.url, channel: channel))"
+                            Text(line.url == channel?.streamURL ? "✓ \(title)" : title)
+                        }
                     }
+                } header: {
+                    Text(group.sourceName)
                 }
             }
         } label: {
@@ -2723,7 +2726,7 @@ private struct TVToolbarDeck: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
+        .fixedSize().layoutPriority(3)
         .help("选择播放线路 · 当前 \(lineIndex + 1)/\(lineCount)")
     }
 
@@ -2801,6 +2804,8 @@ private struct TVCatchupProgressBar: View {
     @ObservedObject var model: VideoPlayerModel
     let epgDuration: Double
 
+    @State private var hostWindow: NSWindow?
+
     private var total: Double {
         model.duration > 1 ? model.duration : max(0, epgDuration)
     }
@@ -2825,6 +2830,22 @@ private struct TVCatchupProgressBar: View {
                           tint: TVBrand.gold,
                           knobBorder: Color.white.opacity(0.72),
                           duration: total,
+                          onPreviewChange: { fraction in
+                              // 与普通视频的顶栏进度条同一套悬停预览：
+                              // 回看自己没有取帧逻辑，气泡与取帧都复用播放页那一套。
+                              guard AppSettings.shared.scrubPreviewEnabled else {
+                                  VideoScrubPreviewCenter.shared.end()
+                                  return
+                              }
+                              if let fraction {
+                                  VideoScrubPreviewCenter.shared.hover(fraction: fraction,
+                                                                       duration: total,
+                                                                       player: model.player,
+                                                                       window: hostWindow)
+                              } else {
+                                  VideoScrubPreviewCenter.shared.end()
+                              }
+                          },
                           onSeek: { value in
                               guard total > 1 else { return }
                               model.scrub(to: value * total)
@@ -2834,6 +2855,11 @@ private struct TVCatchupProgressBar: View {
                               model.requestSeek(to: value * total)
                           })
                 .frame(minWidth: 140, maxWidth: .infinity)
+                .background {
+                    WindowAccessor { window in
+                        if hostWindow !== window { hostWindow = window }
+                    }
+                }
 
             Text(TVDeckFormat.timecode(total))
                 .foregroundStyle(Color.primary.opacity(0.52))
@@ -2842,7 +2868,5 @@ private struct TVCatchupProgressBar: View {
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .monospacedDigit()
         .contentShape(Rectangle())
-        .help(total > 1 ? "点按 / 拖动定位 · 剩余 \(TVDeckFormat.timecode(max(0, total - position)))"
-                        : "回看进度")
     }
 }

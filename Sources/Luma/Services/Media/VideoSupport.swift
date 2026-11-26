@@ -1,44 +1,9 @@
 import Foundation
 import AppKit
 import AVFoundation
+import LumaCore
 import PlaybackCore
 import UniformTypeIdentifiers
-
-// MARK: - 视频格式
-
-/// 集中维护可导入/可播放的视频扩展名。部分容器（mkv/avi/flv/wmv…）系统 UTI 未声明为 movie，
-/// 只能按扩展名识别，因此这里以白名单为主、UTType 为辅。
-enum VideoFormats {
-    static let extensions: Set<String> = [
-        "mp4", "m4v", "mov", "qt",
-        "avi", "mkv", "webm", "flv", "f4v", "wmv", "asf",
-        "mpg", "mpeg", "m2v", "mpe", "m1v", "vob", "ts", "m2ts", "mts", "mtts",
-        "3gp", "3g2", "ogv", "rm", "rmvb", "divx", "dv", "mxf", "amv"
-    ]
-
-    static func isVideoExtension(_ ext: String) -> Bool {
-        extensions.contains(ext.lowercased())
-    }
-
-    static func isVideo(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        if extensions.contains(ext) { return true }
-        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else { return false }
-        return type.conforms(to: .movie)
-    }
-
-    /// 打开面板允许的文件类型：系统 image/movie 加上每种视频扩展名的 UTI。
-    static var importContentTypes: [UTType] {
-        var types: [UTType] = [.image, .movie]
-        // 蓝光光盘镜像。
-        if let iso = UTType(filenameExtension: "iso") { types.append(iso) }
-        for ext in extensions {
-            guard let type = UTType(filenameExtension: ext), !types.contains(type) else { continue }
-            types.append(type)
-        }
-        return types
-    }
-}
 
 // MARK: - ffmpeg / ffprobe
 

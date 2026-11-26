@@ -1019,7 +1019,7 @@ struct LibraryResourcesView: View {
         }
         // 图库目录不在了（被移动 / 删除，或外置盘未连接）：整行降级并给出明确出口，
         // 不能让它看起来还能点进去，那是「点完侧边栏全空」的来源。
-        let exists = FileManager.default.fileExists(atPath: summary.path)
+        let exists = LibraryPaths.exists(atPath: summary.path)
         return HStack(spacing: 12) {
             Image(systemName: "photo.stack")
                 .font(.system(size: 14, weight: .medium))
@@ -1268,7 +1268,7 @@ struct LibraryResourcesView: View {
 
     private func open(_ summary: LibraryAggregateModel.LibrarySummary) {
         // 失效的图库只提示、不改状态：以前会一路走到切库，最后留在空壳页面上。
-        guard FileManager.default.fileExists(atPath: summary.path) else {
+        guard LibraryPaths.exists(atPath: summary.path) else {
             store.showToast("找不到「\(summary.name)」，可能已被移动、删除，或外置盘未连接")
             return
         }

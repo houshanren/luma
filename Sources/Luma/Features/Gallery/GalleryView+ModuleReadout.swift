@@ -425,9 +425,7 @@ extension GalleryView {
                 ModuleReadoutItem("channels", symbol: "tv",
                                   value: "\(tv.visibleChannels.count) 个", caption: "全部频道",
                                   tint: TVBrand.wave),
-                ModuleReadoutItem("sources", symbol: "antenna.radiowaves.left.and.right",
-                                  value: "\(enabled) 个", caption: "已启用电视源",
-                                  tint: TVBrand.gold)
+                tvChannelProbeItem(tv)
             ]
             if let updated = tv.refreshedAt {
                 items.append(ModuleReadoutItem("updated", symbol: "clock.arrow.circlepath",
@@ -495,5 +493,61 @@ extension GalleryView {
                                   tint: errors > 0 ? TVBrand.warning : TVBrand.success)
             ]
         }
+    }
+
+    /// 与频道页共用页内源筛选，检测中、可播数、失效数和重试都保留在顶部读数里。
+    private func tvChannelProbeItem(_ tv: IPTVBrowserModel) -> ModuleReadoutItem {
+        let sections: [(group: String, channels: [TVChannel])]
+        if let sourceFilterID = tv.channelSourceFilterID {
+            sections = tv.groupedChannels.compactMap { section in
+                let list = section.channels.filter { $0.playlistID == sourceFilterID }
+                return list.isEmpty ? nil : (group: section.group, channels: list)
+            }
+        } else {
+            sections = tv.groupedChannels
+        }
+
+        var available = 0
+        var unavailable = 0
+        var probing = 0
+        for channel in sections.flatMap(\.channels) {
+            switch tv.probeState(for: channel.id) {
+            case .available: available += 1
+            case .unavailable: unavailable += 1
+            case .probing: probing += 1
+            case .idle: break
+            }
+        }
+
+        let value: String
+        let caption: String
+        let symbol: String
+        let tint: Color
+        if probing > 0 {
+            value = "检测中 \(probing)"
+            var status: [String] = []
+            if available > 0 { status.append("可播 \(available)") }
+            if unavailable > 0 { status.append("失效 \(unavailable) · 重试") }
+            caption = status.isEmpty ? "频道可播性" : status.joined(separator: " · ")
+            symbol = "antenna.radiowaves.left.and.right"
+            tint = unavailable > 0 ? TVBrand.signal : TVBrand.gold
+        } else if available + unavailable == 0 {
+            value = "尚未检测"
+            caption = "频道可播性"
+            symbol = "antenna.radiowaves.left.and.right"
+            tint = TVBrand.gold
+        } else if unavailable > 0 {
+            value = available > 0 ? "可播 \(available)" : "失效 \(unavailable)"
+            caption = available > 0 ? "已隐藏失效 \(unavailable) · 重试" : "已隐藏 · 点按重试"
+            symbol = "exclamationmark.triangle.fill"
+            tint = TVBrand.signal
+        } else {
+            value = "可播 \(available)"
+            caption = "频道可播性"
+            symbol = "checkmark.circle.fill"
+            tint = TVBrand.success
+        }
+        return ModuleReadoutItem("probe", symbol: symbol, value: value, caption: caption, tint: tint,
+                                 action: unavailable > 0 ? { tv.retryUnavailableChannels() } : nil)
     }
 }

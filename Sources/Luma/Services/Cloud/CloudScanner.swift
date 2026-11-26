@@ -149,6 +149,7 @@ enum CloudScanner {
         }
         var scopeSeen: Set<String> = []
         let scopes = scopeCandidates.filter { scopeSeen.insert($0.path).inserted }
+
         var queue: [String] = scopes.isEmpty ? [root] : scopes.map(\.path)
         if !scopes.isEmpty {
             let scopeFolders = scopes.map {
@@ -163,7 +164,7 @@ enum CloudScanner {
         }
         // 阿里云盘的媒体经常放在「资源库」而不是默认盘，只扫默认盘会几乎为空；
         // 这里把账号下的每个盘都挂成一个虚拟根目录，扫描器按普通目录遍历即可。
-        if scopes.isEmpty, mount.kind == .aliyun,
+        if scopes.isEmpty, mount.kind == .aliyun, mount.authMode != .webQR,
            let token = try? await CloudService.accessToken(for: mount),
            let drives = try? await AliyunOAuth.drives(accessToken: token),
            !drives.isEmpty {

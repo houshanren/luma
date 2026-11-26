@@ -145,6 +145,8 @@ enum SettingsKeys {
     static let importVerifyCopies = "settings.import.verifyCopies"
     /// 旧版全局设置已迁入当前图库的一次性标记（仅 UserDefaults）。
     static let libraryScopeMigrationDone = "settings.libraryScopeMigrationDone"
+    /// 搜索结果的展示布局：列表 / 格子 / 画廊。
+    static let searchResultsLayout = "settings.searchResultsLayout"
     /// 本地模型清单地址（可替换为私有镜像或测试源）。
     static let modelManifestURL = "settings.model.manifestURL"
 

@@ -339,41 +339,12 @@ enum QuarkDrive {
         return object
     }
 
-    /// 夸克会通过 Set-Cookie 轮换 __puus / __pus，写回钥匙串避免后续请求失效。
+    /// 夸克会通过 Set-Cookie 轮换 __puus / __pus，以及其它会话 Cookie；
+    /// 统一交给 `CloudCookieRotation` 写回钥匙串，避免后续请求还在用旧值。
     private static func persistRenewedCookie(from response: HTTPURLResponse,
                                              original: String,
                                              mountID: UUID?) {
-        guard let mountID,
-              let url = response.url else { return }
-        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, element in
-            if let key = element.key as? String, let value = element.value as? String {
-                result[key] = value
-            }
-        }
-        let cookies = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
-            .filter { $0.name == "__puus" || $0.name == "__pus" }
-        guard !cookies.isEmpty else { return }
-        var updated = normalizedCookie(original)
-        for cookie in cookies {
-            updated = merge(cookie: cookie.name, value: cookie.value, into: updated)
-        }
-        guard updated != normalizedCookie(original) else { return }
-        CloudCredentials.setPassword(updated, for: mountID)
-    }
-
-    private static func merge(cookie name: String, value: String, into cookie: String) -> String {
-        var pairs: [(String, String)] = cookie.split(separator: ";").compactMap { part in
-            let piece = part.trimmingCharacters(in: .whitespaces)
-            guard !piece.isEmpty else { return nil }
-            let comps = piece.split(separator: "=", maxSplits: 1)
-            return (String(comps[0]), comps.count > 1 ? String(comps[1]) : "")
-        }
-        if let index = pairs.firstIndex(where: { $0.0 == name }) {
-            pairs[index] = (name, value)
-        } else {
-            pairs.append((name, value))
-        }
-        return pairs.map { "\($0.0)=\($0.1)" }.joined(separator: "; ")
+        CloudCookieRotation.persist(from: response, original: original, mountID: mountID)
     }
 
     /// 会话统一由 `HTTPSessionPool` 建：超时 / 缓存 / Cookie 策略只在一处维护。

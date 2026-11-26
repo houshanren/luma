@@ -15,6 +15,7 @@
 | 新增一张表、一次查询 | §8 数据层 + §9 分页常量 |
 | 改搜索 | §10 搜索 |
 | 改播放器 | §14 播放内核 |
+| 跑测试 / 看界面性能 | §19 测试 |
 | 打包 / 签名 / 排查构建 | §18 构建与发布 + §21 排错 |
 
 **同步规则**：新增或移动文件后，必须同时更新 §4 清册与 AGENTS.md 的「文件职责」表；否则下一个人（或 Agent）会照着过期路径找你根本不存在的东西。这是本项目最容易被忽略的一条。
@@ -37,15 +38,15 @@
 
 ```
 photos/
-├── Package.swift              # 6 个 target，唯一产物 Luma
+├── Package.swift              # 12 个 target，唯一产物 Luma
 ├── build.sh                   # 组装 Luma.app（支持 preview / PACKAGE / NOTARIZE）
 ├── README.md                  # 对外的产品介绍
 ├── AGENTS.md                  # 开发规范（硬约束、文件职责、权限矩阵、行数上限）
 ├── CHANGELOG.md
 ├── .gitignore
 ├── Resources/                 # 随包资源，见 §2.1
-├── Sources/                   # 四个 target 的源码，见 §4
-├── Tests/                     # 两个可执行断言 target
+├── Sources/                   # 八个 target 的源码，见 §4
+├── Tests/                     # 三个可执行断言 target
 ├── Tools/                     # 构建 / 素材 / 资料库脚本，见 §2.2
 ├── Vendor/                    # 构建时下载的 ffmpeg，不入库
 ├── docs/                      # 本文档 + 产品 / UI 文档 + 设计底稿
@@ -76,76 +77,142 @@ photos/
 | --- | --- |
 | `catalog_build/` | 资料库流水线：`fetch_*.py` 抓取、`build_*.py` 归一化、`build_catalog_db.py` 生成 `Resources/Catalog/catalog.sqlite`、`t2s.swift` 简繁转换 |
 | `make_icon.swift` | 画 1024 图标 |
-| `brand_hero_gif.py` | 生成 README 顶部的品牌动图 `docs/assets/brand-hero.gif` |
+| `brand_hero_gif.py` | 生成 README 顶部的品牌动图 `docs/design/assets/brand-hero.gif` |
 | `bundle_ffmpeg.py` | 整理 ffmpeg 运行时依赖 |
 | `make_vendor_runtime.sh` | 从本机 Homebrew 生成 `Vendor/ffmpeg-dv`（ffmpeg-full + libplacebo + MoltenVK + 全部 dylib） |
 | `avplayer_probe.swift` · `media_matrix.py` | 片源能力探测与媒体矩阵实验 |
 | `playback_log_report.py` | 播放日志归因报告 |
+| `ui_perf.py` | 启动应用内界面性能基准并汇总 FPS / 慢帧 / 缩略图 p95；`--report` 只解析已有 JSON |
+| `ui_trace.sh` | 用 `xctrace` 录 Instruments trace，同时跑同一套基准并输出 JSON |
 | `quick_app.sh` | 快速重启辅助脚本 |
 
 `Vendor/` 下的 `ffmpeg/`、`ffmpeg-dv/` 都是 `build.sh` 现场生成或下载的，不进版本库。
 
 ---
 
-## 3. 六个 target
+## 3. 十二个 target
 
-`Package.swift` 只有 1 个 product（`Luma` 可执行文件），另外 2 个是可执行检查器。
+`Package.swift` 只有 1 个 product（`Luma` 可执行文件），其余是库与可执行检查器。
 
 | target | 类型 | 路径 | 依赖 | 备注 |
 | --- | --- | --- | --- | --- |
-| `Luma` | executable | `Sources/Luma` | `LumaCore` `PlaybackCore` `LumaContentCore` | 链接 sqlite3 / NetFS / Photos |
+| `Luma` | executable | `Sources/Luma` | `LumaCore` `PlaybackCore` `LumaContentCore` `LumaDomain` `LumaPersistence` `LumaAI` `LumaUI` | 链接 sqlite3 / NetFS / Photos |
 | `LumaCore` | library | `Sources/LumaCore` | — | 纯算法，无 UI、无 IO |
 | `PlaybackCore` | library | `Sources/PlaybackCore` | — | 仅 Foundation + AVFoundation + AVKit |
 | `LumaContentCore` | library | `Sources/LumaContentCore` | `LumaCore` `PlaybackCore` | 只有契约，没有实现 |
-| `LumaCoreChecks` | executable | `Tests/LumaCoreChecks` | `LumaCore` `PlaybackCore` | 命令行断言 |
-| `LumaContentChecks` | executable | `Tests/LumaContentChecks` | `LumaContentCore` `PlaybackCore` | 命令行断言 |
+| `LumaDomain` | library | `Sources/LumaDomain` | `LumaCore` `PlaybackCore` `LumaContentCore` | 模型 / 查询描述 / 格式判定，无 AppKit、无 IO |
+| `LumaPersistence` | library | `Sources/LumaPersistence` | `LumaDomain` `LumaCore` `LumaContentCore` | SQLite 与图库 / 电视 / 资源站库表 |
+| `LumaAI` | library | `Sources/LumaAI` | `LumaDomain` | 模型后端契约 / OpenAI 兼容实现 / 提示词上下文 / 工具定义 |
+| `LumaUI` | library | `Sources/LumaUI` | `LumaDomain` | 设计 token / 通用视图修饰器 / 拖放 · 键盘 · 窗口胶水 |
+| `TestSupport` | library | `Tests/TestSupport` | — | 命令行断言记录器 |
+| `LumaCoreChecks` | executable | `Tests/LumaCoreChecks` | `TestSupport` `LumaCore` `PlaybackCore` | 命令行断言 |
+| `LumaContentChecks` | executable | `Tests/LumaContentChecks` | `TestSupport` `LumaContentCore` `PlaybackCore` | 命令行断言 |
+| `LumaDataChecks` | executable | `Tests/LumaDataChecks` | `TestSupport` `LumaDomain` `LumaPersistence` | 领域模型与 SQLite 边界断言 |
 
 ---
 
 ## 4. `Sources/Luma` 目录清册
 
-7 个一级目录：`App` / `Components` / `Domain` / `Features` / `Services` / `Store` / `Support`。
+5 个一级目录：`App` / `Features` / `Services` / `Store` / `UI`。
+`LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` 是独立 target，清单见 §4.3。
 下面按目录列全部文件——**新增文件就加在这里**。
 
-### 4.1 `App/`（5）
+### 4.1 `App/`（6）
 
 ```
 AboutWindowView.swift      LibraryPickerView.swift   LibrarySetupView.swift
 LumaApp.swift              RootView.swift
+Shortcuts/ShortcutCatalog.swift
 ```
 
-- `LumaApp`：`@main`、窗口与菜单、启动流程（是否进建库引导 / 选库面板）。
+- `LumaApp`：`@main`、窗口与菜单、启动流程（是否进建库引导 / 选库面板），也是组合根：注入 `LibraryUserInteraction` 等端口。
 - `RootView`：主界面骨架、覆盖层（查看器 / 搜索 / 播放器）的门禁；`store.needsLibrarySetup` 为真时直接渲染 `LibrarySetupView`。
+- `Shortcuts/ShortcutCatalog`：快捷键清单与帮助页数据源。
 
-### 4.2 `Components/`（5）
+### 4.2 `UI/`（14，通用界面层）
 
 ```
-AnimatedImageView.swift   Components.swift          PhotoCell.swift
-PhotoMarqueeSelection.swift                        PhotoThumbnailView.swift
+Components/    AnimatedImageView.swift   Components.swift          PhotoCell.swift
+               PhotoMarqueeSelection.swift                        PhotoThumbnailView.swift
+Platform/      PhotoPicker.swift         PrintSupport.swift
+Shared/        AppKitLibraryUserInteraction.swift                 LibraryInteraction.swift
+               LumaStateViews.swift       ModuleReadoutBar.swift    SourceErrorView.swift
+               SourceJobStatusBar.swift   SourceTransferMenu.swift
 ```
 
-- `PhotoThumbnailView` / `PhotoThumbnailLoader` 是全应用**唯一**取缩略图的入口；`ThumbnailPurpose` 四种：`.grid(maxPixel:)` `.cover(_:)` `.filmstrip(_:)` `.preview(_:)`。
+- `Components/`：跨页面复用的通用视图组件。`PhotoThumbnailView` / `PhotoThumbnailLoader` 是全应用**唯一**取缩略图的入口；`ThumbnailPurpose` 四种：`.grid(maxPixel:)` `.cover(_:)` `.filmstrip(_:)` `.preview(_:)`。
+- `Platform/`：需要 Store 或 App 服务的系统胶水——系统照片选择器（`PhotoPicker`，注入 `LibraryStore`）与打印（`PrintSupport`，依赖 `ImageLoader`）。零依赖的拖放 / 键盘 / 窗口访问已移入 `LumaUI`（见 §4.3.3）。
+- `Shared/`：页面级共享视图 + 交互端口。`LibraryInteraction` 定义文件面板 / 确认弹窗的协议与请求模型；`AppKitLibraryUserInteraction` 是其 AppKit 实现，由 `LumaApp` 组合根注入，Store 不直接创建弹窗。
 - `PhotoGrids.swift` 不在这个目录，在 `Features/Gallery/`。
 
-### 4.3 `Domain/`（29，纯模型，无 IO）
+### 4.3 `Sources/LumaDomain`（独立 target，41 个文件）
 
 ```
-AIAgentModels            BeautyRecommendation    CacheRecords
-CatalogDiscoveryModels   CatalogModels           CinemaModels
-CloudInsight             CloudModels             CloudWizardModels
-Duplicates               ExportOptions           FavoritesDigest
-ImportTypes              LibraryHealth           LibraryVault
-Models                   NetworkCinemaModels     PersonInsight
-PhotoQuery               PhotoTags               PlaceInsight
-RevisitInsight           SceneTags               SearchQuery
-SmartAlbum               SystemQuery             TVEPGModels
-TVModels                 VideoHub
+AIAgentModels              AssetOverlay               BeautyRecommendation
+CacheRecords               CatalogDiscoveryModels     CatalogModels
+CatalogPageSnapshot        CinemaModels               CloudBrand
+CloudIndexState            CloudInsight               CloudModels
+CloudPhotoEXIF             CloudWizardModels          Duplicates
+ExportOptions              FavoritesDigest            ImportTypes
+LibraryData                LibraryHealth              LibraryHealthTuning
+LibraryOverview            LibraryVault               LocalPerson
+MediaTypeSupport           Models                     NetworkCinemaModels
+PersonInsight              PhotoQuery                 PhotoTags
+PlaceInsight               PlaceSupport               RevisitInsight
+SceneTags                  SearchQuery                SmartAlbum
+SystemQuery                TVEPGModels                TVModels
+VideoFormats               VideoHub
 ```
 
+- 只放可序列化模型、查询描述、派生 DTO 与格式判定；不 import AppKit / SwiftUI，不读写文件、不发网络请求。
 - `Models.swift`：`SidebarItem`（`library` / `cloudMount(UUID)` / `iptv` …）、`PhotoItem` 等基础模型。
 - `PhotoQuery` / `SystemQuery` / `SearchQuery`：三个可下推的查询描述，分别对应自建库、系统图库、搜索。
+- `VideoFormats` / `MediaTypeSupport`：导入与网盘浏览共用的媒体类型判定（白名单 + UTType + 蓝光镜像）。
+- `PlaceSupport`：坐标校验、地点聚类与 GCJ-02 / BD-09 坐标换算，纯计算。
 - `SourceKind`（`library` / `cloudMount` / `cinemaFeed` / `catalogSite` / `iptv`）定义在 `Sources/LumaContentCore/Source/Source.swift`，不在本目录。
 - `CatalogProviderKind.supportsNetworkCinema` 在 `CatalogModels.swift`，决定一个资源站是「网络影院」还是「网络资源」。
+
+### 4.3.1 `Sources/LumaPersistence`（独立 target，17 个文件）
+
+```
+CatalogDatabase            CatalogPaths              LibraryPaths
+MetadataStore              MetadataStore+CloudIndex  MetadataStore+DerivedCache
+MetadataStore+Query        PersistenceLog            SQLite
+SystemIndex                SystemIndex+Direct        SystemIndex+DirectQuery
+SystemIndex+DirectSets     SystemIndex+Metadata      SystemIndex+Query
+SystemPhotosLibrary        TVDatabase
+```
+
+- `SQLite` 是全仓库唯一 import `SQLite3` 的地方；`MetadataStore` / `SystemIndex` / `TVDatabase` / `CatalogDatabase` 是各领域仓库。
+- `LibraryPaths` / `CatalogPaths` 收口所有本地路径；Domain 不得依赖它们（`CatalogPaths` 因此从 Domain 移到这里）。
+- `PersistenceLog` 是数据层日志出口，由 `LumaApp` 组合根把 `Diagnostics.record` 注入 `sink`；数据层不得反向引用 App 的 `Diagnostics`。
+
+### 4.3.2 `Sources/LumaAI`（独立 target，12 个文件）
+
+```
+AICapability                AIChatProvider             AIChatProviderFactory
+AILibraryCatalogTools       AILibraryCinemaTools       AILibraryContext
+AILibraryNetworkCinemaTools AILibraryTools             AILibraryTVTools
+AITool                      LocalRuntimeScanner        OpenAICompatibleProvider
+```
+
+- 只依赖 `LumaDomain`；模型后端契约（`AIChatProvider` / `AIChatRequest` / `AICompletion`）、OpenAI 兼容实现、提示词上下文与工具定义都在这里。
+- `AITool`：`AIToolExecution` / `AIToolProvider` / `AIToolRegistry`；provider 是否处理某个工具由定义列表推导（`handles`），不再单独维护名字集合。
+- 每个业务域一个定义文件，自带工具定义、写操作白名单与确认文案：`AILibraryTools`（图库基础 + 参数解析 / 风险判定 / `describe` 兜底）、`AILibraryCatalogTools`、`AILibraryCinemaTools`、`AILibraryNetworkCinemaTools`、`AILibraryTVTools`。
+- 需要 `LibraryStore` 的执行侧留在 App：`Services/AI/Integrations/AIIntegration.swift`、`Services/AI/Tools/AIToolProviders.swift`（执行分派）、`Store/AI/LibraryStore+AITools*.swift`（各业务域执行）。
+
+### 4.3.3 `Sources/LumaUI`（独立 target，5 个文件）
+
+```
+DragSupport        KeyboardMonitor           LumaDesign
+ViewSupport        WindowAccessor
+```
+
+- 只依赖 `LumaDomain`，不依赖 Store 或任何功能模块；跨 target 成员统一用 `package` 标注，不再逐个写 `public`。
+- `LumaDesign`：`LumaMetrics`（间距 / 圆角 / 侧边栏尺寸）、`LumaBrand`（官网六色与渐变）、环境光背景、磨砂卡片 / 胶囊、行高亮、面包屑。
+- `ViewSupport`：`searchableIf` 与 `PhotoColorLabel` / `PhotoFlag` 的展示色。
+- `DragSupport` / `KeyboardMonitor` / `WindowAccessor`：站内拖拽、窗口级按键监听与粘贴快捷键兜底、窗口尺寸访问。
+- 依赖 Store 的界面胶水仍留在 `UI/Platform/`：`PhotoPicker`（注入 `LibraryStore`）、`PrintSupport`（依赖 `ImageLoader`）。
 
 ### 4.4 `Features/`（21 个子目录，144 个文件）
 
@@ -184,6 +251,7 @@ Gallery/       DeleteConfirmView · DuplicatesView · GalleryChrome
 Import/        ImportView
 Maps/          FootprintPlaybackView · MapCanvas · MapPlaceGridView
                PhotoMapView · PlaceDetailView · PlaceStatisticsView
+Memories/      MemoryMovieView
 NetworkCinema/ NetworkCinemaDetailView · NetworkCinemaHubPages
                NetworkCinemaHubView · NetworkCinemaPersonView
                NetworkCinemaSidebarRow
@@ -205,8 +273,9 @@ Sidebar/       CloudMountDetailView · CloudMountSidebarRow · NamePromptSheet
 TV/            TVBrand · TVHubView · TVRecordingsPanel · TVSourceWizardView
                TVTimeRingStage
 Videos/        VideoHoverPreview · VideoHubView
-Viewer/        FilmstripView · InfoPanelView · PhotoViewer · ShortcutHelpView
-               SlideshowView · TVChannelActions · TVPlaybackOverlay
+Viewer/        FilmstripView · InfoPanelView · LivePhotoLayerView
+               PhotoViewer · ShortcutHelpView · SlideshowView
+               TVChannelActions · TVPlaybackOverlay
                VideoPlayback · VideoPlaybackUI · VideoScrubThumbnails
 ```
 
@@ -217,103 +286,101 @@ Viewer/        FilmstripView · InfoPanelView · PhotoViewer · ShortcutHelpView
 - `Catalog/` = 网络资源（站点聚合、海报墙、详情、演员、片单、追更）；`NetworkCinema/` = 网络影院（影视源聚合）；两者数据源同类但页面不同，不要互相引用视图。
 - `Settings/AppModules.swift` 定义 `AppModule` 的 5 个模块（`library` / `cloud` / `catalog` / `television` / `cinema`），控制侧边栏入口、搜索来源与文案；关闭模块不删数据。
 
-### 4.5 `Services/`（18 个子目录，147 个文件）
+### 4.5 `Services/`（20 个子目录，138 个文件）
 
 ```
-AI/           AIImageEncoder · AIKeychain · AILibraryCinemaTools · AILibraryContext
-              AILibraryTVTools · AILibraryTools · AIProviderClient
-              AIToolProvider · LocalRuntimeScanner
-App/          Diagnostics · UpdateChecker
-Catalog/      AvgleCatalogProvider · AvpleCatalogProvider · CatalogArtworkCache
-              CatalogArtworkMemory · CatalogClient · CatalogCrypto
-              CatalogDatabase · CatalogMaintenance · CatalogNameDictionary
-              CatalogNameParser · CatalogPersonInfoService
-              CatalogSnapshotStore · CatalogStore · FoFoCatalogProvider
-              FoFoCloudflareGate · HuangguoAddressResolver
-              HuangguoCatalogProvider · IKanPPCatalogProvider
-              IYFCatalogProvider · JavClCatalogProvider · JavGGCatalogProvider
-              MacCMSCatalogProvider · MadouCatalogProvider · MissavCatalogProvider
-              NinetyOneCatalogProvider · NinetyOnePornaCatalogProvider
-              QuanjiCatalogProvider · RouHLSProxy · RouVideoCatalogProvider
-              ShiseCatalogProvider · WebCatalogSupport · XszCatalogProvider
-Cinema/       AssrtSubtitleClient · CinemaArtworkCache · CinemaIntroDetector
-              CinemaIntroOnline · CinemaKeychain · CinemaMetadataSource
-              CinemaNFO · CinemaScraper · DoubanClient · DoubanTrailerClient
-              NetworkCinemaSnapshotStore · OpenSubtitlesClient
-              SubtitleProviderService · TMDBClient · TVDBClient
-Cloud/        AliyunCookieAuth · CloudEXIF · CloudProviders · CloudScanner
-              CloudSecretStore · CloudSupport · JPEGMetadata · Pan115Drive
-              QuarkDrive · SMBClient · WebDAVClient · WebDAVResourceLoader
-Compression/  PhotoCompressor
-Import/       ImportService
-Library/      LibraryPaths · LibraryVaultService · LocalCinemaWatcher
-              MetadataStore · MetadataStore+CloudIndex
-              MetadataStore+DerivedCache · MetadataStore+Query
-              SQLite · SystemIndex · SystemIndex+Direct
-              SystemIndex+DirectQuery · SystemIndex+DirectSets
-              SystemIndex+Metadata · SystemIndex+Query
-              SystemPhotosLibrary
-Media/        ArtworkCache · FFmpegPrewarm · ImageLoader · ImageTransform
-              LivePhotoSupport · ObjectDetector · PersonAvatarLoader
-              PersonPalette · PhotoBeauty · PhotoHasher · PhotoIntelligence
-              PhotoKitBridge · PhotoKitThumbnailProvider · PhotoQuality
-              RawSupport · SigLIPEngine · SigLIPTokenizer
-              ThumbnailFileIndex · VideoSupport
-Memories/     Memories · MemoryExporter · Trips
-Models/       ModelInstaller · ModelManifest · ModelRegistry
-People/       FaceClustering
-Places/       PlaceSupport · WorldCityIndex
-Playback/     PlaybackSourceResolver · SourcePlaybackProgressStore
-Search/       LibrarySearchCrossLibrary · SearchCenter · SearchProviders
-              SearchSessionStore · SearchTypes
-Shared/       CinemaMetadataEnricher · ContentRepositories
-              EnrichedContentRepository · KeychainAccess
-              LibraryIngestService · LumaKeychainVault
-              NetworkCinemaMetadataEnricher · SnapshottedContentRepository
-              SourceContentCache · SourceErrorMapper · SourceSessions
-              SourceTransfer
-TV/           IPTVService · TVCatchupURL · TVClipRecorder · TVDatabase
-              TVEPGService · TVLogoCache · TVPreviewCache · TVReminderCenter
-Video/        DisplayModeMatcher · EmbeddedSubtitleLoader · NowPlayingCenter
-              PlaybackCoreBridge · SubtitleLoader
+AI/            Integrations/ · Media/ · Tools/
+AI/Integrations/ AIIntegration
+AI/Media/      AIImageEncoder · AIKeychain
+AI/Tools/      AIToolProviders
+App/           Diagnostics · UpdateChecker
+               UIBenchmarkRunner · UIPerformanceMonitor · UIPerformanceMetrics
+Catalog/       AvgleCatalogProvider · AvpleCatalogProvider · CatalogArtworkCache
+               CatalogArtworkMemory · CatalogClient · CatalogCrypto
+               CatalogMaintenance · CatalogNameDictionary
+               CatalogNameParser · CatalogPersonInfoService
+               CatalogSnapshotStore · CatalogStore · FoFoCatalogProvider
+               FoFoCloudflareGate · HuangguoAddressResolver
+               HuangguoCatalogProvider · IKanPPCatalogProvider
+               IYFCatalogProvider · JavClCatalogProvider · JavGGCatalogProvider
+               MacCMSCatalogProvider · MadouCatalogProvider · MissavCatalogProvider
+               NinetyOneCatalogProvider · NinetyOnePornaCatalogProvider
+               QuanjiCatalogProvider · RouHLSProxy · RouVideoCatalogProvider
+               ShiseCatalogProvider · WebCatalogSupport · XszCatalogProvider
+               CatalogAvatarStore · CatalogPortraitLoader
+Cinema/        AssrtSubtitleClient · CinemaArtworkCache · CinemaIntroDetector
+               CinemaIntroOnline · CinemaKeychain · CinemaMetadataSource
+               CinemaNFO · CinemaScraper · DoubanClient · DoubanTrailerClient
+               NetworkCinemaSnapshotStore · OpenSubtitlesClient
+               SubtitleProviderService · TMDBClient · TVDBClient
+Cloud/         AliyunCookieAuth · CloudEXIF · CloudProviders · CloudScanner
+               CloudSecretStore · CloudSupport · CloudThumbnailResult
+               JPEGMetadata · Pan115Drive · QuarkDrive · SMBClient
+               WebDAVClient · WebDAVResourceLoader
+Compression/   PhotoCompressor
+Import/        ImportCandidate · ImportService
+Infrastructure/ KeychainAccess · LumaKeychainVault · SourceTransfer
+Library/       LibraryOverviewService · LibraryVaultService · LocalCinemaWatcher
+Media/         ArtworkCache · EditLUTLoader · FFmpegPrewarm · ImageLoader
+               ImageTransform · ObjectDetector · PersonAvatarLoader
+               PersonPalette · PhotoBeauty · PhotoHasher · PhotoIntelligence
+               PhotoKitBridge · PhotoKitThumbnailProvider · PhotoQuality
+               RawSupport · SigLIPEngine · SigLIPTokenizer
+               ThumbnailFileIndex · VideoSupport
+Memories/      Memories · MemoryExporter · Trips
+Maps/          BaiduTileService
+Models/        ModelInstaller · ModelManifest · ModelRegistry
+People/        FaceClustering
+Places/        WorldCityIndex
+Playback/      PlaybackSourceResolver · SourcePlaybackProgressStore
+Search/        LibrarySearchCrossLibrary · SearchCenter · SearchProviders
+               SearchSessionStore · SearchTypes
+TV/            IPTVService · TVCatchupURL · TVClipRecorder
+               TVEPGService · TVLogoCache · TVPreviewCache · TVReminderCenter
+UseCases/      CinemaMetadataEnricher · ContentRepositories
+               EnrichedContentRepository · LibraryIngestService
+               NetworkCinemaMetadataEnricher · SnapshottedContentRepository
+               SourceContentCache · SourceErrorMapper · SourceSessions
+Video/         DisplayModeMatcher · EmbeddedSubtitleLoader · NowPlayingCenter
+               PlaybackCoreBridge · SubtitleLoader
 ```
 
 边界：
 
-- `Library/` 是数据层；`Media/` 是解码与视觉计算；`Cloud/` 是协议；`Catalog/` 是资源站抓取；`Cinema/` 是刮削与字幕；`TV/` 是 IPTV；`Video/` 是播放器的 App 侧胶水（把 `PlaybackCore` 接到 UI 与系统能力）。
-- `Services/Shared/KeychainAccess.swift` 是全应用唯一直接调用 Security.framework 的地方；`LumaKeychainVault` 在其上做统一凭据保险库。
+- 数据仓库（SQLite / 图库元数据 / 系统索引 / 三套库表）在独立 target `LumaPersistence`，本目录只留服务与编排。
+- AI 的模型后端契约、OpenAI 兼容实现、提示词上下文与工具定义在独立 target `LumaAI`；本目录 `AI/` 只留需要 `LibraryStore` 的执行侧。
+- `Library/` 是图库服务；`Media/` 是解码与视觉计算；`Cloud/` 是协议；`Catalog/` 是资源站抓取；`Cinema/` 是刮削与字幕；`TV/` 是 IPTV；`Video/` 是播放器的 App 侧胶水（把 `PlaybackCore` 接到 UI 与系统能力）。
+- `Infrastructure/` 只放系统能力适配（Security.framework 钥匙串、分享文件编解码），不持有业务状态；`UseCases/` 放跨模块业务编排（内容仓库包装、快照缓存、元数据补全、入库、会话适配、错误归一）。
+- `Services/Infrastructure/KeychainAccess.swift` 是全应用唯一直接调用 Security.framework 的地方；`LumaKeychainVault` 在其上做统一凭据保险库。
 - `Services/App/UpdateChecker` 是唯一对外网络访问（GitHub Releases）；`Diagnostics` 生成不含照片与凭据的诊断报告。
+- `Services/App/UIBenchmarkRunner` 只在 `LUMA_UI_BENCH` 环境变量下运行，正常启动不注册 display link、不采样图片加载；`UIPerformanceMonitor` 采样帧间隔并驱动 NSScrollView，`UIPerformanceMetrics` 记录缩略图 / 海报加载耗时。
 
-### 4.6 `Store/`（58 个文件，其中 49 个 `LibraryStore+*` 扩展）
+### 4.6 `Store/`（59 个文件，其中 50 个 `LibraryStore+*` 扩展；按领域分 7 组）
 
 ```
-LibraryStore.swift
-LibraryStore+AIAgent            LibraryStore+AICinemaTools
-LibraryStore+AINetworkCinemaTools                      LibraryStore+AITools
-LibraryStore+AliyunCookie       LibraryStore+Beauty
-LibraryStore+Burst              LibraryStore+Catalog
-LibraryStore+Cinema             LibraryStore+CinemaBrowse
-LibraryStore+CinemaDetail       LibraryStore+CinemaFiles
-LibraryStore+Cloud              LibraryStore+CloudCache
-LibraryStore+CloudInfo          LibraryStore+CloudInsight
-LibraryStore+CloudLocal         LibraryStore+CloudSnapshot
-LibraryStore+CompressionExport  LibraryStore+Deletion
-LibraryStore+EditorStyle        LibraryStore+Favorites
-LibraryStore+Hashing            LibraryStore+Health
-LibraryStore+Import             LibraryStore+Intelligence
-LibraryStore+Maintenance        LibraryStore+Metadata
-LibraryStore+Organize           LibraryStore+Paging
-LibraryStore+Pan115             LibraryStore+People
-LibraryStore+PlaybackHooks      LibraryStore+Quark
-LibraryStore+Query              LibraryStore+Revisit
-LibraryStore+SearchBridge       LibraryStore+Selection
-LibraryStore+SourceJobs         LibraryStore+SourceRegistry
-LibraryStore+Stacking           LibraryStore+SystemAlbums
-LibraryStore+SystemCache        LibraryStore+SystemImport
-LibraryStore+SystemLibrary      LibraryStore+TV
-LibraryStore+Undo               LibraryStore+Vault
-LibraryStore+VideoHub           LibraryStore+Viewer
+Library/   LibraryStore.swift
+           LibraryStore+Beauty · +Burst · +CompressionExport · +Deletion
+           +EditorStyle · +Favorites · +Hashing · +Health · +Import
+           +Intelligence · +Maintenance · +Metadata · +Organize · +Paging
+           +People · +PlaybackHooks · +Query · +Revisit · +SearchBridge
+           +Selection · +Stacking · +SystemAlbums · +SystemCache
+           +SystemImport · +SystemLibrary · +SystemMedia · +Undo
+           +Vault · +VideoHub · +Viewer
+           SelectionModel · ViewerModel
+AI/        LibraryStore+AIAgent · +AICinemaTools · +AIContext
+           +AINetworkCinemaTools · +AITools · +AIToolsCatalog · +AIToolsCinema
+           +AITVTools
+Catalog/   CatalogBrowserModel · CatalogBrowserModel+Discovery · LibraryStore+Catalog
+Cinema/    LibraryStore+Cinema · +CinemaBrowse · +CinemaDetail · +CinemaFiles
+           NetworkCinemaModel
+Cloud/     CloudBrowserModel
+           LibraryStore+AliyunCookie · +Cloud · +CloudCache · +CloudInfo
+           +CloudInsight · +CloudLocal · +CloudSnapshot · +Pan115 · +Quark
+Shared/    LibraryStore+SourceJobs · +SourceRegistry · SourceHubModel
+TV/        IPTVBrowserModel · LibraryStore+TV
 ```
+
+**分组规矩**：`Library/` 是图库本身的读写与派生（默认落点）；其余目录只放该领域的扩展与状态对象，跨领域共用逻辑放 `Shared/`。
 
 独立状态对象（各自 `ObservableObject`，避免一张照片的选择触发整页重算）：
 
@@ -325,16 +392,6 @@ SourceHubModel · ViewerModel
 
 **扩展的硬规矩**：存储属性只能写在 `LibraryStore.swift`（Swift 的 extension 不能声明存储属性）；新领域一律新建 `LibraryStore+Xxx.swift`，不要塞回主文件。
 
-### 4.7 `Support/`（8）
-
-```
-DragSupport · KeyboardMonitor · LumaDesign · PhotoPicker
-PrintSupport · ShortcutCatalog · ViewSupport · WindowAccessor
-```
-
-- `LumaDesign.swift`：设计 token（`LumaBrand` 六色、间距、圆角、材质）。
-- `ShortcutCatalog`：快捷键清单与帮助页数据源；`KeyboardMonitor`：全局按键监听。
-
 ---
 
 ## 5. 分层与依赖方向
@@ -342,10 +399,14 @@ PrintSupport · ShortcutCatalog · ViewSupport · WindowAccessor
 ```
 Luma (SwiftUI / AppKit / Store / Services)
  ├─ LumaContentCore  ── PlaybackCore ── LumaCore
+ ├─ LumaDomain       ── PlaybackCore ── LumaCore
+ ├─ LumaPersistence  ── LumaDomain ── LumaContentCore ── LumaCore
  └─ LumaCore
 ```
 
 - 依赖只向下。UI 不直接 import `PlaybackCore` 的内部类型，统一走 `Services/Video/PlaybackCoreBridge`。
+- Luma 内部固定为 `Features → Store → Services（UseCases → Infrastructure）→ LumaPersistence（MetadataStore / SystemIndex / TVDatabase / CatalogDatabase / SQLite）→ SQLite / 文件 / 网络`；`LumaPersistence` 只依赖 `LumaDomain` 与路径入口，不得反向引用 Store、Services 或视图。
+- `LumaDomain` 只依赖 `LumaCore` / `PlaybackCore` / `LumaContentCore`；跨回 Luma 时一律通过组合根注入（`PersistenceLog.sink`、`PhotoTagCatalog.resourceResolver`）。
 - `PlaybackCore` 不碰文件路径、不写日志、不读 UserDefaults：缓存目录、ffmpeg 路径、日志与进度落盘由 App 注入。
 - `LumaContentCore` 只有契约：`Source` / `SourceSession` / `Content` / `PlaybackContract` / `PlaybackCoordinator` / `ContentSnapshot` / `SourceRevision` / `SourceJob` / `CommandPolicy` / `HTTPTransport` / `SourceError` / `M3U` / `IngestService`。
 - 具体源实现留在 `Luma/Services/*`，不要往 `LumaContentCore` 里加协议实现。
@@ -361,7 +422,7 @@ SwiftUI View ──读 @Published / 调方法──▶ LibraryStore(@MainActor) 
       └── PhotoThumbnailView ◀── ImageLoader ◀── LibraryPaths / CloudPaths / 网络
 ```
 
-- **唯一状态源**：`LibraryStore`（`@MainActor` + `ObservableObject`，见 `Store/LibraryStore.swift`）。
+- **唯一状态源**：`LibraryStore`（`@MainActor` + `ObservableObject`，见 `Store/Library/LibraryStore.swift`）。
 - 视图不持有照片 / 相簿数组，不自己开数据库、不自己拼路径；总数用 `store.visibleCount` / `visibleVideoCount`，不要用 `visiblePhotos.count`（分页窗口下两者不同）。
 - 视图 → Store 单向调用；Store 不持有任何 View。跨视图通信用 `@Published` 状态（`viewerID`、`showLibraryPicker`、`pendingLibraryOpen`、`needsLibrarySetup` 等）。
 - 唯一落盘入口：元数据走 `MetadataStore`（由 `LibraryStore.save()` 触发）；文件走 `LibraryPaths` / `CloudPaths` 提供的 URL，且只允许在 Store / `ImportService` / `ImageLoader` 里做。
@@ -525,7 +586,7 @@ cinema_entries
 - 关键词查询走 `SystemIndex.nativeKeywordAssetIDs`：先筛小表 `ZKEYWORD` 拿到 PK，再按 PK 关联 `Z_1KEYWORDS` / `ZADDITIONALASSETATTRIBUTES` / `ZASSET`；`limit == 0` 时不拼 LIMIT（整表 join 要 7 秒，先筛小表 0.03 秒）。
 - **当前模块不含图库数据时的坑**：浏览网络影院 / 电视 / 资源时，`store` 里没有图库内容（`sidebarItem` 不在系统图库范围、`photos` 为空）。所以 `storeServesLibrary = store.isSystemScope || !store.isNativeContainer`；为假时当前图库也改走只读直连，否则图库来源永远 0 命中。
 - 系统图库分页窗口是异步装填的：搜索词一变先清空再跑 SQL。统计前必须 `waitForSystemWindow(store:)`（最多 2.5s，120ms 轮询），否则大库上会瞬间得到「图库 0」并被会话缓存住。
-- 跨库打开：`openSearchResultInLibrary(path:pending:)` → 切 / 连目标库 → `consumePendingLibraryOpenIfReady()` 在原查看器打开（`Store/LibraryStore+SearchBridge.swift`）。
+- 跨库打开：`openSearchResultInLibrary(path:pending:)` → 切 / 连目标库 → `consumePendingLibraryOpenIfReady()` 在原查看器打开（`Store/Library/LibraryStore+SearchBridge.swift`）。
 - 会话缓存：`SearchSessionStore` 以「关键词 + 来源集合」为键保留最近 **4** 轮，返回搜索页不重跑。
 - 已知性能债：文件名与关键词是 `LIKE` 全表扫描。后续可建 FTS 表提速，但不得改变「结果完整」的语义。
 
@@ -535,7 +596,7 @@ cinema_entries
 
 - `AppModule`（`Features/Settings/AppModules.swift`）5 个：`library` `cloud` `catalog` `television` `cinema`。每个模块带标题、副标题、关闭说明、SF Symbol、双色渐变、`UserDefaults` key、对应 `SourceKind`。图库模块始终开启。
 - `SourceKind`（`Sources/LumaContentCore/Source/Source.swift`）5 种：`library` `cloudMount` `cinemaFeed` `catalogSite` `iptv`。
-- `SourceDescriptor` 是侧边栏统一行模型（`Store/LibraryStore+SourceRegistry.swift`）；新增来源 = 新增 provider + 注册表条目 + 能力位，不改侧边栏结构。
+- `SourceDescriptor` 是侧边栏统一行模型（`Store/Shared/LibraryStore+SourceRegistry.swift`）；新增来源 = 新增 provider + 注册表条目 + 能力位，不改侧边栏结构。
 - 归类看 `CatalogProviderKind.supportsNetworkCinema`（`maccms` / `fofo` / `ikanpp` / `iyf`）：它们只进「网络影院」，不再在「网络资源」重复出现；网盘里的影片随「网络存储」，不算影院模块。
 - 侧边栏分区：拾光 / 系统图库 / 网络存储。当前库本身就是官方库（`isNativeContainer`）时，主分区直接展示该库结构。
 
@@ -603,8 +664,8 @@ cinema_entries
 - 识别：`Services/Media/PhotoIntelligence`（Vision 分类 / OCR / 特征）、`SigLIPEngine` / `SigLIPTokenizer`、`ObjectDetector`、`PhotoQuality`、`PhotoBeauty`；模型由 `ModelInstaller` / `ModelManifest` / `ModelRegistry` 管理。
 - 人物：`FaceClustering` 聚类，`LibraryStore+People` 编排；`PersonPalette` / `PersonAvatarLoader` 管头像与色调。
 - 编排层 `LibraryStore+Intelligence` 只做调度，不直接发 Vision 请求。
-- 助手：配置与对话是**图库级**数据；API Key 只进钥匙串（`AIKeychain` → `LumaKeychainVault`）；请求只经 `AIProviderClient`；提示词只由 `AILibraryContext` 组装。
-- 工具定义在 `Services/AI/AILibraryTools`（含 `AILibraryCinemaTools` / `AILibraryTVTools`），执行在 `LibraryStore+AITools` / `+AICinemaTools` / `+AINetworkCinemaTools`；所有写操作先确认，失败结果必须回传模型。
+- 助手：配置与对话是**图库级**数据；API Key 只进钥匙串（`AIKeychain` → `LumaKeychainVault`）；请求只经 `AIChatProvider`（默认 `OpenAICompatibleChatProvider`，由 `AIChatProviderFactory` 选择）；提示词只由 `AILibraryContext` / `AIContextBuilder` 组装。
+- 工具定义在 `LumaAI`：`AILibraryTools`（图库基础 + 参数解析 / 风险判定 / 确认文案兜底）与同目录的 `AILibraryCatalogTools` / `AILibraryCinemaTools` / `AILibraryNetworkCinemaTools` / `AILibraryTVTools`，每个域文件自带写操作白名单与确认文案；执行分派在 `AIToolProviders`（`handles` 由定义列表推导）。图库基础工具在 `LibraryStore+AITools`，网络资源与影院分别拆在 `+AIToolsCatalog` / `+AIToolsCinema`，影院个人状态在 `+AICinemaTools`，网络影院在 `+AINetworkCinemaTools`，电视在 `+AITVTools`。所有写操作先确认，失败结果必须回传模型；MCP / 技能 / 快捷指令等外部能力实现 `AIIntegration` 后只注册工具 provider。
 
 ---
 
@@ -626,6 +687,7 @@ cinema_entries
 ./build.sh preview      # 增量编译 + 只替换可执行文件 + 重启 App
 swift run LumaCoreChecks
 swift run LumaContentChecks
+swift run LumaDataChecks
 ```
 
 `build.sh` 的实际行为（按执行顺序）：
@@ -652,7 +714,7 @@ swift run LumaContentChecks
 
 `preview` 分支只做 `swift build -c release -Xswiftc -no-whole-module-optimization --product Luma`，把二进制覆盖到 `Luma.app/Contents/MacOS/Luma`，然后 `quit` + `open` 重启。它**不复制资源、不签名、不下载 ffmpeg**——改了 `Resources/` 或签名相关的东西必须跑完整构建。
 
-版本号真源是 `Resources/Info.plist`：当前 `CFBundleShortVersionString 1.2.1`、`CFBundleVersion 7`。
+版本号真源是 `Resources/Info.plist`：当前 `CFBundleShortVersionString 2.1.1`、`CFBundleVersion 9`。
 
 **两个已知的坑**：
 
@@ -663,16 +725,185 @@ swift run LumaContentChecks
 
 ## 19. 测试
 
-命令行工具链没有 XCTest，测试是「可执行 target + 断言」：
+命令行工具链没有 XCTest，测试是「可执行 target + 断言」：三个检查器把每条断言打印成 `PASS` / `FAIL`，只要有一项失败就以退出码 1 结束，可以直接串进脚本或 CI。用例按领域拆文件，避免单个 `main.swift` 持续膨胀。
 
-- `Tests/LumaCoreChecks/main.swift`：网格布局、缩略图档位、感知哈希、行程分段、美化建议。
-- `Tests/LumaContentChecks/main.swift`：源激活策略、能力位、内容引用、播放目标、任务中心。
+### 19.1 运行
+
+```sh
+swift run LumaCoreChecks        # 纯算法：布局 / 转码 / 播放决策 / 字幕 / 导入规则
+swift run LumaContentChecks     # 内容契约：源语义 / 传输 / 播放协调 / 网络资源 / IPTV
+swift run LumaDataChecks        # 领域模型 + SQLite 读写
+echo $?                         # 0 = 全过；1 = 有断言失败
+```
+
+- 三个 target 互不依赖，可以并行跑；单个 target 全量在秒级完成。
+- 检查器不读真实图库、不联网、不写用户目录，用例需要的输入都在文件内就地构造。
+- `swift run` 与 `./build.sh` 共用 `.build`；同时跑会撞上 `input file '...' was modified during the build`，等一边结束再跑另一边。
+
+### 19.2 断言 API（`Tests/TestSupport/CheckContext.swift`）
+
+| API | 说明 |
+| --- | --- |
+| `expect(条件, "描述")` | 布尔断言；失败累加计数并打印 `FAIL 描述` |
+| `expectEqual(实际, 期望, "描述")` | 相等断言，失败时打印实际值与期望值 |
+| `expectClose(实际, 期望, accuracy: 精度, "描述")` | `CGFloat` 近似相等，用于几何 / 布局 |
+| `CheckRecorder.shared.finish()` | 汇总失败数并以非零码退出；每个 `main.swift` 末尾必须调用 |
+
+`expect` 的参数是 `@autoclosure`，只有真正断言时才求值；断言失败不会中断后续用例，一次能看到全部问题。
+
+### 19.3 检查器清单
+
+- `Tests/TestSupport/CheckContext.swift`：检查器共用的断言记录器（PASS / FAIL 汇总、非零退出）。
+- `Tests/LumaDataChecks/main.swift`：`LumaDomain` / `LumaPersistence` 的公开边界回归——视频 / RAW 格式判定、坐标校验、地点聚类、UUID 分片、SQLite 读写与 `MetadataStore` 的照片 / 设置往返。
+- `Tests/LumaCoreChecks/`：
+  - `ChecksLayout.swift`：缩略图档位、网格与瀑布流、行程分段。
+  - `ChecksMediaInsight.swift`：美化建议、JPEG 元数据剥离、票据 / 证件文字、地标、感知哈希。
+  - `ChecksFootprint.swift`：足迹回放与连续巡航时间轴。
+  - `ChecksVideoPlanning.swift`：转码档位、滤镜链、缓冲档位、音频策略、失败分类、原生直读与画面比例。
+  - `ChecksBluray.swift`：蓝光原盘输入、MPLS 章节、多角度与字幕语言偏好。
+  - `ChecksPlaybackRuntime.swift`：缓冲自适应、HLS 缓存键 / 清理、电视线路重试、seek 决策与时间轴。
+  - `ChecksVideoMatrix.swift`：媒体矩阵的纯决策回归（可直通编码、hvc1 / DV 标签、降档、HDR 映射、多音轨、直播参数）。
+  - `ChecksSubtitles.swift`：SRT / VTT / ASS 解析、样式、时间命中与烧录路径转义。
+  - `ChecksImport.swift`：视频 / RAW 扩展名、实况照片配对、媒体归类、蓝光失败文案与 EXIF 时间。
+- `Tests/LumaContentChecks/`：
+  - `ChecksSource.swift`：源激活语义、能力位、错误恢复、任务中心、任务耗时与内容模型。
+  - `ChecksTransport.swift`：HTTP 重试、Mock 传输、快照与修订号。
+  - `ChecksPlayback.swift`：播放协调器、占位仓库与 provider 解析失败。
+  - `ChecksCatalogPlayback.swift`：网络资源的播放目标、请求画像、续看进度与适配器解析契约。
+  - `ChecksIPTV.swift`：M3U 解析 / 多线路排序、频道名本地化与省份归类。
+
+### 19.4 新增一条检查
+
+1. 纯逻辑先落到库里：算法 → `Sources/LumaCore`，播放 → `Sources/PlaybackCore`，内容契约 → `Sources/LumaContentCore`，数据层 → `Sources/LumaDomain` / `Sources/LumaPersistence`。**不要在 `Sources/Luma` 里加只给测试用的分支。**
+2. 在对应 target 已有的 `Checks<领域>.swift` 里加 `func runXxxChecks()`，内部用 `expect*`；同一领域沿用已有文件，不要为一条用例新建文件（每个 `Checks*.swift` 控制在 400 行以内，超了按子领域再拆）。
+3. 新文件才需要在 `Tests/<target>/main.swift` 里加一行调用；已存在的文件只需在函数里补断言，并在 `finish()` 之前执行。
+4. `swift run <target>` 跑绿后，再跑另外两个 target，确认没有互相影响。
 
 约定：
 
-- 纯逻辑新增优先放 `Sources/LumaCore` 并补断言，断言失败必须非零退出。
-- 涉及数据层的行为用 `MetadataStore` 的临时库手工验证。
-- 手工回归清单：建库引导（浅 / 深 / 自动 × 极端强调色）、百万级滚动、统一搜索六来源、跨库打开、播放器按住加速与字幕、切库后主题与设置、系统图库只读边界。
+- 检查器只覆盖「不依赖真实样片 / 网络 / 用户库」的决策与契约。容器 × 编码 × HDR × 音轨的真实解码矩阵仍用 `Tools/media_matrix.py`；检查器负责把矩阵结论固化成断言（可直通编码、hvc1 / DV 标签、降档、映射、多音轨），防止结论与代码漂移。
+- 站点 HTML / 直链提取属于适配器层，需要真实页面样本才能验证；播放链路本身的公共语义放在 `ChecksCatalogPlayback.swift`。
+- 涉及数据层的行为优先写进 `Tests/LumaDataChecks`（临时目录 + `MetadataStore(url:)`），不再依赖手工验证。
+- 导入规则（扩展名、实况照片配对、媒体归类、蓝光文案、EXIF 时间）只有 `Sources/LumaCore/ImportRules.swift` 一份实现，App 与 `ChecksImport.swift` 共用；不要在 App 层另写一套。
+
+### 19.5 手工回归清单
+
+建库引导（浅 / 深 / 自动 × 极端强调色）、百万级滚动、统一搜索六来源、跨库打开、播放器按住加速与字幕、切库后主题与设置、系统图库只读边界。
+
+### 19.6 界面性能基准（应用内采集）
+
+没有 Instruments 也能量化图库滚动与缩略图加载。基准在 App 内执行，Python 只负责启动、等待与汇总：
+
+```sh
+./build.sh
+python3 Tools/ui_perf.py                                       # 全部场景，单轮 5 秒
+python3 Tools/ui_perf.py --scenes grid-square,cinema-wall --seconds 8
+python3 Tools/ui_perf.py --min-fps 55 --max-slow-ratio 0.03    # 不达标退出码 1
+python3 Tools/ui_perf.py --build                               # 先完整构建再跑
+python3 Tools/ui_perf.py --report /tmp/luma-ui-trace-xxx.json  # 只解析已有报告
+```
+
+`ui_perf.py` 参数：
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `--scenes` | 五个全跑 | 逗号分隔的场景名 |
+| `--seconds` | 5 | 单轮滚动秒数（每个场景跑两轮） |
+| `--out` | `/tmp/luma-ui-perf-<时间戳>.json` | 报告路径 |
+| `--report` | — | 只解析已有 JSON，不启动应用 |
+| `--min-fps` / `--max-slow-ratio` | 不校验 | 阈值；任一不满足则退出码 1 |
+| `--timeout` | 360 | 等报告的秒数 |
+| `--build` | 关 | 启动前跑一次 `./build.sh` |
+| `--allow-running` | 关 | 允许已有 Luma 实例（单实例下新进程会直接退出，不建议） |
+
+场景（`--scenes` 的可选值）：
+
+| 场景 | 实际在测什么 |
+| --- | --- |
+| `grid-square` | 图库方形网格：`LazyVGrid` + 快速层缩略图 |
+| `grid-actual` | 图库原始比例网格：不同高度单元格的重排 |
+| `grid-masonry` | 瀑布流：列高计算与增量布局 |
+| `cinema-wall` | 影院海报墙：`poster.poster` 封面加载 |
+| `catalog-channel` | 网络资源频道货架：远程封面与列表加载 |
+
+应用侧实现在 `Sources/Luma/Services/App/`，三段职责：
+
+| 文件 | 职责 |
+| --- | --- |
+| `UIBenchmarkRunner.swift` | 编排：切场景 → 找可滚动视图 → 跑两轮 → 写 JSON → 退出；由 `RootView` 的 `.task` 在检测到环境变量时触发 |
+| `UIPerformanceMonitor.swift` | 用 `CADisplayLink` 采样真实刷新节奏，并按 1800pt/s 驱动底层 `NSScrollView` 的 clip view |
+| `UIPerformanceMetrics.swift` | 线程安全地收集缩略图 / 海报加载耗时；正常启动时 `collecting == false`，记录是空操作 |
+
+环境变量（通常由 `ui_perf.py` / `ui_trace.sh` 注入，手工调试时才自己设）：
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `LUMA_UI_BENCH` | 报告 JSON 路径；设置后启动即进入基准模式，跑完自动退出 |
+| `LUMA_UI_BENCH_SCENES` | 逗号分隔场景名；非法或为空时退回全部 |
+| `LUMA_UI_BENCH_SECONDS` | 单轮滚动秒数（默认 5） |
+
+采集口径：
+
+- 帧间隔来自 `CADisplayLink` 的 `timestamp`；`expectedFrameMs` 取首帧的 `link.duration`，60Hz / 120Hz 屏各按自己的刷新率计算。
+- 慢帧阈值 `max(1.5 × 帧间隔, 24ms)`；丢帧按 `round(间隔 / 帧间隔) - 1` 折算；`p50 / p95 / p99 / max` 都按同一套向上取整分位口径。
+- 滚动到片尾会跳回顶部，保证整轮持续有新格子进入可视区，形成真实渲染负载；走的仍是 SwiftUI `LazyVGrid` / `LazyVStack` 的创建、复用与图片加载路径。
+- 每个场景跑两轮：`pass1` 偏冷（首次解码 / 磁盘读）、`pass2` 偏热（缓存命中）；两轮的图片加载分开统计。
+- 图片加载按 key 聚合：`grid.quick`（快速层）、`grid.target`（目标档位）、`cover.target`（封面）、`poster.poster`（海报），各给 `count / failures / p50 / p95 / max`。
+- 场景状态：`ok` = 有数据且滚动出帧；`skipped` = 数据不足（空库 / 无已刮削条目 / 无已启用网络资源）；`failed` = 内容高度不足或没有收到 `CADisplayLink` 回调。
+- 数据与图库规模、海报数量、网络响应强相关。**只比较同一图库、同一版本下同场景的差异**，不要跨机器比绝对值。
+
+报告结构（`schemaVersion: 1`）：
+
+```
+{ appVersion, osVersion, architecture, libraryPath, libraryPhotoCount, generatedAt,
+  scenes: [ { scene, status, note, itemCount, scrollable,
+              passes: [ { frame: { label, seconds, frames, fps, expectedFrameMs,
+                                   p50Ms, p95Ms, p99Ms, maxMs,
+                                   slowFrameCount, slowFrameRatio, estimatedDroppedFrames,
+                                   documentHeight, viewportHeight, startOffset, endOffset },
+                          imageLoads: [ { key, count, failures, p50Ms, p95Ms, maxMs } ] } ] } ] }
+```
+
+### 19.7 Instruments trace（需要完整 Xcode）
+
+`Tools/ui_trace.sh` 用 `xctrace` 录制 trace，同时用同一套环境变量触发应用内基准，一次拿到「Instruments 时间线 + JSON 数字」：
+
+```sh
+./build.sh
+Tools/ui_trace.sh                                              # Animation Hitches，全部场景
+Tools/ui_trace.sh --template "Time Profiler" --scenes grid-square --seconds 6
+Tools/ui_trace.sh --template "Metal System Trace" --output /tmp/luma-metal.trace
+```
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `--template` | `Animation Hitches` | `xcrun xctrace list templates` 里的模板名 |
+| `--scenes` | 五个全跑 | 与 `ui_perf.py` 同名的场景 |
+| `--seconds` | 5 | 单轮滚动秒数 |
+| `--output` | `/tmp/luma-ui-trace-<时间戳>.trace` | trace 路径；同名 `.json` 报告并排生成 |
+
+- 模板选择：掉帧 / 卡顿看 `Animation Hitches`，CPU 热点看 `Time Profiler`，GPU 与合成看 `Metal System Trace`，内存增长看 `Allocations`。
+- 脚本结束会自动调 `ui_perf.py --report` 打印同一份数字；trace 用 `open <x.trace>` 在 Instruments 里看。
+- 录制上限按「场景数 ×（2 轮 + 准备余量）」估算，最长 10 分钟，避免异常时一直录。
+
+前置（缺 `xctrace` 时脚本会打印同样的指引并以退出码 2 结束）：
+
+```sh
+# 方式一：App Store 搜索 Xcode，或 https://developer.apple.com/download/all/ 下载
+# 方式二：xcodes CLI（安装时会交互提示输入 Apple ID / app 专用密码）
+xcodes install --latest --select
+
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+xcrun xctrace list templates      # 应能看到 Animation Hitches / Time Profiler
+```
+
+注意：`xctrace record` 首次会申请录制权限；应用是单实例，录之前先退出正在运行的 Luma。
+
+### 19.8 新增埋点或基准场景
+
+- **新增图片加载埋点**：在加载路径记下 `CFAbsoluteTimeGetCurrent()` 起始时间，完成后调用 `UIPerformanceMetrics.shared.record(kind:tier:seconds:success:)`。`tier` 只有 `quick / target / poster`，新类型优先复用 `kind` 区分而不是加 `Tier`；没开基准时调用是空操作。
+- **新增基准场景**：在 `UIBenchmarkRunner.Scene` 加 case（`rawValue` 就是 `--scenes` 用的名字），在 `prepare(_:store:)` 里切好界面并等到有数据，滚动与采样交给现有逻辑；再把场景名补进 `ui_perf.py` 的 `DEFAULT_SCENES` 和 `ui_trace.sh` 的默认 `SCENES`，最后更新 19.6 的场景表。
 
 ---
 
@@ -703,9 +934,10 @@ swift run LumaContentChecks
 
 ## 22. 变更同步清单
 
-改完代码，至少问自己这四句：
+改完代码，至少问自己这五句：
 
 1. 新增 / 移动 / 删除了文件？→ 更新 §4 清册 + AGENTS.md 文件职责表。
 2. 新增了表、索引、缓存目录？→ 更新 §7 / §8，并写明失效条件。
 3. 改了口径（阈值、防抖、倍率、分页）？→ 更新 §9 / §10 / §14。
 4. 改了构建、签名、打包？→ 更新 §18，并实际跑一遍 `./build.sh`。
+5. 改了检查器、基准场景或性能埋点？→ 更新 §19 的清单 / 场景表 / 参数表，并跑一遍对应 target。

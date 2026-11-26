@@ -2,32 +2,6 @@ import Foundation
 import AppKit
 import CoreGraphics
 
-/// 网盘照片的 EXIF / GPS 元数据。
-///
-/// 网盘文件同样带有 EXIF（拍摄时间、相机、镜头、曝光参数、GPS），
-/// 只是需要用 Range 请求读取文件头部（WebDAV / 官方网盘）或直接读挂载文件（SMB）。
-/// 这里只解析元数据，不下载原图，也不写回网盘。
-struct CloudPhotoEXIF: Codable {
-    var capturedAt: Date?
-    var make: String?
-    var model: String?
-    var lens: String?
-    var iso: String?
-    var aperture: String?
-    var shutterSpeed: String?
-    var focalLength: String?
-    var latitude: Double?
-    var longitude: Double?
-    var pixelWidth: Int?
-    var pixelHeight: Int?
-
-    var isEmpty: Bool {
-        capturedAt == nil && make == nil && model == nil && lens == nil
-            && iso == nil && aperture == nil && shutterSpeed == nil && focalLength == nil
-            && latitude == nil && longitude == nil
-    }
-}
-
 enum CloudEXIF {
     /// 头部探测区间：EXIF（APP1）与 HEIC 的 meta box 都在文件最前面。
     static let probeRange = 0...262_143

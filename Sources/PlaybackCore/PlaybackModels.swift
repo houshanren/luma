@@ -200,6 +200,13 @@ public extension VideoProbe {
         }
         return codec == "HEVC"
     }
+
+    /// 4K 50/60fps 的 HEVC：本机系统解码器出不了画面（有声音、全黑），换容器也救不回来。
+    /// 直接重编码虽然多花几秒起播，但比「黑屏几秒再降级」干净。
+    var requiresRecodeForHighFrameRate4K: Bool {
+        guard isHEVC, frameRate >= 45 else { return false }
+        return max(size.width, size.height) >= 1700
+    }
 }
 
 public enum VideoError: LocalizedError {

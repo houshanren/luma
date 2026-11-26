@@ -131,6 +131,11 @@ struct RootView: View {
             CloudSetupWizardView()
                 .environmentObject(store)
         }
+        // Cookie / 令牌失效：原地重新登录，保存后自动刷新当前网盘。
+        .sheet(item: $cloud.reauthMount) { mount in
+            CloudCookieReauthView(mount: mount)
+                .environmentObject(store)
+        }
         .sheet(item: $cloud.nameRequest) { request in
             CloudNameSheet(request: request)
                 .environmentObject(store)
@@ -212,6 +217,11 @@ struct RootView: View {
             guard let target else { return }
             store.openViewer(target.id)
         }
+        // 环境变量驱动的界面性能基准：自动切换场景、滚动并输出 JSON 报告。
+        .task {
+            guard let reportPath = ProcessInfo.processInfo.environment["LUMA_UI_BENCH"] else { return }
+            await UIBenchmarkRunner.runIfRequested(store: store, reportPath: reportPath)
+        }
         // 影院详情跟随应用外观：浅色皮肤下页面、标题栏与控制台一起保持浅色，
         // 深色皮肤下仍是影院暗色，不再整窗固定切深色。
         .preferredColorScheme(settings.appearance.colorScheme)
@@ -274,6 +284,16 @@ struct RootView: View {
         switch store.sidebarItem {
         case .cinema, .cloudCinema: return true
         default: return false
+        }
+    }
+
+    /// 会替换工具栏中区的模块总览页：网络存储 / 网络资源 / 网络影院 / 网络电视 / 图库总览。
+    private static func isModuleHubItem(_ item: SidebarItem) -> Bool {
+        switch item {
+        case .cloudStorages, .catalogSources, .networkCinema, .iptv, .systemLibraries:
+            return true
+        default:
+            return false
         }
     }
 
@@ -405,6 +425,13 @@ struct RootView: View {
             if sidebarChrome.isVisible != visible {
                 sidebarChrome.isVisible = visible
             }
+        }
+        // 模块总览页会整体换掉工具栏中区（分页控件），SwiftUI 重建工具栏时
+        // 偶尔不再给侧边栏铺内容：列还在、左栏一片空白。切换模块页后重建一次侧边栏；
+        // 等分区收展动画（最长 0.42s）结束再重建，避免重建又落回中间态。
+        .onChange(of: store.sidebarItem) { _, item in
+            guard Self.isModuleHubItem(item) else { return }
+            nudgeSidebarLayout(after: 0.45)
         }
 
         if store.viewerPhoto != nil, settings.viewerLayout == .fullscreen {

@@ -719,7 +719,7 @@ struct CatalogToolbarConsole: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "arrow.up.arrow.down")
+                Image(systemName: catalog.sort.symbol)
                     .font(.system(size: 10, weight: .semibold))
                 Text(shortSortTitle)
                     .font(.system(size: 10.5, weight: .medium))
@@ -1644,11 +1644,11 @@ struct CatalogArtworkImage: View {
     @State private var image: NSImage?
 
     var quickKey: String {
-        CatalogPaths.artworkURL(sourceID: source.id, urlString: urlString, quick: true).path
+        CatalogArtworkCache.cacheKey(sourceID: source.id, urlString: urlString, quick: true)
     }
 
     var fullKey: String {
-        CatalogPaths.artworkURL(sourceID: source.id, urlString: urlString, quick: false).path
+        CatalogArtworkCache.cacheKey(sourceID: source.id, urlString: urlString, quick: false)
     }
 
     init(source: CatalogSource, urlString: String,
@@ -1665,10 +1665,10 @@ struct CatalogArtworkImage: View {
             return
         }
         let quick = CatalogArtworkMemory.shared.image(
-            for: CatalogPaths.artworkURL(sourceID: source.id, urlString: urlString, quick: true).path)
+            for: CatalogArtworkCache.cacheKey(sourceID: source.id, urlString: urlString, quick: true))
         let full = quality == .full
             ? CatalogArtworkMemory.shared.image(
-                for: CatalogPaths.artworkURL(sourceID: source.id, urlString: urlString, quick: false).path)
+                for: CatalogArtworkCache.cacheKey(sourceID: source.id, urlString: urlString, quick: false))
             : nil
         _image = State(initialValue: full ?? quick)
     }

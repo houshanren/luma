@@ -11,6 +11,7 @@ final class CinemaArtworkCache {
     nonisolated func image(for urlString: String, maxPixelSize: Int = 800) async -> NSImage? {
         let key = "cinema:\(urlString)|\(maxPixelSize)"
         let diskURL = Self.diskURL(for: urlString)
+        let started = CFAbsoluteTimeGetCurrent()
         let image = await ArtworkCache.shared.image(for: key,
                                                     diskURL: diskURL,
                                                     maxPixelSize: maxPixelSize) {
@@ -27,6 +28,9 @@ final class CinemaArtworkCache {
             return data
         }
         // 写入磁盘后顺带检查容量：超过 6 GB 就按最久未用淘汰。
+        UIPerformanceMetrics.shared.record(kind: "poster", tier: .poster,
+                                           seconds: CFAbsoluteTimeGetCurrent() - started,
+                                           success: image != nil)
         if image != nil { Self.scheduleDiskTrim() }
         return image
     }

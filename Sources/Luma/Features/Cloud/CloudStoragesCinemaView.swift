@@ -1561,7 +1561,7 @@ struct CloudStoragesResumeView: View {
 struct CloudStoragesManageView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
-    @State private var indexStates: [UUID: MetadataStore.CloudIndexState] = [:]
+    @State private var indexStates: [UUID: CloudIndexState] = [:]
     @State private var renamingMount: CloudMount?
     @State private var renameText = ""
 
@@ -1869,6 +1869,9 @@ struct CloudStoragesManageView: View {
                                       symbol: "key.horizontal", tint: tint) {
                     if mount.kind == .webdav || mount.kind == .smb {
                         store.presentCloudSheet(mount)
+                    } else if mount.kind.supportsInPlaceReauth {
+                        // Cookie 型网盘就地更新凭据，保存在同一个挂载上。
+                        store.presentCloudReauth(mount)
                     } else {
                         store.presentCloudWizard(flow: mount.kind.wizardFlow)
                     }
@@ -1916,7 +1919,8 @@ struct CloudStoragesManageView: View {
     func authText(for mount: CloudMount) -> String {
         switch mount.kind {
         case .smb, .webdav: return "账号密码"
-        case .quark, .aliyun, .pan115: return "浏览器 Cookie"
+        case .quark, .pan115: return "浏览器 Cookie"
+        case .aliyun: return mount.authMode == .webQR ? "扫码登录" : "浏览器 Cookie"
         case .baidu: return mount.authMode == .oauth ? "OAuth 令牌" : "浏览器 Cookie"
         }
     }
@@ -1935,7 +1939,7 @@ struct CloudStoragesManageView: View {
         return parts.joined(separator: " · ")
     }
 
-    func indexText(_ state: MetadataStore.CloudIndexState?) -> String {
+    func indexText(_ state: CloudIndexState?) -> String {
         guard let state else { return "尚未建立" }
         let base = "\(state.mediaCount.formatted()) 项 · \(state.folderCount.formatted()) 目录"
         return state.complete ? base : base + " · 未完成"

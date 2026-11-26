@@ -86,16 +86,20 @@ struct TVChannelActionCluster: View {
         }
     }
 
-    /// 线路选择：与 OSD / 工具栏共用同一枚图标。
+    /// 线路选择：按接入平台分组，列出这个台在所有平台里的全部线路。
     private var lineMenu: some View {
         Menu {
-            ForEach(Array(channel.streamLines.enumerated()), id: \.offset) { pair in
-                Button {
-                    store.selectTVLine(pair.offset, for: photoID)
-                } label: {
-                    Text(pair.offset == lineIndex
-                         ? "✓ 线路 \(pair.offset + 1)"
-                         : "线路 \(pair.offset + 1)")
+            ForEach(store.tvLineGroups(for: photoID)) { group in
+                Section {
+                    ForEach(group.lines) { line in
+                        Button {
+                            store.selectTVLine(url: line.url, for: photoID)
+                        } label: {
+                            Text(line.url == activeURL ? "✓ \(line.title)" : line.title)
+                        }
+                    }
+                } header: {
+                    Text(group.sourceName)
                 }
             }
         } label: {
@@ -105,6 +109,10 @@ struct TVChannelActionCluster: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("选择线路 · 当前 \(lineIndex + 1)/\(lineCount)（← → 循环）")
+    }
+
+    private var activeURL: String {
+        store.tvPlaybackChannel(for: photoID)?.streamURL ?? channel.streamURL
     }
 
     /// 睡眠定时：30 / 60 / 90 分钟后渐隐停止。

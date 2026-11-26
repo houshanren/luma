@@ -81,7 +81,8 @@ struct CloudMountSidebarRow: View {
             },
             onToggle: toggle,
             onRetry: { store.refreshCloudDirectory() },
-            onReauthorize: { store.presentCloudWizard(flow: mount.kind.wizardFlow) }
+            // Cookie 型网盘就地重新登录；百度 OAuth 等仍回落到原向导。
+            onReauthorize: { store.presentCloudReauth(mount) }
         ) { _ in
             cover
         } menu: {
@@ -123,7 +124,7 @@ struct CloudMountSidebarRow: View {
                 let alwaysCookie = mount.kind == .quark || mount.kind == .aliyun
                     || mount.kind == .pan115
                 Button(alwaysCookie ? "更新 Cookie…" : "重新授权…") {
-                    store.presentCloudWizard(flow: mount.kind.wizardFlow)
+                    store.presentCloudReauth(mount)
                 }
             }
             Divider()

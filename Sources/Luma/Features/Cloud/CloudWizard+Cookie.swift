@@ -15,6 +15,7 @@ extension CloudSetupWizardView {
 
     private var isAliyunCookie: Bool { flow == .aliyunCookie }
     private var isPan115Cookie: Bool { flow == .pan115 }
+    private var isQuarkCookie: Bool { flow == .quark }
     private var cookieProviderName: String {
         if isAliyunCookie { return "阿里云盘" }
         return isPan115Cookie ? "115 网盘" : "夸克网盘"
@@ -32,7 +33,27 @@ extension CloudSetupWizardView {
 
     private var cookieInputStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("1. 从浏览器复制\(cookieProviderName)登录凭据")
+            // 阿里云盘的方式切换已并入页头，这里只保留夸克与 115 的切换器。
+            if isQuarkCookie {
+                quarkLoginModeSwitcher
+            } else if isPan115Cookie {
+                pan115LoginModeSwitcher
+            }
+            if isAliyunCookie && aliyunQRMode {
+                aliyunQRLoginPanel
+            } else if isQuarkCookie && quarkQRMode {
+                quarkQRLoginPanel
+            } else if isPan115Cookie && pan115QRMode {
+                pan115QRLoginPanel
+            } else {
+                cookiePasteStep
+            }
+        }
+    }
+
+    private var cookiePasteStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(isAliyunCookie ? "1. 粘贴 refresh_token" : "1. 从浏览器复制\(cookieProviderName)登录凭据")
                 .font(.system(size: 13, weight: .semibold))
 
             VStack(alignment: .leading, spacing: 8) {
@@ -510,6 +531,32 @@ extension CloudSetupWizardView {
             return
         }
 
+        if flow == .aliyunCookie {
+            // 扫码走的网页令牌与粘贴的开放平台令牌，目录接口不同：两边都试一次。
+            let preferWeb = aliyunWebToken != nil
+            let cookie = cookieText
+            let trail = scopeBrowseTrail.map(\.name).joined(separator: " › ")
+            Diagnostics.record("阿里云盘范围读取 container=\(container.isEmpty ? "root" : container) "
+                               + "路径=\(trail.isEmpty ? "根目录" : trail) preferWeb=\(preferWeb)")
+            Task {
+                do {
+                    let entries = try await store.aliyunScopeFolders(cookie: cookie,
+                                                                     containerID: container,
+                                                                     preferWeb: preferWeb)
+                    guard token == scopeBrowseToken else { return }
+                    isLoadingScopeFolders = false
+                    applyScopeFolders(entries)
+                } catch {
+                    guard token == scopeBrowseToken else { return }
+                    isLoadingScopeFolders = false
+                    scopeBrowseFolders = []
+                    scopeBrowseError = (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
+            }
+            return
+        }
+
         guard flow.usesCookie else {
             isLoadingScopeFolders = false
             return
@@ -673,6 +720,8 @@ extension CloudSetupWizardView {
             let result: (ok: Bool, message: String)
             if aliyun {
                 result = await store.testAliyunCookie(text)
+                // 手动粘贴走开放平台；之前扫码暂存的网页令牌作废。
+                if result.ok { aliyunWebToken = nil }
             } else if pan115 {
                 result = await store.testPan115Cookie(text)
             } else {
@@ -715,11 +764,24 @@ extension CloudSetupWizardView {
         status = "正在验证并保存…"
         statusIsError = false
         let text = cookieText
+        let webToken = aliyunWebToken
         Task {
-            let error = await store.registerAliyunCookieMount(input: text,
+            let error: String?
+            if let webToken {
+                // 扫码登录：令牌已经在扫码阶段校验过，这里只写回挂载。
+                // 没动过接入范围时显式重置为整个网盘：旧挂载可能绑着
+                // 修复排序前选错的盘，重新扫码就应当回到默认范围。
+                error = store.registerAliyunWebMount(token: webToken,
+                                                     driveID: webToken.driveID,
+                                                     name: mountName,
+                                                     scopes: resolvedScopes ?? [],
+                                                     excludes: resolvedExcludes ?? [])
+            } else {
+                error = await store.registerAliyunCookieMount(input: text,
                                                               name: mountName,
                                                               scopes: resolvedScopes,
                                                               excludes: resolvedExcludes)
+            }
             isBusy = false
             if let error {
                 status = error

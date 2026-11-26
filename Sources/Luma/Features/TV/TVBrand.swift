@@ -229,9 +229,28 @@ struct TVLogoImage: View {
             guard let urlString, !urlString.isEmpty else { return }
             if let cached = await TVLogoCache.shared.image(for: urlString) {
                 image = cached
-                usesDarkPlate = !Self.isDarkArtwork(cached)
+                // 底板判定要采样 32×32 像素并逐点求亮度：同一张台标反复出现时直接复用结论，
+                // 否则快速滚动（卡片不断创建 / 销毁）会在主线程反复做这份计算。
+                if let known = Self.platePreference(for: urlString) {
+                    usesDarkPlate = known
+                } else {
+                    let darkPlate = !Self.isDarkArtwork(cached)
+                    Self.storePlatePreference(darkPlate, for: urlString)
+                    usesDarkPlate = darkPlate
+                }
             }
         }
+    }
+
+    /// 台标底板偏好缓存：只按 URL 记一个 Bool，图片本身仍由 `TVLogoCache` 管理。
+    private static let plateCache = NSCache<NSString, NSNumber>()
+
+    private static func platePreference(for urlString: String) -> Bool? {
+        plateCache.object(forKey: urlString as NSString)?.boolValue
+    }
+
+    private static func storePlatePreference(_ value: Bool, for urlString: String) {
+        plateCache.setObject(NSNumber(value: value), forKey: urlString as NSString)
     }
 
     /// 采样台标亮度，判断它是否适合配浅色底板。

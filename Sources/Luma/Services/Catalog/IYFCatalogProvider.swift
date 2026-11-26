@@ -108,7 +108,12 @@ struct IYFCatalogProvider: CatalogProvider {
         } else {
             failure = CatalogError.parse("首页没有解析到内容")
         }
-        if let api = try? await Self.apiList(cid: "0", page: 1, source: source) {
+        // 首选 `/api/list/Search`：Kubb 等站点会关闭 `/api/list/index` 的签名校验，
+        // 但 Search 接口仍然可用；首页优先走它，避免整站被判成 404。
+        if let api = try? await Self.searchList(source: source, cid: "0", region: nil, page: 1) {
+            items = Self.merge(ssr: items, api: api.items)
+            hasMore = api.hasMore
+        } else if let api = try? await Self.apiList(cid: "0", page: 1, source: source) {
             items = Self.merge(ssr: items, api: api.items)
             hasMore = api.hasMore
         } else {
@@ -120,6 +125,9 @@ struct IYFCatalogProvider: CatalogProvider {
 
     func home(source: CatalogSource, page: Int) async throws -> CatalogPage {
         guard page > 1 else { return try await home(source: source) }
+        if let api = try? await Self.searchList(source: source, cid: "0", region: nil, page: page) {
+            return CatalogPage(items: api.items, page: page, hasMore: api.hasMore)
+        }
         let api = try await Self.apiList(cid: "0", page: page, source: source)
         return CatalogPage(items: api.items, page: page, hasMore: api.hasMore)
     }

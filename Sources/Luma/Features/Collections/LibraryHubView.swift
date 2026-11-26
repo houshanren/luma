@@ -117,28 +117,8 @@ struct LibraryHubTabs: View {
 /// 外接图库直连 Photos.sqlite（只读、不建索引），App 自己的图库沿用内存数据。
 @MainActor
 final class LibraryAggregateModel: ObservableObject {
-    struct LibrarySummary: Identifiable {
-        let id: String
-        let name: String
-        let path: String
-        let isNative: Bool
-        let isAppContainer: Bool
-        var photos: Int
-        var videos: Int
-        var albums: Int
-        var folders: Int
-        var updatedAt: Date?
-        var error: String?
-        /// 打开过、但不是当前容器的 App 图库：点进去等于切换 App 图库。
-        var isOtherAppLibrary: Bool = false
-    }
-
-    struct Item: Identifiable {
-        let photo: PhotoItem
-        let libraryID: String
-        let libraryName: String
-        var id: String { "\(libraryID)|\(photo.id.uuidString)" }
-    }
+    typealias LibrarySummary = LibraryOverviewSummary
+    typealias Item = LibraryOverviewItem
 
     private struct Target {
         let id: String
@@ -149,11 +129,7 @@ final class LibraryAggregateModel: ObservableObject {
         var isOtherAppLibrary: Bool = false
     }
 
-    private struct Loaded {
-        let summary: LibrarySummary
-        let items: [Item]
-        let favorites: [Item]
-    }
+    private typealias Loaded = LibraryOverviewService.NativeLoad
 
     @Published private(set) var summaries: [LibrarySummary] = []
     @Published private(set) var items: [Item] = []
@@ -201,10 +177,10 @@ final class LibraryAggregateModel: ObservableObject {
             } else if target.isOtherAppLibrary {
                 // 打开过的其他 App 图库：只读它自己的 Luma.sqlite 取体量，
                 // 不加载整库，也不参与照片 / 收藏聚合。
-                if let loaded = await Task.detached(priority: .utility, operation: {
+                if let summary = await Task.detached(priority: .utility, operation: {
                     Self.loadAppLibrary(target)
                 }).value {
-                    loadedSummaries.append(loaded.summary)
+                    loadedSummaries.append(summary)
                 } else {
                     loadedSummaries.append(LibrarySummary(id: target.id,
                                                           name: target.name,
@@ -306,66 +282,19 @@ final class LibraryAggregateModel: ObservableObject {
         return list
     }
 
-    /// 直连一个系统照片图库：读合计、相簿 / 文件夹数量与最近照片。
+    /// 直连一个系统照片图库：读取交给 `LibraryOverviewService`，视图不碰数据库。
     private nonisolated static func loadNative(_ target: Target) -> Loaded? {
-        let url = URL(fileURLWithPath: target.path)
-        guard let index = SystemIndex.openDirect(libraryURL: url) else { return nil }
-        let totals = index.summary(SystemQuery())
-        let meta = SystemIndex.albumMetadata(libraryURL: url)
-        let photos = index.page(SystemQuery(), offset: 0, limit: photoLimit)
-        let favs = index.page(SystemQuery(scope: .favorites), offset: 0, limit: favoriteLimit)
-        let dbURL = url.appendingPathComponent("database/Photos.sqlite")
-        let updated = (try? FileManager.default.attributesOfItem(atPath: dbURL.path))?[.modificationDate] as? Date
-
-        let summary = LibrarySummary(id: target.id,
-                                     name: target.name,
-                                     path: target.path,
-                                     isNative: true,
-                                     isAppContainer: target.isAppContainer,
-                                     photos: max(0, totals.total - totals.videos),
-                                     videos: totals.videos,
-                                     albums: meta.albums.count,
-                                     folders: meta.folders.count,
-                                     updatedAt: updated,
-                                     error: nil)
-        let items = photos.map {
-            Item(photo: $0, libraryID: target.id, libraryName: target.name)
-        }
-        let favorites = favs.map {
-            Item(photo: $0, libraryID: target.id, libraryName: target.name)
-        }
-        return Loaded(summary: summary, items: items, favorites: favorites)
+        LibraryOverviewService.loadNative(path: target.path,
+                                          name: target.name,
+                                          isAppContainer: target.isAppContainer,
+                                          photoLimit: photoLimit,
+                                          favoriteLimit: favoriteLimit)
     }
 
     /// 只读一个打开过的 App 图库的数据库，取体量 / 相簿 / 文件夹数与更新时间。
     /// 不加载整库资产，避免为一次总览把几十 GB 的图库读进内存。
-    private nonisolated static func loadAppLibrary(_ target: Target) -> Loaded? {
-        let url = URL(fileURLWithPath: target.path)
-        guard let dbURL = LibraryPaths.existingMetadataFile(in: url) else { return nil }
-        guard let db = try? SQLiteDatabase(path: dbURL.path, readonly: true) else { return nil }
-        let totals = (try? db.query("""
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN kind = 'video' THEN 1 ELSE 0 END) AS videos
-            FROM assets WHERE deleted_at IS NULL AND is_hidden = 0
-            """))?.first
-        let total = totals?["total"]?.int ?? 0
-        let videos = totals?["videos"]?.int ?? 0
-        let albums = (try? db.query("SELECT COUNT(*) AS c FROM albums"))?.first?["c"]?.int ?? 0
-        let folders = (try? db.query("SELECT COUNT(*) AS c FROM folders"))?.first?["c"]?.int ?? 0
-        let updated = (try? FileManager.default.attributesOfItem(atPath: dbURL.path))?[.modificationDate] as? Date
-        let summary = LibrarySummary(id: target.id,
-                                     name: target.name,
-                                     path: target.path,
-                                     isNative: false,
-                                     isAppContainer: false,
-                                     photos: max(0, total - videos),
-                                     videos: videos,
-                                     albums: albums,
-                                     folders: folders,
-                                     updatedAt: updated,
-                                     error: nil,
-                                     isOtherAppLibrary: true)
-        return Loaded(summary: summary, items: [], favorites: [])
+    private nonisolated static func loadAppLibrary(_ target: Target) -> LibrarySummary? {
+        LibraryOverviewService.loadAppLibrary(path: target.path, name: target.name)
     }
 }
 

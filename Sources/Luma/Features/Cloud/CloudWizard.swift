@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import LumaContentCore
 
 // MARK: - 统一接入向导
 //
@@ -79,6 +80,47 @@ struct CloudSetupWizardView: View {
     // 浏览器 Cookie（阿里云盘 / 夸克网盘 / 115 网盘）
     @State var cookieText = ""
     @State var cookieVerified = false
+
+    // 阿里云盘扫码登录
+    /// 阿里云盘默认走扫码；失败或想手动粘贴时可以切到 refresh_token。
+    @State var aliyunQRMode = true
+    @State var aliyunQRPhase: QRLoginPhase = .idle
+    @State var aliyunQRSession: QRLoginChallenge?
+    @State var aliyunQRMessage: String?
+    @State var aliyunQRTask: Task<Void, Never>?
+    @State var aliyunQRRunID = UUID()
+    /// 扫码成功后暂存的网页登录令牌：确认页点「添加」时直接写回挂载。
+    @State var aliyunWebToken: CloudToken?
+    /// 二维码上的扫描线动画进度。
+    @State var aliyunQRSweep = false
+    /// 二维码光晕的呼吸动画。
+    @State var aliyunQRPulse = false
+
+    // 夸克网盘扫码登录
+    /// 夸克默认走扫码；失败或想手动粘贴时可以切到 Cookie。
+    @State var quarkQRMode = true
+    @State var quarkQRPhase: QRLoginPhase = .idle
+    @State var quarkQRSession: QRLoginChallenge?
+    @State var quarkQRMessage: String?
+    @State var quarkQRTask: Task<Void, Never>?
+    @State var quarkQRRunID = UUID()
+    /// 二维码上的扫描线动画进度。
+    @State var quarkQRSweep = false
+    /// 二维码光晕的呼吸动画。
+    @State var quarkQRPulse = false
+
+    // 115 网盘扫码登录
+    /// 115 默认走扫码；失败或想手动粘贴时可以切到 Cookie。
+    @State var pan115QRMode = true
+    @State var pan115QRPhase: QRLoginPhase = .idle
+    @State var pan115QRSession: QRLoginChallenge?
+    @State var pan115QRMessage: String?
+    @State var pan115QRTask: Task<Void, Never>?
+    @State var pan115QRRunID = UUID()
+    /// 二维码上的扫描线动画进度。
+    @State var pan115QRSweep = false
+    /// 二维码光晕的呼吸动画。
+    @State var pan115QRPulse = false
 
     // Cookie / SMB 的接入范围：读取目录后可勾选一个或多个子目录
     @State var scopePicks: [CloudScopePick] = []
@@ -161,7 +203,7 @@ struct CloudSetupWizardView: View {
             Divider()
             footer
         }
-        .frame(width: 600, height: 680)
+        .frame(width: 600, height: wizardHeight)
         .onAppear {
             if let editingID = cloud.wizardEditingMountID,
                let mount = store.cloudMounts.first(where: { $0.id == editingID }) {
@@ -178,6 +220,9 @@ struct CloudSetupWizardView: View {
         }
         .onDisappear {
             cancelSMBDiscovery()
+            stopAliyunQRLogin()
+            stopQuarkQRLogin()
+            stopPan115QRLogin()
             OAuthLoopbackServer.shared.cancel()
         }
     }
@@ -189,11 +234,17 @@ struct CloudSetupWizardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("网盘接入向导")
                     .font(.system(size: 15, weight: .semibold))
-                Text(headerSubtitle)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
+                if !headerSubtitle.isEmpty {
+                    Text(headerSubtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
             }
-            Spacer()
+            // 阿里云盘第 1 步把登录方式切换并入页头，内容区直接从二维码卡片开始。
+            if showsHeaderLoginModeSwitcher {
+                aliyunLoginModeSwitcher
+            }
+            Spacer(minLength: 8)
             if let flow {
                 Text("第 \(step + 1) / \(flow.steps.count) 步 · \(flow.steps[step])")
                     .font(.system(size: 10.5, design: .monospaced))
@@ -213,6 +264,16 @@ struct CloudSetupWizardView: View {
         .padding(.vertical, 14)
     }
 
+    /// 阿里云盘以一张二维码为主，收窄高度避免底部留白。
+    private var wizardHeight: CGFloat {
+        flow == .aliyunCookie ? 600 : 680
+    }
+
+    /// 阿里云盘第 1 步把方式切换放进页头，副标题与其重复，直接留空。
+    private var showsHeaderLoginModeSwitcher: Bool {
+        flow == .aliyunCookie && step == 0
+    }
+
     private var headerSubtitle: String {
         guard let flow else {
             return "统一入口：Cookie 直连、官方 OAuth、SMB、WebDAV、AList 聚合"
@@ -225,7 +286,7 @@ struct CloudSetupWizardView: View {
         case .webdav:
             return "群晖 / TrueNAS / 任意 WebDAV 服务"
         case .aliyunCookie:
-            return "用浏览器登录凭据换取令牌，不需要开发者资质"
+            return ""
         case .quark:
             return "粘贴浏览器 Cookie，不需要开发者资质"
         case .pan115:
@@ -261,7 +322,7 @@ struct CloudSetupWizardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("选择接入方式")
                 .font(.system(size: 13, weight: .semibold))
-            Text("百度网盘走官方 OAuth，需要一次性创建应用；阿里云盘、夸克与 115 直接用浏览器 Cookie 接入，SMB、WebDAV 与 AList 同样不需要开发者资质。")
+            Text("百度网盘走官方 OAuth，需要一次性创建应用；阿里云盘用手机 App 扫码登录，夸克与 115 用浏览器 Cookie，SMB、WebDAV 与 AList 同样不需要开发者资质。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -400,6 +461,25 @@ struct CloudSetupWizardView: View {
         smbVerified = false
         cookieVerified = false
         mountName = ""
+        stopAliyunQRLogin()
+        stopQuarkQRLogin()
+        stopPan115QRLogin()
+        aliyunQRMode = true
+        aliyunQRPhase = .idle
+        aliyunQRSession = nil
+        aliyunQRMessage = nil
+        aliyunQRSweep = false
+        aliyunWebToken = nil
+        quarkQRMode = true
+        quarkQRPhase = .idle
+        quarkQRSession = nil
+        quarkQRMessage = nil
+        quarkQRSweep = false
+        pan115QRMode = true
+        pan115QRPhase = .idle
+        pan115QRSession = nil
+        pan115QRMessage = nil
+        pan115QRSweep = false
         if !flow.usesCookie { cookieText = "" }
         if flow.usesCookie || flow == .smb { resetAccessScope(for: flow) }
         if flow == .smb {
@@ -431,6 +511,9 @@ struct CloudSetupWizardView: View {
         } else {
             flow = nil
             cancelSMBDiscovery()
+            stopAliyunQRLogin()
+            stopQuarkQRLogin()
+            stopPan115QRLogin()
             if isAuthorizing {
                 OAuthLoopbackServer.shared.cancel()
                 isAuthorizing = false

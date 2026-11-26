@@ -156,19 +156,14 @@ final class BaiduTileOverlay: MKTileOverlay {
                                              longitude: coordinate.longitude,
                                              zoom: path.z)
         let server = abs(tile.x + tile.y) % 4
-        let urlString = "https://maponline\(server).bdimg.com/tile/?qt=vtile&x=\(tile.x)&y=\(tile.y)"
-            + "&z=\(path.z)&styles=pl&scaler=1&udt=20220601&ak=\(accessKey)"
-        guard let url = URL(string: urlString) else {
-            result(nil, nil)
-            return
+        Task {
+            let (data, error) = await BaiduTileService.tileData(server: server,
+                                                                x: tile.x,
+                                                                y: tile.y,
+                                                                zoom: path.z,
+                                                                accessKey: accessKey)
+            result(data, error)
         }
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            if let data, !data.isEmpty {
-                result(data, nil)
-            } else {
-                result(nil, error)
-            }
-        }.resume()
     }
 }
 

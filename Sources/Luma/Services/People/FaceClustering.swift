@@ -3,21 +3,6 @@ import AppKit
 import Vision
 import CoreGraphics
 
-/// 本地图库的人物聚类结果（端侧 Vision 分析，不上传任何照片）。
-struct LocalPerson: Identifiable, Hashable {
-    var id: UUID
-    var name: String
-    var assetIDs: [UUID]
-    var coverImageData: Data?
-    var faceCount: Int
-    var centroid: [Float]
-
-    /// 聚类生成时默认叫「人物 N」，用户没改过名就视为未命名。
-    var isUnnamed: Bool {
-        name.hasPrefix("人物 ") && Int(name.dropFirst(3)) != nil
-    }
-}
-
 struct FaceClusterProgress {
     var processed: Int
     var total: Int

@@ -121,9 +121,14 @@ struct XszCatalogProvider: CatalogProvider {
         let html = try await WebCatalogSupport.fetchHTML(url, source: source)
         guard let raw = CatalogHTML.first(#"<video[^>]+src="([^"]+\.m3u8[^"]*)""#, in: html)
         else { throw CatalogError.parse("该条目没有可播放的视频") }
-        return try WebCatalogSupport.stream(raw, base: root,
-                                            referer: episode.pageURL,
-                                            userAgent: source.userAgent)
+        let parsed = try WebCatalogSupport.stream(raw, base: root,
+                                                  referer: episode.pageURL,
+                                                  userAgent: source.userAgent)
+        // 视频 CDN（xsz-cdn.com）按 Origin 校验站外引用：只带 Referer 时播放器会拿到
+        // HTTP 403（「没有访问所请求的资源的许可」）。主列表与子列表都要带这个头。
+        var headers = parsed.headers
+        headers["Origin"] = root
+        return CatalogStream(url: parsed.url, headers: headers, isHLS: parsed.isHLS)
     }
 
     func coverData(source: CatalogSource, urlString: String) async throws -> Data {

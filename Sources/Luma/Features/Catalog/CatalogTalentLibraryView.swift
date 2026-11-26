@@ -104,7 +104,7 @@ struct CatalogTalentLibraryView: View {
         var result: [String: [CatalogActressRecord]] = [:]
         for region in regions.map(\.id) {
             result[region] = Array(peopleByWorks.lazy
-                .filter { $0.region == region && !($0.avatarBase64 ?? "").isEmpty }
+                .filter { $0.region == region && $0.hasAvatar }
                 .prefix(3))
         }
         return result
@@ -112,11 +112,11 @@ struct CatalogTalentLibraryView: View {
 
     /// 主展厅背景的人物拼贴。
     private static let hallMosaic: [CatalogActressRecord] = Array(
-        peopleByWorks.lazy.filter { !($0.avatarBase64 ?? "").isEmpty }.prefix(6))
+        peopleByWorks.lazy.filter(\.hasAvatar).prefix(6))
 
     /// 已归档的头像与生辰记录：告诉用户这些资料是真的存在本机。
     private static let portraitCount = peopleByWorks.reduce(0) {
-        $0 + (($1.avatarBase64 ?? "").isEmpty ? 0 : 1)
+        $0 + ($1.hasAvatar ? 1 : 0)
     }
     private static let birthdayCount = peopleByWorks.reduce(0) {
         $0 + ((($1.birthDate ?? "").count >= 10) ? 1 : 0)
@@ -155,7 +155,7 @@ struct CatalogTalentLibraryView: View {
 
     /// 今日展品：按日期从带头像的头部人物里轮换，天天不一样。
     private static let featured: [CatalogActressRecord] = {
-        let pool = peopleByWorks.filter { ($0.avatarBase64 ?? "").isEmpty == false }
+        let pool = peopleByWorks.filter(\.hasAvatar)
         guard !pool.isEmpty else { return [] }
         let day = Calendar.current.ordinality(of: .day, in: .year, for: Date()) ?? 1
         var picks: [CatalogActressRecord] = []

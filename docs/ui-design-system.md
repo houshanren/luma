@@ -1,6 +1,6 @@
 # 拾光 Luma · UI 设计及标准
 
-> 适用于 macOS 14+ 的 SwiftUI 界面。所有数值取自 `Sources/Luma/Support/LumaDesign.swift` 与各视图实现，新增界面请沿用本规范。
+> 适用于 macOS 14+ 的 SwiftUI 界面。所有数值取自 `Sources/LumaUI/LumaDesign.swift` 与各视图实现，新增界面请沿用本规范。
 
 ---
 

@@ -4,6 +4,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import AVFoundation
 import CoreImage
+import LumaCore
 import PlaybackCore
 
 enum ImportError: Error, LocalizedError {
@@ -23,12 +24,7 @@ enum ImportError: Error, LocalizedError {
 
 enum ImportService {
     static func isSupported(_ url: URL) -> Bool {
-        if VideoFormats.isVideo(url) { return true }
-        // 蓝光光盘镜像：真正的蓝光校验放到导入时（探测一次），这里只按扩展名收下。
-        if BluraySource.isDiscImage(url) { return true }
-        if RawFormats.isRaw(url) { return true }
-        guard let type = UTType(filenameExtension: url.pathExtension.lowercased()) else { return false }
-        return type.conforms(to: .image)
+        MediaTypeSupport.isSupportedImport(url)
     }
 
     /// 蓝光目录 / 光盘镜像：不复制原文件，只在图库里留一个引用。
@@ -87,7 +83,7 @@ enum ImportService {
 
     /// 同目录视频索引缓存：批量导入同一文件夹时避免每张照片都重新列目录。
     private static let companionLock = NSLock()
-    private static var companionCache: [String: (stamp: Date?, files: [String: URL])] = [:]
+    private static var companionCache: [String: (stamp: Date?, files: [URL])] = [:]
 
     /// 查找与图片同名的实况照片视频（例如 IMG_1234.HEIC + IMG_1234.MOV）。
     /// 原生图库导入也复用它，把配对视频作为 `.pairedVideo` 一起写进「照片」。
@@ -96,12 +92,11 @@ enum ImportService {
     }
 
     private static func livePhotoCompanion(for imageURL: URL) -> URL? {
-        let directory = imageURL.deletingLastPathComponent()
-        let stem = imageURL.deletingPathExtension().lastPathComponent.lowercased()
-        return videoFilesByStem(in: directory)[stem]
+        ImportRules.livePhotoCompanion(for: imageURL,
+                                       among: videoFiles(in: imageURL.deletingLastPathComponent()))
     }
 
-    private static func videoFilesByStem(in directory: URL) -> [String: URL] {
+    private static func videoFiles(in directory: URL) -> [URL] {
         let key = directory.path
         let stamp = (try? directory.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate
@@ -112,16 +107,13 @@ enum ImportService {
         }
         companionLock.unlock()
 
-        var files: [String: URL] = [:]
+        var files: [URL] = []
         if let contents = try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) {
-            for file in contents where VideoFormats.isVideo(file) {
-                let stem = file.deletingPathExtension().lastPathComponent.lowercased()
-                if files[stem] == nil { files[stem] = file }
-            }
+            files = contents.filter { VideoFormats.isVideo($0) }
         }
         companionLock.lock()
         companionCache[key] = (stamp, files)
@@ -147,7 +139,11 @@ enum ImportService {
         let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
         let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any]
 
-        if let date = exifDate(exif) {
+        let originalDate = ImportRules.parseEXIFDate(
+            exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+        let digitizedDate = ImportRules.parseEXIFDate(
+            exif?[kCGImagePropertyExifDateTimeDigitized] as? String)
+        if let date = originalDate ?? digitizedDate {
             item.capturedAt = date
         }
 
@@ -226,46 +222,15 @@ enum ImportService {
     /// 也能确定是加密盘，直接给出「先解密」的处理方式。
     private static func blurayEncryptionNote(root: URL) -> String? {
         let fm = FileManager.default
-        if fm.fileExists(atPath: root.appendingPathComponent("AACS").path) {
-            return "这张蓝光光盘受 AACS 加密保护，无法直接播放。"
-                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
-        }
-        if fm.fileExists(atPath: root.appendingPathComponent("BDSVM").path) {
-            return "这张蓝光光盘受 BD+ 加密保护，无法直接播放。"
-                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
-        }
-        return nil
+        return ImportRules.blurayEncryptionMessage(
+            hasAACS: fm.fileExists(atPath: root.appendingPathComponent("AACS").path),
+            hasBDSVM: fm.fileExists(atPath: root.appendingPathComponent("BDSVM").path))
     }
 
     /// 把 ffprobe 的英文报错翻译成明确文案：加密盘要说清「为什么打不开、怎么办」，
     /// 不能只回一句「导入失败」。
     private static func blurayFailureMessage(_ raw: String) -> String {
-        let text = raw.lowercased()
-        if text.contains("aacs") {
-            return "这张蓝光光盘受 AACS 加密保护，无法直接播放。"
-                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
-        }
-        if text.contains("bd+") || text.contains("bdplus") {
-            return "这张蓝光光盘受 BD+ 加密保护，无法直接播放。"
-                + "请先用 MakeMKV 等工具解密为 MKV，或导入已解密的光盘备份。"
-        }
-        if text.contains("blu-ray disc not detected")
-            || text.contains("not a blu-ray")
-            || text.contains("bluray: no") {
-            return "没有找到有效的蓝光结构：需要包含 BDMV 目录的原盘文件，或未加密的 ISO 镜像。"
-        }
-        if text.contains("no playlist") || text.contains("playlist") && text.contains("empty") {
-            return "这张光盘里没有可播放的正片播放列表（可能是花絮盘或结构损坏）。"
-        }
-        if text.contains("permission denied") || text.contains("operation not permitted") {
-            return "没有权限读取这张光盘：请在系统设置 › 隐私与安全性 › 文件与文件夹中允许访问，"
-                + "或把原盘复制到可读位置后再导入。"
-        }
-        let firstLine = raw.split(separator: "\n").first.map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return firstLine.isEmpty
-            ? "无法读取蓝光原盘：光盘结构不完整或已损坏。"
-            : "无法读取蓝光原盘：\(firstLine)"
+        ImportRules.blurayFailureMessage(raw)
     }
 
     private static func videoItem(url: URL, destination: URL, id: UUID, filename: String,
@@ -288,35 +253,13 @@ enum ImportService {
     }
 
     private static func detectKind(name: String, width: Int, height: Int) -> MediaKind {
-        let lower = name.lowercased()
-        if lower.contains("screenshot") || lower.contains("screen shot")
-            || lower.contains("截屏") || lower.contains("屏幕快照") {
-            return .screenshot
+        switch ImportRules.classify(fileName: name, pixelWidth: width, pixelHeight: height) {
+        case .photo: return .photo
+        case .video: return .video
+        case .screenshot: return .screenshot
+        case .panorama: return .panorama
+        case .selfie: return .selfie
         }
-        if width > 0, height > 0, CGFloat(width) / CGFloat(height) >= 2.2 {
-            return .panorama
-        }
-        if lower.contains("selfie") || lower.contains("自拍") {
-            return .selfie
-        }
-        return .photo
-    }
-
-    private static let exifDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        return formatter
-    }()
-
-    private static func exifDate(_ exif: [CFString: Any]?) -> Date? {
-        let candidates = [kCGImagePropertyExifDateTimeOriginal, kCGImagePropertyExifDateTimeDigitized]
-        for key in candidates {
-            if let string = exif?[key] as? String, let date = exifDateFormatter.date(from: string) {
-                return date
-            }
-        }
-        return nil
     }
 
     static func generateThumbnail(for photo: PhotoItem) {

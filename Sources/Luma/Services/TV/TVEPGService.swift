@@ -62,6 +62,52 @@ enum TVEPGService {
         return Date(timeIntervalSince1970: stamp)
     }
 
+    // MARK: - 缓存维护
+
+    /// 磁盘缓存占用：文件数、字节数与最近写入时间。
+    struct DiskUsage {
+        var files: Int
+        var bytes: Int64
+        var newest: Date?
+    }
+
+    static func diskUsage() -> DiskUsage {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]
+        ) else { return DiskUsage(files: 0, bytes: 0, newest: nil) }
+        var files = 0
+        var bytes: Int64 = 0
+        var newest: Date?
+        for url in urls {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            files += 1
+            bytes += Int64(values?.fileSize ?? 0)
+            if let date = values?.contentModificationDate, date > (newest ?? .distantPast) {
+                newest = date
+            }
+        }
+        return DiskUsage(files: files, bytes: bytes, newest: newest)
+    }
+
+    static func clearDiskCache() {
+        try? FileManager.default.removeItem(at: cacheDirectory)
+    }
+
+    /// 淘汰超过保留天数的节目单（`.json` 与旁边的 `.meta` 一起删）。
+    static func pruneCache(olderThan days: Double) {
+        guard days > 0,
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: cacheDirectory,
+                includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let cutoff = Date().addingTimeInterval(-days * 24 * 3600)
+        for url in urls {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            if modified < cutoff { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
     /// 缓存目录：跟着当前图库走，换库不会串用旧节目单。
     private static var cacheDirectory: URL {
         LibraryPaths.tvDir.appendingPathComponent("epg-cache", isDirectory: true)

@@ -137,22 +137,26 @@ struct SearchResultsPage<PhotoContent: View>: View {
 
             Spacer(minLength: 8)
 
-            Button {
-                store.searchText = ""
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                    Text("清除")
-                        .font(.system(size: 11, weight: .medium))
+            HStack(spacing: 10) {
+                // 结果布局切换：列表 / 格子 / 画廊，偏好记住，下次搜索沿用。
+                SearchLayoutPicker()
+                Button {
+                    store.searchText = ""
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("清除")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 11)
+                    .frame(height: 26)
+                    .background(.quaternary, in: Capsule(style: .continuous))
                 }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 11)
-                .frame(height: 26)
-                .background(.quaternary, in: Capsule(style: .continuous))
+                .buttonStyle(.plain)
+                .help("清除搜索（Esc）")
             }
-            .buttonStyle(.plain)
-            .help("清除搜索（Esc）")
         }
         .padding(.horizontal, 26)
         .padding(.top, 20)
@@ -230,92 +234,8 @@ struct SearchResultsPage<PhotoContent: View>: View {
             store.openSearchResultInLibrary(path: path, pending: pending)
             return
         }
-        switch hit.payload {
-        case .photo(let id):
-            store.openViewer(id)
-
-        case .localAlbum(let id):
-            store.navigate(to: .album(id))
-
-        case .localFolder(let id):
-            store.navigate(to: .folder(id))
-
-        case .systemAlbum(let id):
-            store.navigate(to: .systemAlbum(id))
-
-        case .systemFolder(let id):
-            store.navigate(to: .systemFolder(id))
-
-        case .localPerson(let id):
-            store.navigate(to: .people)
-            store.selectedLocalPersonID = id
-
-        case .systemPerson(let person):
-            store.navigate(to: .systemPeople)
-            store.openPerson(person)
-
-        case .place(let cluster):
-            store.navigate(to: store.isSystemScope ? .systemPlaces : .places)
-            store.openPlace(cluster)
-
-        case .scene(let id):
-            // 场景分类直达：系统图库有自己的场景入口。
-            store.navigate(to: store.isSystemScope ? .systemScene(id) : .scene(id))
-
-        case .cloudFile(let mountID, let folderPath, let path):
-            // 直达文件本身：打开挂载与所在目录后，直接把这一项送进查看器。
-            store.openCloudFile(mountID: mountID, folderPath: folderPath, path: path)
-
-        case .cloudFolder(let mountID, let path):
-            store.openCloudMount(mountID)
-            store.selectCloudFolder(path: path)
-
-        case .cinema(let scopeKey, let queueTitle, let entry):
-            openCinema(scopeKey: scopeKey, queueTitle: queueTitle, entry: entry)
-
-        case .channel(let channel):
-            tvModel.focusPlaylist(channel.playlistID)
-            tvModel.searchText = trimmedQuery
-            tvModel.setHubTab(.channels)
-            store.navigate(to: .iptv)
-            store.openTVChannel(channel)
-
-        case .program(let channel, let program):
-            tvModel.focusPlaylist(channel.playlistID)
-            store.navigate(to: .iptv)
-            if program.isLive {
-                tvModel.setHubTab(.channels)
-                store.openTVChannel(channel)
-            } else if program.end <= Date(), !(channel.catchUpSource ?? "").isEmpty {
-                // 已经播完且源支持回看：直接回看这一档。
-                store.openTVCatchup(channel, program: program)
-            } else {
-                // 未开播 / 该源不能回看：停在这档节目当天的节目单上。
-                let today = Calendar.current.startOfDay(for: Date())
-                let day = Calendar.current.startOfDay(for: program.start)
-                let offset = Calendar.current.dateComponents([.day], from: today, to: day).day ?? 0
-                tvModel.guideDayOffset = min(2, max(-2, offset))
-                tvModel.setHubTab(.guide)
-            }
-
-        case .catalogItem(let sourceID, let item):
-            // 进入频道页时它会先复位内联详情：必须走「待打开条目」，
-            // 由频道页自己的 task 消费，才能一进来就停在详情页。
-            catalog.pendingInlineItem = item
-            catalog.focus(sourceID)
-            store.navigate(to: .catalogSource(sourceID))
-
-        case .networkCinemaItem(let sourceID, let item, let isTV):
-            // 与网络资源同样的思路：网络影院页出现时消费「待打开条目」，直接进详情。
-            store.networkCinemaSourceID = sourceID
-            store.networkCinemaTab = isTV ? .shows : .movies
-            if let source = catalog.cinemaSources.first(where: { $0.id == sourceID }) {
-                store.networkCinemaPendingItem = NetworkCinemaItem(source: source,
-                                                                   item: item,
-                                                                   isTV: isTV)
-            }
-            store.navigate(to: .networkCinema)
-        }
+        // 打开路由放在 Store 里：助手与结果页共用同一套跳转。
+        store.openSearchHit(hit)
     }
 
     private var tvModel: IPTVBrowserModel { store.tvModel }
@@ -384,26 +304,5 @@ struct SearchResultsPage<PhotoContent: View>: View {
         case .systemPerson(let person): return .systemPerson(person)
         default: return nil
         }
-    }
-
-    private func openCinema(scopeKey: String, queueTitle: String, entry: CinemaEntry) {
-        let mountID = Self.mountID(from: scopeKey)
-        if let mountID {
-            store.navigate(to: .cloudCinema(mountID))
-        } else {
-            store.navigate(to: .cinema)
-        }
-        let scope: CinemaScope = mountID.map { CinemaScope.mount($0) } ?? .local
-        let queue = (store.cinemaIndexes[scope] ?? [:])
-            .values
-            .filter { $0.title == queueTitle }
-            .sorted { ($0.season ?? 0, $0.episode ?? 0) < ($1.season ?? 0, $1.episode ?? 0) }
-        store.openCinema(entry, queue: queue.isEmpty ? nil : queue)
-    }
-
-    private static func mountID(from scopeKey: String) -> UUID? {
-        let prefix = "mount-"
-        guard scopeKey.hasPrefix(prefix) else { return nil }
-        return UUID(uuidString: String(scopeKey.dropFirst(prefix.count)))
     }
 }

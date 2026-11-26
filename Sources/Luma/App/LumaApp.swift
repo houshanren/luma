@@ -4,7 +4,7 @@ import AppKit
 @main
 struct LumaApp: App {
     @NSApplicationDelegateAdaptor(LumaAppDelegate.self) private var appDelegate
-    @StateObject private var store = LibraryStore()
+    @StateObject private var store: LibraryStore
     @StateObject private var settings = AppSettings.shared
     /// 侧边栏可见性：菜单与工具栏按钮共用，收起后仍能重新打开。
     @StateObject private var sidebarChrome = SidebarChrome()
@@ -17,6 +17,17 @@ struct LumaApp: App {
     @AppStorage(SettingsKeys.moduleCatalog) private var catalogModule = true
     @AppStorage(SettingsKeys.showTelevision) private var televisionModule = true
     @AppStorage(SettingsKeys.moduleCinema) private var cinemaModule = true
+
+    init() {
+        // 数据层日志出口：Persistence 不依赖 App，由组合根把 Diagnostics 注入进去。
+        PersistenceLog.sink = { Diagnostics.record($0) }
+        // 领域层的模型资源定位：Domain 不依赖模型安装目录，由组合根注入解析器。
+        PhotoTagCatalog.resourceResolver = { LumaModelResources.file($0) }
+        // 组合根注入：Store 只依赖交互协议，AppKit 文件面板 / 弹窗实现留在视图层。
+        let store = LibraryStore()
+        store.userInteraction = AppKitLibraryUserInteraction()
+        _store = StateObject(wrappedValue: store)
+    }
 
     private var favoriteCommandTitle: String {
         store.currentIsFavorite ? "取消个人收藏" : "标记为个人收藏"

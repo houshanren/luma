@@ -3,9 +3,9 @@ import SwiftUI
 /// 侧边栏层级缩进：图库下的树整体比图库行再深一级。
 enum SidebarTreeMetrics {
     /// 图库行图标列在 22pt 处（8 留白 + 12 折叠箭头 + 2 间距）；
-    /// 树里的行整体再缩进 26pt，图标列落在 34pt、文字落在 62pt，
-    /// 与父行的 22 / 50 拉开清楚的一级，子分区标题的竖线也对齐到 34pt。
-    static let childIndent: CGFloat = 26
+    /// 树里的行整体再缩进 22pt，图标列落在 30pt、文字落在 58pt，
+    /// 与父行的 22 / 50 拉开一级，同时避免缩进过深挤压标题。
+    static let childIndent: CGFloat = 22
 }
 
 /// 侧边栏分类行：拾光、系统图库与网盘共用同一套图标列、字号、内边距与悬停高亮。
@@ -13,7 +13,8 @@ enum SidebarTreeMetrics {
 struct SidebarCategoryRow: View {
     let icon: String
     let title: String
-    var iconColor: Color = .accentColor
+    /// 图标默认单色；只有选中行用强调色，语义项（红心等）才显式传入颜色。
+    var iconColor: Color = .secondary
     var trailingIcon: String?
     var count: Int?
     var isActive: Bool = false
@@ -84,7 +85,7 @@ struct SidebarCategoryRow: View {
         } else {
             Image(systemName: icon)
                 .font(.system(size: iconSize ?? LumaMetrics.sidebarIconSize))
-                .foregroundStyle(iconColor)
+                .foregroundStyle(isActive ? Color.accentColor : iconColor)
         }
     }
 }

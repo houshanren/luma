@@ -17,6 +17,11 @@ actor CatalogArtworkCache {
     static func trimToLimit() {
         CatalogDatabase.shared.evictArtwork(targetBytes: maxDiskBytes)
     }
+
+    /// 海报缓存键：视图只拿键做内存命中判断，不自己拼缓存路径。
+    static func cacheKey(sourceID: UUID, urlString: String, quick: Bool) -> String {
+        CatalogPaths.artworkURL(sourceID: sourceID, urlString: urlString, quick: quick).path
+    }
     private static let gate = CloudConcurrencyGate(limit: 4)
     private var failures: [String: Date] = [:]
     private var running: [String: Task<NSImage?, Never>] = [:]

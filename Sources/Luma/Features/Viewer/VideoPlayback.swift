@@ -5,6 +5,7 @@ import AppKit
 import QuartzCore
 import UniformTypeIdentifiers
 import PlaybackCore
+import LumaCore
 
 // MARK: - 视频画面
 
@@ -657,9 +658,10 @@ struct VideoPlayerStage: View {
     @State private var hasNextVideo = false
     /// 视频原始尺寸（仅影响播放显示，不改原文件）。
     @State private var videoSize: CGSize = .zero
-    /// 载入代次：连续翻页时旧任务从 await 恢复后不能再把上一个视频装进播放器，
-    /// 否则界面已经切到别的照片，旧视频的声音还在继续。
+    /// 载入代次：连续翻页时作废旧任务，避免旧视频覆盖新照片并继续出声。
     @State private var loadGeneration = 0
+    /// 已开始装片的线路身份；Store 换线后、SwiftUI 新任务启动前的旧回调据此作废。
+    @State private var tvAttemptKey: String?
     /// 播放器真正所在的窗口：全屏按钮必须切换这个窗口，
     /// 用 NSApp.keyWindow 在弹出面板 / 子窗口存在时会切错窗口。
     @State private var playerWindow: NSWindow?
@@ -720,6 +722,13 @@ struct VideoPlayerStage: View {
         return channel
     }
 
+    /// 装片键：换台（photo.id 变化）或换线（tvLineTokens 自增）都要重新装片。
+    /// 之前只监听 photo.id，手动选线路后地址变了、代次也变了，但没有触发重新装片，
+    /// 表现就是「点了线路没反应」。
+    private var playbackReloadKey: String {
+        "\(photo.id.uuidString)-\(store.tvLineTokens[photo.id, default: 0])"
+    }
+
     /// 电视 OSD 的独立子视图：把大段类型推断从 `body` 里拆出去。
     @ViewBuilder
     private var tvOverlay: some View {
@@ -757,18 +766,28 @@ struct VideoPlayerStage: View {
         model.requestSeek(to: target)
     }
 
-    /// 电视线路失败自动顺延：成功返回 true，重新装片；全部失败时保留错误卡片。
-    private func attemptTVLineFallback(reason: String? = nil) -> Bool {
-        guard store.advanceTVLineAfterFailure(for: photo.id, reason: reason) else {
-            // 只有多线路频道才提示「全部线路失败」，单线路直接交给错误卡片。
-            if store.tvLineCount(for: photo.id) > 1 {
-                store.showToast("这个频道的全部线路都失败了")
-            }
-            return false
+    /// 直播失败只推进当前装片；旧任务、重复回调与回看都不消耗重试次数。
+    private func attemptTVLineFallback(reason: String? = nil, generation: Int) {
+        guard generation == loadGeneration, tvAttemptKey == playbackReloadKey,
+              let channel = tvPlaybackChannel, !channel.isCatchUp else { return }
+        let url = channel.streamURL
+        let token = store.tvLineTokens[photo.id, default: 0]
+        switch store.advanceTVLineAfterFailure(for: photo.id, token: token, url: url, reason: reason) {
+        case .next:
+            failureMessage = nil
+            streamFailure = nil
+        case .exhausted:
+            failureMessage = store.tvLiveRetryExhaustedMessage(for: photo.id)
+        case .ignored:
+            break
         }
-        failureMessage = nil
-        streamFailure = nil
-        return true
+    }
+
+    private func rememberTVLiveLineIfReady(generation: Int) {
+        guard generation == loadGeneration, tvAttemptKey == playbackReloadKey, model.isItemReady, let channel = tvLiveChannel else { return }
+        store.rememberTVLiveLine(for: photo.id,
+                                 token: store.tvLineTokens[photo.id, default: 0],
+                                 url: channel.streamURL)
     }
 
     /// 把播放错误翻译成失败卡片上的一行原因。
@@ -784,22 +803,32 @@ struct VideoPlayerStage: View {
         return failure.domain == NSURLErrorDomain ? "网络错误" : "无响应"
     }
 
-    /// 打开 / 切换条目时启动装片，顺带恢复上次的倍速。
     private func startPlaybackTask() async {
+        tvAttemptKey = playbackReloadKey
         loadGeneration &+= 1
+        let generation = loadGeneration
         if settings.videoRememberSpeed, settings.videoLastSpeed > 0,
            settings.videoLastSpeed != 1 {
             model.setSpeed(settings.videoLastSpeed)
         }
-        await preparePlayback(generation: loadGeneration)
+        await preparePlayback(generation: generation)
+        rememberTVLiveLineIfReady(generation: generation)
     }
 
-    /// 播放器上报失败：电视频道先尝试换到备用线路，其余情况走原有的转码兜底。
+    /// 直播独立处理三轮换线；回看与普通视频继续沿用原有兜底。
     private func handlePlaybackFailure(_ failure: PlaybackFailure?) {
         guard let failure else { return }
-        // 电视频道：任一线路被拒都先顺延到下一条，全部失败才交给错误卡片。
-        if tvPlaybackChannel != nil,
-           attemptTVLineFallback(reason: lineFailureReason(failure)) { return }
+        if let channel = tvPlaybackChannel, !channel.isCatchUp {
+            let line = store.tvLineIndex(for: photo.id) + 1
+            let total = store.tvLineCount(for: photo.id)
+            let host = URL(string: channel.streamURL)?.host ?? "-"
+            Diagnostics.record("电视线路失败 \(channel.name) 线路\(line)/\(total) \(host)："
+                               + "\(failure.domain ?? "-") \(failure.code.map(String.init) ?? "-") "
+                               + "http=\(failure.httpStatus.map(String.init) ?? "-") \(failure.message)")
+            attemptTVLineFallback(reason: "\(lineFailureReason(failure))（\(host)）",
+                                  generation: loadGeneration)
+            return
+        }
         guard hasLoadedVideo else { return }
         Diagnostics.record("装片失败 \(photo.originalName)："
                            + "\(failure.domain ?? "-") \(failure.code.map(String.init) ?? "-") "
@@ -812,10 +841,15 @@ struct VideoPlayerStage: View {
         autoFallbackToTranscode(after: failure)
     }
 
-    /// 流地址层面失败（403 / 超时 / 直链失效）：电视频道再顺延一次备用线路。
+    /// 流地址解析失败也走同一个直播三轮入口，避免重复计数。
     private func handleStreamFailureChange(_ value: String?) {
-        guard let value, tvPlaybackChannel != nil else { return }
-        _ = attemptTVLineFallback(reason: value.lowercased().contains("403") ? "返回 403" : "无响应")
+        guard let value, let channel = tvPlaybackChannel, !channel.isCatchUp else { return }
+        let line = store.tvLineIndex(for: photo.id) + 1
+        let total = store.tvLineCount(for: photo.id)
+        let host = URL(string: channel.streamURL)?.host ?? "-"
+        let reason = value.lowercased().contains("403") ? "返回 403" : "无响应"
+        Diagnostics.record("电视流出错 \(channel.name) 线路\(line)/\(total) \(host)：\(value)")
+        attemptTVLineFallback(reason: "\(reason)（\(host)）", generation: loadGeneration)
     }
 
     /// 离开播放层：停流、撤销画中画与窗口显示模式，全部集中在这里，避免 `body` 里的闭包过大。
@@ -826,6 +860,7 @@ struct VideoPlayerStage: View {
         VideoScrubPreviewCenter.shared.fallbackProvider = nil
         VideoScrubPreviewCenter.shared.end()
         loadGeneration &+= 1
+        tvAttemptKey = nil
         hideControlsTask?.cancel()
         model.seekRouter = nil
         model.scrubGuard = nil
@@ -1356,16 +1391,15 @@ struct VideoPlayerStage: View {
         return true
     }
 
-    var body: some View {
-        GeometryReader { proxy in
+    private func playbackContent(in size: CGSize) -> some View {
         ZStack {
             if !transparentBackground {
                 Color.black
             }
 
             if hasLoadedVideo, activeFailure == nil {
-                // 画面布局只发生在显示层：比例预设裁出一个居中框，平移与显示方式都在框内完成。
-                let layout = framingLayout(in: proxy.size)
+                // 比例预设裁出居中框，平移与显示方式都在框内完成。
+                let layout = framingLayout(in: size)
                 ZStack {
                     PlayerLayerView(player: model.player,
                                     gravity: settings.videoFramingMode.gravity,
@@ -1390,7 +1424,7 @@ struct VideoPlayerStage: View {
                 tapLayer
             }
 
-            // 起播阶段：海报直接垫底，出画面后淡出；等待反馈只留一枚紧凑缓冲胶囊。
+            // 起播海报在出画面后淡出，等待反馈只保留紧凑缓冲胶囊。
             waitingLayer
                 .animation(.easeOut(duration: 0.25), value: model.isItemReady)
 
@@ -1399,27 +1433,22 @@ struct VideoPlayerStage: View {
             }
 
             if activeFailure == nil, let cue = activeCue {
-                subtitleOverlay(cue, in: proxy.size)
+                subtitleOverlay(cue, in: size)
             }
 
             if activeFailure == nil {
                 centerPlayButton
-                // 顶栏融合由窗口工具栏渲染控件；视频真全屏时工具栏被隐藏，改用画面内控制条。
-                // 电视直播全屏已经用频道 OSD（顶部频道条 + 底部动作胶囊）承载操作，
-                // 再叠一条通用播放栏会重复，这里直接不显示。
+                // 电视直播全屏由频道 OSD 承载操作，不再叠通用播放栏。
                 let hidesPlaybackControls = tvLiveChannel != nil && viewer.videoImmersiveFullScreen
                 if !hidesPlaybackControls,
                    settings.videoControlPlacement == .floating || !transparentBackground
                     || viewer.videoImmersiveFullScreen {
-                    controls(stage: proxy.size)
+                    controls(stage: size)
                 }
-                // 顶栏融合模式下音轨 / 字幕入口在窗口工具栏的播放舱里。
             }
 
-            // 电视 OSD：频道号 / Now & Next / 节目单抽屉 / 底部频道带。
-            // 只在播放器已经就绪时出现，避免和失败卡片、起播海报叠在一起。
+            // 就绪后才显示频道 OSD，避免与失败卡片、起播海报重叠。
             tvOverlay
-
             if showPlaybackInfo, activeFailure == nil {
                 VStack {
                     HStack {
@@ -1432,6 +1461,10 @@ struct VideoPlayerStage: View {
                 .transition(.opacity)
             }
         }
+    }
+
+    private func playbackChrome<Content: View>(for content: Content) -> some View {
+        content
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         // 播放器控件始终按深色玻璃渲染，避免浅色外观下白色文字叠在亮色材质上。
@@ -1444,6 +1477,10 @@ struct VideoPlayerStage: View {
                 scheduleControlsHide()
             }
         }
+    }
+
+    private func playbackObservers<Content: View>(for content: Content) -> some View {
+        content
         .onChange(of: model.isPlaying) { _, playing in
             if playing {
                 scheduleControlsHide()
@@ -1452,19 +1489,17 @@ struct VideoPlayerStage: View {
                 controlsShown = true
             }
         }
-        .onChange(of: photo.id) { _, _ in
-            resetTVInput()
-        }
-        // 只在「开始 / 继续播放」时恢复生成，**暂停时不挂起 ffmpeg**：
-        // EVENT 列表停更超过 1.5 × TARGETDURATION，AVPlayer 会报 -12888 并判定流已结束，
-        // 之后不再拉新分片，恢复播放时直接卡死。暂停期间继续生成也顺带把后面缓冲做好。
+        .onChange(of: photo.id) { _, _ in resetTVInput() }
+        // 暂停时继续生成 EVENT 分片，避免恢复播放时 AVPlayer 报 -12888。
         .onChange(of: model.wantsPlayback) { _, wants in
             if wants { playbackSession.setGenerationActive(true) }
         }
-        // 转封装后的 HLS 也可能在解码阶段失败：这时必须把「转换为兼容格式」入口放出来，
-        // 否则用户只能停在错误页。真正的兼容性判断由 ffmpeg 转码兜底。
+        // 转封装后的 HLS 解码失败仍保留转码兜底入口。
         .onChange(of: model.playbackFailure) { _, failure in
             handlePlaybackFailure(failure)
+        }
+        .onChange(of: model.isItemReady) { _, ready in
+            if ready { rememberTVLiveLineIfReady(generation: loadGeneration) }
         }
         .onChange(of: settings.preservePitchAtSpeed) { _, enabled in
             model.preservesPitch = enabled
@@ -1481,14 +1516,12 @@ struct VideoPlayerStage: View {
             guard buffering, hasLoadedVideo else { return }
             Diagnostics.record("播放缓冲 \(photo.originalName) at \(Int(model.currentTime))s", level: .verbose)
         }
-        // 流地址层面失败（403 / 超时 / 直链失效）不会走 playbackFailure，单独顺延一次。
         .onChange(of: streamFailure) { _, value in
             handleStreamFailureChange(value)
         }
-        // 原生容器的音轨组就绪 / 切换后，把选项同步给顶栏与画面内菜单。
         .onChange(of: model.audioOptions.count) { _, _ in refreshAudioChoices() }
         .onChange(of: model.selectedAudio) { _, _ in refreshAudioChoices() }
-        .task(id: photo.id) {
+        .task(id: playbackReloadKey) {
             await startPlaybackTask()
         }
         .onDisappear {
@@ -1506,6 +1539,11 @@ struct VideoPlayerStage: View {
             }
             .frame(width: 0, height: 0)
         )
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            playbackObservers(for: playbackChrome(for: playbackContent(in: proxy.size)))
         }
     }
 
@@ -1621,30 +1659,49 @@ struct VideoPlayerStage: View {
         }
     }
 
-    /// 拖动进度条的预览帧：HLS 已生成区间用会话取帧，其余回退到原始片源。
+    /// 拖动进度条的预览帧：先试播放项自身，再回退到原始片源。
     private func scrubThumbnail(fraction: Double) async -> NSImage? {
-        guard settings.scrubPreviewEnabled else { return nil }
+        guard settings.scrubPreviewEnabled, model.duration > 0 else { return nil }
         if let image = await VideoScrubThumbnails.image(player: model.player,
                                                         fraction: fraction,
                                                         duration: model.duration) {
             return image
         }
-        guard let sourceURL, model.duration > 0 else { return nil }
-        return await VideoScrubThumbnails.sourceImage(source: sourceURL,
-                                                      headers: sourceHeaders,
-                                                      seconds: model.duration * fraction,
-                                                      duration: model.duration)
+        return await previewFrame(seconds: model.duration * fraction,
+                                  duration: model.duration)
     }
 
-    /// 顶栏悬停预览的回退取帧：拖到 HLS 还没生成的区间时，从原始片源抽一帧。
+    /// 顶栏悬停预览的回退取帧：拖到还没生成的区间时，换一路片源抽一帧。
     private func registerScrubPreviewFallback() {
         VideoScrubPreviewCenter.shared.fallbackProvider = { fraction, duration in
-            guard settings.scrubPreviewEnabled, let url = sourceURL, duration > 0 else { return nil }
-            return await VideoScrubThumbnails.sourceImage(source: url,
-                                                          headers: sourceHeaders,
-                                                          seconds: duration * fraction,
-                                                          duration: duration)
+            guard settings.scrubPreviewEnabled, duration > 0 else { return nil }
+            return await previewFrame(seconds: duration * fraction, duration: duration)
         }
+    }
+
+    /// 预览取帧的统一回退链：本地转封装会话 → 远端影子播放器 → ffmpeg 直接抽帧。
+    /// MKV / HDR 这类 AVFoundation 播不了的片源全靠会话，分片在本机磁盘上，最快。
+    private func previewFrame(seconds: Double, duration: Double) async -> NSImage? {
+        if let session = VideoScrubThumbnails.localSessionURL(player: model.player),
+           let image = await VideoScrubThumbnails.playerImage(source: session,
+                                                              headers: [:],
+                                                              seconds: seconds,
+                                                              duration: duration) {
+            return image
+        }
+        guard let sourceURL else { return nil }
+        // 网络 HLS：分片常伪装成 .jpeg，ImageGenerator 取不到帧，改由影子播放器取。
+        if !sourceURL.isFileURL,
+           let image = await VideoScrubThumbnails.playerImage(source: sourceURL,
+                                                              headers: sourceHeaders,
+                                                              seconds: seconds,
+                                                              duration: duration) {
+            return image
+        }
+        return await VideoScrubThumbnails.sourceImage(source: sourceURL,
+                                                      headers: sourceHeaders,
+                                                      seconds: seconds,
+                                                      duration: duration)
     }
 
     /// 播放回调只在换片时注册一次：一切跳转、音轨、字幕操作都从这里分发。
@@ -1928,13 +1985,6 @@ struct VideoPlayerStage: View {
         // HDR 屏优先保留片源：杜比视界 P5 也交给系统解码，只有 SDR 屏才映射。
         // 若系统拒绝该码流，PlaybackSession 会按起流失败自动降级为重编码 + tone map。
         return !displaySupportsHDR
-    }
-
-    /// 4K 50/60fps 的 HEVC：实测这台机器的系统解码器出不了画面（有声音、全黑），
-    /// 而且换容器也救不回来。直接重编码虽然多花几秒起播，但比「黑屏几秒再降级」干净。
-    private static func requiresRecodeForHighFrameRate4K(_ probe: VideoProbe) -> Bool {
-        guard probe.isHEVC, probe.frameRate >= 45 else { return false }
-        return max(probe.size.width, probe.size.height) >= 1700
     }
 
     /// 杜比视界 P5 的播放路径提示：HDR 屏保留原样时记录一次诊断；
@@ -3016,9 +3066,9 @@ struct VideoPlayerStage: View {
     private func tvFailureCard(channel: TVChannel, fallbackMessage: String) -> some View {
         let summary = store.tvLineFailureSummary(for: photo.id)
         let total = store.tvLineCount(for: photo.id)
-        let reasonText = summary.isEmpty
-            ? fallbackMessage
-            : "\(total) 条线路都失败了：\(summary)。"
+        let reasonText = store.tvLiveRetryExhaustedMessage(for: photo.id)
+            .map { summary.isEmpty ? $0 : "\($0)：\(summary)" }
+            ?? (summary.isEmpty ? fallbackMessage : "\(total) 条线路都失败了：\(summary)。")
         return VStack(spacing: 12) {
             Text("这个频道暂时看不了")
                 .font(.system(size: 14.5, weight: .semibold))
@@ -3032,7 +3082,12 @@ struct VideoPlayerStage: View {
             HStack(spacing: 8) {
                 tvFailureButton("重试", prominent: true) {
                     failureMessage = nil
-                    Task { await load(generation: loadGeneration) }
+                    streamFailure = nil
+                    if channel.isCatchUp {
+                        Task { await startPlaybackTask() }
+                    } else {
+                        store.retryTVLivePlayback(for: photo.id)
+                    }
                 }
                 tvFailureButton("换一条线路", prominent: false) {
                     _ = store.switchTVLine(for: photo.id, delta: 1)
@@ -3292,6 +3347,13 @@ struct VideoPlayerStage: View {
                                     offset: 0, resumeAt: nil, mode: .remux,
                                     audioIndex: 0, isLive: true) {
                 ui.loadSiblingIfAvailable(sourceURL: sourceURL)
+            } else if generation == loadGeneration, !Task.isCancelled,
+                      let channel = tvPlaybackChannel, !channel.isCatchUp {
+                // ffmpeg 边下边播失败不会走 AVPlayer 的失败回调，这里手动顺延到备用线路，
+                // 否则会一直停在当前这条坏线上，只能手点「换一条线路」。
+                let host = URL(string: channel.streamURL)?.host ?? "-"
+                Diagnostics.record("电视边下边播失败 \(channel.name) \(host)")
+                attemptTVLineFallback(reason: "无法播放（\(host)）", generation: generation)
             }
             return
         }
@@ -3362,7 +3424,7 @@ struct VideoPlayerStage: View {
             // AVPlayer 没有去隔行开关：隔行源跳过原生直连，交给 ffmpeg 重编码 + bwdif。
             // 4K 50/60fps HEVC 直连会黑屏有声音，同样跳过（统一走重编码）。
             if probe.hasVideoTrack, probe.isPlayable, !probe.isInterlaced,
-               !Self.requiresRecodeForHighFrameRate4K(probe),
+               !probe.requiresRecodeForHighFrameRate4K,
                !needsToneMapping(probe) {
                 videoSize = probe.size
                 model.load(asset: asset, probe: probe, autoplay: autoplay,
@@ -3442,7 +3504,7 @@ struct VideoPlayerStage: View {
         // 系统「照片」图库：本机没有原图时交给 PhotoKit，
         // 共享相簿与仅存 iCloud 的视频会由 Photos 自己下载后再交给播放器。
         if photo.isSystem {
-            guard let resolved = await PhotoKitBridge.videoAsset(id: photo.id) else {
+            guard let resolved = await store.systemVideoAsset(for: photo) else {
                 guard generation == loadGeneration, !Task.isCancelled else { return }
                 failureMessage = "无法从系统「照片」图库读取该视频，可能仍在 iCloud 或共享相簿中下载。"
                 isPreparing = false
@@ -3516,7 +3578,7 @@ struct VideoPlayerStage: View {
                                    + "\(Int(streamProbe.size.width))x\(Int(streamProbe.size.height)) "
                                    + "fps=\(Int(streamProbe.frameRate))")
             }
-            let highFrameRate4K = Self.requiresRecodeForHighFrameRate4K(streamProbe)
+            let highFrameRate4K = streamProbe.requiresRecodeForHighFrameRate4K
             if highFrameRate4K {
                 Diagnostics.record("4K 高帧率 HEVC 直接重编码：\(photo.originalName) "
                                    + "codec=\(streamProbe.codec ?? "-") "
@@ -3933,7 +3995,7 @@ struct VideoToolbarProgress: View {
         .font(.system(size: 10, weight: .medium, design: .monospaced))
         .monospacedDigit()
         .foregroundStyle(.secondary)
-        .help("拖动进度条定位")
+        // 进度条上不再挂悬停提示：提示气泡会盖住画面预览，本身也没提供新信息。
         .background {
             WindowAccessor { window in
                 if hostWindow !== window { hostWindow = window }

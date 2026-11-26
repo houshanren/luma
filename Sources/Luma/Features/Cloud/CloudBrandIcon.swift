@@ -1,27 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// 官方网盘品牌标识。图标取自各产品官方的 512pt 应用图标，
-/// 放在 `Resources/CloudIcons`，构建时随 App 内置。
-enum CloudBrand: String, CaseIterable {
-    case aliyun
-    case baidu
-    case quark
-    case pan115
-
-    var assetName: String { rawValue }
-
-    /// 图标资源缺失时的兜底符号（仅在开发期资源未拷贝时出现）。
-    var fallbackSymbol: String {
-        switch self {
-        case .aliyun: return "cloud"
-        case .baidu: return "cloud.fill"
-        case .quark: return "square.stack.3d.up.fill"
-        case .pan115: return "externaldrive.fill"
-        }
-    }
-}
-
 /// 网盘产品图标：圆角方形裁切，尺寸与侧边栏 / 向导卡片保持一致。
 struct CloudBrandIcon: View {
     let brand: CloudBrand

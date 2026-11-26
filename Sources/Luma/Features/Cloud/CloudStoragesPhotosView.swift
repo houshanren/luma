@@ -9,7 +9,7 @@ struct CloudStoragesPhotosView: View {
     @EnvironmentObject private var cloud: CloudBrowserModel
 
     @State private var items: [CloudAggregatedPhoto] = []
-    @State private var indexStates: [UUID: MetadataStore.CloudIndexState] = [:]
+    @State private var indexStates: [UUID: CloudIndexState] = [:]
     @State private var loading = false
     @State private var selectedMountID: UUID?
     @State private var mediaFilter: MediaFilter = .all

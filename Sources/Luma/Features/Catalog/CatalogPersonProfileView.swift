@@ -69,18 +69,11 @@ struct CatalogPersonProfileView: View {
         // 内置 base64 头像已经够用，不再下载外链。
         guard wiki?.info.avatarBase64?.isEmpty != false else { return }
         guard let urlString = wiki?.info.imageURL, !urlString.isEmpty,
-              urlString != loadedPortraitURL, let url = URL(string: urlString),
-              let scheme = url.scheme, let host = url.host else { return }
+              urlString != loadedPortraitURL, URL(string: urlString) != nil else { return }
         loadedPortraitURL = urlString
 
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 20
-        request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                         + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-                         forHTTPHeaderField: "User-Agent")
         Task { @MainActor in
-            guard let (data, _) = try? await URLSession.shared.data(for: request),
+            guard let data = await CatalogPortraitLoader.data(for: urlString),
                   let image = NSImage(data: data) else { return }
             remotePortrait = image
         }

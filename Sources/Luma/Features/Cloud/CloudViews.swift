@@ -636,6 +636,11 @@ struct CloudGridEmptyState: View {
         return cloud.mounts.first(where: { $0.id == id })?.kind
     }
 
+    private var currentMount: CloudMount? {
+        guard let id = store.currentCloudMountID else { return nil }
+        return cloud.mounts.first(where: { $0.id == id })
+    }
+
     private var emptyTitle: String {
         cloud.selectedFolderPath == nil ? "这个网盘里还没有可展示的媒体" : "此相簿没有照片或视频"
     }
@@ -687,8 +692,12 @@ struct CloudGridEmptyState: View {
         case .retry:
             store.refreshCloudDirectory()
         case .reauthorize, .reconfigureSource:
-            guard let kind = mountKind else { return }
-            store.presentCloudWizard(flow: kind.wizardFlow)
+            // Cookie 型网盘就地重新登录：只换凭据并刷新，不新建挂载。
+            if let mount = currentMount, mount.kind.supportsInPlaceReauth {
+                store.presentCloudReauth(mount)
+            } else if let kind = mountKind {
+                store.presentCloudWizard(flow: kind.wizardFlow)
+            }
         case .openInBrowser(let address):
             if let url = URL(string: address) { NSWorkspace.shared.open(url) }
         case .openSystemSettings:

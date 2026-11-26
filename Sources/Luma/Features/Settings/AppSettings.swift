@@ -531,8 +531,8 @@ final class AppSettings: ObservableObject {
         autoSiblingSubtitles = defaults.object(forKey: SettingsKeys.videoAutoSiblingSubtitles) as? Bool ?? false
         autoOnlineSubtitles = defaults.object(forKey: SettingsKeys.videoAutoOnlineSubtitles) as? Bool ?? false
         systemMediaIntegration = defaults.object(forKey: SettingsKeys.videoSystemMediaIntegration) as? Bool ?? true
-        // 悬停关键帧默认关闭：不主动解码预览帧，想要的人再到设置里打开。
-        scrubPreviewEnabled = defaults.object(forKey: SettingsKeys.videoScrubPreview) as? Bool ?? false
+        // 悬停预览默认开启：鼠标停在进度条上就能认场景；不想解码的人可在设置里关掉。
+        scrubPreviewEnabled = defaults.object(forKey: SettingsKeys.videoScrubPreview) as? Bool ?? true
         videoSeekStep = defaults.object(forKey: SettingsKeys.videoSeekStep) as? Double ?? 5
         videoControlPlacement = VideoControlPlacement(
             rawValue: defaults.string(forKey: SettingsKeys.videoControlPlacement) ?? "") ?? .topIntegrated

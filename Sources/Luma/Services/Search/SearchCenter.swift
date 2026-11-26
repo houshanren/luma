@@ -13,18 +13,18 @@ final class SearchCenter: ObservableObject {
     let scopes: [SearchSourceKind]
 
     @Published private(set) var query = ""
-    @Published private(set) var sections: [SearchSection] = []
+    @Published private(set) var sections: [SearchSection] = [] { didSet { publishOverview() } }
     @Published private(set) var counts: [SearchSourceKind: Int] = [:]
     @Published private(set) var searchingSources: Set<SearchSourceKind> = []
     @Published private(set) var isSearching = false
     /// nil = 全部来源；否则只展示该来源。
-    @Published var activeSource: SearchSourceKind?
+    @Published var activeSource: SearchSourceKind? { didSet { publishOverview() } }
     /// nil = 该来源内全部类型。
-    @Published var activeKind: SearchHitKind?
+    @Published var activeKind: SearchHitKind? { didSet { publishOverview() } }
     /// 当前来源内选中的「源」（网盘 / 影院范围 / 电视播放列表 / 资源站点）；nil = 全部源。
-    @Published var activeOrigin: String?
+    @Published var activeOrigin: String? { didSet { publishOverview() } }
     /// 当前来源内选中的分类（电视频道分组、资源分类、网盘目录）；nil = 全部分类。
-    @Published var activeCategory: String?
+    @Published var activeCategory: String? { didSet { publishOverview() } }
 
     private let providers: [SearchSourceKind: any SearchProviding]
     /// 任务中心的落点：搜索结果登记到侧边栏底部的后台任务，结束进「任务记录」。
@@ -188,5 +188,42 @@ final class SearchCenter: ObservableObject {
 
     private func order(_ source: SearchSourceKind) -> Int {
         scopes.firstIndex(of: source) ?? scopes.count
+    }
+
+    // MARK: - 助手现场
+
+    /// 把这一轮检索的现场同步给智能助手：分区计数、类型分布与当前筛选。
+    /// 助手只读这些摘要，不复制命中数组，避免把整份结果塞进提示词。
+    private func publishOverview() {
+        guard let store else { return }
+        store.aiSearchOverview = makeOverview()
+    }
+
+    private func makeOverview() -> AISearchOverview? {
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty, !sections.isEmpty else { return nil }
+        let lines: [AISearchOverview.SourceLine] = sections.map { section in
+            let kinds: [(title: String, count: Int)] = section.kindCounts
+                .sorted { $0.value > $1.value }
+                .prefix(6)
+                .map { (title: $0.key.title, count: $0.value) }
+            return AISearchOverview.SourceLine(title: section.source.title,
+                                               total: section.total,
+                                               kinds: kinds)
+        }
+        let samples: [String] = sections
+            .flatMap { section in
+                section.hits.prefix(2).map { "\(section.source.title)·\($0.title)" }
+            }
+            .prefix(6)
+            .map { $0 }
+        return AISearchOverview(query: keyword,
+                                total: totalCount,
+                                sources: lines,
+                                activeSource: activeSource?.title,
+                                activeKind: activeKind?.title,
+                                activeOrigin: activeOrigin,
+                                activeCategory: activeCategory,
+                                samples: samples)
     }
 }

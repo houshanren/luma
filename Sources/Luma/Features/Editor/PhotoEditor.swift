@@ -2044,7 +2044,7 @@ struct PhotoEditorView: View {
         }
         // 系统照片只能经 PhotoKit 取原图；本地照片优先从原图 + 配方重建。
         if photo.isSystem {
-            guard let data = await PhotoKitBridge.originalImageData(assetID: photo.id),
+            guard let data = await store.systemOriginalImageData(for: photo),
                   let ci = CIImage(data: data, options: [.applyOrientationProperty: true]) else {
                 isLoading = false
                 preview = nil

@@ -151,7 +151,8 @@ enum Pan115Drive {
 
     // MARK: 目录
 
-    static func list(cookie: String, folderID: String) async throws -> [CloudEntry] {
+    static func list(cookie: String, folderID: String,
+                     mountID: UUID? = nil) async throws -> [CloudEntry] {
         var entries: [CloudEntry] = []
         var offset = 0
         let limit = 100
@@ -175,9 +176,8 @@ enum Pan115Drive {
                 URLQueryItem(name: "source", value: "")
             ]
             guard let url = components?.url else { throw CloudOAuthError.api("地址无效") }
-            let object = try await get(url, cookie: cookie)
+            let object = try await get(url, cookie: cookie, mountID: mountID)
             try check(object)
-
             let list = object["data"] as? [[String: Any]] ?? []
             entries.append(contentsOf: list.compactMap { parseEntry($0) })
             let total = (object["count"] as? NSNumber)?.intValue
@@ -193,7 +193,8 @@ enum Pan115Drive {
     // MARK: 直链
 
     static func downloadURL(pickCode: String, cookie: String,
-                            userAgent overrideUA: String? = nil) async throws -> URL {
+                            userAgent overrideUA: String? = nil,
+                            mountID: UUID? = nil) async throws -> URL {
         guard !pickCode.isEmpty else {
             throw CloudOAuthError.api("缺少 115 文件标识（pickcode），请刷新该目录后重试")
         }
@@ -215,7 +216,8 @@ enum Pan115Drive {
         let object = try await sendForm(url: url,
                                         form: ["data": encoded],
                                         cookie: cookie,
-                                        userAgent: overrideUA ?? downloadUserAgent)
+                                        userAgent: overrideUA ?? downloadUserAgent,
+                                        mountID: mountID)
         guard let dataString = object["data"] as? String,
               let decoded = Pan115Crypto.decode(dataString, key: key),
               let json = (try? JSONSerialization.jsonObject(with: decoded)) as? [String: Any] else {
@@ -235,7 +237,8 @@ enum Pan115Drive {
 
     /// 删除文件：网页端 / PC 客户端的 `rb/delete`，fid[n] 传文件 ID。
     /// 115 若开启了「安全码」保护，会返回需要密码的提示，这里原样转成中文错误。
-    static func delete(fids: [String], cookie: String) async throws {
+    static func delete(fids: [String], cookie: String,
+                       mountID: UUID? = nil) async throws {
         guard !fids.isEmpty else { return }
         var form: [String: String] = [:]
         for (index, fid) in fids.enumerated() {
@@ -244,7 +247,7 @@ enum Pan115Drive {
         guard let url = URL(string: apiBase + "/rb/delete") else {
             throw CloudOAuthError.api("地址无效")
         }
-        let object = try await sendForm(url: url, form: form, cookie: cookie)
+        let object = try await sendForm(url: url, form: form, cookie: cookie, mountID: mountID)
         try check(object)
     }
 
@@ -324,21 +327,23 @@ enum Pan115Drive {
         throw CloudOAuthError.api(message)
     }
 
-    private static func get(_ url: URL, cookie: String) async throws -> [String: Any] {
+    private static func get(_ url: URL, cookie: String,
+                            mountID: UUID? = nil) async throws -> [String: Any] {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = "GET"
         request.setValue(normalizedCookie(cookie), forHTTPHeaderField: "Cookie")
         request.setValue(browserUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(referer, forHTTPHeaderField: "Referer")
         request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        return try await send(request)
+        return try await send(request, mountID: mountID)
     }
 
     private static func sendForm(url: URL,
                                  form: [String: String],
                                  cookie: String,
                                  userAgent: String = browserUserAgent,
-                                 contentType: String = "application/x-www-form-urlencoded") async throws -> [String: Any] {
+                                 contentType: String = "application/x-www-form-urlencoded",
+                                 mountID: UUID? = nil) async throws -> [String: Any] {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue(normalizedCookie(cookie), forHTTPHeaderField: "Cookie")
@@ -350,11 +355,15 @@ enum Pan115Drive {
             .map { "\(escape($0.key))=\(escape($0.value))" }
             .joined(separator: "&")
             .data(using: .utf8)
-        return try await send(request)
+        return try await send(request, mountID: mountID)
     }
 
-    private static func send(_ request: URLRequest) async throws -> [String: Any] {
+    private static func send(_ request: URLRequest, mountID: UUID? = nil) async throws -> [String: Any] {
         let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse {
+            CloudCookieRotation.persist(from: http, original: request.value(forHTTPHeaderField: "Cookie") ?? "",
+                                        mountID: mountID)
+        }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 || status == 403 { throw CloudOAuthError.notAuthorized }
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]

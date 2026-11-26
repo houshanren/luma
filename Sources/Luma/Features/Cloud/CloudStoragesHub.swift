@@ -157,7 +157,7 @@ struct CloudStoragesSnapshotPanels: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var cloud: CloudBrowserModel
 
-    @State private var indexStates: [UUID: MetadataStore.CloudIndexState] = [:]
+    @State private var indexStates: [UUID: CloudIndexState] = [:]
 
     // MARK: 图库
     var library: LibraryStore.LibraryStats { store.libraryStats }
@@ -168,7 +168,7 @@ struct CloudStoragesSnapshotPanels: View {
     var totalIndexFolders: Int { indexStates.values.reduce(0) { $0 + $1.folderCount } }
     var maxIndexMedia: Int { max(1, indexStates.values.map(\.mediaCount).max() ?? 0) }
 
-    var latestScan: (mount: CloudMount, state: MetadataStore.CloudIndexState)? {
+    var latestScan: (mount: CloudMount, state: CloudIndexState)? {
         cloud.mounts
             .compactMap { mount in
                 indexStates[mount.id].map { (mount: mount, state: $0) }

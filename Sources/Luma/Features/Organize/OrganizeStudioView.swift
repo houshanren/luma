@@ -1337,7 +1337,7 @@ struct OrganizeStudioView: View {
         }
     }
 
-    private func accumulate(_ overlay: MetadataStore.AssetOverlay, into next: inout OrganizeStudioStats) {
+    private func accumulate(_ overlay: AssetOverlay, into next: inout OrganizeStudioStats) {
         let rating = min(5, max(0, overlay.rating ?? 0))
         next.ratingCounts[rating] += 1
         if rating > 0 { next.rated += 1 }
@@ -1374,7 +1374,7 @@ struct OrganizeStudioView: View {
         }
     }
 
-    private func matches(_ overlay: MetadataStore.AssetOverlay) -> Bool {
+    private func matches(_ overlay: AssetOverlay) -> Bool {
         switch dimension {
         case .rating:
             guard let ratingPick else { return false }
@@ -1401,7 +1401,7 @@ struct OrganizeStudioView: View {
             || !photo.tags.isEmpty
     }
 
-    private func overlayHasMetadata(_ overlay: MetadataStore.AssetOverlay) -> Bool {
+    private func overlayHasMetadata(_ overlay: AssetOverlay) -> Bool {
         (overlay.rating ?? 0) > 0
             || (overlay.flag ?? .none) != .none
             || (overlay.colorLabel ?? .none) != .none

@@ -14,6 +14,83 @@ extension SearchSourceKind {
     }
 }
 
+// MARK: - 布局
+
+/// 搜索结果的展示布局：紧凑列表 / 封面格子 / 大图画廊。
+/// 偏好持久化在 UserDefaults，全部来源与单来源两套视图共用同一选择。
+enum SearchResultLayout: String, CaseIterable, Identifiable {
+    case list
+    case grid
+    case gallery
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .list: return "列表"
+        case .grid: return "格子"
+        case .gallery: return "画廊"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .list: return "line.3.horizontal"
+        case .grid: return "square.grid.2x2"
+        case .gallery: return "rectangle.grid.1x2"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .list: return "紧凑列表：每行一条，信息密度最高"
+        case .grid: return "封面格子：缩略图铺开的卡片墙"
+        case .gallery: return "大图画廊：封面大图 + 底部渐变标题"
+        }
+    }
+}
+
+/// 布局切换器：三枚图标按钮收进一个胶囊分段控件，跟在搜索结果标题旁。
+/// 当前项高亮主题色；切换带短动画，结果区随之重排。
+struct SearchLayoutPicker: View {
+    @AppStorage(SettingsKeys.searchResultsLayout) private var raw = SearchResultLayout.gallery.rawValue
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SearchResultLayout.allCases) { layout in
+                let active = layout.rawValue == raw
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        raw = layout.rawValue
+                    }
+                } label: {
+                    Image(systemName: layout.symbol)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .frame(width: 26, height: 22)
+                        .foregroundStyle(active ? Color.white : Color.secondary)
+                        .background {
+                            Capsule(style: .continuous)
+                                .fill(active ? AnyShapeStyle(Color.accentColor)
+                                             : AnyShapeStyle(Color.clear))
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(layout.help)
+            }
+        }
+        .padding(2.5)
+        .background {
+            Capsule(style: .continuous)
+                .fill(Color.primary.opacity(0.055))
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.6)
+        }
+    }
+}
+
 // MARK: - 来源胶囊
 
 /// 来源切换条：只展示 `center.scopes` 里配置过的来源。
@@ -111,6 +188,14 @@ struct SearchContent<PhotoGrid: View>: View {
     /// 全部来源都为空时展示的提示（宿主可自定义）。
     var emptyView: AnyView? = nil
 
+    /// 结果布局与顶部的切换器共用同一个 UserDefaults 键：改一处，两处同步。
+    /// 默认「画廊」：搜索结果以封面大图为主，比紧凑列表更容易一眼认出内容。
+    @AppStorage(SettingsKeys.searchResultsLayout) private var layoutRaw = SearchResultLayout.gallery.rawValue
+
+    private var layout: SearchResultLayout {
+        SearchResultLayout(rawValue: layoutRaw) ?? .gallery
+    }
+
     var body: some View {
         if let source = center.activeSource {
             sourceContent(source)
@@ -123,7 +208,12 @@ struct SearchContent<PhotoGrid: View>: View {
 
     private var allContent: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 26) {
+            // 外层必须用普通 VStack：格子 / 画廊布局时分区行里是 LazyVGrid 或
+            // 横向 LazyHStack，Lazy 容器直接套 Lazy 容器会让后续增量更新丢失
+            // （首个分区之后的 sections / searchingSources 发布全部不再落地，
+            // 表现为检索完成后「全部」一直停在第一个分区的快照）。
+            // 全部页最多 7 个分区 × 8 条预览，普通 VStack 没有性能压力。
+            VStack(alignment: .leading, spacing: 26) {
                 if center.sections.isEmpty {
                     if center.isSearching {
                         loadingHint("正在检索各来源…")
@@ -149,6 +239,10 @@ struct SearchContent<PhotoGrid: View>: View {
         VStack(alignment: .leading, spacing: 9) {
             SearchSectionHeader(source: section.source,
                                 count: section.total,
+                                kindSummary: section.orderedKinds.compactMap { kind in
+                                    let count = section.kindCounts[kind] ?? 0
+                                    return count > 0 ? (kind.title, count) : nil
+                                },
                                 showsMore: true) {
                 withAnimation(.snappy(duration: 0.18)) {
                     center.setActiveSource(section.source)
@@ -160,8 +254,70 @@ struct SearchContent<PhotoGrid: View>: View {
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
             } else {
-                ForEach(section.hits.prefix(5)) { hit in
-                    SearchHitRow(hit: hit, onOpen: onOpen)
+                // 全部来源页的画廊布局用横向滚动条：像内容中心的轨道一样一条条铺开，
+                // 每个来源一排，右侧自然引向「查看全部」。
+                hitCollection(previewHits(section), horizontalGallery: true)
+            }
+        }
+    }
+
+    /// 「全部来源」里的预览条数：每种类型先各取一条，再补到上限。
+    /// 电视频道动辄几十条，直接取前几条会把排在后面的节目单整个挤掉；
+    /// 相簿 / 人物 / 场景也有同样问题。
+    private func previewHits(_ section: SearchSection, limit: Int = 8) -> [SearchHit] {
+        guard section.hits.count > limit else { return section.hits }
+        var picked: [SearchHit] = []
+        var used = Set<String>()
+        for kind in section.orderedKinds {
+            guard let hit = section.hits.first(where: { $0.kind == kind }),
+                  used.insert(hit.id).inserted else { continue }
+            picked.append(hit)
+        }
+        if picked.count > limit {
+            picked = Array(picked.prefix(limit))
+        }
+        for hit in section.hits where picked.count < limit {
+            guard used.insert(hit.id).inserted else { continue }
+            picked.append(hit)
+        }
+        return picked
+    }
+
+    /// 一组命中按当前布局渲染：列表 → 行；格子 → 自适应封面卡；
+    /// 画廊 → 大图卡（默认纵向网格，`horizontalGallery` 时改横向滚动轨道）。
+    @ViewBuilder
+    private func hitCollection(_ hits: [SearchHit], horizontalGallery: Bool = false) -> some View {
+        switch layout {
+        case .list:
+            ForEach(hits) { hit in
+                SearchHitRow(hit: hit, onOpen: onOpen)
+            }
+
+        case .grid:
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 10)],
+                      alignment: .leading, spacing: 10) {
+                ForEach(hits) { hit in
+                    SearchHitCard(hit: hit, style: .compact, onOpen: onOpen)
+                }
+            }
+
+        case .gallery:
+            if horizontalGallery {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(hits) { hit in
+                            SearchHitCard(hit: hit, style: .feature, onOpen: onOpen)
+                                .frame(width: 236)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 236), spacing: 10)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(hits) { hit in
+                        SearchHitCard(hit: hit, style: .feature, onOpen: onOpen)
+                    }
                 }
             }
         }
@@ -194,16 +350,18 @@ struct SearchContent<PhotoGrid: View>: View {
                 photoGrid()
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
+                    // 同 allContent：行内 hitCollection 在格子 / 画廊布局下是
+                    // LazyVGrid / LazyHStack，外层再用 LazyVStack 会丢更新，
+                    // 切换类型 / 源 / 分类筛选后列表可能不再刷新。
+                    // 单来源命中上限是 limit（40 条），普通 VStack 足够。
+                    VStack(alignment: .leading, spacing: 8) {
                         if let section {
                             let hits = filteredHits(section)
                             if hits.isEmpty {
                                 emptyHint(center.activeKind.map { "没有匹配的\($0.title)" }
                                           ?? "没有匹配的\(source.title)")
                             } else {
-                                ForEach(hits) { hit in
-                                    SearchHitRow(hit: hit, onOpen: onOpen)
-                                }
+                                hitCollection(hits)
                             }
                         } else if center.searchingSources.contains(source) {
                             loadingHint("正在检索\(source.title)…")
@@ -475,6 +633,8 @@ struct SearchContent<PhotoGrid: View>: View {
 struct SearchSectionHeader: View {
     let source: SearchSourceKind
     let count: Int
+    /// 各类型的命中数：全部来源页用它把「节目 / 相簿」等被预览挤掉的类型也说清楚。
+    var kindSummary: [(title: String, count: Int)] = []
     var showsMore: Bool = false
     var onMore: (() -> Void)?
 
@@ -493,6 +653,14 @@ struct SearchSectionHeader: View {
             Text(count.formatted())
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.tertiary)
+            if kindSummary.count > 1 {
+                Text(kindSummary.prefix(5)
+                    .map { "\($0.title) \($0.count)" }
+                    .joined(separator: " · "))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
             Spacer(minLength: 0)
             if showsMore, let onMore {
                 Button(action: onMore) {
@@ -549,6 +717,8 @@ struct SearchHitRow: View {
         }
         .searchRowChrome()
         .onTapGesture { onOpen(hit) }
+        // 右键可直接收藏，不必先打开详情页。
+        .searchHitFavoriteMenu(hit)
         .help(hit.title)
     }
 
@@ -629,12 +799,315 @@ struct SearchHitRow: View {
     }
 }
 
+// MARK: - 命中卡片
+
+/// 格子 / 画廊布局的命中卡片。
+/// `compact`：封面在上、标题在下的紧凑格子；
+/// `feature`：封面大图铺满 + 底部渐变字幕，悬停浮出播放按钮。
+struct SearchHitCard: View {
+    @EnvironmentObject private var catalog: CatalogBrowserModel
+
+    enum Style {
+        case compact
+        case feature
+
+        var visualHeight: CGFloat {
+            self == .compact ? 86 : 132
+        }
+
+        /// 封面解码的目标像素：按显示尺寸取图，画廊卡给更大一档。
+        var imageSide: CGFloat {
+            self == .compact ? 180 : 340
+        }
+    }
+
+    let hit: SearchHit
+    let style: Style
+    let onOpen: (SearchHit) -> Void
+
+    @State private var hovering = false
+
+    private var cornerRadius: CGFloat {
+        style == .compact ? 13 : 14
+    }
+
+    var body: some View {
+        Group {
+            if style == .compact { compactBody } else { featureBody }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .onTapGesture { onOpen(hit) }
+        .onHover { hovering = $0 }
+        .searchHitFavoriteMenu(hit)
+        .help(hit.title)
+    }
+
+    // MARK: 紧凑格子
+
+    private var compactBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SearchCardVisual(visual: hit.visual,
+                             tint: hit.source.tint,
+                             side: style.imageSide,
+                             height: style.visualHeight)
+                .frame(height: style.visualHeight)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    if let badge = hit.badge, !badge.isEmpty {
+                        Text(badge)
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.45), in: Capsule(style: .continuous))
+                            .padding(5)
+                    }
+                }
+                .overlay {
+                    Image(systemName: playSymbol)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .opacity(hovering && isPlayable ? 1 : 0)
+                        .scaleEffect(hovering && isPlayable ? 1 : 0.6)
+                }
+
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text(hit.title)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                if !hit.subtitle.isEmpty {
+                    Text(hit.subtitle)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 1)
+        }
+        .padding(7)
+        .background {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color.primary.opacity(hovering ? 0.075 : 0.035))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(hovering ? hit.source.tint.opacity(0.45)
+                                       : Color.primary.opacity(0.06),
+                              lineWidth: hovering ? 1 : 0.6)
+        }
+        .scaleEffect(hovering ? 1.02 : 1)
+        .animation(.spring(response: 0.26, dampingFraction: 0.8), value: hovering)
+    }
+
+    // MARK: 画廊大卡
+
+    private var featureBody: some View {
+        ZStack(alignment: .bottom) {
+            SearchCardVisual(visual: hit.visual,
+                             tint: hit.source.tint,
+                             side: style.imageSide,
+                             height: style.visualHeight)
+                .frame(height: style.visualHeight)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+
+            // 底部字幕：深色渐变压住封面，白字在任何封面上都可读。
+            LinearGradient(colors: [.clear, .black.opacity(0.24), .black.opacity(0.78)],
+                           startPoint: .center, endPoint: .bottom)
+                .frame(height: style.visualHeight * 0.62)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+
+            HStack(alignment: .bottom, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hit.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if !hit.subtitle.isEmpty {
+                        Text(hit.subtitle)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: trailingSymbol)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 24, height: 24)
+                    .background(.white.opacity(0.18), in: Circle())
+            }
+            .padding(11)
+        }
+        .overlay(alignment: .topLeading) {
+            // 画廊卡左上角挂来源徽标：大图上没有它就分不清是哪个模块的命中。
+            HStack(spacing: 4) {
+                Image(systemName: hit.source.icon)
+                    .font(.system(size: 8.5, weight: .semibold))
+                Text(hit.source.title)
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.black.opacity(0.38), in: Capsule(style: .continuous))
+            .padding(9)
+        }
+        .overlay {
+            if isPlayable {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .opacity(hovering ? 1 : 0)
+                    .scaleEffect(hovering ? 1 : 0.6)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(hovering ? hit.source.tint.opacity(0.55)
+                                       : Color.primary.opacity(0.08),
+                              lineWidth: hovering ? 1.2 : 0.7)
+        }
+        .scaleEffect(hovering ? 1.015 : 1)
+        .animation(.spring(response: 0.26, dampingFraction: 0.8), value: hovering)
+    }
+
+    private var isPlayable: Bool {
+        switch hit.kind {
+        case .movie, .series, .channel, .program, .video, .cloudVideo, .catalogItem:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var playSymbol: String { "play.fill" }
+
+    private var trailingSymbol: String {
+        isPlayable ? "play.fill" : "chevron.right"
+    }
+}
+
+// MARK: - 卡片封面
+
+/// 卡片封面：铺满给定的封面区。
+/// 图片类按卡面尺寸取图；图标类换成来源色大图标色板，保证格子整体不花。
+struct SearchCardVisual: View {
+    @EnvironmentObject private var catalog: CatalogBrowserModel
+
+    let visual: SearchVisual
+    let tint: Color
+    /// 缩略图解码的目标像素边长。
+    var side: CGFloat
+    /// 封面区高度：电视台标等固定尺寸组件按它排版。
+    var height: CGFloat
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [tint.opacity(0.17), tint.opacity(0.05)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            content
+        }
+        .clipped()
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch visual {
+        case .photo(let photo):
+            PhotoThumbnailView(photo: photo, purpose: .cover(side))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        case .albumCover(let photo, let style):
+            AlbumCoverImage(photo: photo, side: side, style: style)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        case .avatar(let data, let isPet):
+            ZStack {
+                Circle().fill(tint.opacity(0.18))
+                if let data, let image = NSImage(data: data) {
+                    Image(nsImage: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: isPet ? "pawprint.fill" : "person.fill")
+                        .font(.system(size: min(side, height) * 0.28, weight: .medium))
+                        .foregroundStyle(tint)
+                }
+            }
+            .frame(width: avatarSide, height: avatarSide)
+            .clipShape(Circle())
+
+        case .place:
+            bigIcon("mappin.and.ellipse")
+        case .scene:
+            bigIcon("sparkles")
+        case .cloudFile(let isVideo):
+            bigIcon(isVideo ? "video.fill" : "photo.fill")
+        case .cloudFolder:
+            bigIcon("folder.fill")
+
+        case .cinemaPoster(let url, let kind):
+            // 海报 / 台标是固定 frame 的组件：尺寸必须取卡片实际可用区域，
+            // 不能用解码像素（180 / 340）当宽度，否则比列宽还宽、压到相邻卡片上。
+            GeometryReader { proxy in
+                CinemaSearchPoster(urlString: url, kind: kind,
+                                   width: proxy.size.width,
+                                   height: proxy.size.height)
+            }
+
+        case .channelLogo(let url):
+            GeometryReader { proxy in
+                TVLogoImage(urlString: url, size: proxy.size, cornerRadius: 9)
+            }
+
+        case .catalogCover(let sourceID, let url):
+            if let source = catalog.sources.first(where: { $0.id == sourceID }) {
+                CatalogArtworkImage(source: source,
+                                    urlString: url,
+                                    cornerRadius: 9,
+                                    quality: .thumbnail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            } else {
+                bigIcon("safari.fill")
+            }
+        }
+    }
+
+    private var avatarSide: CGFloat {
+        min(min(side, height), 74)
+    }
+
+    private func bigIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: min(side, height * 1.6) * 0.2, weight: .medium))
+            .foregroundStyle(tint.opacity(0.75))
+    }
+}
+
 /// 影院海报：优先缓存里的封面，没有时用类型色块占位。
+/// 行内小图用默认 42×58；卡片封面按传入尺寸铺满。
 struct CinemaSearchPoster: View {
     let urlString: String?
     let kind: CinemaMediaKind
+    var width: CGFloat = 42
+    var height: CGFloat = 58
 
     @State private var image: NSImage?
+
+    private var cornerRadius: CGFloat {
+        min(width, height) * 0.18
+    }
+
+    /// 海报解码像素随显示尺寸走：卡片大图取 480px，行内小图维持 200px。
+    private var decodePixels: Int {
+        max(Int(max(width, height)), 200)
+    }
 
     var body: some View {
         ZStack {
@@ -642,24 +1115,28 @@ struct CinemaSearchPoster: View {
                                     Color(red: 0.18, green: 0.14, blue: 0.12)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
             if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
+                Color.clear
+                    .overlay {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    }
             } else {
                 Image(systemName: kind == .movie ? "film" : "tv")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: min(width, height) * 0.26, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
             }
         }
-        .frame(width: 42, height: 58)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.6)
         }
         .task(id: urlString) {
             guard let urlString, !urlString.isEmpty else { return }
-            if let cached = await CinemaArtworkCache.shared.image(for: urlString, maxPixelSize: 200) {
+            if let cached = await CinemaArtworkCache.shared.image(for: urlString,
+                                                                  maxPixelSize: decodePixels) {
                 image = cached
             }
         }
@@ -692,4 +1169,76 @@ private struct SearchRowChrome: ViewModifier {
 
 extension View {
     func searchRowChrome() -> some View { modifier(SearchRowChrome()) }
+}
+
+// MARK: - 右键收藏
+
+/// 搜索结果条目的右键菜单：收藏 / 稍后看。
+/// 四类来源各自落到自己的收藏存储：图库照片写照片标记，网盘文件写当前图库的本地收藏，
+/// 网络影院 / 网络资源条目写条目的「稍后看」表。其它来源（相簿、频道、节目等）不挂菜单。
+private struct SearchHitFavoriteMenu: ViewModifier {
+    @EnvironmentObject private var store: LibraryStore
+    @EnvironmentObject private var catalog: CatalogBrowserModel
+
+    let hit: SearchHit
+
+    func body(content: Content) -> some View {
+        if let action = favoriteAction {
+            content.contextMenu {
+                Button {
+                    action.toggle()
+                } label: {
+                    Text(action.title)
+                }
+            }
+        } else {
+            content
+        }
+    }
+
+    private struct FavoriteAction {
+        let title: String
+        let toggle: () -> Void
+    }
+
+    private var favoriteAction: FavoriteAction? {
+        switch hit.payload {
+        case .photo(let id):
+            // 跨图库的照片不在当前图库里，收藏要先切库，这里不提供。
+            guard let photo = store.anyPhoto(id: id) else { return nil }
+            return FavoriteAction(title: photo.isFavorite ? "取消收藏" : "收藏") {
+                store.toggleFavorite(id)
+            }
+
+        case .cloudFile(let mountID, _, let path):
+            let key = LibraryStore.cloudFavoriteKey(mountID: mountID, path: path)
+            return FavoriteAction(title: store.cloudFavorites.contains(key) ? "取消收藏" : "收藏") {
+                store.toggleCloudFavorite(mountID: mountID, path: path)
+            }
+
+        case .catalogItem(let sourceID, let item):
+            guard let source = catalog.sources.first(where: { $0.id == sourceID }) else { return nil }
+            let favorited = catalog.isFavorite(sourceID: sourceID, itemID: item.id)
+            return FavoriteAction(title: favorited ? "移出稍后看" : "稍后看") {
+                catalog.toggleFavorite(source: source, item: item)
+            }
+
+        case .networkCinemaItem(let sourceID, let item, _):
+            guard let source = catalog.sources.first(where: { $0.id == sourceID }) else { return nil }
+            let favorited = catalog.isFavorite(sourceID: sourceID, itemID: item.id)
+            return FavoriteAction(title: favorited ? "取消收藏" : "收藏") {
+                catalog.toggleFavorite(source: source, item: item)
+            }
+
+        default:
+            return nil
+        }
+    }
+}
+
+extension View {
+    /// 搜索结果右键：收藏 / 取消收藏（不支持收藏的来源不出现菜单）。
+    func searchHitFavoriteMenu(_ hit: SearchHit) -> some View {
+        modifier(SearchHitFavoriteMenu(hit: hit))
+    }
 }

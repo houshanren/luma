@@ -77,7 +77,7 @@ extension LibraryStore {
 
     func resolvePlaybackStream(for photo: PhotoItem) async throws -> ResolvedStream {
         // 网络电视：直播流不走续播与转码，直接把频道地址交给播放器。
-        if let stream = resolveTVStream(for: photo.id) { return stream }
+        if let stream = await resolveTVStream(for: photo.id) { return stream }
         // 网络资源：按虚拟分集取当前集的播放直链。
         if let context = catalogPlaybackContext(for: photo.id) {
             let stream = try await catalog.stream(source: context.source, episode: context.episode)

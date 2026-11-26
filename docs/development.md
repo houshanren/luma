@@ -27,7 +27,7 @@
 - Swift 5.9 / SwiftPM，最低 **macOS 14**，零第三方依赖。
 - 链接的系统库只有三个：`libsqlite3`、`NetFS`、`Photos`（见 `Package.swift` 的 `linkerSettings`）。
 - UI 全部 SwiftUI；只有需要系统面板或图片桥接时才 `import AppKit`（`NSOpenPanel` / `NSSavePanel` / `NSWorkspace` / `NSImage`）。
-- 不使用 `.xcassets`。图标是 `Resources/AppIcon.icns`，源图 `Resources/icon_1024.png`，由 `Tools/make_icon.swift` 生成后 `iconutil` 打包。
+- 不使用 `.xcassets`。图标是 `Resources/AppIcon.icns`，源图 `Resources/icon_1024.png`，由 `Tools/design/make_icon.swift` 生成后 `iconutil` 打包。
 - 界面文案与代码注释统一简体中文。
 - 产物固定为仓库根目录 `Luma.app`（可执行文件 `Luma`，bundle id `com.baymax.luma`，显示名「拾光」）。
 - `LumaCore` / `PlaybackCore` / `LumaContentCore` 三个库**不得** import SwiftUI / AppKit。
@@ -75,16 +75,14 @@ photos/
 
 | 文件 | 用途 |
 | --- | --- |
-| `catalog_build/` | 资料库流水线：`fetch_*.py` 抓取、`build_*.py` 归一化、`build_catalog_db.py` 生成 `Resources/Catalog/catalog.sqlite`、`t2s.swift` 简繁转换 |
-| `make_icon.swift` | 画 1024 图标 |
-| `brand_hero_gif.py` | 生成 README 顶部的品牌动图 `docs/design/assets/brand-hero.gif` |
-| `bundle_ffmpeg.py` | 整理 ffmpeg 运行时依赖 |
-| `make_vendor_runtime.sh` | 从本机 Homebrew 生成 `Vendor/ffmpeg-dv`（ffmpeg-full + libplacebo + MoltenVK + 全部 dylib） |
-| `avplayer_probe.swift` · `media_matrix.py` | 片源能力探测与媒体矩阵实验 |
-| `playback_log_report.py` | 播放日志归因报告 |
-| `ui_perf.py` | 启动应用内界面性能基准并汇总 FPS / 慢帧 / 缩略图 p95；`--report` 只解析已有 JSON |
-| `ui_trace.sh` | 用 `xctrace` 录 Instruments trace，同时跑同一套基准并输出 JSON |
-| `quick_app.sh` | 快速重启辅助脚本 |
+| `catalog_build/` | 资料库流水线，入口 `catalog_build/refresh_catalog.sh`（抓取 / 归一 / R18 / 建库 / 头像 / 打包） |
+| `catalog_build/fetch/` | `fetch_*.py` 一手源抓取 |
+| `catalog_build/build/` | `build_*.py` 本地归一、`fix_*` / `match_*` 补丁、`build_catalog_db.py` 生成 `Resources/Catalog/catalog.sqlite` |
+| `catalog_build/import/` | `import_*.py` 大盘数据导入（javrate / R18 dump） |
+| `catalog_build/t2s.swift` | 简繁转换（归一化共用） |
+| `build/` | `make_vendor_runtime.sh` 生成 `Vendor/ffmpeg-dv`、`bundle_ffmpeg.py` 整理 ffmpeg 依赖、`quick_app.sh` 快速重启 |
+| `design/` | `make_icon.swift` 画 1024 图标、`brand_hero_gif.py` 生成 README 品牌动图 |
+| `dev/` | `avplayer_probe.swift` · `media_matrix.py` 片源能力探测与媒体矩阵、`playback_log_report.py` 播放日志归因、`ui_perf.py` 界面性能基准、`ui_trace.sh` Instruments trace |
 
 `Vendor/` 下的 `ffmpeg/`、`ffmpeg-dv/` 都是 `build.sh` 现场生成或下载的，不进版本库。
 
@@ -720,7 +718,7 @@ swift run LumaDataChecks
 1. `swift build -c <config> --product Luma`。
 2. 删除旧 `Luma.app`，重建 `Contents/MacOS` 与 `Contents/Resources`，拷贝可执行文件、`Info.plist`、`PkgInfo`。
 3. 拷贝 `AppIcon.icns`、`PrivacyInfo.xcprivacy`、`CloudIcons/*.png`、`Catalog/*.sqlite`、`Models/*`。
-4. ffmpeg：优先复制 `Vendor/ffmpeg-dv/{bin,lib}`（缺失则先跑 `Tools/make_vendor_runtime.sh` 现场生成），并附 `FFmpeg-VERSIONS.txt` 与 GPL `FFmpeg-NOTICE.txt`；没有 dv 运行时才下载静态 `ffmpeg` / `ffprobe` 到 `Vendor/ffmpeg` 并拷进 `Contents/Resources/bin/`。
+4. ffmpeg：优先复制 `Vendor/ffmpeg-dv/{bin,lib}`（缺失则先跑 `Tools/build/make_vendor_runtime.sh` 现场生成），并附 `FFmpeg-VERSIONS.txt` 与 GPL `FFmpeg-NOTICE.txt`；没有 dv 运行时才下载静态 `ffmpeg` / `ffprobe` 到 `Vendor/ffmpeg` 并拷进 `Contents/Resources/bin/`。
 5. 签名：**先签内嵌 dylib，再签 ffmpeg / ffprobe，最后签外层 App**（hardened runtime 不允许未签名的嵌套可执行文件）。
 6. 可选打包与公证。
 
@@ -806,7 +804,7 @@ echo $?                         # 0 = 全过；1 = 有断言失败
 
 约定：
 
-- 检查器只覆盖「不依赖真实样片 / 网络 / 用户库」的决策与契约。容器 × 编码 × HDR × 音轨的真实解码矩阵仍用 `Tools/media_matrix.py`；检查器负责把矩阵结论固化成断言（可直通编码、hvc1 / DV 标签、降档、映射、多音轨），防止结论与代码漂移。
+- 检查器只覆盖「不依赖真实样片 / 网络 / 用户库」的决策与契约。容器 × 编码 × HDR × 音轨的真实解码矩阵仍用 `Tools/dev/media_matrix.py`；检查器负责把矩阵结论固化成断言（可直通编码、hvc1 / DV 标签、降档、映射、多音轨），防止结论与代码漂移。
 - 站点 HTML / 直链提取属于适配器层，需要真实页面样本才能验证；播放链路本身的公共语义放在 `ChecksCatalogPlayback.swift`。
 - 涉及数据层的行为优先写进 `Tests/LumaDataChecks`（临时目录 + `MetadataStore(url:)`），不再依赖手工验证。
 - 导入规则（扩展名、实况照片配对、媒体归类、蓝光文案、EXIF 时间）只有 `Sources/LumaCore/ImportRules.swift` 一份实现，App 与 `ChecksImport.swift` 共用；不要在 App 层另写一套。
@@ -821,11 +819,11 @@ echo $?                         # 0 = 全过；1 = 有断言失败
 
 ```sh
 ./build.sh
-python3 Tools/ui_perf.py                                       # 全部场景，单轮 5 秒
-python3 Tools/ui_perf.py --scenes grid-square,cinema-wall --seconds 8
-python3 Tools/ui_perf.py --min-fps 55 --max-slow-ratio 0.03    # 不达标退出码 1
-python3 Tools/ui_perf.py --build                               # 先完整构建再跑
-python3 Tools/ui_perf.py --report /tmp/luma-ui-trace-xxx.json  # 只解析已有报告
+python3 Tools/dev/ui_perf.py                                       # 全部场景，单轮 5 秒
+python3 Tools/dev/ui_perf.py --scenes grid-square,cinema-wall --seconds 8
+python3 Tools/dev/ui_perf.py --min-fps 55 --max-slow-ratio 0.03    # 不达标退出码 1
+python3 Tools/dev/ui_perf.py --build                               # 先完整构建再跑
+python3 Tools/dev/ui_perf.py --report /tmp/luma-ui-trace-xxx.json  # 只解析已有报告
 ```
 
 `ui_perf.py` 参数：
@@ -891,13 +889,13 @@ python3 Tools/ui_perf.py --report /tmp/luma-ui-trace-xxx.json  # 只解析已有
 
 ### 19.7 Instruments trace（需要完整 Xcode）
 
-`Tools/ui_trace.sh` 用 `xctrace` 录制 trace，同时用同一套环境变量触发应用内基准，一次拿到「Instruments 时间线 + JSON 数字」：
+`Tools/dev/ui_trace.sh` 用 `xctrace` 录制 trace，同时用同一套环境变量触发应用内基准，一次拿到「Instruments 时间线 + JSON 数字」：
 
 ```sh
 ./build.sh
-Tools/ui_trace.sh                                              # Animation Hitches，全部场景
-Tools/ui_trace.sh --template "Time Profiler" --scenes grid-square --seconds 6
-Tools/ui_trace.sh --template "Metal System Trace" --output /tmp/luma-metal.trace
+Tools/dev/ui_trace.sh                                              # Animation Hitches，全部场景
+Tools/dev/ui_trace.sh --template "Time Profiler" --scenes grid-square --seconds 6
+Tools/dev/ui_trace.sh --template "Metal System Trace" --output /tmp/luma-metal.trace
 ```
 
 | 参数 | 默认 | 作用 |

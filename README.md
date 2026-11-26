@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/brand-hero.gif" alt="拾光 Luma — 拾起每一段时光" width="100%">
+  <img src="docs/design/assets/brand-hero.gif" alt="拾光 Luma — 拾起每一段时光" width="100%">
 </p>
 
 <h1 align="center">拾光 Luma</h1>
@@ -151,8 +151,8 @@
 | 搜索 | ● | 台名 / 分组 / 省份 / 节目名；已接入全局搜索 |
 | 收藏与最近 | ● | 收藏存当前图库；最近观看去重保留 40 条 |
 | 切台 | ● | ↑↓ 换台、数字键直接输入频道号、←→ 切线路 |
-| 直播播放 | ● | HLS 直连 AVPlayer；非 HLS 由 ffmpeg 转封装，带断线重连 |
-| 缓冲与恢复 | ● | 8 秒卡住升级转封装、12 秒轻推、10 秒重建流；失败自动顺延线路 |
+| 直播播放 | ● | HLS 直连 AVPlayer；非 HLS 由 ffmpeg 转封装，带断线重连；最近实际就绪的线路随图库记住，下次同频道优先使用 |
+| 缓冲与恢复 | ● | 8 秒卡住升级转封装、12 秒轻推、10 秒重建流；失败按固定顺序遍历全部线路，总计最多 3 轮（单线路 3 次），耗尽后明确提示 |
 | 台标 | ● | 台标缓存，同频道跨源共用 |
 | EPG | ● | 播放列表自带 url-tvg、手动地址与内置补充源；缓存前后 3 天（另加半天缓冲） |
 | 节目单 | ● | 5 天时间轴、时间环表盘、当前 / 下一节目、节目详情 |
@@ -192,7 +192,7 @@
 | 观看体验 | ● | 全屏沉浸、画中画、当前帧 PNG 截图、自动连播、下一集预热 |
 | 未做 | ○ | 多码率 ABR、ffmpeg 硬件解码、Atmos 对象音频、HDR10+ 动态元数据、蓝光菜单与加密盘、A-B 循环、视频剪辑 |
 
-> 播放能力依赖随包 ffmpeg；杜比视界映射需要内置 ffmpeg-full + libplacebo / MoltenVK。逐项实测与验收口径见 [视频播放能力设计](docs/video-playback-capability-design-2026-11.md)。
+> 播放能力依赖随包 ffmpeg；杜比视界映射需要内置 ffmpeg-full + libplacebo / MoltenVK。逐项实测与验收口径见 [视频播放能力设计](docs/playback/video-playback-capability-design-2026-11.md)。
 
 **播放决策链**（代码里的实际分支）
 
@@ -201,12 +201,12 @@
 | ① 原生直读 | 本地 / 网盘资产、系统可解码、非隔行、非 4K50-60 HEVC、不需要 HDR 映射、未烧录字幕 | AVPlayer 直接播放原文件，起播最快 |
 | ② 无损转封装 | 容器不受系统支持（MKV / AVI / TS…）但视频轨可解码 | ffmpeg 边下边转 fMP4 HLS，视频流原样拷贝；HEVC 写 `hvc1`，杜比视界保留 `dvh1` / `dvhe` |
 | ③ 重编码 | 视频轨不可解码、隔行、4K50-60 HEVC、HDR → SDR、烧录字幕 | VideoToolbox H.264 / HEVC / 低功耗 HEVC；输出像素率 ≤ 2.5 亿/秒，码率按输出高度 20 / 12 / 8 / 5 Mbps |
-| 直播 | HLS 直接交给 AVPlayer；非 HLS 由 ffmpeg 转封装 | 断线重连、失败顺延备用线路 |
+| 直播 | HLS 直接交给 AVPlayer；非 HLS 由 ffmpeg 转封装 | 断线重连、就绪线路记忆、失败最多三轮顺延 |
 
 **能力状态（按代码与实测整理）**
 
 - **已实测通过**：AC-3 / E-AC-3 / ALAC 直通；杜比视界 RPU 在 HDR 屏保留、SDR 屏经 libplacebo 映射；4K 色调映射约 1.55× 实时；SMB / WebDAV 真实片源起播与拖动；离线转码按真实帧率降档；HEVC 重编码输出 `hvc1` / Main10。
-- **待实测（暂不按「完整支持」宣传）**：E-AC-3 JOC / Atmos 元数据是否保留、`hevc_videotoolbox main10` 编码速度、`-hwaccel videotoolbox` 的净收益、多 variant HLS 切换开销、弱网 `NWPathMonitor` 时序、HDR10+ 动态元数据、`yadif_videotoolbox` 与 `bwdif` 的画质差异、端到端首段与卡顿基线。
+- **待实测（暂不按「完整支持」宣传）**：直播线路记忆与三轮重试的真实频道回归、E-AC-3 JOC / Atmos 元数据是否保留、`hevc_videotoolbox main10` 编码速度、`-hwaccel videotoolbox` 的净收益、多 variant HLS 切换开销、弱网 `NWPathMonitor` 时序、HDR10+ 动态元数据、`yadif_videotoolbox` 与 `bwdif` 的画质差异、端到端首段与卡顿基线。
 - **尚未实现**：HDR 输出计划层（HDR 判定仍分散在播放器与 `StreamPlanner`）、ffmpeg 硬件解码、多码率 ABR、云端字幕自动挂载、Atmos 对象层渲染、HDR10+ 动态元数据。
 
 ### AI 与本地推理
@@ -426,7 +426,7 @@ AI 分两层：**本机理解**（默认离线、随图库写入结果）与 **�
 | 与本地媒体库统一 | ● | ○ | ○ | ○ | ◐ | ● |
 | 桌面端体验 | ● | ○ | ◐ | ◐ | ◐ | ◐ |
 
-> 拾光的「回看」完整、时移受当前缓冲限制；「录制」是 30 秒片段与定时片段，不含完整节目录制。拾光不再内置频道源，首次使用需要导入 M3U；EPG 会自动接入内置公共 XMLTV。OTT Navigator 与 VLC / IINA 的完整对比见 [电视直播竞品报告](docs/iptv-competitor-report-2026-11.html)。
+> 拾光的「回看」完整、时移受当前缓冲限制；「录制」是 30 秒片段与定时片段，不含完整节目录制。拾光不再内置频道源，首次使用需要导入 M3U；EPG 会自动接入内置公共 XMLTV。OTT Navigator 与 VLC / IINA 的完整对比见 [电视直播竞品报告](docs/product/iptv-competitor-report-2026-11.html)。
 
 ### 四、网络资源与网络影院：拾光 vs 六类产品
 
@@ -462,7 +462,7 @@ AI 分两层：**本机理解**（默认离线、随图库写入结果）与 **�
 | 资源 / 影院 | Web / 手机端 | ○ | ● | ● | ● | — | ● |
 | 资源 / 影院 | API / MCP / 自动化 | ○ | ○ | ● | ● | — | ● |
 
-> 列名对应：番号库 = JavDB App，自托管库 = Stash，元数据插件 = MetaTube，多站刮削 = JavSP，自动下载 = Whisparr；用户脚本（Jable / MissAV 增强）的完整列与逐项说明见 [网络资源竞品分析](docs/catalog-competitive-analysis-2026-11.md)。
+> 列名对应：番号库 = JavDB App，自托管库 = Stash，元数据插件 = MetaTube，多站刮削 = JavSP，自动下载 = Whisparr；用户脚本（Jable / MissAV 增强）的完整列与逐项说明见 [网络资源竞品分析](docs/catalog/catalog-competitive-analysis-2026-11.md)。
 > 「影院」列指网络影院（影视源聚合）与本地 / 网盘影院共用的一套能力：同名条目按标题归并、详情页切换来源、TMDB 补全海报 / 背景 / 简介 / 评分 / 类型并及时刷新，演职员与剧集信息按 tmdbID 缓存。
 > 两处仍未做：网络资源的「同片跨源归并」现按源分组；网络影院没有个人评分与短评、下载队列与多端。
 > 「失败换源」：影院可自动顺延线路或切换到另一个来源播放，网络资源侧需要手动回列表换源。
@@ -498,7 +498,7 @@ AI 分两层：**本机理解**（默认离线、随图库写入结果）与 **�
 
 ## 下载
 
-- **发布产物**：[Luma-2.1.0-macOS.zip](https://github.com/houshanren/luma/releases/download/v2.1.0/Luma-2.1.0-macOS.zip)（macOS 14+，本地自签，未做 Apple 公证）
+- **发布产物**：[Luma-2.1.1-macOS.zip](https://github.com/houshanren/luma/releases/download/v2.1.1/Luma-2.1.1-macOS.zip)（macOS 14+，本地自签，未做 Apple 公证）
 - **全部版本**：[Releases](https://github.com/houshanren/luma/releases)
 - **官方网站**：[http://houshanren.asia:10086/](http://houshanren.asia:10086/)
 - **从源码构建**：[`./build.sh`](#获取与构建)
@@ -531,13 +531,13 @@ swift run LumaCoreChecks
 | [产品设计文档](docs/product-design.md) | 品牌叙事、目标用户、信息架构、模块边界、核心流程与路线 |
 | [UI 设计及标准](docs/ui-design-system.md) | 色彩、字体、间距、圆角、组件、动效、可读性与无障碍规范 |
 | [代码开发文档](docs/development.md) | 架构分层、目录结构、数据与索引、搜索体系、播放内核、测试与发布 |
-| [视频播放能力设计](docs/video-playback-capability-design-2026-11.md) | 播放链路、HDR / 杜比视界、转码、音频、画面、缓冲、字幕的现状、实测与验收口径 |
-| [播放组合实测](docs/video-media-matrix-2026-11.md) | 容器 × 编码 × HDR × 音频组合的实测矩阵与失败案例 |
-| [音画同步诊断](docs/video-av-sync-diagnosis-2026-11.md) | 音画不同步的复现、量化与修复记录 |
-| [图库竞品分析](docs/luma-competitive-analysis-2026-11.md) | 与 Apple 照片 / Google 相册 / Lightroom / Mylio / Eagle / Immich 的分类对比 |
-| [影院海报墙研究](docs/cinema-poster-wall/index.html) | 芝杜海报墙与 Infuse 8.5 的能力矩阵、交互与视觉拆解 |
-| [电视直播竞品报告](docs/iptv-competitor-report-2026-11.html) | TiviMate / Smarters / GSE / Channels / Jellyfin 等产品的直播能力对比 |
-| [网络资源竞品分析](docs/catalog-competitive-analysis-2026-11.md) | 番号库 / 自托管库 / 元数据插件 / 多站刮削 / 自动下载的覆盖对比 |
+| [视频播放能力设计](docs/playback/video-playback-capability-design-2026-11.md) | 播放链路、HDR / 杜比视界、转码、音频、画面、缓冲、字幕的现状、实测与验收口径 |
+| [播放组合实测](docs/playback/video-media-matrix-2026-11.md) | 容器 × 编码 × HDR × 音频组合的实测矩阵与失败案例 |
+| [音画同步诊断](docs/playback/video-av-sync-diagnosis-2026-11.md) | 音画不同步的复现、量化与修复记录 |
+| [图库竞品分析](docs/product/luma-competitive-analysis-2026-11.md) | 与 Apple 照片 / Google 相册 / Lightroom / Mylio / Eagle / Immich 的分类对比 |
+| [影院海报墙研究](docs/design/cinema-poster-wall/index.html) | 芝杜海报墙与 Infuse 8.5 的能力矩阵、交互与视觉拆解 |
+| [电视直播竞品报告](docs/product/iptv-competitor-report-2026-11.html) | TiviMate / Smarters / GSE / Channels / Jellyfin 等产品的直播能力对比 |
+| [网络资源竞品分析](docs/catalog/catalog-competitive-analysis-2026-11.md) | 番号库 / 自托管库 / 元数据插件 / 多站刮削 / 自动下载的覆盖对比 |
 
 ## 隐私
 

@@ -13,3 +13,6 @@ Vendor/ffmpeg-dv/
 # Python 缓存与原始抓取数据（可重建，不入库）
 __pycache__/
 Tools/catalog_build/raw/
+
+# 本地导出的网络电视 / 网络影院源配置（含站点地址与凭据，属于用户数据）
+StreamSource/

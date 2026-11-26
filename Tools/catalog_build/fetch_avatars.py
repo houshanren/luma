@@ -32,7 +32,8 @@ HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
     "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
 }
-PROXIES = {"http": PROXY, "https": PROXY}
+# 国内图床（秀人网镜像等）直连更快；把 MONO_PROXY 设为空串即可关掉代理。
+PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
 
 
 def encode(url: str) -> str | None:
@@ -41,8 +42,12 @@ def encode(url: str) -> str | None:
             # 每个请求独立连接：复用 Session 时 JavBus 图床的连接容易卡死。
             parsed = urllib.parse.urlparse(url)
             headers = dict(HEADERS)
-            # JavBus 图床没有 Referer 会直接 403。
-            headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+            # 只有 JavBus 图床必须带 Referer（没有会直接 403）。其他图床
+            # 相反：imgdb 302 到百度 CDN 后带旧 Referer 会被防盗链拦截，
+            # 66372188 带自家根 Referer 也直接 403——第一次都裸连，
+            # 403 了第 2 次再补站点根 Referer 试一遍。
+            if "javbus" in parsed.netloc or attempt >= 1:
+                headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
             response = requests.get(url, proxies=PROXIES, headers=headers, timeout=20)
             if response.status_code == 404:
                 return None

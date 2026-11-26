@@ -2,7 +2,7 @@
 """生成 README 顶部的品牌动图（拾光 Luma）。
 
 用法：python3 Tools/brand_hero_gif.py
-产物：docs/assets/brand-hero.gif（Markdown 里可直接播放）
+产物：docs/design/assets/brand-hero.gif（Markdown 里可直接播放）
 """
 
 import math
@@ -291,13 +291,13 @@ def main():
         draw_brand_lines(img, t)
         frames.append(img)
 
-    os.makedirs("docs/assets", exist_ok=True)
+    os.makedirs("docs/design/assets", exist_ok=True)
     palette_source = frames[0].quantize(colors=192, method=Image.MEDIANCUT, dither=Image.NONE)
     quantized = [f.quantize(palette=palette_source, dither=Image.NONE) for f in frames]
-    out = "docs/assets/brand-hero.gif"
+    out = "docs/design/assets/brand-hero.gif"
     quantized[0].save(out, save_all=True, append_images=quantized[1:],
                       duration=FRAME_MS, loop=0, optimize=True, disposal=2)
-    frames[24].save("docs/assets/brand-hero.png")
+    frames[24].save("docs/design/assets/brand-hero.png")
     print("wrote", out, os.path.getsize(out) // 1024, "KB")
 
 

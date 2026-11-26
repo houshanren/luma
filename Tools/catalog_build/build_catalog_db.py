@@ -27,9 +27,12 @@ from __future__ import annotations
 
 import base64
 import colorsys
+import difflib
+import glob
 import hashlib
 import html
 import io
+import itertools
 import json
 import os
 import re
@@ -778,6 +781,7 @@ def blank_studio(name):
         "work_count": None,
         "summary": None,
         "website": None,
+        "logo_url": None,
         "source_url": None,
         "sources": set(),
     }
@@ -854,7 +858,9 @@ def apply_actress_details(merged, name_keys, details):
         site_stats = has_site_stats(detail.get("source"))
         region = target.get("region") or detail.get("region")
         for field in ("summary", "description", "source_url", "image",
-                      "birth_date", "height", "bust", "waist", "hips", "cup", "hobby"):
+                      "birth_date", "height", "bust", "waist", "hips", "cup", "hobby",
+                      "birthplace", "blood_type", "debut_year", "agency", "status",
+                      "official_site", "ruby"):
             value = detail.get(field)
             if field in ("summary", "description"):
                 value = summary_for(value, region)
@@ -870,6 +876,36 @@ def apply_actress_details(merged, name_keys, details):
                 target["tags"].append(tag)
         target["sources"].add(detail.get("source", "kkkhai 人物"))
     return added
+
+
+def apply_manual_profiles(merged, name_keys, rows):
+    """人工逐条核对过的档案优先级最高：同名记录直接覆盖数值字段。"""
+    flat = [name for row in rows for name in [row["name"], *row.get("names", [])]]
+    normalized = normalize_all(flat) if flat else []
+    cursor = 0
+    applied = 0
+    for row in rows:
+        names = [row["name"], *row.get("names", [])]
+        keys = normalized[cursor: cursor + len(names)]
+        cursor += len(names)
+        key = next((name_keys[k] for k in keys if name_keys.get(k) in merged), None)
+        if key is None:
+            continue
+        target = merged[key]
+        if row.get("name") and row["name"] != target.get("name"):
+            if target.get("name") and target["name"] not in target["names"]:
+                target["names"].append(target["name"])
+            target["name"] = row["name"]
+        for field in ("birth_date", "height", "bust", "waist", "hips", "birthplace",
+                      "summary", "image", "blood_type", "debut_year", "agency", "region"):
+            if row.get(field) not in (None, ""):
+                target[field] = row[field]
+        for candidate in names:
+            if candidate and candidate not in target["names"]:
+                target["names"].append(candidate)
+        target["sources"].add(row.get("source") or "人工核对")
+        applied += 1
+    return applied
 
 
 def javbus_detail_rows():
@@ -926,24 +962,40 @@ def javbus_star_rows(name_keys):
 
     portrait_candidates.json 是按名字匹配出来的 star_id 清单，
     所以这里的 star 名就是该演员的日文写法，可以补 name_ja。
+    javbus_portraits.json 里其余已探活的 star_id（external_ids 反查出来的）
+    也一并补：名字从 javbus_stars_zh / javbus_name_map 取。
     """
     stars_path = os.path.join(RAW, "javbus_stars_zh.json")
     candidates_path = os.path.join(RAW, "portrait_candidates.json")
     if not os.path.exists(stars_path) or not os.path.exists(candidates_path):
         return []
     stars = load_json(stars_path)
+    name_map_path = os.path.join(RAW, "javbus_name_map.json")
+    if os.path.exists(name_map_path):
+        for entry in load_json(name_map_path):
+            sid = entry.get("star_id")
+            if sid and sid not in stars and (entry.get("ja") or entry.get("zh")):
+                stars[sid] = entry.get("ja") or entry.get("zh")
     portraits_path = os.path.join(RAW, "javbus_portraits.json")
     portraits = load_json(portraits_path) if os.path.exists(portraits_path) else {}
     rows = []
-    for star_id in load_json(candidates_path):
+    candidates = set(load_json(candidates_path))
+    # 已探活出头像的 star_id 全部参与；候选清单里未探活的也保留（补日文名）。
+    extra = [sid for sid, url in portraits.items()
+             if url and sid not in candidates]
+    for star_id in list(candidates) + extra:
         name = stars.get(star_id)
         if not name:
             continue
         base = re.sub(r"\s*[（(][^）)]*[）)]\s*$", "", name).strip() or name
         japanese = clean_person_name(base)
+        # JavBus 改名后同时保留新旧两个 star 页：带括号的全名页对应
+        # javbus_detail_rows 建出的旧名条目（有资料没图），剥括号的现用名
+        # 页对应常有头像的孪生条目。主名用全名优先命中旧名条目直接补图，
+        # 现用名只做回退，避免把图又补到孪生身上。
         row = {
-            "name": base,
-            "names": [name] if name != base else [],
+            "name": name,
+            "names": [base] if name != base else [],
             "name_ja": japanese,
             "region": "japan",
             "source": "javbus 演员页",
@@ -953,6 +1005,28 @@ def javbus_star_rows(name_keys):
         if url:
             row["image"] = url
         rows.append(row)
+    return rows
+
+
+def wiki_image_rows():
+    """wiki_person_images.json：MediaWiki pageimages 探到的缩略图，只补头像。"""
+    path = os.path.join(RAW, "wiki_person_images.json")
+    if not os.path.exists(path):
+        return []
+    rows = []
+    for key, url in load_json(path).items():
+        if ":" not in key or not url:
+            continue
+        _site, title = key.split(":", 1)
+        name = strip_disambiguation(title)
+        rows.append({
+            "name": name,
+            "names": [title] if title != name else [],
+            "image": url,
+            "region": "japan",
+            "source": "维基缩略图",
+            "require_existing": True,
+        })
     return rows
 
 
@@ -977,6 +1051,433 @@ def wiki_bio_rows():
             "region": "japan",
             "source": "中文维基",
         })
+    return rows
+
+
+JA_PLACE_TAIL = re.compile(r"(都|道|府|県|州|市|町|村|国|島|地方)$")
+JA_NON_PERSON = {"AV女優", "AV女优", "日本のAV女優", "AV女優一覧", "日本のAV女優一覧"}
+JA_FIELD_JUNK = re.compile(r"(趣味|特技|身長|スリーサイズ|デビュー|生年月日|血液型|出身|カップ)")
+
+
+def _ja_field(value, max_len=60):
+    """日文维基的字段常混进表格 / 模板残留，只留开头那一段干净的。"""
+    text = (value or "").strip()
+    if not text:
+        return None
+    text = re.split(r"[\|{*（(：:]", text)[0]
+    text = text.strip(" ・,，-–—")
+    if not text or len(text) > max_len:
+        return None
+    return text
+
+
+def _ja_birthplace(value):
+    text = _ja_field(value, 40)
+    if not text:
+        return None
+    if not JA_PLACE_TAIL.search(text) and len(text) > 8:
+        return None
+    return text
+
+
+def _ja_agency(value):
+    text = _ja_field(value, 60)
+    if not text or JA_FIELD_JUNK.search(text):
+        return None
+    return text
+
+
+def _ja_hobby(value):
+    text = (value or "").strip()
+    if not text:
+        return None
+    text = re.split(r"[=|*]", text)[0].strip(" ・,，、")
+    return text[:80] or None
+
+
+def ja_wiki_rows():
+    """日文维基信息框 → apply_actress_details 的输入格式。
+
+    日文维基的标题是日文名，先用 javbus 的「日文名 → 中文译名」对照换成展示名；
+    没有对照的保留日文名，仍然可以作为新人物入库。
+    """
+    path = os.path.join(RAW, "ja_wiki_people.json")
+    if not os.path.exists(path):
+        return []
+    people = load_json(path)
+
+    ja_zh: dict[str, str] = {}
+    mapping_path = os.path.join(RAW, "javbus_name_map.json")
+    if os.path.exists(mapping_path):
+        mapping = [row for row in load_json(mapping_path) if row.get("zh")]
+        simplified = simplify_all([row["zh"] for row in mapping])
+        for row, zh in zip(mapping, simplified):
+            japanese = clean_person_name(row.get("ja"))
+            if japanese:
+                ja_zh[merge_key(japanese.translate(JP_VARIANTS))] = zh
+
+    rows = []
+    for title, info in people.items():
+        if not isinstance(info, dict):
+            continue
+        name_ja = clean_person_name(info.get("name") or strip_disambiguation(title))
+        if not name_ja or name_ja in JA_NON_PERSON:
+            continue
+        zh = ja_zh.get(merge_key(name_ja.translate(JP_VARIANTS)))
+        display = zh or name_ja
+        names = [name_ja]
+        for alias in info.get("aliases", []):
+            alias = clean_alias(alias)
+            if alias and alias not in names:
+                names.append(alias)
+        if zh and zh != display and zh not in names:
+            names.append(zh)
+        rows.append({
+            "name": display,
+            "names": names,
+            "name_ja": name_ja,
+            "region": "japan",
+            "birth_date": info.get("birth_date"),
+            "height": info.get("height"),
+            "bust": info.get("bust"),
+            "waist": info.get("waist"),
+            "hips": info.get("hips"),
+            "cup": info.get("cup"),
+            "hobby": _ja_hobby(info.get("hobby")),
+            "ruby": info.get("ruby"),
+            "birthplace": _ja_birthplace(info.get("birthplace")),
+            "blood_type": info.get("blood_type"),
+            "debut_year": info.get("debut_year"),
+            "agency": _ja_agency(info.get("agency")),
+            "official_site": info.get("official_site"),
+            "status": info.get("status"),
+            "source_url": info.get("url"),
+            "source": "日文维基",
+        })
+    return rows
+
+
+CN_HANGUL = re.compile(r"[\uac00-\ud7af]")
+CN_KANA = re.compile(r"[ぁ-んァ-ヶ]")
+CN_WEB_CACHE = None
+
+# 聚合站标签会把写真机构当成模特：克拉女神 → 「克拉」、MYGirl美媛馆 → 「MYGirl」。
+# 这些名字进人物表只会污染搜索，直接按机构词过滤（带人名的「克拉女神小西」不受影响）。
+WEB_ORG_EXTRA = {
+    "初夏", "激萌文化", "轻兰映画", "壹吻映画", "差点映画", "兔玩映画",
+    "赛车女郎", "OL女郎", "Ugirls模特", "模特合辑", "女神在卧", "辣妈女神",
+}
+# 与机构同名的真人（青柠是物恋传媒 / 绮梦摄影的模特，被「青柠映画」误伤）。
+WEB_NAME_ALLOW = {"青柠"}
+WEB_ORG_STRIP = re.compile(r"(女神|传媒|文化|映画|摄影|写真|女郎|画报|学院|学苑)$")
+WEB_ORG_KEYS = None
+
+
+def web_org_keys():
+    """机构名及其去后缀变体：用于把聚合站标签里的机构从人名列剔除。"""
+    global WEB_ORG_KEYS
+    if WEB_ORG_KEYS is not None:
+        return WEB_ORG_KEYS
+    keys = set()
+
+    def add(name):
+        key = merge_key((name or "").translate(JP_VARIANTS))
+        if key:
+            keys.add(key)
+
+    for name in WEB_ORG_EXTRA:
+        add(name)
+    for file in ("cn_studios_yituwan.json", "kkkhai_studios.json"):
+        path = os.path.join(RAW, file)
+        if not os.path.exists(path):
+            continue
+        for row in load_json(path):
+            name = (row.get("name") if isinstance(row, dict) else row) or ""
+            add(name)
+            stripped = WEB_ORG_STRIP.sub("", name).strip()
+            if len(re.sub(r"[^A-Za-z0-9\u4e00-\u9fa5]", "", stripped)) >= 2:
+                add(stripped)
+            latin = re.match(r"[A-Za-z][A-Za-z0-9]+", name)
+            if latin:
+                add(latin.group(0))
+    WEB_ORG_KEYS = keys
+    return keys
+
+
+def web_name_ok(name, has_works=True):
+    """聚合站标签里的人名最低要求：不是机构；没有作品的单字标签也不要。"""
+    if name in WEB_NAME_ALLOW:
+        return True
+    if merge_key((name or "").translate(JP_VARIANTS)) in web_org_keys():
+        return False
+    if has_works:
+        return True
+    # 假名 / 谚文也是有效字符，别把「えなこ」这类日韩名字当成空名。
+    cleaned = re.sub(r"[^\w\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]", "", name or "")
+    return len(cleaned) >= 2
+
+
+def cn_web_profiles():
+    """coshe / 52cos / xiuren 抓到的华语 Coser / 写真模特公开档案。
+
+    返回 (详情行, 链接行)：详情行走正常的合并流程补字段，
+    链接行在写库后按名字解析成 id，落 person_links / external_ids / works。
+    """
+    global CN_WEB_CACHE
+    if CN_WEB_CACHE is not None:
+        return CN_WEB_CACHE
+    paths = [os.path.join(RAW, name) for name in
+             ("cn_profiles_web.json", "cn_profiles_web2.json",
+              "cn_profiles_web3.json", "cn_profiles_web4.json",
+              "cn_profiles_web5.json", "cn_profiles_web6.json",
+              "cn_profiles_web7.json", "cn_profiles_web8.json",
+              "cn_profiles_web9.json",
+              "cn_profiles_myxiuren.json", "cn_profiles_xiurenz.json",
+              "cn_profiles_jvheku.json", "cn_profiles_yituwan.json",
+              "cn_profiles_guoxuezy.json", "cn_profiles_yanmishe.json",
+              "cn_profiles_xsnvshen.json",
+              "cn_profiles_manual.json", "cn_profiles_manual2.json",
+              "cn_profiles_manual3.json")]
+    records = []
+    for path in paths:
+        if os.path.exists(path):
+            manual = "cn_profiles_manual" in os.path.basename(path)
+            for record in load_json(path):
+                record["_manual"] = manual
+                records.append(record)
+    if not records:
+        CN_WEB_CACHE = ([], [])
+        return CN_WEB_CACHE
+    details = []
+    links = []
+    for record in records:
+        name = (record.get("name") or "").strip()
+        if not name:
+            continue
+        # 人工核对过的条目不做机构过滤，避免误删真人。
+        if not record.get("_manual") and not web_name_ok(name, bool(record.get("works"))):
+            continue
+        aliases = [alias for alias in record.get("aliases") or [] if alias and alias != name]
+        # 这些站也收了日韩模特：只有名字本身没有汉字时，才用别名里的假名/谚文判地区，
+        # 避免「小仓千代w」这种带日文别名的国人被误判成日本。
+        # xsnvshen 走资料页「出生：韩国 …」字段，给了更可靠的国家标注，直接采用。
+        region = record.get("region")
+        if region not in REGION_TITLES:
+            region = "china"
+            probe = name + " " + " ".join(aliases)
+            if not re.search(r"[\u4e00-\u9fa5]", probe):
+                if CN_HANGUL.search(probe):
+                    region = "korea"
+                elif CN_KANA.search(probe):
+                    region = "japan"
+        source = record.get("source") or "web"
+        source_url = record.get("source_url") or ""
+        detail = {
+            "name": name,
+            "names": aliases,
+            "region": region,
+            "birth_date": record.get("birth_date"),
+            "height": record.get("height"),
+            "bust": record.get("bust"),
+            "waist": record.get("waist"),
+            "hips": record.get("hips"),
+            "birthplace": record.get("birthplace"),
+            "blood_type": record.get("blood_type"),
+            "debut_year": record.get("debut_year"),
+            "agency": record.get("agency"),
+            "hobby": record.get("hobby"),
+            "summary": record.get("summary"),
+            "image": record.get("image_url"),
+            "tags": record.get("tags") or [],
+            # 站内套图数当作品数，供名字字典按作品量排序。
+            "work_count": record.get("album_count"),
+            "source": source,
+            "source_url": source_url,
+            # 梗语百科混着主播 / 动漫角色 / 日本女优，只拿它补已有条目，不新增。
+            "require_existing": source == "yglsr",
+            "manual": bool(record.get("_manual")),
+        }
+        if any(detail.get(field) for field in
+               ("birth_date", "height", "bust", "birthplace", "summary", "image")):
+            details.append(detail)
+        for position, work in enumerate(record.get("works") or []):
+            title = (work.get("title") or "").strip()
+            if not title or not source_url:
+                continue
+            no = work.get("no")
+            anchor = f"NO{no}" if no else f"W{position + 1}"
+            links.append({
+                "name": name, "region": region, "source": source, "kind": "work",
+                # xsnvshen 等站的作品有独立页面，优先用真实链接。
+                "url": work.get("url") or f"{source_url}#{anchor}", "title": title,
+            })
+        for platform, info in (record.get("socials") or {}).items():
+            info = info or {}
+            url, handle = info.get("url"), info.get("handle")
+            if not url or not handle:
+                continue
+            links.append({
+                "name": name, "region": region, "source": platform, "kind": "profile",
+                "url": url, "title": None, "external_id": handle,
+            })
+    CN_WEB_CACHE = (details, links)
+    return CN_WEB_CACHE
+
+
+WIKIDATA_PERF_CACHE = None
+
+
+def wikidata_performer_rows():
+    """Wikidata 女性成人演员：生日 / 身高 / 官网 / 社交 ID。
+
+    安全口径：欧美行允许新建人物（库里本来只有 1,452 人，且拉丁名能直接对上）；
+    日韩台港陆只补已有记录，避免「Yua Mikami」和「三上悠亚」被拆成两条。
+    """
+    global WIKIDATA_PERF_CACHE
+    if WIKIDATA_PERF_CACHE is not None:
+        return WIKIDATA_PERF_CACHE
+    path = os.path.join(RAW, "wikidata_performers.json")
+    if not os.path.exists(path):
+        WIKIDATA_PERF_CACHE = ([], [])
+        return WIKIDATA_PERF_CACHE
+    details = []
+    links = []
+    for row in load_json(path):
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        region = row.get("region") or "western"
+        source_url = row.get("source_url") or ""
+        # 只有生日的欧美条目不足以单独立一条人物（会灌进几千个「名字 + 生日」），
+        # 但可以补已有人的生日；有身高 / 社交 / 官网才允许新建。
+        rich = bool(row.get("height") or row.get("socials") or row.get("official_site"))
+        details.append({
+            "name": name,
+            "names": [alias for alias in row.get("names") or [] if alias and alias != name],
+            "region": region,
+            "birth_date": row.get("birth_date"),
+            "height": row.get("height"),
+            "official_site": row.get("official_site"),
+            "source": "wikidata",
+            "source_url": source_url,
+            "require_existing": region != "western" or not rich,
+        })
+        qid = row.get("qid") or ""
+        if qid and source_url:
+            links.append({"name": name, "region": region, "source": "wikidata",
+                          "kind": "profile", "url": source_url, "external_id": qid})
+        for platform, handle in (row.get("socials") or {}).items():
+            if not handle:
+                continue
+            if platform == "instagram":
+                url = f"https://www.instagram.com/{handle}/"
+            elif platform == "twitter":
+                url = f"https://twitter.com/{handle}"
+            elif platform == "youtube":
+                url = f"https://www.youtube.com/channel/{handle}"
+            else:
+                continue
+            links.append({"name": name, "region": region, "source": platform,
+                          "kind": "profile", "url": url, "external_id": handle})
+    WIKIDATA_PERF_CACHE = (details, links)
+    return WIKIDATA_PERF_CACHE
+
+
+R18_PROFILE_CACHE = None
+R18_VIDEO_CACHE = None
+
+
+def r18_profile_rows():
+    """R18.dev 女优档案：R18 ID / 头像 / 假名与罗马字别名（只补已有记录）。"""
+    global R18_PROFILE_CACHE
+    if R18_PROFILE_CACHE is not None:
+        return R18_PROFILE_CACHE
+    path = os.path.join(RAW, "r18_actresses.json")
+    if not os.path.exists(path):
+        R18_PROFILE_CACHE = ([], [])
+        return R18_PROFILE_CACHE
+    details = []
+    links = []
+    for row in load_json(path):
+        names = [name for name in (row.get("names") or []) if name]
+        if not names:
+            continue
+        primary = names[0]
+        aliases = []
+        for candidate in (row.get("name_kanji"), row.get("name_kana"), row.get("name_romaji")):
+            if candidate and candidate != "----" and candidate != primary:
+                aliases.append(candidate)
+        r18_id = str(row.get("r18_id") or "")
+        url = (f"https://r18.dev/videos/vod/movies/list/?id={r18_id}&type=actress"
+               if r18_id else None)
+        details.append({
+            "name": primary,
+            "names": aliases,
+            "region": "japan",
+            "image": row.get("image"),
+            "source": "r18",
+            "source_url": url,
+            "require_existing": True,
+        })
+        if r18_id and url:
+            links.append({"name": primary, "region": "japan", "source": "r18",
+                          "kind": "profile", "url": url, "external_id": r18_id})
+    R18_PROFILE_CACHE = (details, links)
+    return R18_PROFILE_CACHE
+
+
+def load_r18_videos():
+    """raw/r18_videos.json：已按库内人物筛选 + 截断过的 R18 作品。"""
+    global R18_VIDEO_CACHE
+    if R18_VIDEO_CACHE is not None:
+        return R18_VIDEO_CACHE
+    path = os.path.join(RAW, "r18_videos.json")
+    R18_VIDEO_CACHE = load_json(path) if os.path.exists(path) else []
+    return R18_VIDEO_CACHE
+
+
+def r18_maker_counts():
+    counts: dict[str, int] = {}
+    for video in load_r18_videos():
+        maker = (video.get("maker") or "").strip()
+        if maker:
+            counts[maker] = counts.get(maker, 0) + 1
+    return counts
+
+
+def cn_avatar_patch_rows():
+    """xsnvshen / v2ph 反查补丁：按库内确切人名补字段 / 头像，只补已有记录。
+
+    补丁由外部脚本生成：把站点档案按名字（含别名）反查到库里缺头像或
+    字段不齐的人。name 就是库内人名，精确命中，不走别名的保守合并，
+    也不会新增人物。文件名匹配 cn_profiles_avatar_patch*.json。
+    """
+    rows = []
+    for path in sorted(glob.glob(os.path.join(RAW, "cn_profiles_avatar_patch*.json"))):
+        for record in load_json(path):
+            name = (record.get("name") or "").strip()
+            if not name:
+                continue
+            rows.append({
+                "name": name,
+                "names": [alias for alias in record.get("aliases") or []
+                          if alias and alias != name],
+                "region": record.get("region") or "china",
+                "birth_date": record.get("birth_date"),
+                "height": record.get("height"),
+                "bust": record.get("bust"),
+                "waist": record.get("waist"),
+                "hips": record.get("hips"),
+                "birthplace": record.get("birthplace"),
+                "blood_type": record.get("blood_type"),
+                "hobby": record.get("hobby"),
+                "summary": record.get("summary"),
+                "image": record.get("image_url"),
+                "tags": record.get("tags") or [],
+                "source": record.get("source") or "反查补丁",
+                "source_url": record.get("source_url") or "",
+                "require_existing": True,
+            })
     return rows
 
 
@@ -1067,7 +1568,9 @@ def merge_records(target, other):
         if name and name not in target["names"]:
             target["names"].append(name)
     for field in ("birth_date", "height", "bust", "waist", "hips", "cup", "summary",
-                  "description", "image", "source_url", "name_ja", "name_en", "hobby"):
+                  "description", "image", "source_url", "name_ja", "name_en", "hobby",
+                  "birthplace", "blood_type", "debut_year", "agency", "status",
+                  "official_site", "ruby"):
         if target.get(field) is None and other.get(field) is not None:
             target[field] = other[field]
     if other.get("age") is not None and target.get("age") is None:
@@ -1084,9 +1587,82 @@ def merge_records(target, other):
 def record_score(target):
     fields = ("birth_date", "height", "bust", "waist", "hips", "cup", "summary",
               "description", "image", "source_url", "work_count", "name_ja", "name_en",
-              "hobby")
+              "hobby", "birthplace", "blood_type", "debut_year", "agency", "status",
+              "official_site", "ruby")
     return (sum(1 for field in fields if target.get(field) is not None)
             + len(target.get("names", [])) + len(target.get("tags", [])))
+
+
+def apply_manual_names(merged, name_keys, rows):
+    """人工条目决定展示名：finalize 会按「混合写法优先」重选，这里最后再压回来。"""
+    forced = 0
+    for row in rows:
+        name = row.get("name")
+        if not name:
+            continue
+        for candidate in [name, *row.get("names", [])]:
+            key = name_keys.get(merge_key((candidate or "").translate(JP_VARIANTS)))
+            if key and key in merged:
+                if merged[key].get("name") != name:
+                    merged[key]["name"] = name
+                    forced += 1
+                break
+    if forced:
+        print(f"  人工条目展示名 {forced} 条")
+
+
+def fix_script_regions(merged):
+    """名字本身是假名 / 谚文的，地区按字形改正（原来被默认成中国大陆）。"""
+    changed = 0
+    for record in merged.values():
+        name = record.get("name") or ""
+        region = record.get("region")
+        if re.search(r"[\uac00-\ud7af]", name):
+            if region != "korea":
+                record["region"] = "korea"
+                changed += 1
+        elif re.search(r"[ぁ-んァ-ヶ]", name) and not re.search(r"[\u4e00-\u9fa5]", name):
+            if region != "japan":
+                record["region"] = "japan"
+                changed += 1
+    if changed:
+        print(f"  按字形修正地区 {changed} 条")
+
+
+def merge_slash_variants(merged, name_keys):
+    """『咬一口兔娘/Yiko湿润兔』这种斜杠名，如果另一半已有独立记录就并进去。"""
+    removed = 0
+    for key, record in list(merged.items()):
+        name = record.get("name") or ""
+        if "/" not in name and "／" not in name:
+            continue
+        parts = [part.strip() for part in re.split(r"[/／]", name) if part.strip()]
+        target_key = None
+        for part in parts:
+            candidate = name_keys.get(merge_key(part.translate(JP_VARIANTS)))
+            if candidate and candidate != key and candidate in merged:
+                target_key = candidate
+                break
+        if not target_key:
+            continue
+        target = merged[target_key]
+        for field in ("birth_date", "height", "bust", "waist", "hips", "cup", "birthplace",
+                      "hobby", "image", "summary", "work_count", "status", "official_site",
+                      "debut_year", "agency", "ruby", "name_ja", "name_en"):
+            if target.get(field) is None and record.get(field) is not None:
+                target[field] = record[field]
+        for candidate in [*record.get("names", []), name, *parts]:
+            if candidate and candidate not in target["names"]:
+                target["names"].append(candidate)
+        target["tags"] = list(dict.fromkeys([*target.get("tags", []), *record.get("tags", [])]))
+        target["sources"] |= record.get("sources", set())
+        for alias_key, owner in list(name_keys.items()):
+            if owner == key:
+                name_keys[alias_key] = target_key
+        del merged[key]
+        removed += 1
+    if removed:
+        print(f"  斜杠重名合并 {removed} 条")
 
 
 def consolidate_actresses(merged, name_keys):
@@ -1172,6 +1748,239 @@ def consolidate_actresses(merged, name_keys):
     merged_count = sum(1 for row in report if "merged" in row)
     print(f"  重复条目收敛 {merged_count} 条（跳过 {len(report) - merged_count} 组冲突）")
     return report
+
+
+# 名字里的括号注记段（『西野花梨（小柳まりん、椎名くるみ）』）。
+PAREN_SEG_RE = re.compile(r"[（(][^（）()]*[）)]")
+
+
+def paren_pieces(name):
+    """括号注记里按顿号拆出的各个别名（剥掉残括号和分隔符）。"""
+    pieces = []
+    for seg in PAREN_SEG_RE.findall(name or ""):
+        for part in re.split(r"[、，,/\s·]", seg):
+            part = part.strip("（）()、，,/· 　\t")
+            if part:
+                pieces.append(part)
+    return pieces
+
+
+def date_key(value):
+    """生日统一成 YYYY-MM-DD 再比较，避免 1990-5-5 / 1990-05-05 被当成冲突。"""
+    if not value:
+        return None
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", str(value))
+    if not m:
+        return str(value)
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+
+def merge_rename_twins(merged, name_keys):
+    """收敛改名孪生条目。
+
+    JavBus 演员改名后会同时保留旧名页和新名页：旧名页是带括号注记的全名
+    （『西野花梨（小柳まりん、椎名くるみ）』），新名页是剥括号的现用名或
+    旧名本身，于是同一个人落成两条记录。consolidate_actresses 收不掉：
+    merge_key 保留括号内容导致主名对不上，两条的日文名又互换（一条
+    name_ja=旧名、一条 name_ja=现用名），被日文名冲突规则挡下。这里按
+    『剥掉括号段后的归一键』专门再收一遍：
+    - 主名、日文名剥括号归一相同才连；
+    - 地区冲突或生日冲突的一律不合并（同名不同人的保护）；
+    - 括号注记里的别名收进幸存者的 names。
+    """
+    keys = list(merged.keys())
+    items = [merged[key] for key in keys]
+    bare_names = normalize_all([PAREN_SEG_RE.sub("", it.get("name") or "") for it in items])
+    bare_ja = normalize_all([PAREN_SEG_RE.sub("", it.get("name_ja") or "") for it in items])
+
+    groups = {}
+    for index, (bare, japanese) in enumerate(zip(bare_names, bare_ja)):
+        for key in (bare, japanese):
+            if key and key not in GENERIC_KEYS:
+                groups.setdefault(key, set()).add(index)
+
+    parent = list(range(len(items)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    skipped = 0
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for left, right in itertools.combinations(sorted(members), 2):
+            a, b = items[left], items[right]
+            regions = {r.get("region") for r in (a, b) if r.get("region")}
+            births = {date_key(r.get("birth_date")) for r in (a, b) if r.get("birth_date")}
+            if len(regions) > 1 or len(births) > 1:
+                skipped += 1
+                continue
+            union(left, right)
+
+    clusters = {}
+    for index in range(len(items)):
+        clusters.setdefault(find(index), []).append(index)
+
+    removed = 0
+    for members in clusters.values():
+        if not (2 <= len(members) <= 6):
+            continue
+        survivor = max(members, key=lambda index: record_score(items[index]))
+        target = items[survivor]
+        for index in members:
+            if index == survivor:
+                continue
+            other = items[index]
+            merge_records(target, other)
+            for candidate in [other.get("name"), *other.get("names", []),
+                              *paren_pieces(other.get("name"))]:
+                if candidate and candidate not in target["names"]:
+                    target["names"].append(candidate)
+            dead = keys[index]
+            for candidate_key, owner in list(name_keys.items()):
+                if owner == dead:
+                    name_keys[candidate_key] = keys[survivor]
+            merged.pop(dead, None)
+            removed += 1
+    if removed:
+        print(f"  改名孪生收敛 {removed} 条（冲突跳过 {skipped} 对）")
+    return removed
+
+
+# 国内采集站名字里的站名 / 品牌前缀（「模范模特方子萱」→「方子萱」）。
+CN_BRAND_PREFIXES = (
+    "模范模特", "推女郎", "秀人网", "萌萌社", "女神阵营", "推女神",
+    "青娱乐", "尤果网", "美女团", "魅惑", "MFStar模特")
+
+
+def cjk_core(name):
+    """名字里的汉字段（「水淼aqua」→「水淼」），用于国产艺名跨源对齐。"""
+    return "".join(ch for ch in unicodedata.normalize("NFKC", name or "")
+                   if "\u3400" <= ch <= "\u9fff")
+
+
+def merge_cn_variants(merged, name_keys):
+    """大陆人物跨源同名收敛。
+
+    国产写真模特在微博 / 秀色女神 / 萌萌社等源各留一版艺名：中英混写
+    （水淼aqua vs 水淼）、站名前缀（模范模特方子萱 vs 方子萱）、相册艺名
+    vs 微博真名（果儿 vs 张杨果而），全名归一对不上。consolidate 收不掉
+    完全不同名，merge_domestic_variants 的变体键要求 3 字以上，把「水淼」
+    「呆呆」这类 2 字名挡在门外。这里按两条身份证据专门再收一遍：
+    1. 剥站名前缀后 CJK 核心相同（只留汉字段，水淼aqua / 水淼 → 水淼）；
+    2. xsnvshen 专属相册封面同 URL + 生日一致（月日同、年差 ≤1 视作录入
+       误差也认）——公共图床不算：avking 是几十人共用的占位图，imgdb 是
+       公共图床（葛征 / Kiren_程程程 共图但生日身高全冲突）。
+    生日 / 身高 / 三围冲突的一律不并：同名不同人很常见（果儿Victoria、
+    果儿celia、张杨果而的「果儿」生日三个不同）。
+    """
+    keys = list(merged.keys())
+    items = [merged[key] for key in keys]
+
+    def signature(it):
+        return (date_key(it.get("birth_date")), it.get("height_cm"),
+                it.get("bust"), it.get("waist"), it.get("hips"))
+
+    def conflicting(a, b):
+        for left, right in zip(signature(a), signature(b)):
+            if left and right and left != right:
+                return True
+        return False
+
+    def month_day(value):
+        return value[5:] if value and len(value) >= 10 else None
+
+    parent = list(range(len(items)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    # 规则 1：剥站名前缀后 CJK 核心相同（只对大陆条目，避免日文假名被剥掉误连）。
+    cores = {}
+    for index, it in enumerate(items):
+        if (it.get("region") or "").lower() != "china":
+            continue
+        name = it.get("name") or ""
+        for prefix in CN_BRAND_PREFIXES:
+            if name.startswith(prefix) and len(name) > len(prefix):
+                name = name[len(prefix):]
+                break
+        core = cjk_core(name)
+        if len(core) >= 2:
+            cores.setdefault(core, []).append(index)
+
+    skipped = 0
+    for members in cores.values():
+        if len(members) < 2:
+            continue
+        for left, right in itertools.combinations(sorted(members), 2):
+            if conflicting(items[left], items[right]):
+                skipped += 1
+                continue
+            union(left, right)
+
+    # 规则 2：xsnvshen 专属相册封面同 URL + 生日一致（merged 记录里头像字段叫 image）。
+    by_url = {}
+    for index, it in enumerate(items):
+        url = it.get("image") or ""
+        if "xsnvshen.com" in url:
+            by_url.setdefault(url, []).append(index)
+    for members in by_url.values():
+        if len(members) < 2:
+            continue
+        for left, right in itertools.combinations(sorted(members), 2):
+            a, b = items[left], items[right]
+            da, db = date_key(a.get("birth_date")), date_key(b.get("birth_date"))
+            if not da or not db:
+                continue
+            close = da == db or (month_day(da) == month_day(db)
+                                 and abs(int(da[:4]) - int(db[:4])) <= 1)
+            if close:
+                union(left, right)
+
+    clusters = {}
+    for index in range(len(items)):
+        clusters.setdefault(find(index), []).append(index)
+
+    removed = 0
+    for members in clusters.values():
+        if not (2 <= len(members) <= 8):
+            continue
+        survivor = max(members, key=lambda index: record_score(items[index]))
+        target = items[survivor]
+        for index in members:
+            if index == survivor:
+                continue
+            other = items[index]
+            merge_records(target, other)
+            for candidate in [other.get("name"), *other.get("names", [])]:
+                if candidate and candidate not in target["names"]:
+                    target["names"].append(candidate)
+            dead = keys[index]
+            for candidate_key, owner in list(name_keys.items()):
+                if owner == dead:
+                    name_keys[candidate_key] = keys[survivor]
+            merged.pop(dead, None)
+            removed += 1
+    if removed:
+        print(f"  大陆跨源同名收敛 {removed} 条（冲突跳过 {skipped} 对）")
+    return removed
 
 
 def merge_domestic_variants(merged, name_keys):
@@ -1315,7 +2124,25 @@ def prune_conflicting_aliases(merged):
 CUP_RE = re.compile(r"^[A-O]$")
 JUNK_NAME = re.compile(r"(【[^】]*】|ai女优|ai女優)", re.I)
 CODE_NAME = re.compile(r"^[A-Z]{2,6}[-_]?\d{2,5}$")
-JUNK_PERSON_NAMES = {"学妹校园寝室丝短袜美脚"}
+JUNK_PERSON_NAMES = {"学妹校园寝室丝短袜美脚", "英文名", "中文名", "名字", "姓名", "别名",
+                    "生日", "身高", "三围", "资料", "简介", "图片", "视频"}
+# 推广文章标题式人名（「爱看动漫的必知！超会还原角色的水淼aqua」）：
+# 抓取脚本从泡面站等 WordPress 站的文章标题抽不出人名时，整标题落库的产物。
+TITLE_JUNK_MARK = re.compile(
+    r"(必知|美图全部|谁还不认识|精彩世界|奇幻世界|魅力世界|宝藏达人|天花板|"
+    r"给大家介绍|一定得认识|走进|探秘|刷屏|次元壁|破壁|破圈|二次元圈|"
+    r"火遍|超火|称之为|漫展之旅|魅力之旅|闪耀轨迹|光影舞者|萌系奇迹|百变)")
+TITLE_PUNCT = "！？：；，“”、"
+# 维基正文里的「公式」链接常指向商店页 / 新闻稿，不能当官方站。
+OFFICIAL_SITE_BLOCK = re.compile(
+    r"(dmm\.co\.jp|fanza\.jp|arzon\.jp|xcity\.jp|archive\.(?:is|org|today|ph|li)|"
+    r"menscyzo\.com|cyzo\.com|news\.sod\.co\.jp|news-postseven\.com|"
+    r"tokyo-sports\.co\.jp|smart-flash\.jp|nikkan-spa\.jp|zakzak\.co\.jp|"
+    r"allcinema\.net|jmdb\.ne\.jp|allabout\.co\.jp|av-channel\.com|yutura\.net|"
+    r"rakuten\.co\.jp|mycom\.jp|oricon\.co\.jp|asagei\.com|bunshun\.jp|"
+    r"sponichi\.co\.jp|nikkansports\.com|news\.yahoo\.co\.jp)",
+    re.IGNORECASE,
+)
 
 
 def sanitize_actress(target):
@@ -1357,6 +2184,38 @@ def sanitize_actress(target):
     cup = target.get("cup")
     if cup and not CUP_RE.fullmatch(cup.strip().upper()):
         target["cup"] = None
+    debut = target.get("debut_year")
+    if debut is not None and not (1940 <= debut <= date.today().year):
+        target["debut_year"] = None
+    blood = target.get("blood_type")
+    if blood and blood.upper() not in {"A", "B", "AB", "O", "不明"}:
+        target["blood_type"] = None
+    site = target.get("official_site")
+    if site and (not re.match(r"https?://", site) or OFFICIAL_SITE_BLOCK.search(site)):
+        target["official_site"] = None
+    for field in ("birthplace", "agency", "hobby", "ruby"):
+        value = target.get(field)
+        if value and len(value) > 120:
+            target[field] = value[:120]
+    status = target.get("status")
+    if status and status not in {"active", "retired", "hiatus", "returned"}:
+        target["status"] = None
+
+
+def is_title_junk_name(name: str) -> bool:
+    """文章标题冒充的人名：泡面站推广文标题整段落库（「爱看动漫的必知！…」）。"""
+    value = (name or "").strip()
+    if not value:
+        return False
+    # 括号里的旧名列举（倉木小夜（村上美咲、樋口啓子））不是标题，剥掉再判。
+    stripped = re.sub(r"[（(][^）)]*[）)]", "", value)
+    if any(char in stripped for char in TITLE_PUNCT):
+        return True
+    if TITLE_JUNK_MARK.search(stripped):
+        return True
+    # 长名带「的」且纯中文 → 标题句式；混写网名（wink是可爱的wink）不算。
+    return (len(stripped) >= 12 and "的" in stripped
+            and not re.search(r"[A-Za-z0-9@_]", stripped))
 
 
 def is_junk_person(name: str) -> bool:
@@ -1404,9 +2263,11 @@ def clean_domestic_target(key, target, owners):
              if name == target["name"] or (len(name) >= 3 and clean_alias(name))]
     target["names"] = names
     # 主名优先用「中文 + 英文」的完整写法（阿薰kaOri 优于 阿薰），
-    # 并避开「雪晴Astra雷电将军」这类作品标题式的长尾。
+    # 并避开「雪晴Astra雷电将军」这类作品标题式的长尾与推广文标题式别名
+    # （俄罗斯Yoshinobi_精美美图全部）。
     display_junk = re.compile(r"(微密圈|平台|资源|图集|写真|合集|系列|作品|角色|公开|代表|跨语言)")
-    usable = [name for name in names if not display_junk.search(name)]
+    usable = [name for name in names
+              if not display_junk.search(name) and not is_title_junk_name(name)]
     mixed = [name for name in usable
              if re.search(CJK_CHAR, name) and re.search(r"[A-Za-z]", name)]
     cjk_only = [name for name in usable if re.fullmatch(rf"{CJK_CHAR}{{2,}}", name)]
@@ -1463,9 +2324,10 @@ def finalize_actresses(merged):
     removed = 0
     for key in list(merged.keys()):
         target = merged[key]
-        if is_junk_person(target["name"]):
+        if is_junk_person(target["name"]) or is_title_junk_name(target["name"]):
             name = next((name for name in target.get("names", [])
-                         if name and not is_junk_person(name)), None)
+                         if name and not is_junk_person(name)
+                         and not is_title_junk_name(name)), None)
             if name:
                 target["name"] = name
             else:
@@ -1707,11 +2569,39 @@ def build_actresses(studio_keys=None):
         apply_actress_details(merged, name_keys, javrate_details)
         print(f"  javrate 人物资料补全 {len(javrate_details)} 位")
 
-    # JavBus 演员页：补生日 / 身高 / 三围 / 罩杯。
+    # JavBus 演员页：补生日 / 身高 / 三围 / 罩杯 / 爱好。
     javbus_details = javbus_detail_rows()
     if javbus_details:
         apply_actress_details(merged, name_keys, javbus_details)
         print(f"  javbus 演员页补全 {len(javbus_details)} 位")
+
+    # 日文维基：出身地 / 血型 / 出道年 / 事务所 / 官方站 / 趣味。
+    ja_rows = ja_wiki_rows()
+    if ja_rows:
+        apply_actress_details(merged, name_keys, ja_rows)
+        print(f"  日文维基补全 {len(ja_rows)} 位")
+
+    # 华语 Coser / 写真模特网页档案：生日 / 身高 / 三围 / 出生地 / 简介 / 头像。
+    cn_details, _cn_links = cn_web_profiles()
+    if cn_details:
+        added = apply_actress_details(merged, name_keys, cn_details)
+        print(f"  国内网页档案补全 {len(cn_details)} 位（新增 {added}）")
+    manual_details = [row for row in cn_details if row.get("manual")]
+    if manual_details:
+        applied = apply_manual_profiles(merged, name_keys, manual_details)
+        print(f"  人工核对档案覆盖 {applied} 位")
+
+    # Wikidata 女性成人演员：欧美允许新增，日韩台港陆只补已有。
+    wd_details, _wd_links = wikidata_performer_rows()
+    if wd_details:
+        added = apply_actress_details(merged, name_keys, wd_details)
+        print(f"  Wikidata 演员档案 {len(wd_details)} 条（新增 {added}）")
+
+    # R18.dev 女优档案：R18 ID / 头像 / 假名与罗马字别名，只补已有记录。
+    r18_details, _r18_links = r18_profile_rows()
+    if r18_details:
+        added = apply_actress_details(merged, name_keys, r18_details)
+        print(f"  R18 女优档案 {len(r18_details)} 位（新增 {added}）")
 
     # JavBus 演员页的日文名 / 头像：只补给已有记录（JavRate 头像优先）。
     star_rows = javbus_star_rows(name_keys)
@@ -1719,11 +2609,33 @@ def build_actresses(studio_keys=None):
         apply_actress_details(merged, name_keys, star_rows)
         print(f"  javbus 日文名 / 头像候选 {len(star_rows)} 位")
 
+    # 维基 pageimages 缩略图：给无头像的人补维基条目配图。
+    wiki_img_rows = wiki_image_rows()
+    if wiki_img_rows:
+        apply_actress_details(merged, name_keys, wiki_img_rows)
+        print(f"  维基缩略图补头像 {len(wiki_img_rows)} 条")
+
+    # xsnvshen 反查补丁：按库内人名补字段与头像（绕过别名的保守合并）。
+    cn_patch_rows = cn_avatar_patch_rows()
+    if cn_patch_rows:
+        apply_actress_details(merged, name_keys, cn_patch_rows)
+        print(f"  xsnvshen 反查补丁 {len(cn_patch_rows)} 条")
+
     # 最后再收敛一次：晚到的别名 / 资料会把同一个人拆成两条记录。
     consolidate_actresses(merged, name_keys)
+    merge_rename_twins(merged, name_keys)
+    merge_slash_variants(merged, name_keys)
     merge_domestic_variants(merged, name_keys)
     prune_conflicting_aliases(merged)
     finalize_actresses(merged)
+    apply_manual_names(merged, name_keys, manual_details)
+    fix_script_regions(merged)
+    # finalize 会把『Chamei』这类记录重选成『叉魅』、fix_script_regions 再修正地区，
+    # 展示名与地区全部定型后再按剥括号键收一次同名孪生。
+    merge_rename_twins(merged, name_keys)
+    # 地区定型后（merge_domestic_variants 的 3 字门槛收不掉「水淼」这类 2 字名，
+    # 也收不掉相册艺名 vs 微博真名）按 CJK 核心 + xsnvshen 同图证据再收大陆跨源同名。
+    merge_cn_variants(merged, name_keys)
     return list(merged.values())
 
 
@@ -2092,6 +3004,35 @@ def build_studios():
                 "sources": {row.get("source", "kkkhai")},
             })
 
+    # 艺图湾机构标签：物恋传媒 / 丝享家 / 克拉女神 / Beautyleg 等 100+ 写真机构。
+    extra_path = os.path.join(RAW, "cn_studios_yituwan.json")
+    if os.path.exists(extra_path):
+        fixes = {"绣人网": "秀人网", "爱油物": "爱尤物",
+                 "bimilstory(韩国)": "Bimilstory",
+                 "pure media(韩国)": "Pure Media"}
+        for row in load_json(extra_path):
+            raw_name = (row.get("name") or "").strip()
+            raw_name = fixes.get(raw_name, raw_name)
+            name, aliases, region = split_studio_names(raw_name)
+            name = clean_studio_name(name)
+            if not name:
+                continue
+            records.append({
+                "name": name,
+                "names": aliases,
+                "region": region or row.get("region") or "china",
+                "work_count": row.get("work_count"),
+                "source_url": row.get("source_url"),
+                "sources": {row.get("source", "yituwan")},
+            })
+
+    # R18 片商：只登记最终落库作品 ≥ 30 部的，避免几千个小厂淹没机构页。
+    for name, count in sorted(r18_maker_counts().items(), key=lambda item: -item[1]):
+        if count < 30:
+            continue
+        records.append({"name": name, "region": "japan",
+                        "work_count": count, "sources": {"r18"}})
+
     flat = []
     for record in records:
         flat.append(record["name"])
@@ -2137,7 +3078,27 @@ def build_studios():
     if os.path.exists(details_path):
         added = apply_studio_details(merged, name_keys, load_json(details_path))
         print(f"  kkkhai 机构资料新增 {added} 个")
-    return merge_studio_variants(list(merged.values()))
+
+    result = merge_studio_variants(list(merged.values()))
+    logos_path = os.path.join(RAW, "studio_logos.json")
+    if os.path.exists(logos_path):
+        logos = load_json(logos_path)
+        logo_keys = {
+            merge_key(name.translate(JP_VARIANTS)): info.get("logo_url")
+            for name, info in logos.items()
+            if isinstance(info, dict) and info.get("logo_url")
+        }
+        matched = 0
+        for studio in result:
+            if studio.get("logo_url"):
+                continue
+            key = merge_key(studio["name"].translate(JP_VARIANTS))
+            logo = logo_keys.get(key)
+            if logo:
+                studio["logo_url"] = logo
+                matched += 1
+        print(f"  厂牌品牌图 {matched}/{len(result)} 个")
+    return result
 
 
 # ---------------------------------------------------------------- 头像
@@ -2396,6 +3357,173 @@ def enrich_domestic_posts(actresses):
 
 # ---------------------------------------------------------------- 写库
 
+SHARED_CJK_MIN = 2
+
+
+def _shared_cjk_run(left, right):
+    """两串姓名的最长连续汉字公共子串长度（「黎落落」/「上杉绘黎落」→ 2）。"""
+    left_cjk = "".join(ch for ch in left if "\u4e00" <= ch <= "\u9fa5")
+    right_cjk = "".join(ch for ch in right if "\u4e00" <= ch <= "\u9fa5")
+    if not left_cjk or not right_cjk:
+        return 0
+    best = 0
+    for i in range(len(left_cjk)):
+        for j in range(len(right_cjk)):
+            run = 0
+            while (i + run < len(left_cjk) and j + run < len(right_cjk)
+                   and left_cjk[i + run] == right_cjk[j + run]):
+                run += 1
+            best = max(best, run)
+    return best
+
+
+def _same_person(left, right):
+    """同一个社交账号下的两条记录是否同一个人。
+
+    生日都非空且不同 → 不同人；地区不同 → 不同人；
+    生日一致 → 同一人（网名 vs 真名、拼写变体）；否则看姓名是否互为变体。
+    """
+    birth_left, birth_right = left.get("birth_date"), right.get("birth_date")
+    if birth_left and birth_right and birth_left != birth_right:
+        return False
+    if (left.get("region") or "japan") != (right.get("region") or "japan"):
+        return False
+    if birth_left and birth_right:
+        return True
+    name_left, name_right = left.get("name") or "", right.get("name") or ""
+    key_left = merge_key(name_left.translate(JP_VARIANTS))
+    key_right = merge_key(name_right.translate(JP_VARIANTS))
+    if key_left and key_right and (key_left in key_right or key_right in key_left):
+        return True
+    if _shared_cjk_run(name_left, name_right) >= SHARED_CJK_MIN:
+        return True
+    return difflib.SequenceMatcher(None, key_left, key_right).ratio() >= 0.85
+
+
+def _handle_affinity(record, handle):
+    """账号 handle 与人物姓名的相似度，用来判断错挂的 ID 该留给谁。"""
+    key = merge_key((handle or "").casefold())
+    if not key:
+        return 0.0
+    best = 0.0
+    for name in [record.get("name"), *(record.get("names") or [])]:
+        name_key = merge_key((name or "").casefold())
+        if not name_key:
+            continue
+        if key in name_key or name_key in key:
+            best = max(best, 1.0)
+        else:
+            best = max(best, difflib.SequenceMatcher(None, key, name_key).ratio())
+    return best
+
+
+def _absorb_profile(target, source):
+    """把 source 的姓名 / 空字段 / 标签 / 来源并入 target。"""
+    for name in [source.get("name"), *(source.get("names") or [])]:
+        if name and name != target.get("name") and name not in target["names"]:
+            target["names"].append(name)
+    for field in ("birth_date", "birth_precision", "name_ja", "name_en", "ruby",
+                  "height", "bust", "waist", "hips", "cup", "hobby", "birthplace",
+                  "blood_type", "debut_year", "agency", "status", "official_site",
+                  "summary", "description", "image", "source_url"):
+        if target.get(field) is None and source.get(field) is not None:
+            target[field] = source[field]
+    work_count = max(target.get("work_count") or 0, source.get("work_count") or 0)
+    target["work_count"] = work_count or None
+    for tag in source.get("tags") or []:
+        if tag not in target["tags"]:
+            target["tags"].append(tag)
+    target["sources"] |= set(source.get("sources") or ())
+
+
+def merge_by_external_ids(actresses, link_rows):
+    """同一社交账号落在两条人物上时收敛。
+
+    生日一致 / 姓名互为变体 → 判为同一人被拆两条，合并（作品、别名、链接一起并）。
+    否则视为外部 ID 抓串（推荐位、同名账号、角色名），只把 ID 留给最匹配的那条，
+    人物不动——不同人绝不因为一个账号串号就被合并。
+    """
+    by_key = {}
+    for record in actresses:
+        for name in [record.get("name"), *(record.get("names") or [])]:
+            if name:
+                by_key.setdefault(merge_key(name.translate(JP_VARIANTS)), record)
+
+    groups = {}
+    for row in link_rows:
+        if row.get("kind") != "profile" or not row.get("external_id"):
+            continue
+        record = by_key.get(merge_key((row.get("name") or "").translate(JP_VARIANTS)))
+        if record is None:
+            continue
+        groups.setdefault((row.get("source") or "", str(row["external_id"])), []).append(
+            (row, record))
+    if not groups:
+        return
+
+    order = {id(record): index for index, record in enumerate(actresses)}
+    absorbed = {}      # id(被吸收记录) → 目标记录
+    removed = set()    # id(被吸收记录)
+    drop_rows = set()  # 错挂 ID 对应的 link 行
+    merged_count = 0
+    cleaned_ids = 0
+
+    for (source, external), items in groups.items():
+        records = []
+        seen = set()
+        for _row, record in items:
+            if id(record) not in seen:
+                seen.add(id(record))
+                records.append(record)
+        if len(records) < 2:
+            continue
+        if all(_same_person(records[0], other) for other in records[1:]):
+            target = max(records, key=lambda r: ((r.get("work_count") or 0),
+                                                 -order.get(id(r), 0)))
+            for record in records:
+                if record is target:
+                    continue
+                _absorb_profile(target, record)
+                absorbed[id(record)] = target
+                removed.add(id(record))
+                merged_count += 1
+        else:
+            # 不是同一人：只保留与 handle 最像的那条，其余删掉这个外部 ID。
+            keep = max(records, key=lambda r: (_handle_affinity(r, external),
+                                               r.get("work_count") or 0,
+                                               -order.get(id(r), 0)))
+            for row, record in items:
+                if record is not keep:
+                    drop_rows.add(id(row))
+                    cleaned_ids += 1
+
+    if absorbed:
+        for row in link_rows:
+            record = by_key.get(merge_key((row.get("name") or "").translate(JP_VARIANTS)))
+            moved = absorbed.get(id(record)) if record is not None else None
+            if moved is not None:
+                row["name"] = moved.get("name")
+    if removed:
+        actresses[:] = [record for record in actresses if id(record) not in removed]
+    if drop_rows:
+        link_rows[:] = [row for row in link_rows if id(row) not in drop_rows]
+    if merged_count or cleaned_ids:
+        print(f"  外部 ID 收敛：合并人物 {merged_count} 条，清理错挂 ID {cleaned_ids} 条")
+
+
+SEARCH_TOKEN = re.compile(r"[A-Za-z0-9_]+|.")
+
+
+def search_index_text(names):
+    """FTS5 索引文本：汉字按单字切（2 字中文名也能命中），拉丁/数字整词，再存整串。"""
+    parts = []
+    for name in names:
+        parts.extend(token for token in SEARCH_TOKEN.findall(name or "")
+                     if token.strip())
+    joined = " ".join(name for name in names if name)
+    return ((" ".join(parts) + " " + joined).strip())[:6000]
+
+
 SCHEMA = """
 PRAGMA user_version = 3;
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -2428,7 +3556,7 @@ CREATE TABLE actresses (
     summary TEXT,
     description TEXT,
     image_url TEXT,
-    avatar_base64 TEXT,
+    has_avatar INTEGER NOT NULL DEFAULT 0,
     source_url TEXT,
     source TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
@@ -2448,7 +3576,7 @@ CREATE TABLE studios (
     work_count INTEGER,
     summary TEXT,
     logo_url TEXT,
-    avatar_base64 TEXT,
+    has_avatar INTEGER NOT NULL DEFAULT 0,
     website TEXT,
     source_url TEXT,
     source TEXT NOT NULL DEFAULT '',
@@ -2524,15 +3652,95 @@ CREATE TABLE works (
 );
 CREATE INDEX idx_works_code ON works(code);
 CREATE INDEX idx_works_release ON works(release_date);
+-- 厂牌页「最新作品」：studio_id 等值 + release_date 排序，走复合索引免排序临时表。
+CREATE INDEX idx_works_studio_release ON works(studio_id, release_date);
 CREATE TABLE work_actresses (
     work_id INTEGER NOT NULL,
     actress_id INTEGER NOT NULL,
     PRIMARY KEY (work_id, actress_id)
 );
+-- 反查「这个人有哪些作品」是详情页最频繁的查询，PK 只覆盖 work 方向。
+CREATE INDEX idx_work_actresses_actress ON work_actresses(actress_id);
+-- 头像 base64 独立成表：主表查询/扫描不再背 18,863 条大文本，
+-- 按主键单条取（人物详情页用），列表过滤只看 has_avatar 标志。
+CREATE TABLE person_avatars (
+    actress_id INTEGER PRIMARY KEY,
+    base64     TEXT NOT NULL
+);
+CREATE TABLE studio_avatars (
+    studio_id INTEGER PRIMARY KEY,
+    base64    TEXT NOT NULL
+);
+-- 标签关联表：支持「按角色/IP 筛选」「标签计数」走 SQL。
+-- actresses.tags 保留（app 启动时全量加载进内存用），这里给关系型查询第二份。
+CREATE TABLE person_tags (
+    actress_id INTEGER NOT NULL,
+    tag        TEXT NOT NULL,
+    PRIMARY KEY (actress_id, tag)
+);
+CREATE INDEX idx_person_tags_tag ON person_tags(tag);
+-- 名字搜索：汉字按单字切分后建索引，2 字中文名也能命中（trigram 对 2 字无效）。
+CREATE VIRTUAL TABLE actress_search USING fts5(text, tokenize='unicode61');
 """
 
 
-def write_enrichment(connection, link_rows):
+WORK_NO_RE = re.compile(r"(?:NO|No|no)\.?\s*(\d{1,5})\b")
+# 作品标题里与「是哪一套」无关的部分：栏目、规格、体积、日期、营销词。
+WORK_TITLE_NOISE = re.compile(
+    r"(?:【[^】]*】|\[[^\]]*\]|\([^)]*\)|（[^）]*）"
+    r"|(?:19|20)\d{2}[.\-/年]\d{1,2}[.\-/月]\d{1,2}日?"
+    r"|\d+(?:\.\d+)?\s*(?:TB|GB|MB|G|M)\b"
+    r"|\d+\s*[Pp](?:\s*\d+\s*[Vv])?"
+    r"|内购|无水印|原版|原图|高清|套图|图集|合集|精选|限量|独家)", re.I)
+
+
+def normalize_work_title(title):
+    """作品标题归一：去规格/体积/营销词，只留「谁 + 哪一套」的可比文本。"""
+    text = unicodedata.normalize("NFKC", title or "").casefold()
+    text = WORK_TITLE_NOISE.sub(" ", text)
+    return re.sub(r"[^\w\u4e00-\u9fa5]+", "", text)
+
+
+# 作品标题里不构成「人/套」证据的通用词；同名比对时先剥掉它们。
+WORK_GENERIC_SUB = re.compile(
+    r"(高清|写真|套图|图集|合集|合辑|图片|美图|视频|内购|无水印|原版|原图|精选|独家|限量|"
+    r"模特|系列|最新|更新|性感|美女|女神|美腿|美臀|美乳|美胸|巨乳|爆乳|丝袜|黑丝|白丝|"
+    r"肉丝|诱惑|私房|自拍|露出|福利|少女|御姐|少妇|萝莉|制服|旗袍|内衣|泳装)")
+WORK_DATE_RE = re.compile(r"((?:19|20)\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})")
+
+
+def work_title_tokens(title):
+    """提取标题里的人名/套名 token（剥掉通用词），用于判断两条作品是否同一套。"""
+    text = unicodedata.normalize("NFKC", title or "")
+    tokens = set()
+    for run in re.findall(r"[\u4e00-\u9fa5]{2,}", text):
+        cleaned = WORK_GENERIC_SUB.sub("", run)
+        if len(cleaned) >= 2:
+            tokens.add(cleaned.casefold())
+    for word in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}", text):
+        if word.casefold() not in {"no", "vol", "the", "and"}:
+            tokens.add(word.casefold())
+    return tokens
+
+
+def work_full_date(title):
+    match = WORK_DATE_RE.search(unicodedata.normalize("NFKC", title or ""))
+    if not match:
+        return None
+    return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+
+
+def work_same_set(left_title, right_title, ratio):
+    """同一套图判定：共享人名/套名，或同日期，或标题几乎一致。"""
+    if ratio >= 0.9:
+        return True
+    if work_title_tokens(left_title) & work_title_tokens(right_title):
+        return True
+    left_date, right_date = work_full_date(left_title), work_full_date(right_title)
+    return bool(left_date and left_date == right_date)
+
+
+def write_enrichment(connection, link_rows, studio_ids=None):
     """写库后：按名字解析 id，落人物作品链接、主页链接与跨站 ID。"""
     rows = connection.execute("SELECT id, name, region, aliases FROM actresses").fetchall()
     name_ids: dict[str, set[tuple[int, str]]] = {}
@@ -2561,10 +3769,67 @@ def write_enrichment(connection, link_rows):
     added_links = 0
     added_ids = 0
     added_works = 0
+    deduped_works = 0
+    # 同一次重建里所有作品都经过 add_link：用 NO. 号 + 标题相似度做跨站去重，
+    # 避免同一套图在多个镜像站各留一条。标题太短（「写真」）不比，防误并。
+    # 去重必须限定在同一人物（rid）内：不同 Coser 的「碧蓝航线 可畏」、
+    # 不同模特的「2023年12月订阅」标题一模一样但不是同一套图，
+    # 跨人物合并会把 20+ 人挂到同一个作品上。
+    work_no_index: dict[str, list[tuple[str, str, int, int]]] = {}
+    # 同一个归一标题可能属于多个人（coser 们拍同一个角色），所以按人存候选。
+    work_title_index: dict[str, list[tuple[str, int, int]]] = {}
 
     def add_link(rid, source, kind, url, title=None, published=None):
-        nonlocal added_links
+        nonlocal added_links, added_works, deduped_works
         if not rid or not url:
+            return
+        # 作品只落 works 底座 + work_actresses 关联；person_links 只存主页 / 社交，
+        # 避免 13 万条作品在两处双写（增量更新时必然不同步）。
+        if kind == "work":
+            norm = normalize_work_title(title)
+            no_match = WORK_NO_RE.search(title or "")
+            work_id = None
+            if no_match and len(norm) >= 6:
+                best_ratio = 0.0
+                for prev_norm, prev_title, prev_id, prev_rid in work_no_index.get(no_match.group(1), ()):
+                    if prev_rid != rid:
+                        continue
+                    ratio = difflib.SequenceMatcher(None, norm, prev_norm).ratio()
+                    if ratio > best_ratio and work_same_set(title, prev_title, ratio):
+                        best_ratio, work_id = ratio, prev_id
+                if best_ratio < 0.72:
+                    work_id = None
+                else:
+                    deduped_works += 1
+            if work_id is None and len(norm) >= 5:
+                for prev_title, prev_id, prev_rid in work_title_index.get(norm, ()):
+                    if prev_rid == rid:
+                        work_id = prev_id
+                        deduped_works += 1
+                        break
+            if work_id is None:
+                cursor = connection.execute(
+                    """INSERT OR IGNORE INTO works
+                       (kind, title_zh, release_date, source, source_url, updated_at)
+                       VALUES ('photo', ?, ?, ?, ?, ?)""",
+                    (title, published, source, url, BUILD_DATE))
+                if cursor.rowcount:
+                    added_works += 1
+                    work_id = cursor.lastrowid
+                else:
+                    found = connection.execute(
+                        "SELECT id FROM works WHERE source_url = ?", (url,)).fetchone()
+                    work_id = found[0] if found else None
+                if work_id:
+                    if no_match:
+                        work_no_index.setdefault(
+                            no_match.group(1), []).append((norm, title or "", work_id, rid))
+                    if len(norm) >= 5:
+                        work_title_index.setdefault(norm, []).append((title or "", work_id, rid))
+            if work_id:
+                connection.execute(
+                    "INSERT OR IGNORE INTO work_actresses (work_id, actress_id) VALUES (?, ?)",
+                    (work_id, rid))
             return
         cursor = connection.execute(
             """INSERT OR IGNORE INTO person_links
@@ -2586,31 +3851,14 @@ def write_enrichment(connection, link_rows):
         if cursor.rowcount:
             added_ids += 1
 
-    # 1) 本轮从 coscd / kkkhai 文章整理出的作品链接。
+    # 1) 本轮从 coscd / kkkhai / 华语模特站整理出的作品与社交链接。
     for row in link_rows:
         rid = resolve(row.get("name"), row.get("region"))
         add_link(rid, row.get("source") or "unknown", row.get("kind") or "work",
                  row.get("url"), row.get("title"), row.get("published_at"))
-        # 国内套图/写真也进 works 底座：没有番号，但有标题、来源和人物关系。
-        if rid and row.get("kind") == "work" and row.get("url") and row.get("title"):
-            source = row.get("source") or "unknown"
-            cursor = connection.execute(
-                """INSERT OR IGNORE INTO works
-                   (kind, title_zh, release_date, source, source_url, updated_at)
-                   VALUES ('photo', ?, ?, ?, ?, ?)""",
-                (row.get("title"), row.get("published_at"), source,
-                 row.get("url"), BUILD_DATE))
-            if cursor.rowcount:
-                added_works += 1
-                work_id = cursor.lastrowid
-            else:
-                found = connection.execute(
-                    "SELECT id FROM works WHERE source_url = ?", (row.get("url"),)).fetchone()
-                work_id = found[0] if found else None
-            if work_id:
-                connection.execute(
-                    "INSERT OR IGNORE INTO work_actresses (work_id, actress_id) VALUES (?, ?)",
-                    (work_id, rid))
+        external = row.get("external_id")
+        if rid and external and row.get("kind") == "profile":
+            add_external(rid, row.get("source") or "unknown", external, row.get("url"))
 
     # 2) JavBus：star_id 同时作为跨站 ID 与演员页链接。
     stars_map_path = os.path.join(RAW, "javbus_name_map.json")
@@ -2638,6 +3886,34 @@ def write_enrichment(connection, link_rows):
         add_external(rid, "javbus", star_id, url)
         add_link(rid, "javbus", "profile", url, "JavBus 演员页")
 
+    # 2b) JavBus 兜底：合并阶段名字没匹配上、但有跨站 ID 且没头像的人，
+    #     直接按 external_id 反查探活结果补 image_url / base64。
+    portraits_path = os.path.join(RAW, "javbus_portraits.json")
+    if os.path.exists(portraits_path):
+        portraits = load_json(portraits_path)
+        missing = connection.execute(
+            """SELECT a.id, e.external_id FROM actresses a
+               JOIN external_ids e ON e.entity_type = 'person' AND e.entity_id = a.id
+               WHERE e.source = 'javbus' AND a.image_url IS NULL"""
+        ).fetchall()
+        patched = 0
+        for rid, star_id in missing:
+            url = portraits.get(star_id)
+            if not url:
+                continue
+            b64 = AVATARS.get(url)
+            cursor = connection.execute(
+                """UPDATE actresses SET image_url = ?, has_avatar = max(has_avatar, ?)
+                   WHERE id = ? AND image_url IS NULL""",
+                (url, 1 if b64 else 0, rid))
+            if b64:
+                connection.execute(
+                    "INSERT OR REPLACE INTO person_avatars (actress_id, base64) VALUES (?, ?)",
+                    (rid, b64))
+            patched += cursor.rowcount or 0
+        if patched:
+            print(f"  javbus 跨站 ID 兜底补图 {patched} 人")
+
     # 3) JavRate：详情页 uuid + 主页链接。
     actors_path = os.path.join(RAW, "javrate_actors_all.json")
     if os.path.exists(actors_path):
@@ -2663,7 +3939,78 @@ def write_enrichment(connection, link_rows):
             add_external(rid, "zhwiki", name, url)
             add_link(rid, "zhwiki", "profile", url, info.get("ja") or name)
 
-    return added_links, added_ids, added_works
+    # 5) 日文维基：标题作为跨站 ID，页面作为主页链接。
+    ja_path = os.path.join(RAW, "ja_wiki_people.json")
+    if os.path.exists(ja_path):
+        for title, info in load_json(ja_path).items():
+            info = info or {}
+            url = info.get("url")
+            rid = resolve(title) or resolve(info.get("name"))
+            if not rid or not url:
+                continue
+            add_external(rid, "jawiki", title, url)
+            add_link(rid, "jawiki", "profile", url, title)
+            # 维基「公式サイト」里若指向商店 / 资料站，官方站位置不用，但 ID 仍有串联价值。
+            site = info.get("official_site") or ""
+            dmm = re.search(r"[?&]actress=(\d+)", site)
+            if dmm:
+                add_external(rid, "dmm", dmm.group(1), site)
+                add_link(rid, "dmm", "profile", site, "DMM 演员页")
+            xcity = re.search(r"xcity\.jp/idol/detail/(\d+)", site)
+            if xcity:
+                add_external(rid, "xcity", xcity.group(1), site)
+                add_link(rid, "xcity", "profile", site, "XCITY 演员页")
+
+    # 4) R18.dev 作品：dvd_id 唯一，参演者按库内名字解析；解析不到任何人就不入库，
+    #    避免产生没有人物入口的孤儿作品。片商名能在 studios 里对上才写 studio_id。
+    added_videos = 0
+    for video in load_r18_videos():
+        actress_ids = []
+        for name in video.get("actresses") or []:
+            rid = resolve(name, "japan")
+            if rid and rid not in actress_ids:
+                actress_ids.append(rid)
+        if not actress_ids:
+            continue
+        dvd = (video.get("dvd_id") or "").strip()
+        if not dvd:
+            continue
+        source_url = ("https://r18.dev/videos/vod/movies/detail/-/dvd_id/"
+                      f"{urllib.parse.quote(dvd)}/")
+        maker = (video.get("maker") or "").strip()
+        studio_id = None
+        if maker and studio_ids:
+            studio_id = studio_ids.get(merge_key(maker.translate(JP_VARIANTS)))
+        cursor = connection.execute(
+            """INSERT OR IGNORE INTO works
+               (kind, dvd_id, code, title_ja, title_en, release_date, runtime_min,
+                studio_id, label, series, genres, cover_url, trailer_url,
+                source, source_url, updated_at)
+               VALUES ('video', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'r18', ?, ?)""",
+            (dvd, dvd, video.get("title_ja"), video.get("title_en"),
+             video.get("release_date"), video.get("runtime"), studio_id,
+             video.get("label"), video.get("series"),
+             json.dumps(video.get("genres") or [], ensure_ascii=False),
+             video.get("cover"), video.get("trailer"),
+             source_url, BUILD_DATE))
+        if cursor.rowcount:
+            added_videos += 1
+            work_id = cursor.lastrowid
+        else:
+            found = connection.execute(
+                "SELECT id FROM works WHERE source_url = ?", (source_url,)).fetchone()
+            work_id = found[0] if found else None
+        if work_id:
+            for rid in actress_ids:
+                connection.execute(
+                    "INSERT OR IGNORE INTO work_actresses (work_id, actress_id) VALUES (?, ?)",
+                    (work_id, rid))
+
+    if deduped_works:
+        print(f"  同人物作品跨站去重 {deduped_works} 条（同 NO. + 标题高度相似）")
+    if added_videos:
+        print(f"  R18 日本作品 {added_videos:,} 部")
+    return added_links, added_ids, added_works, deduped_works
 
 
 def write_database(actresses, studios, link_rows, coser_tag_count):
@@ -2673,61 +4020,115 @@ def write_database(actresses, studios, link_rows, coser_tag_count):
         os.remove(OUT)
     connection = sqlite3.connect(OUT)
     connection.executescript(SCHEMA)
+    # 头像 base64 先按行号算好（显式 id 从 1 递增），与主表写入一一对应。
+    person_avatar_rows = []
+    actress_rows = []
+    for rid, a in enumerate(actresses, start=1):
+        b64 = AVATARS.get(a.get("image") or "")
+        if b64:
+            person_avatar_rows.append((rid, b64))
+        actress_rows.append((
+            rid,
+            a["name"], a.get("name_ja"), a.get("name_en"),
+            json.dumps([n for n in a["names"] if n != a["name"]], ensure_ascii=False),
+            a.get("region") or "japan",
+            a.get("birth_date"), a.get("birth_precision"),
+            a.get("age"), a.get("age_asof"),
+            a.get("height"), a.get("bust"), a.get("waist"), a.get("hips"),
+            a.get("cup"), a.get("hobby"), a.get("ruby"), a.get("birthplace"),
+            a.get("blood_type"), a.get("debut_year"), a.get("agency"),
+            a.get("status"), a.get("official_site"),
+            a.get("work_count"),
+            json.dumps(a.get("tags", []), ensure_ascii=False),
+            a.get("summary"), a.get("description"),
+            a.get("image"), 1 if b64 else 0,
+            a.get("source_url"),
+            "+".join(sorted(a.get("sources", []))), BUILD_DATE,
+        ))
     connection.executemany(
         """INSERT INTO actresses
-           (name, name_ja, name_en, aliases, region, birth_date, birth_precision,
+           (id, name, name_ja, name_en, aliases, region, birth_date, birth_precision,
             age, age_asof, height_cm, bust, waist, hips, cup, hobby, ruby,
             birthplace, blood_type, debut_year, agency, status, official_site,
-            work_count, tags, summary, description, image_url, avatar_base64,
+            work_count, tags, summary, description, image_url, has_avatar,
             source_url, source, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        [
-            (
-                a["name"], a.get("name_ja"), a.get("name_en"),
-                json.dumps([n for n in a["names"] if n != a["name"]], ensure_ascii=False),
-                a.get("region") or "japan",
-                a.get("birth_date"), a.get("birth_precision"),
-                a.get("age"), a.get("age_asof"),
-                a.get("height"), a.get("bust"), a.get("waist"), a.get("hips"),
-                a.get("cup"), a.get("hobby"), a.get("ruby"), a.get("birthplace"),
-                a.get("blood_type"), a.get("debut_year"), a.get("agency"),
-                a.get("status"), a.get("official_site"),
-                a.get("work_count"),
-                json.dumps(a.get("tags", []), ensure_ascii=False),
-                a.get("summary"), a.get("description"),
-                a.get("image"), AVATARS.get(a.get("image") or ""),
-                a.get("source_url"),
-                "+".join(sorted(a.get("sources", []))), BUILD_DATE,
-            )
-            for a in actresses
-        ],
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        actress_rows,
     )
     connection.executemany(
+        "INSERT INTO person_avatars (actress_id, base64) VALUES (?, ?)",
+        person_avatar_rows,
+    )
+    studio_avatar_rows = []
+    studio_rows = []
+    for rid, s in enumerate(studios, start=1):
+        b64 = studio_avatar(s["name"])
+        if b64:
+            studio_avatar_rows.append((rid, b64))
+        studio_rows.append((
+            rid,
+            s["name"],
+            s["name"] if s["name"].isascii() else None,
+            json.dumps(s["names"][1:], ensure_ascii=False),
+            s.get("region") or "japan",
+            s.get("kind") or "studio",
+            s.get("work_count"), s.get("summary"), s.get("logo_url"),
+            1 if b64 else 0,
+            s.get("website"),
+            s.get("source_url"),
+            "+".join(sorted(s.get("sources", []))), BUILD_DATE,
+        ))
+    connection.executemany(
         """INSERT INTO studios
-           (name, name_en, aliases, region, kind, work_count, summary, logo_url,
-            avatar_base64, website, source_url, source, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        [
-            (
-                s["name"],
-                s["name"] if s["name"].isascii() else None,
-                json.dumps(s["names"][1:], ensure_ascii=False),
-                s.get("region") or "japan",
-                s.get("kind") or "studio",
-                s.get("work_count"), s.get("summary"), None,
-                studio_avatar(s["name"]),
-                s.get("website"),
-                s.get("source_url"),
-                "+".join(sorted(s.get("sources", []))), BUILD_DATE,
-            )
-            for s in studios
-        ],
+           (id, name, name_en, aliases, region, kind, work_count, summary, logo_url,
+            has_avatar, website, source_url, source, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        studio_rows,
+    )
+    connection.executemany(
+        "INSERT INTO studio_avatars (studio_id, base64) VALUES (?, ?)",
+        studio_avatar_rows,
     )
     connection.executemany(
         "INSERT OR REPLACE INTO code_makers (prefix, studio_name, source) VALUES (?, ?, ?)",
         [(prefix, maker, "内置词典") for prefix, maker in CODE_MAKERS.items()],
     )
-    link_count, external_count, works_count = write_enrichment(connection, link_rows)
+    # 片商名 → studio id：R18 作品按 maker 名落到厂牌页。
+    studio_ids: dict[str, int] = {}
+    for rid, studio in enumerate(studios, start=1):
+        for candidate in [studio["name"], *studio.get("names", [])]:
+            key = merge_key((candidate or "").translate(JP_VARIANTS))
+            if key:
+                studio_ids.setdefault(key, rid)
+    link_count, external_count, works_count, works_deduped = write_enrichment(
+        connection, link_rows, studio_ids)
+
+    # 标签关联表 + 名字搜索索引：让「按角色/IP 筛选」「按名字搜」走 SQL 而不是全表扫。
+    tag_pairs = []
+    search_rows = []
+    for row in actress_rows:
+        rid, name, name_ja, name_en, aliases_json, tags_json = (
+            row[0], row[1], row[2], row[3], row[4], row[24])
+        try:
+            for tag in json.loads(tags_json or "[]"):
+                if tag:
+                    tag_pairs.append((rid, tag))
+        except (ValueError, TypeError):
+            pass
+        names = [name, name_ja, name_en]
+        try:
+            names.extend(json.loads(aliases_json or "[]"))
+        except (ValueError, TypeError):
+            pass
+        text = search_index_text([value for value in names if value])
+        if text:
+            search_rows.append((rid, text))
+    connection.executemany(
+        "INSERT OR IGNORE INTO person_tags (actress_id, tag) VALUES (?, ?)",
+        tag_pairs)
+    connection.executemany(
+        "INSERT INTO actress_search (rowid, text) VALUES (?, ?)", search_rows)
+
     connection.executemany(
         "INSERT INTO meta (key, value) VALUES (?, ?)",
         [
@@ -2740,8 +4141,18 @@ def write_database(actresses, studios, link_rows, coser_tag_count):
             ("person_link_count", str(link_count)),
             ("external_id_count", str(external_count)),
             ("works_count", str(works_count)),
+            ("works_deduped", str(works_deduped)),
+            ("avatar_count", str(len(person_avatar_rows))),
+            ("studio_avatar_count", str(len(studio_avatar_rows))),
             ("coser_tag_count", str(coser_tag_count)),
-            ("sources", "zh.wikipedia / wikidata / javrate / javbus / kkkhai / coscd"),
+            ("person_tag_pairs", str(len(tag_pairs))),
+            ("search_rows", str(len(search_rows))),
+            ("sources", "zh.wikipedia / ja.wikipedia / wikidata / javrate / javbus / kkkhai / coscd / "
+                        "coshe / 52cos / cosmeitu / xiuren / paomianz / yglsr / yingyuge / leyaotu / "
+                        "tuluoj / miaofengxiang / yuanqi6 / xiarenzhuxin / huyingshe / chaotuji / 7n5 / "
+                        "xsnvshen / cos2cy / sluyu / nvshenkong / costuan / tuquge / tuinvlang / "
+                        "qiliguan / fulill / myxiuren / xiurenz / jvheku / yituwan / "
+                        "guoxuezy / yanmishe / wikidata / r18"),
         ],
     )
     connection.commit()
@@ -2751,6 +4162,8 @@ def write_database(actresses, studios, link_rows, coser_tag_count):
     print(f"已生成 {OUT}")
     print(f"女优 {len(actresses)} 位，厂牌 {len(studios)} 个，番号前缀 {len(CODE_MAKERS)} 条")
     print(f"  人物链接 {link_count} 条，跨站 ID {external_count} 条，作品 {works_count} 条，Coser 标签 {coser_tag_count} 条")
+    print(f"  头像独立表：人物 {len(person_avatar_rows)} 条，厂牌 {len(studio_avatar_rows)} 条")
+    print(f"  查询索引：标签对 {len(tag_pairs)} 条，名字搜索 {len(search_rows)} 行")
     regions = {}
     for a in actresses:
         regions[a.get("region") or "japan"] = regions.get(a.get("region") or "japan", 0) + 1
@@ -2766,6 +4179,15 @@ def main():
                 studio_keys.add(merge_key(name.translate(JP_VARIANTS)))
     actresses = build_actresses(studio_keys)
     link_rows, coser_tag_count = enrich_domestic_posts(actresses)
+    _, cn_links = cn_web_profiles()
+    link_rows.extend(cn_links)
+    _, wd_links = wikidata_performer_rows()
+    link_rows.extend(wd_links)
+    _, r18_links = r18_profile_rows()
+    link_rows.extend(r18_links)
+    # 同一个微博/抖音/IG/Twitter 账号挂在两条人物上：先判定是否同一人再收敛，
+    # 否则贸然合并会把不同人串在一起。
+    merge_by_external_ids(actresses, link_rows)
     print(f"  国内作品链接 {len(link_rows)} 条，角色/IP 标签 {coser_tag_count} 条")
     write_database(actresses, studios, link_rows, coser_tag_count)
 

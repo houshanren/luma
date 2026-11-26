@@ -105,12 +105,12 @@
 
 代码落点：
 
-- 起流参数：[VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoStreamSession.swift#L350-L419)
-- 关键帧对齐：[VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoStreamSession.swift#L452-L492)
-- 起流调用与 `timelineOffset`：[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1582-L1651)
-- 拖动/远跳重建流：[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1524-L1558)
-- 片头/续播位置来源：[LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Cinema.swift#L1830-L1886)
-- 装片后 seek：[VideoPlayerModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoPlayerModel.swift#L252-L345)
+- 起流参数：[VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L350-L419)
+- 关键帧对齐：[VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L452-L492)
+- 起流调用与 `timelineOffset`：[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1582-L1651)
+- 拖动/远跳重建流：[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1524-L1558)
+- 片头/续播位置来源：[LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cinema/LibraryStore+Cinema.swift#L1830-L1886)
+- 装片后 seek：[VideoPlayerModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoPlayerModel.swift#L252-L345)
 
 ---
 
@@ -311,11 +311,11 @@ lm2（-ss 6.0，当前实现）
 
 | 编号 | 内容 | 状态 | 代码落点 |
 | --- | --- | --- | --- |
-| P0-1 | 转封装模式关闭 `accurate_seek` | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoStreamSession.swift#L386-L396) |
-| P0-2 | 真实起流点回填 `playbackStartOffset` | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoStreamSession.swift#L483-L541) |
-| P1-1 | AAC / ALAC 音轨直接拷贝 | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoStreamSession.swift#L404-L418) |
-| P1-2 | 重编码模式强制 2 秒关键帧 | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/VideoStreamSession.swift#L419-L421) |
-| P2 | 重建流期间合并连续远跳 | 已实现 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1539-L1596) |
+| P0-1 | 转封装模式关闭 `accurate_seek` | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L386-L396) |
+| P0-2 | 真实起流点回填 `playbackStartOffset` | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L483-L541) |
+| P1-1 | AAC / ALAC 音轨直接拷贝 | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L404-L418) |
+| P1-2 | 重编码模式强制 2 秒关键帧 | 已实现 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L419-L421) |
+| P2 | 重建流期间合并连续远跳 | 已实现 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1539-L1596) |
 
 ### P0-1（已实现）：转封装模式关闭 accurate_seek
 
@@ -461,9 +461,9 @@ transcode 模式当前是对齐的，但 `-hls_time 2` 在长 GOP 源上切不�
 | 落点 | 改动 |
 | --- | --- |
 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift#L461-L481) | 时间基改为 `numerator / denominator`，并加 `denominator > 0` 防护 |
-| [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L740-L752) | `CinemaProgressRecord.isTrustworthy(realDuration:)`：时长超过片源 1.5 倍（或 24h）即判为脏记录 |
-| [LibraryStore+PlaybackHooks.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+PlaybackHooks.swift#L7-L52) | 续播前校验记录，脏记录不参与续播 |
-| [LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Cinema.swift#L174-L197) | 启动加载时清洗脏记录并回写，「继续观看」不再显示已看完 |
+| [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L740-L752) | `CinemaProgressRecord.isTrustworthy(realDuration:)`：时长超过片源 1.5 倍（或 24h）即判为脏记录 |
+| [LibraryStore+PlaybackHooks.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+PlaybackHooks.swift#L7-L52) | 续播前校验记录，脏记录不参与续播 |
+| [LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cinema/LibraryStore+Cinema.swift#L174-L197) | 启动加载时清洗脏记录并回写，「继续观看」不再显示已看完 |
 
 **验证**：同一 `framecrc` 命令实测 `#tb 0: 1/1000`、`pts 38000` → 修复后为 `38.0s`（关键帧），不再放大 1000 倍；`swift build -c debug --product PhotosClone` 通过。
 
@@ -510,8 +510,8 @@ transcode 模式当前是对齐的，但 `-hls_time 2` 在长 GOP 源上切不�
 | --- | --- |
 | [VideoPlayerModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoPlayerModel.swift#L24-L28) | 新增 `isReloading`：重建流期间 `isStalled` 直接为 true，统一显示转圈 |
 | [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L386-L418) | `restart` 进入时 `setReloading(true)`，结束时复位；`stop()` 也复位 |
-| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L536-L541) | `activeFailure` 在 `isPreparing` / 重建期间忽略 `model.errorMessage`，瞬时断连不再弹卡片 |
-| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L403-L445) | `VideoControlButton` 支持 `busy`，重建 / 缓冲时播放按钮换成转圈 |
+| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L536-L541) | `activeFailure` 在 `isPreparing` / 重建期间忽略 `model.errorMessage`，瞬时断连不再弹卡片 |
+| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L403-L445) | `VideoControlButton` 支持 `busy`，重建 / 缓冲时播放按钮换成转圈 |
 
 **回归要点**：来回拖动时只看到转圈；不再出现「无法连接服务器」卡片；真正的起流失败仍会显示错误卡片与「转换为兼容格式」。
 
@@ -600,9 +600,9 @@ cat good/init.mp4 good/seg00000.m4s > good/c0.mp4
 | 高倍速音频 | `AVPlayerItem.audioTimePitchAlgorithm = .spectral`，0.25×～4× 变速保持音调 | [VideoPlayerModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoPlayerModel.swift#L254-L256) |
 | 音频延迟微调 | 内核 `PlaybackSession.audioDelay`，正值 `adelay`、负值 `atrim+asetpts`，音频自动改为 AAC；速度菜单内 ±0.1s / ±0.5s | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L219-L227) |
 | 音轨即时切换 | 多音轨 remux 输出 master playlist（`-var_stream_map` + `agroup`），切换只让 AVPlayer 换轨 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L92-L101) |
-| 内嵌字幕 | ffprobe 解析字幕轨，ffmpeg 提取为 ASS 文本交给覆盖层；本地 / SMB 源自动挂载中文字幕 | [EmbeddedSubtitleLoader.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/EmbeddedSubtitleLoader.swift) |
+| 内嵌字幕 | ffprobe 解析字幕轨，ffmpeg 提取为 ASS 文本交给覆盖层；本地 / SMB 源自动挂载中文字幕 | [EmbeddedSubtitleLoader.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Video/EmbeddedSubtitleLoader.swift) |
 | ASS / SSA 样式 | 解析样式表与 `\an` `\b` `\i` `\fs` `\c`，渲染颜色、字号倍率、粗斜体、描边与上/中/下位置 | [SubtitleCore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/SubtitleCore.swift#L142-L231) |
-| 系统媒体集成 | Now Playing 标题 / 时长 / 进度 / 封面 + 播放、暂停、切集、拖动命令 | [NowPlayingCenter.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/NowPlayingCenter.swift) |
+| 系统媒体集成 | Now Playing 标题 / 时长 / 进度 / 封面 + 播放、暂停、切集、拖动命令 | [NowPlayingCenter.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Video/NowPlayingCenter.swift) |
 
 ### 12.1 音轨即时切换的边界
 
@@ -694,9 +694,9 @@ cat good/init.mp4 good/seg00000.m4s > good/c0.mp4
 
 实现落点：
 
-- [VideoScrubThumbnails.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoScrubThumbnails.swift)：源文件抽帧 + 回退 provider + 无帧时的紧凑时间胶囊
-- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift)：注册回退取帧、按设置开关预览
-- [PhotoViewer.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/PhotoViewer.swift)：移除播放舱 tooltip
+- [VideoScrubThumbnails.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoScrubThumbnails.swift)：源文件抽帧 + 回退 provider + 无帧时的紧凑时间胶囊
+- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift)：注册回退取帧、按设置开关预览
+- [PhotoViewer.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/PhotoViewer.swift)：移除播放舱 tooltip
 
 **说明**：源文件抽帧需要现场 seek 一次，SMB / 网盘上首帧可能慢 1～2 秒；同一采样段内来回滑动命中缓存，不会重复解码。
 
@@ -719,7 +719,7 @@ cat good/init.mp4 good/seg00000.m4s > good/c0.mp4
 - [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift)：`generatedEndSeconds` 读播放列表 `#EXTINF` 求和（多音轨读 `live_0.m3u8`），0.5 秒节流，避免进度条每帧解析 m3u8
 - [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift)：时间轴每次刷新把「已生成末尾」与播放器缓冲取较大值同步给引擎；seek 决策也改用已生成末尾，保证「画到哪里就能跳到哪里」
 - [VideoPlayerModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoPlayerModel.swift)：`generatedEndTime` / `bufferedEndTime`，换片时清零
-- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift)：`VideoScrubber` 新增 `bufferedStart`，画缓冲段与前沿亮线；画面控制条与窗口工具栏共用同一份数据
+- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift)：`VideoScrubber` 新增 `bufferedStart`，画缓冲段与前沿亮线；画面控制条与窗口工具栏共用同一份数据
 
 **行为变化**：拖到浅色区间内直接 seek，不再重建 ffmpeg；拖到浅色区间之后仍按原逻辑重新起流，缓冲段会从新的保留起点重新铺开。
 
@@ -816,7 +816,7 @@ AVPlayer 播到当前 EVENT 列表末尾会进入 `.paused`。原逻辑用 `isPl
 
 | 位置 | 改动 |
 | --- | --- |
-| [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift) | 网络卷探测超时 15s → 45s；播放前探测跳过 `-show_chapters`（MKV 章节在文件尾部，SMB 上要跨大半个文件） |
+| [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift) | 网络卷探测超时 15s → 45s；播放前探测跳过 `-show_chapters`（MKV 章节在文件尾部，SMB 上要跨大半个文件） |
 | 同上 | 起播后不再对网络卷跑第二次技术探测：它和 ffmpeg 抢同一块带宽，会让正在播的片源变卡；章节 / 码率信息以起播探测为准 |
 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift) | 起播前先攒 `startupLeadSeconds`（4–8s）生成量，最多多等 6s：避免「刚出画面就卡一下」 |
 
@@ -830,7 +830,7 @@ AVPlayer 播到当前 EVENT 列表末尾会进入 `.paused`。原逻辑用 `isPl
 
 **根因**：`displaySupportsHDR` 只看 `NSScreen.main`。App 不在前台或窗口全屏切换的瞬间，`NSScreen.main` 为 nil → 判成 SDR 屏 → `needsToneMapping` 返回 true。实测该屏 `potentialEDR = 16.0`。
 
-**修复**（[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift)）：
+**修复**（[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift)）：
 
 - 优先用 `playerWindow?.screen`，其次 `NSScreen.main`；
 - 窗口还没挂到屏幕上时，只要任意一块屏支持 EDR 就按 HDR 处理；
@@ -847,7 +847,7 @@ AVPlayer 播到当前 EVENT 列表末尾会进入 `.paused`。原逻辑用 `isPl
 
 **根因**：为 NAS 适配新增的「网络卷只用 ffprobe 探测」路径（SMB 上的 MKV / AVI 跳过 AVFoundation，避免打开大文件黑屏）里，ffprobe 解析器无条件写了 `probe.isPlayable = true`。播放页据此认为系统能原生播放，把 MKV 直接交给 AVPlayer → `-11828` → 回退到「自动兼容转码」，于是 4K60 HDR 片被迫实时转码，转码速度追不上播放，表现为周期性缓冲。
 
-**修复**（[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift)）：ffprobe 结果对本地文件统一走 `applyingNativePlayability`，复用 `VideoProbe.allowsNativePlayback` 的容器白名单——只有 `mp4 / m4v / mov / qt + HEVC` 才放宽为可直读，MKV / AVI / TS 等一律走 ffmpeg 转封装。这样既保留 `hev1` 误报的修复，也不会再把 MKV 送进原生播放。
+**修复**（[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift)）：ffprobe 结果对本地文件统一走 `applyingNativePlayability`，复用 `VideoProbe.allowsNativePlayback` 的容器白名单——只有 `mp4 / m4v / mov / qt + HEVC` 才放宽为可直读，MKV / AVI / TS 等一律走 ffmpeg 转封装。这样既保留 `hev1` 误报的修复，也不会再把 MKV 送进原生播放。
 
 **日志判据**：起流日志出现 `mode=remux` 即正确；若又看到 `装片失败 -11828 + 自动兼容转码`，说明探测仍把容器判成原生可播。
 
@@ -897,7 +897,7 @@ CDN 只给了 **327 kbps**，片源需要 **856 kbps**，连实时都不到一�
 **修复**：
 
 - [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift)：新增 `onNativeStall`。直连播放（没有本地会话）卡住 8 秒就上报一次，提示「改用本地转封装」；
-- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift)：收到后从当前位置重建为 ffmpeg 转封装会话。远端输入走 `RemoteRangeSource`，按档位**并发预取**（流畅档 8 路），并对直链过期做 403 重解析 —— 单连接 327kbps 的场景下，多连接通常能到实时所需之上。
+- [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift)：收到后从当前位置重建为 ffmpeg 转封装会话。远端输入走 `RemoteRangeSource`，按档位**并发预取**（流畅档 8 路），并对直链过期做 403 重解析 —— 单连接 327kbps 的场景下，多连接通常能到实时所需之上。
 
 **判据**：日志出现 `直连播放卡住 8s，改用本地转封装（并行预取）` 后，`首段就绪 … mode=remux`，之后应出现 `播放心跳 pos=… 领先=…s` 且领先为正、随时间增长。若转封装后领先仍不增长，说明网盘对账号整体限速，需要开通会员或换链路。
 
@@ -944,8 +944,8 @@ track decodable=false  size=3840x2160  fps=50  codec=hev1
 | 位置 | 改动 |
 | --- | --- |
 | [PlaybackModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackModels.swift) | `VideoProbe` 新增 `isVideoDecodable`（来自 `AVAssetTrack.isDecodable`） |
-| [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift) | 视频轨不可解码时**不再放宽**：`isPlayable = isVideoDecodable && …` |
-| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift) | 不可解码时起流模式直接选 `.transcode`（转封装救不回来），并记录 `视频轨系统无法解码，改走重编码` |
+| [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift) | 视频轨不可解码时**不再放宽**：`isPlayable = isVideoDecodable && …` |
+| [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift) | 不可解码时起流模式直接选 `.transcode`（转封装救不回来），并记录 `视频轨系统无法解码，改走重编码` |
 
 **结论**：这类 4K50/60 hev1 片源只能重编码（输出按像素率档位降到 ~2844×1600）。直连 / 转封装都会黑屏。
 
@@ -980,7 +980,7 @@ track decodable=false  size=3840x2160  fps=50  codec=hev1
 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift) | 重编码输入加 `-hwaccel videotoolbox`（硬解） |
 | 同上 | HDR 屏 + HDR10 源：`preserveHDR` 时不跑色调映射，`scale=-2:1440` + `format=p010le`，强制 HEVC 10bit 输出并写回 bt2020/smpte2084 标记 |
 | [VideoStreamSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/VideoStreamSession.swift) | `needsToneMap` 增加 `!preserveHDR`；记录 `重编码保留 HDR（不映射）` |
-| [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift) / [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift) | 上下文新增 `preserveHDR`，由「HDR 屏 且 未被用户强制映射」决定 |
+| [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift) / [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift) | 上下文新增 `preserveHDR`，由「HDR 屏 且 未被用户强制映射」决定 |
 
 **验证**：输出片段 `hevc Main 10 2560×1440 60fps bt2020/smpte2084`，AVFoundation 探测 `isPlayable=true / decodable=true`。
 杜比视界仍走 libplacebo 映射（RPU 只能由它应用）。

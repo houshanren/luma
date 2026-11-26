@@ -57,7 +57,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 依赖方向固定为：`Features → Store → Services（UseCases → Infrastructure）→ Persistence（MetadataStore / SystemIndex / TVDatabase / CatalogDatabase）→ SQLite / 文件 / 网络`。`Domain` 与 `LumaCore` 不依赖上层。
 
-- `LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` / `LumaMemories` 是独立 SwiftPM target：Domain 只依赖 `LumaCore` / `PlaybackCore` / `LumaContentCore`，不得 import AppKit / SwiftUI，也不得引用 Store / Services；Persistence 只依赖 Domain 与这三个基础库；AI 只依赖 Domain，执行侧（需要 `LibraryStore`）留在 App；UI 只依赖 Domain，只放设计 token、通用视图修饰器与拖放 / 键盘 / 窗口胶水；Memories 只依赖 Domain / ContentCore，宿主能力走 `MemoryHost` 协议与 `MemoryFrameLoader` 注入。五者都不得依赖 Store / Services / 功能模块。
+- `LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` / `LumaMemories` 是独立 SwiftPM target：Domain 只依赖 `LumaCore` / `PlaybackCore` / `LumaContentCore`，不得 import AppKit / SwiftUI，也不得引用 Store / Services；Persistence 只依赖 Domain 与这三个基础库；AI 只依赖 Domain，执行侧（需要 `LibraryStore`）留在 App；UI 只依赖 Domain / Core，只放设计 token、通用视图修饰器、照片网格与缩略图组件、拖放 / 键盘 / 窗口胶水；Memories 只依赖 Domain / ContentCore，宿主能力走 `MemoryHost` 协议与 `MemoryFrameLoader` 注入。五者都不得依赖 Store / Services / 功能模块。
 - 跨 target 的 API 必须显式标注访问级别：`LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` / `LumaMemories` 统一用同包可见的 `package`，struct 还要写显式 init；`Luma` 通过 `App/ModuleExports.swift` 的 `@_exported import` 统一转发，普通文件不需要重复 import。
 - 需要 App 能力（日志、模型资源路径）时由组合根注入（`PersistenceLog.sink`、`PhotoTagCatalog.resourceResolver`），不要在 Domain / Persistence 里反向引用 App 类型。
 

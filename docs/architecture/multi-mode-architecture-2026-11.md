@@ -10,6 +10,12 @@
 | 适用范围 | macOS 拾光（Luma）内容浏览、源接入与播放链路 |
 | 结论 | 现有框架“能加功能”，但不是“插件式可加”。新增影院站点源和电视直播源前，需要先补 3 个底座：统一源描述、统一播放目标、播放内核的直播模式 |
 
+> **当前落地情况（2026-11-26 核对）**
+>
+> - **已落地**：`LumaContentCore` 契约层（`Source` / `SourceSession` / `Content` / `PlaybackContract` / `SourceJob` / `SourceError` / `M3U`）；`PlaybackCore` 的 `PlaybackMode` 已区分 VOD / Live；网络电视（`SourceKind.iptv`）与网络影院（`SourceKind.cinemaFeed`）均已全链路可用。
+> - **已过期**：正文 §0 的「电视完全缺失」「影院还不能接入电影源 / JSON 片源」是 2026-11-22 的现状描述，保留作为当时的评估记录，不代表现在。
+> - **未落地**：§4 目标架构里的统一导航描述符、跨源搜索仍是方向性建议。
+
 ---
 
 ## 0. 结论摘要
@@ -25,7 +31,7 @@
    当前用一个 60+ case 的 `SidebarItem` 枚举驱动侧边栏、内容页、标题、命令可用性和查询范围。新增一个模式或一类源，需要在至少 4 处中心 switch 里补分支，属于“开闭原则”层面的结构性负债。
 
 3. **播放链路是最需要先抽象的部分。**
-   [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L2643-L2665) 在播放器内部用 `catalogPlaybackContext` / `photo.isCloud` / 本地文件三分支解析片源；网络资源还通过“虚拟 PhotoItem + 旁路字典”接入。电视直播会变成第四、第五种分支，继续叠加不可控。
+   [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L2643-L2665) 在播放器内部用 `catalogPlaybackContext` / `photo.isCloud` / 本地文件三分支解析片源；网络资源还通过“虚拟 PhotoItem + 旁路字典”接入。电视直播会变成第四、第五种分支，继续叠加不可控。
 
 4. **播放内核目前是 VOD 假设，不是“能播 HLS 就等于支持直播”。**
    [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L303-L355) 的续播、片头片尾、剩余 5 分钟预热、每 10 秒写进度都以 `duration > 0` 为前提。直播流没有有限时长，现有逻辑会退化为“不写进度、不预热”，但界面仍会显示进度条、续播入口和片尾行为，属于“能出画面但不可用”。
@@ -172,18 +178,18 @@
 
 | 扩展点 | 现状代码 | 评价 |
 | --- | --- | --- |
-| 侧边栏条目 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Models.swift#L458-L591) 的 `SidebarItem` | 60+ case，所有模式共用；新增模式必须改这里 |
-| 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Gallery/GalleryView.swift#L1343-L1449) | 一个大 switch；新模式必须补分支 |
-| 标题与范围判断 | [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift#L10-L110) | 标题 switch；`isCloudScope` 等布尔判断散落 |
-| 导航 | [LibraryStore+Organize.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Organize.swift#L10-L29) | `navigate(to:)` 里硬编码云盘 / 资源的打开动作 |
-| 侧边栏分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L1311-L1447) | `cloudSection` / `catalogSection` 各自手写；电视需要再加一段 |
-| 云盘状态 | [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CloudBrowserModel.swift#L5-L44) | 已从 god object 拆出，方向正确 |
-| 网络资源状态 | [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CatalogBrowserModel.swift#L9-L75) | 同上，且持久化与 UI 分离较好 |
-| 站点适配器 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Catalog/CatalogClient.swift#L14-L57) | 全仓最成熟的 provider 抽象，可直接作为电视模板 |
-| 播放目标解析 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L2643-L2665) | 硬编码三分支，是最大耦合点 |
-| 网络资源播放接入 | [LibraryStore+Catalog.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Catalog.swift#L84-L126) | 用虚拟 `PhotoItem` + 旁路字典接入查看器 |
-| 影院刮削源 | [CinemaMetadataSource.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cinema/CinemaMetadataSource.swift#L4-L13) | 小而清晰的协议，可继续复用 |
-| 影院作用域 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L51-L54) | 只有 `local` / `mount`，与文件扫描强绑定 |
+| 侧边栏条目 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/Models.swift#L458-L591) 的 `SidebarItem` | 60+ case，所有模式共用；新增模式必须改这里 |
+| 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Gallery/GalleryView.swift#L1343-L1449) | 一个大 switch；新模式必须补分支 |
+| 标题与范围判断 | [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift#L10-L110) | 标题 switch；`isCloudScope` 等布尔判断散落 |
+| 导航 | [LibraryStore+Organize.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Organize.swift#L10-L29) | `navigate(to:)` 里硬编码云盘 / 资源的打开动作 |
+| 侧边栏分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift#L1311-L1447) | `cloudSection` / `catalogSection` 各自手写；电视需要再加一段 |
+| 云盘状态 | [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cloud/CloudBrowserModel.swift#L5-L44) | 已从 god object 拆出，方向正确 |
+| 网络资源状态 | [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/CatalogBrowserModel.swift#L9-L75) | 同上，且持久化与 UI 分离较好 |
+| 站点适配器 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Catalog/CatalogClient.swift#L14-L57) | 全仓最成熟的 provider 抽象，可直接作为电视模板 |
+| 播放目标解析 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L2643-L2665) | 硬编码三分支，是最大耦合点 |
+| 网络资源播放接入 | [LibraryStore+Catalog.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/LibraryStore+Catalog.swift#L84-L126) | 用虚拟 `PhotoItem` + 旁路字典接入查看器 |
+| 影院刮削源 | [CinemaMetadataSource.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cinema/CinemaMetadataSource.swift#L4-L13) | 小而清晰的协议，可继续复用 |
+| 影院作用域 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L51-L54) | 只有 `local` / `mount`，与文件扫描强绑定 |
 | 播放内核 | [PlaybackCore](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L303-L355) | 无 SwiftUI 依赖，边界干净；缺直播模式 |
 
 ---
@@ -214,12 +220,12 @@
 | 1 | 入口枚举与 4 处中心 switch | `SidebarItem`、`GalleryView`、`sidebarTitle`、命令可用性 | 每加一种模式都要改多处，容易漏分支 | P0 |
 | 2 | 没有统一的“源”概念 | `CloudMount`、`CatalogSource`、`SystemLibraryRef` 各存各的 | 无法用一套界面/流程接入电视源与电影源 | P0 |
 | 3 | 播放源解析硬编码 | `resolveSource` 三分支 | 电视直播会变成第四种分支，且无法测试 | P0 |
-| 4 | 网络资源用虚拟 PhotoItem 旁路 | [LibraryStore+Catalog.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Catalog.swift#L84-L126) | 能跑，但语义错误；电视/影院若照抄会放大技术债 | P1 |
+| 4 | 网络资源用虚拟 PhotoItem 旁路 | [LibraryStore+Catalog.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/LibraryStore+Catalog.swift#L84-L126) | 能跑，但语义错误；电视/影院若照抄会放大技术债 | P1 |
 | 5 | 影院与文件扫描强绑定 | `CinemaScope` 仅 `local` / `mount`；`CinemaFile` 依赖 `photoID` 和云端字段 | 无法直接承载“电影网站条目” | P1 |
 | 6 | 播放内核无直播语义 | `duration > 0` 才写进度、预热、跳片头片尾 | 直播能出画面，但进度条、续播、片尾行为都不对 | P0 |
 | 7 | 侧边栏分区手写 | `cloudSection`、`catalogSection` | 电视要再加一段重复代码 | P1 |
 | 8 | 持久化写法分散 | 云盘挂载在设置 JSON；资源在主库 `catalog_*`；影院按 scope 存 JSON | 电视源、频道、EPG 需要再选一套；不利于统一备份/清理 | P1 |
-| 9 | 云盘能力用 switch 调度 | [CloudService](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cloud/CloudProviders.swift#L914-L949) 的 `list/stream/delete` | 新增网盘类型要改多处；但当前 6 种足够稳定，不是最急 | P2 |
+| 9 | 云盘能力用 switch 调度 | [CloudService](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cloud/CloudProviders.swift#L914-L949) 的 `list/stream/delete` | 新增网盘类型要改多处；但当前 6 种足够稳定，不是最急 | P2 |
 | 10 | 侧边栏/内容页缺少能力位 | 所有条目默认展示同一套工具栏与操作 | 电视频道页会看到“导出/编辑/评分”等无意义按钮 | P1 |
 
 ### 2.3 支持性判断
@@ -506,9 +512,9 @@ protocol EPGProvider {
 
 证据：
 
-- 影院作用域只有 `local` 与 `mount(UUID)`，见 [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L51-L54)。
-- 影院条目必须带 `CinemaFile`（含 `photoID`、云盘挂载 ID、云路径），见 [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L525-L649)。
-- 影院索引按作用域存在设置 JSON 中，见 [LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Cinema.swift#L79-L139)。
+- 影院作用域只有 `local` 与 `mount(UUID)`，见 [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L51-L54)。
+- 影院条目必须带 `CinemaFile`（含 `photoID`、云盘挂载 ID、云路径），见 [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L525-L649)。
+- 影院索引按作用域存在设置 JSON 中，见 [LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cinema/LibraryStore+Cinema.swift#L79-L139)。
 
 因此，**“电影网站/电影源”不是现有影院的自然扩展，而是第二类内容来源**。
 
@@ -767,7 +773,7 @@ struct EPGProgramme: Identifiable, Hashable {
 
 | 协议 | AVPlayer 原生 | 现有能力 | 结论 |
 | --- | --- | --- | --- |
-| HLS（m3u8） | 支持，含直播 | 已有 HLS 直连分支，见 [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L2333-L2360) | 可直接用于电视 MVP |
+| HLS（m3u8） | 支持，含直播 | 已有 HLS 直连分支，见 [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L2333-L2360) | 可直接用于电视 MVP |
 | HTTP-FLV | 不支持 | 有 ffmpeg 与 VOD 转封装 | 需新增“直播复用到本地 HLS”会话 |
 | MPEG-TS（HTTP） | 不支持 | 有 ffmpeg 与 VOD 转封装 | 同上 |
 | RTMP | 不支持 | 无 | ffmpeg 拉流后转 HLS |
@@ -816,9 +822,9 @@ struct EPGProgramme: Identifiable, Hashable {
 
 | 工作项 | 产出 | 涉及文件 |
 | --- | --- | --- |
-| 播放目标与解析器 | `PlaybackTarget`、`ResolvedStream`、`PlaybackResolver` | 新增 `Sources/PhotosClone/Domain/PlaybackTarget.swift` 等 |
+| 播放目标与解析器 | `PlaybackTarget`、`ResolvedStream`、`PlaybackResolver` | 新增 `Sources/LumaContentCore/Playback/PlaybackContract.swift` 等 |
 | 播放模式 | `PlaybackMode` 进入内核与播放器 | `Sources/PlaybackCore/PlaybackSession.swift`、`VideoPlayerModel.swift` |
-| 源描述与注册表骨架 | `SourceRecord`、`SourceKind`、`SourceRegistry` | 新增 `Sources/PhotosClone/Domain/MediaSource.swift` |
+| 源描述与注册表骨架 | `SourceRecord`、`SourceKind`、`SourceRegistry` | 新增 `Sources/LumaContentCore/Source/Source.swift` |
 | 现有链路适配 | 本地 / 云盘 / 网络资源继续走原实现，但输出统一 `ResolvedStream` | `VideoPlayback.resolveSource`、`LibraryStore+Catalog`、`LibraryStore+Cloud` |
 | 侧边栏描述符（可选） | 先给云盘/资源分区套一层描述结构 | `SidebarView` |
 
@@ -888,28 +894,28 @@ struct EPGProgramme: Identifiable, Hashable {
 
 | 主题 | 位置 |
 | --- | --- |
-| 模式枚举 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Models.swift#L458-L591) |
-| 照片/视频统一模型 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Models.swift#L126-L299) |
-| 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Gallery/GalleryView.swift#L1343-L1449) |
-| 标题与范围 | [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift#L10-L110) |
-| 导航动作 | [LibraryStore+Organize.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Organize.swift#L10-L29) |
-| 云盘状态 | [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CloudBrowserModel.swift#L5-L44) |
-| 云盘统一调度 | [CloudProviders.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cloud/CloudProviders.swift#L914-L949) |
-| 云盘扫描 | [CloudScanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cloud/CloudScanner.swift#L5-L59) |
-| 网络资源状态 | [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CatalogBrowserModel.swift#L9-L75) |
-| 站点协议 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Catalog/CatalogClient.swift#L14-L57) |
-| 站点工厂 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Catalog/CatalogClient.swift#L59-L96) |
-| 资源条目与直链 | [CatalogModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CatalogModels.swift#L160-L285) |
-| 资源持久化 | [CatalogStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Catalog/CatalogStore.swift#L1-L34) |
-| 资源播放接入 | [LibraryStore+Catalog.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Catalog.swift#L84-L126) |
-| 影院作用域 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L51-L54) |
-| 影院条目 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L525-L649) |
-| 影院刮削协议 | [CinemaMetadataSource.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cinema/CinemaMetadataSource.swift#L4-L13) |
-| 影院索引与作用域 | [LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Cinema.swift#L79-L139) |
-| 播放源解析 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L2643-L2665) |
-| HLS 直连 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L2333-L2360) |
-| 播放钩子 | [LibraryStore+PlaybackHooks.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+PlaybackHooks.swift#L1-L101) |
+| 模式枚举 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/Models.swift#L458-L591) |
+| 照片/视频统一模型 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/Models.swift#L126-L299) |
+| 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Gallery/GalleryView.swift#L1343-L1449) |
+| 标题与范围 | [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift#L10-L110) |
+| 导航动作 | [LibraryStore+Organize.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Organize.swift#L10-L29) |
+| 云盘状态 | [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cloud/CloudBrowserModel.swift#L5-L44) |
+| 云盘统一调度 | [CloudProviders.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cloud/CloudProviders.swift#L914-L949) |
+| 云盘扫描 | [CloudScanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cloud/CloudScanner.swift#L5-L59) |
+| 网络资源状态 | [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/CatalogBrowserModel.swift#L9-L75) |
+| 站点协议 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Catalog/CatalogClient.swift#L14-L57) |
+| 站点工厂 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Catalog/CatalogClient.swift#L59-L96) |
+| 资源条目与直链 | [CatalogModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CatalogModels.swift#L160-L285) |
+| 资源持久化 | [CatalogStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Catalog/CatalogStore.swift#L1-L34) |
+| 资源播放接入 | [LibraryStore+Catalog.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/LibraryStore+Catalog.swift#L84-L126) |
+| 影院作用域 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L51-L54) |
+| 影院条目 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L525-L649) |
+| 影院刮削协议 | [CinemaMetadataSource.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cinema/CinemaMetadataSource.swift#L4-L13) |
+| 影院索引与作用域 | [LibraryStore+Cinema.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cinema/LibraryStore+Cinema.swift#L79-L139) |
+| 播放源解析 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L2643-L2665) |
+| HLS 直连 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L2333-L2360) |
+| 播放钩子 | [LibraryStore+PlaybackHooks.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+PlaybackHooks.swift#L1-L101) |
 | 播放进度与片尾 | [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L303-L355) |
 | VOD 转封装参数 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L12-L102) |
-| 侧边栏网络分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L1311-L1447) |
-| 云/资源模型注入 | [PhotosCloneApp.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/App/PhotosCloneApp.swift#L48-L59) |
+| 侧边栏网络分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift#L1311-L1447) |
+| 云/资源模型注入 | [PhotosCloneApp.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/App/LumaApp.swift#L48-L59) |

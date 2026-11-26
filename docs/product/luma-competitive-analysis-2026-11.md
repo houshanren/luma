@@ -279,18 +279,18 @@
 | --- | --- |
 | 产品能力总览 | [README.md](file:///Users/lijialong/Documents/gitlab/photos/README.md) |
 | 架构与硬约束 | [AGENTS.md](file:///Users/lijialong/Documents/gitlab/photos/AGENTS.md) |
-| 图库与索引 | [LibraryStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore.swift)、[MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/MetadataStore.swift) |
-| 大图库分页 | [LibraryStore+Paging.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Paging.swift) |
-| 重复检测 | [Duplicates.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Duplicates.swift)（SHA-256 精确重复 + 感知哈希相似组）、[PerceptualHash.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaCore/PerceptualHash.swift) |
-| 导入 | [ImportService.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Import/ImportService.swift)（始终拷贝、UUID 文件名）、[PhotoHasher.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/PhotoHasher.swift)（导入查重与复制后校验） |
-| 图库保险库 | [LibraryVaultService.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/LibraryVaultService.swift)（SHA-256 清单、备份、校验、恢复） |
-| 编辑器 | [PhotoEditor.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Editor/PhotoEditor.swift#L5-L73)（调整、滤镜、裁剪、美化） |
-| 端侧智能 | [PhotoIntelligence.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/PhotoIntelligence.swift)、[SigLIPEngine.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/SigLIPEngine.swift) |
-| 人脸聚类 | [FaceClustering.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/People/FaceClustering.swift) |
-| 系统图库写入 | [PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/PhotoKitBridge.swift) |
-| AI 助手工具 | [AILibraryTools.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/AI/AILibraryTools.swift) |
+| 图库与索引 | [LibraryStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore.swift)、[MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/MetadataStore.swift) |
+| 大图库分页 | [LibraryStore+Paging.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Paging.swift) |
+| 重复检测 | [Duplicates.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/Duplicates.swift)（SHA-256 精确重复 + 感知哈希相似组）、[PerceptualHash.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaCore/PerceptualHash.swift) |
+| 导入 | [ImportService.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Import/ImportService.swift)（始终拷贝、UUID 文件名）、[PhotoHasher.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/PhotoHasher.swift)（导入查重与复制后校验） |
+| 图库保险库 | [LibraryVaultService.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Library/LibraryVaultService.swift)（SHA-256 清单、备份、校验、恢复） |
+| 编辑器 | [PhotoEditor.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Editor/PhotoEditor.swift#L5-L73)（调整、滤镜、裁剪、美化） |
+| 端侧智能 | [PhotoIntelligence.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/PhotoIntelligence.swift)、[SigLIPEngine.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/SigLIPEngine.swift) |
+| 人脸聚类 | [FaceClustering.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/People/FaceClustering.swift) |
+| 系统图库写入 | [PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/PhotoKitBridge.swift) |
+| AI 助手工具 | [AILibraryTools.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaAI/AILibraryTools.swift) |
 | 打包与签名 | [build.sh](file:///Users/lijialong/Documents/gitlab/photos/build.sh)（本地签名 / 可选公证 / 版本检查；无静默自动更新） |
-| 影院 / IPTV / 网络资源 | [CinemaScraper.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cinema/CinemaScraper.swift)、[CinemaLibraryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Cinema/CinemaLibraryView.swift)、[IPTVService.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/TV/IPTVService.swift)、[CatalogStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Catalog/CatalogStore.swift) |
+| 影院 / IPTV / 网络资源 | [CinemaScraper.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cinema/CinemaScraper.swift)、[CinemaLibraryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Cinema/CinemaLibraryView.swift)、[IPTVService.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/TV/IPTVService.swift)、[CatalogStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Catalog/CatalogStore.swift) |
 
 ---
 

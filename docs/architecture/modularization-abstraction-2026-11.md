@@ -10,6 +10,12 @@
 | 前置文档 | [产品元数据重构方案](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md)、[多模式内容框架评估](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/multi-mode-architecture-2026-11.md) |
 | 核心结论 | “统一”应发生在**源契约、内容契约、播放契约**三层，不发生在资产表与 `PhotoItem` 上；图库是唯一拥有写入会话的源，其余云盘 / 资源 / 影院 / 电视都是只读浏览源 |
 
+> **当前落地情况（2026-11-26 核对）**
+>
+> - **已落地**：结论 5 的纯契约 target `LumaContentCore`；`SourceKind` 的五个成员（`library` / `cloudMount` / `cinemaFeed` / `catalogSite` / `iptv`）；任务中心 `SourceJob`。
+> - **已推进**：结论 4 的巨型文件拆分——`GalleryView` / `CinemaLibraryView` 已按扩展拆开，照片网格整栈上移到 `LumaUI`；但仍剩 8 个文件超过 2000 行。
+> - **已过期**：正文「7 万多行全部是 App 内部代码」——现在是 8 个库 target（约 3.8 万行）+ App（约 18.4 万行）。
+
 ---
 
 ## 0. 结论
@@ -414,15 +420,15 @@ Sources/
 
 | 文件 | 行数 | 问题 | 建议拆法 |
 | --- | ---: | --- | --- |
-| [CinemaLibraryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Cinema/CinemaLibraryView.swift) | 9957 | 海报墙、筛选、详情、剧集、任务、设置全在一个文件 | `CinemaHomeView`、`CinemaShelfView`、`CinemaPosterGrid`、`CinemaDetailView`、`CinemaSeriesView`、`CinemaFilterBar`、`CinemaTaskCenter` |
-| [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Gallery/GalleryView.swift) | 3384 | 时间轴、网格、搜索、拖拽、键盘、工具栏耦合 | `GalleryTimelineView`、`GalleryGridContainer`、`GallerySearchResults`、`GalleryToolbar`、`GalleryDropHandler` |
-| [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift) | 1807 | 图库 / 云盘 / 资源分区手写，电视还要再加 | `SidebarLibrarySection`、`SidebarCloudSection`、`SidebarCatalogSection`、`SidebarTVSection`、`SidebarRow` |
-| [PhotosCloneApp.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/App/PhotosCloneApp.swift) | 781 | 所有命令与 `.disabled` 集中在一个文件 | `LibraryCommands`、`PhotoCommands`、`VideoCommands`、`ViewCommands`、`ImportCommands` |
-| [LibraryStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore.swift) + 37 个扩展 | 1435 + 扩展 | 浏览、选择、导入、编辑、AI、健康、云、影院全在一个类 | 按单库方案拆 `LibrarySession`、`LibraryRepository`；再拆 `PlaybackCoordinator`、`SearchCoordinator`、`SourceHubModel` |
-| [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CatalogBrowserModel.swift) + Discovery | 1428 + 1513 | 浏览、发现、健康、搜索、片单、日历、关注全在一个模型 | `CatalogBrowseState`、`CatalogDiscoveryState`、`CatalogPersistence`、`CatalogPlaybackBridge` |
-| [CloudProviders.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cloud/CloudProviders.swift) | 1391 | 多个云盘实现与统一调度混在一个文件 | 按 provider 拆文件，保留 `CloudService` 只做调度 |
-| [MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/MetadataStore.swift) | 924 | 所有 schema 与查询混在一起 | 按单库方案拆 `LibraryRepository`、`NativeSync`、`CloudIndexStore` |
-| [SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex.swift) | 2042 | 独立索引 + 直连两套读法 | 单库方案改为 `NativeLibrarySync` 的读取实现 |
+| [CinemaLibraryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Cinema/CinemaLibraryView.swift) | 9957 | 海报墙、筛选、详情、剧集、任务、设置全在一个文件 | `CinemaHomeView`、`CinemaShelfView`、`CinemaPosterGrid`、`CinemaDetailView`、`CinemaSeriesView`、`CinemaFilterBar`、`CinemaTaskCenter` |
+| [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Gallery/GalleryView.swift) | 3384 | 时间轴、网格、搜索、拖拽、键盘、工具栏耦合 | `GalleryTimelineView`、`GalleryGridContainer`、`GallerySearchResults`、`GalleryToolbar`、`GalleryDropHandler` |
+| [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift) | 1807 | 图库 / 云盘 / 资源分区手写，电视还要再加 | `SidebarLibrarySection`、`SidebarCloudSection`、`SidebarCatalogSection`、`SidebarTVSection`、`SidebarRow` |
+| [PhotosCloneApp.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/App/LumaApp.swift) | 781 | 所有命令与 `.disabled` 集中在一个文件 | `LibraryCommands`、`PhotoCommands`、`VideoCommands`、`ViewCommands`、`ImportCommands` |
+| [LibraryStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore.swift) + 37 个扩展 | 1435 + 扩展 | 浏览、选择、导入、编辑、AI、健康、云、影院全在一个类 | 按单库方案拆 `LibrarySession`、`LibraryRepository`；再拆 `PlaybackCoordinator`、`SearchCoordinator`、`SourceHubModel` |
+| [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/CatalogBrowserModel.swift) + Discovery | 1428 + 1513 | 浏览、发现、健康、搜索、片单、日历、关注全在一个模型 | `CatalogBrowseState`、`CatalogDiscoveryState`、`CatalogPersistence`、`CatalogPlaybackBridge` |
+| [CloudProviders.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cloud/CloudProviders.swift) | 1391 | 多个云盘实现与统一调度混在一个文件 | 按 provider 拆文件，保留 `CloudService` 只做调度 |
+| [MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/MetadataStore.swift) | 924 | 所有 schema 与查询混在一起 | 按单库方案拆 `LibraryRepository`、`NativeSync`、`CloudIndexStore` |
+| [SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex.swift) | 2042 | 独立索引 + 直连两套读法 | 单库方案改为 `NativeLibrarySync` 的读取实现 |
 
 ### 2.6 依赖规则
 
@@ -538,8 +544,8 @@ enum RecoveryAction {
 
 现状是每个模型自己持有 Task：
 
-- [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CloudBrowserModel.swift#L51-L124)：`scanTask`、`refreshLoopTask`、`thumbnailPrefetchTask`、`metadataFlushTask`、`analysisTask`、`metadataTask`、`peopleTask`、`healthTask`。
-- [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CatalogBrowserModel.swift#L143-L217)：`healthTask`、`globalSearchTask`、`calendarTask`、`thumbTask`、页面 `task`。
+- [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cloud/CloudBrowserModel.swift#L51-L124)：`scanTask`、`refreshLoopTask`、`thumbnailPrefetchTask`、`metadataFlushTask`、`analysisTask`、`metadataTask`、`peopleTask`、`healthTask`。
+- [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/CatalogBrowserModel.swift#L143-L217)：`healthTask`、`globalSearchTask`、`calendarTask`、`thumbTask`、页面 `task`。
 - `LibraryStore` 还有导入、压缩、分析、体检、刮削等任务。
 
 电视会新增 EPG 刷新、频道列表刷新、台标预取、直播重连；如果继续分散，任何“切换源 / 退出页面”都要手动取消一堆任务。
@@ -730,18 +736,18 @@ struct SourceNavigationState {
 | 单库方案：代码改造清单 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L719-L743) |
 | 单库方案：分阶段实施 | [metadata-refactor-plan.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/metadata-refactor-plan.md#L789-L810) |
 | 前一篇：多模式评估 | [multi-mode-architecture-2026-11.md](file:///Users/lijialong/Documents/gitlab/photos/docs/architecture/multi-mode-architecture-2026-11.md) |
-| 模式枚举 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Models.swift#L458-L591) |
-| 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Gallery/GalleryView.swift#L1343-L1449) |
-| 侧边栏分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L1311-L1447) |
-| 导航动作 | [LibraryStore+Organize.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Organize.swift#L10-L29) |
-| 标题与范围 | [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift#L10-L110) |
-| 云盘状态与任务 | [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CloudBrowserModel.swift#L51-L124) |
-| 资源状态与任务 | [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/CatalogBrowserModel.swift#L143-L217) |
-| 站点协议 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Catalog/CatalogClient.swift#L14-L57) |
-| 云盘统一调度 | [CloudProviders.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cloud/CloudProviders.swift#L914-L949) |
-| 播放源解析 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L2643-L2665) |
-| 播放钩子 | [LibraryStore+PlaybackHooks.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+PlaybackHooks.swift#L1-L101) |
+| 模式枚举 | [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/Models.swift#L458-L591) |
+| 内容页分发 | [GalleryView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Gallery/GalleryView.swift#L1343-L1449) |
+| 侧边栏分区 | [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift#L1311-L1447) |
+| 导航动作 | [LibraryStore+Organize.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Organize.swift#L10-L29) |
+| 标题与范围 | [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift#L10-L110) |
+| 云盘状态与任务 | [CloudBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Cloud/CloudBrowserModel.swift#L51-L124) |
+| 资源状态与任务 | [CatalogBrowserModel.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Catalog/CatalogBrowserModel.swift#L143-L217) |
+| 站点协议 | [CatalogClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Catalog/CatalogClient.swift#L14-L57) |
+| 云盘统一调度 | [CloudProviders.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cloud/CloudProviders.swift#L914-L949) |
+| 播放源解析 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L2643-L2665) |
+| 播放钩子 | [LibraryStore+PlaybackHooks.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+PlaybackHooks.swift#L1-L101) |
 | 播放内核进度 | [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L303-L355) |
-| 影院作用域 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L51-L54) |
-| 影院条目 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/CinemaModels.swift#L525-L649) |
-| 应用装配 | [PhotosCloneApp.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/App/PhotosCloneApp.swift#L48-L59) |
+| 影院作用域 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L51-L54) |
+| 影院条目 | [CinemaModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/CinemaModels.swift#L525-L649) |
+| 应用装配 | [PhotosCloneApp.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/App/LumaApp.swift#L48-L59) |

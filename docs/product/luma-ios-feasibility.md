@@ -41,10 +41,10 @@
 
 ### 2.2 数据与文件布局
 
-- 图库是标准 `.photoslibrary` 包，应用数据写在包内第一层：`database/PhotosClone.sqlite`、`originals/<UUID 首字符>/`、`resources/derivatives|renders|transcodes|backups`，见 [LibraryPaths.swift](../../Sources/PhotosClone/Services/Library/LibraryPaths.swift#L8-L35)。
-- 元数据表结构完整（`assets` / `folders` / `albums` / `album_assets` / `people` / `person_assets` / `asset_analysis` / `asset_overlays` / `system_analysis` / `derived_reports` / `cloud_assets` 等），见 [MetadataStore.swift](../../Sources/PhotosClone/Services/Library/MetadataStore.swift#L385-L590)。
-- 大图库已有分页下推能力：超过 5,000 张时按 600 张/页走 SQL 窗口，见 [LibraryStore.swift](../../Sources/PhotosClone/Store/LibraryStore.swift#L783) 与 [PhotoQuery.swift](../../Sources/PhotosClone/Domain/PhotoQuery.swift#L20-L45)。
-- 缩略图已有两级（`_q.jpg` 快速层 + `_1_105_c.jpeg`），见 [LibraryPaths.swift](../../Sources/PhotosClone/Services/Library/LibraryPaths.swift#L304-L325)。
+- 图库是标准 `.photoslibrary` 包，应用数据写在包内第一层：`database/PhotosClone.sqlite`、`originals/<UUID 首字符>/`、`resources/derivatives|renders|transcodes|backups`，见 [LibraryPaths.swift](../../Sources/LumaPersistence/LibraryPaths.swift#L8-L35)。
+- 元数据表结构完整（`assets` / `folders` / `albums` / `album_assets` / `people` / `person_assets` / `asset_analysis` / `asset_overlays` / `system_analysis` / `derived_reports` / `cloud_assets` 等），见 [MetadataStore.swift](../../Sources/LumaPersistence/MetadataStore.swift#L385-L590)。
+- 大图库已有分页下推能力：超过 5,000 张时按 600 张/页走 SQL 窗口，见 [LibraryStore.swift](../../Sources/Luma/Store/Library/LibraryStore.swift#L783) 与 [PhotoQuery.swift](../../Sources/LumaDomain/PhotoQuery.swift#L20-L45)。
+- 缩略图已有两级（`_q.jpg` 快速层 + `_1_105_c.jpeg`），见 [LibraryPaths.swift](../../Sources/LumaPersistence/LibraryPaths.swift#L304-L325)。
 
 这意味着服务端**不需要重新发明查询层**，把现有 `PhotoQuery → SQL` 结果序列化即可。
 
@@ -53,11 +53,11 @@
 | 依赖 | 当前用法 | iOS 可用性 | 结论 |
 |---|---|---|---|
 | AppKit（`NSImage`/`NSOpenPanel`/`NSWorkspace`） | 100 个文件 | 不可用 | 视图层重写；服务层做图像抽象 |
-| `Process` 调 ffmpeg | 视频转码、抽帧，见 [VideoSupport.swift](../../Sources/PhotosClone/Services/Media/VideoSupport.swift#L40-L63) | **禁止子进程** | 转码必须留在 Mac，或改集成 libav* |
+| `Process` 调 ffmpeg | 视频转码、抽帧，见 [VideoSupport.swift](../../Sources/Luma/Services/Media/VideoSupport.swift#L40-L63) | **禁止子进程** | 转码必须留在 Mac，或改集成 libav* |
 | `NetFS`（SMB） | 网盘 SMB 挂载 | 不可用 | iOS 不直连 SMB；走 Mac 代理 |
 | `Photos.sqlite` 只读解析 | 系统「照片」图库 | 仅 macOS | iOS 只能读 iPhone 自身相册 |
-| `LocalHLSServer` | 绑定 `127.0.0.1` 的 BSD socket 服务，见 [LocalHLSServer.swift](../../Sources/PhotosClone/Services/Video/LocalHLSServer.swift#L4-L54) | 可移植（需改 `0.0.0.0` + 鉴权 + Range） | 可演进为局域网媒体服务 |
-| `Network.framework`（`NWBrowser`） | SMB 的 Bonjour 发现，见 [SMBClient.swift](../../Sources/PhotosClone/Services/Cloud/SMBClient.swift#L29-L40) | 可用 | 直接复用发现范式 |
+| `LocalHLSServer` | 绑定 `127.0.0.1` 的 BSD socket 服务，见 [LocalHLSServer.swift](../../Sources/PlaybackCore/LocalHLSServer.swift#L4-L54) | 可移植（需改 `0.0.0.0` + 鉴权 + Range） | 可演进为局域网媒体服务 |
+| `Network.framework`（`NWBrowser`） | SMB 的 Bonjour 发现，见 [SMBClient.swift](../../Sources/Luma/Services/Cloud/SMBClient.swift#L29-L40) | 可用 | 直接复用发现范式 |
 | SQLite3 C API | 全量元数据 | 可用 | 数据层可移植 |
 | Vision / Core ML / AVFoundation / Core Image | 端侧识别、播放、编辑 | 可用 | 可移植，模型需按 iOS 重新打包 |
 | Keychain | 智能助手 API Key | 可用 | 直接复用 |
@@ -184,7 +184,7 @@
 
 ### 5.1 发现与配对
 
-1. Mac 启动服务后发布 Bonjour 服务：类型 `_luma._tcp`，TXT 记录包含 `proto=1`、`library=<图库名>`、`pair=required`。现有 [SMBClient.swift](../../Sources/PhotosClone/Services/Cloud/SMBClient.swift#L29-L40) 已证明 `NWBrowser` 在本工程的可用性。
+1. Mac 启动服务后发布 Bonjour 服务：类型 `_luma._tcp`，TXT 记录包含 `proto=1`、`library=<图库名>`、`pair=required`。现有 [SMBClient.swift](../../Sources/Luma/Services/Cloud/SMBClient.swift#L29-L40) 已证明 `NWBrowser` 在本工程的可用性。
 2. iOS 首次连接：Mac 主窗口显示 6 位配对码 → iOS `POST /v1/pair` → 下发 256 位设备令牌，存 Keychain。
 3. 传输层：TLS（Mac 生成自签名身份）；配对码同时作为证书指纹的短校验串，iOS 确认后固定 SPKI 哈希；令牌放 `Authorization: Bearer`。不建议退回明文 HTTP + HMAC，图库内容属于高隐私数据。
 4. 服务默认只监听局域网接口；提供「允许的设备」列表与逐个撤销；不默认开放外网。
@@ -196,7 +196,7 @@
 | GET | `/v1/info` | 协议版本、图库名、能力位、当前 revision | 新增 |
 | POST | `/v1/pair` | 配对，返回设备令牌 | 新增 |
 | GET | `/v1/sidebar` | 相簿 / 文件夹树 + 计数 + 封面 | `LibraryStore` 现有树结构 |
-| GET | `/v1/query` | 分页查询：`PhotoQuery` + `offset/limit` | [MetadataStore+Query.swift](../../Sources/PhotosClone/Services/Library/MetadataStore+Query.swift) |
+| GET | `/v1/query` | 分页查询：`PhotoQuery` + `offset/limit` | [MetadataStore+Query.swift](../../Sources/LumaPersistence/MetadataStore+Query.swift) |
 | GET | `/v1/thumb/{id}?w=200` | 缩略图，带 ETag | `ImageLoader.gridThumbnail` 生成 + 缓存 |
 | GET | `/v1/asset/{id}?variant=display&max=2600` | 服务端解码后的展示图（HEIC/RAW 转标准 JPEG） | `ImageLoader` + `RawSupport` |
 | GET/HEAD | `/v1/asset/{id}/original` | 原图，支持 `Range` | `LibraryPaths.sourceURL` |
@@ -209,7 +209,7 @@
 | GET | `/v1/people` | 人物列表与关系（只读） | `people` / `person_assets` |
 | POST | `/v1/imports` | 创建导入会话，返回缺失项 | 新增（包 `ImportService`） |
 | PUT | `/v1/imports/{sid}/items/{sha256}` | 分块上传单项 | 新增 |
-| POST | `/v1/imports/{sid}/commit` | 提交并生成缩略图/入库 | [ImportService.swift](../../Sources/PhotosClone/Services/Import/ImportService.swift#L20-L63) |
+| POST | `/v1/imports/{sid}/commit` | 提交并生成缩略图/入库 | [ImportService.swift](../../Sources/Luma/Services/Import/ImportService.swift#L20-L63) |
 | GET | `/v1/jobs/{id}` | 导入 / 转码进度 | 新增 |
 
 ### 5.3 大图库与缓存
@@ -235,7 +235,7 @@
 
 ### 5.6 多图库的现状限制
 
-[LibraryPaths.swift](../../Sources/PhotosClone/Services/Library/LibraryPaths.swift#L15-L16) 的 `root` 是全局静态状态，切换图库会改全局并写 bootstrap。因此 **P0 只能服务「Mac 当前打开的图库」**；要支持 iOS 同时选择多个图库，需要把 `LibraryPaths` / `MetadataStore` 从全局单例改成实例作用域（中等改造量，P5 再做）。
+[LibraryPaths.swift](../../Sources/LumaPersistence/LibraryPaths.swift#L15-L16) 的 `root` 是全局静态状态，切换图库会改全局并写 bootstrap。因此 **P0 只能服务「Mac 当前打开的图库」**；要支持 iOS 同时选择多个图库，需要把 `LibraryPaths` / `MetadataStore` 从全局单例改成实例作用域（中等改造量，P5 再做）。
 
 ---
 

@@ -2,7 +2,7 @@
 
 - 日期：2026-11-22
 - 状态：设计稿（部分已落地，2026-11-22 同步）
-- 范围：`Sources/PlaybackCore`、`Sources/PhotosClone/Services/Video`、`Sources/PhotosClone/Features/Viewer`、`Sources/PhotosClone/Features/Settings`
+- 范围：`Sources/PlaybackCore`、`Sources/Luma/Services/Video`、`Sources/Luma/Features/Viewer`、`Sources/Luma/Features/Settings`
 - 事实基线：仓库当前代码 + 发布包内置 ffmpeg 9.0.2（ffmpeg-full + libplacebo + MoltenVK）；回退静态包为 ffmpeg 8.0.git（libzimg，无 libplacebo）
 - 写作约束：本文只写「代码里有什么」「二进制实测到什么」和「按公开 API 能做到什么」；未实测的结论统一进入第 9 节，不写成既成事实
 
@@ -33,10 +33,10 @@
 | --- | --- | --- |
 | 视频运行时 | 发布包优先打包 ffmpeg-full 9.0.2 + libplacebo + MoltenVK（含全部 dylib）；缺失时回退静态 8.0.git | [build.sh](file:///Users/lijialong/Documents/gitlab/photos/build.sh#L105-L132)、`Vendor/ffmpeg-dv/VERSIONS.txt` |
 | 杜比视界 P5 | libplacebo 链应用 DOVI RPU（`apply_dolbyvision=1`），并在 GPU 内顺带缩放 | [PlaybackFilters.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackFilters.swift#L20-L37) |
-| Vulkan 初始化 | 子进程注入 `VK_ICD_FILENAMES`；启动 2 秒后后台预热一次 libplacebo 滤镜图 | [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift#L62-L92)、[FFmpegPrewarm.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/FFmpegPrewarm.swift#L1-L45) |
+| Vulkan 初始化 | 子进程注入 `VK_ICD_FILENAMES`；启动 2 秒后后台预热一次 libplacebo 滤镜图 | [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift#L62-L92)、[FFmpegPrewarm.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/FFmpegPrewarm.swift#L1-L45) |
 | 转码档位 | `TranscodeProfile` 按「宽 × 高 × 帧率」限制输出像素率，4K60 降到 1440p；码率随输出高度查表 | [TranscodeProfile.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/TranscodeProfile.swift#L1-L83) |
-| 播放 / 离线转码 | 两条链路都改用 `h264_videotoolbox` + `TranscodeProfile`；非 HDR 转码也按档位缩放 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L205-L242)、[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift#L795-L845) |
-| 杜比视界策略 | HDR 屏 `automatic` 保留 `dvh1` 交给系统解码；SDR 屏才映射。系统拒绝时按起流失败自动降级 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1308-L1338) |
+| 播放 / 离线转码 | 两条链路都改用 `h264_videotoolbox` + `TranscodeProfile`；非 HDR 转码也按档位缩放 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L205-L242)、[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift#L795-L845) |
+| 杜比视界策略 | HDR 屏 `automatic` 保留 `dvh1` 交给系统解码；SDR 屏才映射。系统拒绝时按起流失败自动降级 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1308-L1338) |
 | zscale 回退修复 | 色调映射前用 `setparams` 把探测到的色彩参数写回帧；修复 ffmpeg 9 下 `no path between colorspaces` | [PlaybackFilters.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackFilters.swift#L20-L58) |
 | 音频直通 | `copyableAudioCodecs` 已加入 `ac3 / eac3`；DTS / TrueHD 仍重编码 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L96-L100) |
 | 网络缓冲 | 省流 / 均衡 / 流畅三档；默认流畅；远端按实测吞吐自适应降档 / 恢复 | [BufferProfile.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/BufferProfile.swift)、[BufferAdaptationState.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/BufferAdaptationState.swift) |
@@ -155,16 +155,16 @@
 | readrate 本地 12 / 远端 6 | [StreamPlanner.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/StreamPlanner.swift#L125-L132) |
 | 远端 Range 代理：8MB 分块、预取 6、并发 6 | [RemoteRangeSource.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/RemoteRangeSource.swift#L20-L35) |
 | 卡顿自愈：12s 轻推、40s 重建流 | [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L230-L270) |
-| HDR 策略入口（含 DV P5 判断） | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1302-L1317) |
-| 离线转码已切 `h264_videotoolbox` + `TranscodeProfile` | [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift#L795-L838) |
-| 内置 ffmpeg 查找顺序与 MoltenVK 环境变量 | [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift#L45-L125) |
-| 启动后 libplacebo 预热 | [FFmpegPrewarm.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/FFmpegPrewarm.swift#L1-L45) |
+| HDR 策略入口（含 DV P5 判断） | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1302-L1317) |
+| 离线转码已切 `h264_videotoolbox` + `TranscodeProfile` | [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift#L795-L838) |
+| 内置 ffmpeg 查找顺序与 MoltenVK 环境变量 | [VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift#L45-L125) |
+| 启动后 libplacebo 预热 | [FFmpegPrewarm.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/FFmpegPrewarm.swift#L1-L45) |
 | 播放会话把帧率与源尺寸传给 `StreamRequest` | [PlaybackSession.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackSession.swift#L370-L385) |
-| 仅按帧率切刷新率，不动 HDR 模式 | [DisplayModeMatcher.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/DisplayModeMatcher.swift#L14-L61) |
-| 画面只有「适应 / 填充」 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1676-L1705) |
-| 内嵌字幕只挑「zh* / chi / zho / chs / cht / cn」，否则第一条 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1264-L1279) |
-| 外挂字幕取文件名最短者 | [SubtitleLoader.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Video/SubtitleLoader.swift#L20-L45) |
-| 在线字幕搜索语言写死 `zh-cn,zh-tw` | [OpenSubtitlesClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Cinema/OpenSubtitlesClient.swift#L85-L100) |
+| 仅按帧率切刷新率，不动 HDR 模式 | [DisplayModeMatcher.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Video/DisplayModeMatcher.swift#L14-L61) |
+| 画面只有「适应 / 填充」 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1676-L1705) |
+| 内嵌字幕只挑「zh* / chi / zho / chs / cht / cn」，否则第一条 | [VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1264-L1279) |
+| 外挂字幕取文件名最短者 | [SubtitleLoader.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Video/SubtitleLoader.swift#L20-L45) |
+| 在线字幕搜索语言写死 `zh-cn,zh-tw` | [OpenSubtitlesClient.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Cinema/OpenSubtitlesClient.swift#L85-L100) |
 | 探测结构里没有 `field_order`、字幕 `disposition`、`forced` | [PlaybackModels.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackModels.swift#L131-L163) |
 
 ---
@@ -173,9 +173,9 @@
 
 ### 2.1 现状
 
-- 探测层已经能拿到：`color_primaries / color_transfer / color_space / color_range / codec_tag / DOVI side data / dv_profile`；Matroska 的 DOVI 配置还会用 ffmpeg 读一次文件头补齐 profile（[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/VideoSupport.swift#L409-L468)）。
+- 探测层已经能拿到：`color_primaries / color_transfer / color_space / color_range / codec_tag / DOVI side data / dv_profile`；Matroska 的 DOVI 配置还会用 ffmpeg 读一次文件头补齐 profile（[VideoSupport.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/VideoSupport.swift#L409-L468)）。
 - 色调映射：PQ / HLG 用 `zscale → linear → tonemap=hable → bt709`；杜比视界只有 `libplacebo` 才会应用 RPU（[PlaybackFilters.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PlaybackCore/PlaybackFilters.swift#L5-L20)）。
-- 决策：`keepHDR` 直接保持原样；`toneMapSDR` 强制映射；`automatic` 在「DV P5 / 屏幕无 EDR」时映射（[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Viewer/VideoPlayback.swift#L1302-L1317)）。
+- 决策：`keepHDR` 直接保持原样；`toneMapSDR` 强制映射；`automatic` 在「DV P5 / 屏幕无 EDR」时映射（[VideoPlayback.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Viewer/VideoPlayback.swift#L1302-L1317)）。
 - 已知事实与约束：
   1. **发布包已内置 libplacebo**（ffmpeg-full 9.0.2 + MoltenVK），DV P5 走 `libplacebo=apply_dolbyvision=1`；只有回退到静态 8.0.git 时才没有 RPU 映射。
   2. 决策仍写在 `VideoPlayback.needsToneMapping`：DV 且无 libplacebo 时直接返回 false（保持原样并提示），不会烘错颜色。
@@ -272,13 +272,13 @@ photoID + burnSuffix + plan.signature + version
 
 | 文件 | 改动 | 状态 |
 | --- | --- | --- |
-| `Sources/PlaybackCore/HDRPlaybackPlan.swift`（新增） | 纯计划与矩阵，避免 UI 里散落 if | 未开始 |
+| `Sources/PlaybackCore/PlaybackModels.swift` | 纯计划与矩阵，避免 UI 里散落 if | 未开始 |
 | `Sources/PlaybackCore/StreamPlanner.swift` | tone map 链已按输出尺寸构造；`treatment` / `signature` 未加 | 部分 |
 | `Sources/PlaybackCore/VideoStreamSession.swift` | 缓存键加入签名；诊断日志记录计划原因 | 未开始 |
-| `Sources/PhotosClone/Services/Media/VideoSupport.swift` | 已内置 ffmpeg-full + MoltenVK 查找与环境注入；`max_cll / max_fall` 探测未加 | 部分 |
-| `Sources/PhotosClone/Features/Viewer/VideoPlayback.swift` | HDR 屏保留 DV、SDR 屏映射已落地；`needsToneMapping` 仍未抽到计划层 | 部分 |
-| `Sources/PhotosClone/Features/Settings/SettingsModels.swift` | `automatic` 文案已改为「HDR 屏保留、SDR 屏映射」 | 已落地 |
-| `Sources/PhotosClone/Services/Video/DisplayModeMatcher.swift` | 增加 `snapshot()` 返回 EDR 余量与当前模式 | 未开始 |
+| `Sources/Luma/Services/Media/VideoSupport.swift` | 已内置 ffmpeg-full + MoltenVK 查找与环境注入；`max_cll / max_fall` 探测未加 | 部分 |
+| `Sources/Luma/Features/Viewer/VideoPlayback.swift` | HDR 屏保留 DV、SDR 屏映射已落地；`needsToneMapping` 仍未抽到计划层 | 部分 |
+| `Sources/Luma/Features/Settings/SettingsModels.swift` | `automatic` 文案已改为「HDR 屏保留、SDR 屏映射」 | 已落地 |
+| `Sources/Luma/Services/Video/DisplayModeMatcher.swift` | 增加 `snapshot()` 返回 EDR 余量与当前模式 | 未开始 |
 
 ### 2.5 验收口径
 
@@ -379,9 +379,9 @@ photoID + burnSuffix + plan.signature + version
 | --- | --- | --- |
 | `Sources/PlaybackCore/TranscodeProfile.swift`（新增） | 像素率降档、码率表、`maxrate/bufsize` | 已落地 |
 | `Sources/PlaybackCore/StreamPlanner.swift` | 编码器与码率从 `profile` 读取 | 已落地 |
-| `Sources/PhotosClone/Services/Media/VideoSupport.swift` | 离线转码改用 `TranscodeProfile`；HDR 输出走 HEVC main10 | 部分（H.264 已切，HEVC 未做） |
-| `Sources/PhotosClone/Features/Settings/SettingsModels.swift` | 新增「转码质量 / 低功耗」设置 | 未开始 |
-| `Sources/PhotosClone/Features/Settings/CinemaSettingsSection.swift` | 设置项入口 | 未开始 |
+| `Sources/Luma/Services/Media/VideoSupport.swift` | 离线转码改用 `TranscodeProfile`；HDR 输出走 HEVC main10 | 部分（H.264 已切，HEVC 未做） |
+| `Sources/Luma/Features/Settings/SettingsModels.swift` | 新增「转码质量 / 低功耗」设置 | 未开始 |
+| `Sources/Luma/Features/Settings/CinemaSettingsSection.swift` | 设置项入口 | 未开始 |
 | `Tests/LumaCoreChecks/main.swift` | 降档、码率、tone map 链尺寸断言 | 已落地 |
 
 ### 3.4 验收口径
@@ -490,11 +490,11 @@ photoID + burnSuffix + plan.signature + version
 
 | 文件 | 改动 |
 | --- | --- |
-| `Sources/PlaybackCore/AudioPlaybackPlan.swift`（新增） | 逐轨决策 + 降混模式 + 语言排序 |
+| `Sources/PlaybackCore/PlaybackOutputOptions.swift` | 逐轨决策 + 降混模式 + 语言排序 |
 | `Sources/PlaybackCore/StreamPlanner.swift` | 使用逐轨编码参数；`var_stream_map` 支持混合直通 / 重编码 |
 | `Sources/PlaybackCore/VideoPlayerModel.swift` | 增加 `hasPlayableAudio` 观察，供回退判断 |
 | `Sources/PlaybackCore/PlaybackSession.swift` | 直通无音轨时触发一次 AAC 重建 |
-| `Sources/PhotosClone/Features/Settings/*` | 新增「音频输出：自动 / 立体声 / 保持多声道」 |
+| `Sources/Luma/Features/Settings/*` | 新增「音频输出：自动 / 立体声 / 保持多声道」 |
 
 ### 4.4 验收口径
 
@@ -566,11 +566,11 @@ photoID + burnSuffix + plan.signature + version
 | 文件 | 改动 |
 | --- | --- |
 | `Sources/PlaybackCore/PlaybackModels.swift` | `VideoProbe` 增加 `fieldOrder / isInterlaced` |
-| `Sources/PhotosClone/Services/Media/VideoSupport.swift` | ffprobe 解析 `field_order`；可选 `idet` 采样 |
-| `Sources/PlaybackCore/VideoTreatment.swift`（新增） | 去隔行 / 裁剪参数与签名 |
+| `Sources/Luma/Services/Media/VideoSupport.swift` | ffprobe 解析 `field_order`；可选 `idet` 采样 |
+| `Sources/PlaybackCore/PlaybackFilters.swift` | 去隔行 / 裁剪参数与签名 |
 | `Sources/PlaybackCore/StreamPlanner.swift` | 滤镜链接入 `bwdif` |
-| `Sources/PhotosClone/Features/Viewer/VideoPlayback.swift` | `playerFrame` 支持拉伸 / 裁剪 / 比例预设 |
-| `Sources/PhotosClone/Features/Settings/*` | 「去隔行：自动 / 总是 / 关闭」「画面比例默认值」 |
+| `Sources/Luma/Features/Viewer/VideoPlayback.swift` | `playerFrame` 支持拉伸 / 裁剪 / 比例预设 |
+| `Sources/Luma/Features/Settings/*` | 「去隔行：自动 / 总是 / 关闭」「画面比例默认值」 |
 
 ### 5.5 验收口径
 
@@ -668,10 +668,10 @@ photoID + burnSuffix + plan.signature + version
 | `Sources/PlaybackCore/StreamPlanner.swift` | 远端 readrate 从档位读取 | 已落地 |
 | `Sources/PlaybackCore/RemoteRangeSource.swift` | 分块 / 预取 / 并发从档位注入；上报吞吐；自适应调整预取 | 已落地 |
 | `Sources/PlaybackCore/VideoStreamSession.swift` | 提前量阈值、吞吐采样、码率估算与档位切换；起播前攒 4–8 秒缓冲 | 已落地 |
-| `Sources/PhotosClone/Services/Media/VideoSupport.swift` | 网络卷 MKV / AVI 跳过 AVFoundation 探测；ffprobe 限 `-probesize 5M -analyzeduration 1s`，远程超时 15s | 已落地 |
+| `Sources/Luma/Services/Media/VideoSupport.swift` | 网络卷 MKV / AVI 跳过 AVFoundation 探测；ffprobe 限 `-probesize 5M -analyzeduration 1s`，远程超时 15s | 已落地 |
 | `Sources/PlaybackCore/VideoPlayerModel.swift` | 前向缓冲可配置、可在线调整 | 已落地 |
 | `Sources/PlaybackCore/PlaybackSession.swift` | 自适应结果同步到播放器前向缓冲 | 已落地 |
-| `Sources/PhotosClone/Features/Settings/*` | 网络缓冲四选一「自适应 / 流畅 / 均衡 / 省流」，默认流畅 | 已落地 |
+| `Sources/Luma/Features/Settings/*` | 网络缓冲四选一「自适应 / 流畅 / 均衡 / 省流」，默认流畅 | 已落地 |
 
 ### 6.4 验收口径
 
@@ -764,13 +764,13 @@ score = 语言排名权重 + 来源权重 + forced 权重 + default 权重
 
 | 文件 | 改动 |
 | --- | --- |
-| `Sources/LumaCore/SubtitleLanguage.swift`（新增） | 语言归一化与打分，纯函数 |
+| `Sources/PlaybackCore/SubtitlePreference.swift` | 语言归一化与打分，纯函数 |
 | `Sources/PlaybackCore/SubtitlePreference.swift`（新增） | 偏好模型与默认值 |
-| `Sources/PhotosClone/Services/Video/SubtitleLoader.swift` | 返回候选列表 |
-| `Sources/PhotosClone/Features/Viewer/VideoPlaybackUI.swift` | 候选选择、手动记忆 |
-| `Sources/PhotosClone/Features/Viewer/VideoPlayback.swift` | 自动挂载改为偏好引擎 |
-| `Sources/PhotosClone/Services/Cinema/OpenSubtitlesClient.swift` | 语言参数从偏好读取 |
-| `Sources/PhotosClone/Features/Settings/*` | 语言优先级列表编辑（拖拽排序） |
+| `Sources/Luma/Services/Video/SubtitleLoader.swift` | 返回候选列表 |
+| `Sources/Luma/Features/Viewer/VideoPlaybackUI.swift` | 候选选择、手动记忆 |
+| `Sources/Luma/Features/Viewer/VideoPlayback.swift` | 自动挂载改为偏好引擎 |
+| `Sources/Luma/Services/Cinema/OpenSubtitlesClient.swift` | 语言参数从偏好读取 |
+| `Sources/Luma/Features/Settings/*` | 语言优先级列表编辑（拖拽排序） |
 
 ### 7.4 验收口径
 

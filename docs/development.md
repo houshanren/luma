@@ -221,7 +221,7 @@ ViewSupport        WindowAccessor
 - App 侧桥接：`Store/Shared/LibraryPhotoGridBridge.swift` 把 `LibraryStore` / `AppSettings` / `SelectionModel` 的值与动作填进 `PhotoGridHost`，由 `LumaApp` 在根视图注入一次；右键菜单实现留在 App（`UI/Components/PhotoContextMenu.swift`）。
 - 依赖 Store 的界面胶水仍留在 `UI/Platform/`：`PhotoPicker`（注入 `LibraryStore`）、`PrintSupport`（依赖 `ImageLoader`）。
 
-### 4.3.4 `Sources/LumaMemories`（独立 target，4 个文件）
+### 4.3.4 `Sources/LumaMemories`（独立 target，6 个文件）
 
 ```
 Memories        MemoryExporter            MemoryFrameLoader

@@ -67,9 +67,9 @@
 
 | 通路 | 数据位置 | 代码 |
 | --- | --- | --- |
-| 拾光自建图库 | `database/PhotosClone.sqlite` 的 `assets / albums / folders / people / settings` | [MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/MetadataStore.swift#L356-L558) |
-| 官方照片图库 | 只读 `database/Photos.sqlite` + 旁挂 `PhotosClone.sqlite` 的 `asset_overlays` | [LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/LibraryPaths.swift#L70)、[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemLibrary.swift#L490-L549) |
-| 系统图库索引 | 应用目录下的 `SystemIndex-*.sqlite`，或直连 `Photos.sqlite` | [SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex.swift#L32-L45)、[SystemIndex+Direct.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex+Direct.swift#L12-L33) |
+| 拾光自建图库 | `database/PhotosClone.sqlite` 的 `assets / albums / folders / people / settings` | [MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/MetadataStore.swift#L356-L558) |
+| 官方照片图库 | 只读 `database/Photos.sqlite` + 旁挂 `PhotosClone.sqlite` 的 `asset_overlays` | [LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/LibraryPaths.swift#L70)、[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemLibrary.swift#L490-L549) |
+| 系统图库索引 | 应用目录下的 `SystemIndex-*.sqlite`，或直连 `Photos.sqlite` | [SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex.swift#L32-L45)、[SystemIndex+Direct.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex+Direct.swift#L12-L33) |
 
 > 上表是现状。重构后 Luma 可写库统一为 `database/PhotosLuma.sqlite`；旧 `PhotosClone.sqlite` 不读取、不迁移，改名隔离后保留或删除。
 
@@ -77,8 +77,8 @@
 
 - 拾光图库走 `photos`、`albums`、`folders`。
 - 系统图库走 `systemPhotos`、`systemAlbums`、`systemFolders`、`systemIndex`。
-- 侧边栏在原生库时直接换一棵树（[SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L43-L150)）。
-- 大量操作通过 `isSystemScope` / `isNativeContainer` 分支（[LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift#L95-L102)、[LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift#L256)）。
+- 侧边栏在原生库时直接换一棵树（[SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift#L43-L150)）。
+- 大量操作通过 `isSystemScope` / `isNativeContainer` 分支（[LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift#L95-L102)、[LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift#L256)）。
 
 ### 1.2 问题
 
@@ -543,12 +543,12 @@ struct LibraryCapabilities {
 
 对应代码：
 
-- 写回门槛：[LibraryStore+SystemAlbums.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemAlbums.swift#L14-L34)。
-- 收藏 / 隐藏：[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemLibrary.swift#L809-L881)。
-- 相簿增删改与排序：[LibraryStore+SystemAlbums.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemAlbums.swift#L61-L187)。
-- 美化写回：[LibraryStore+Beauty.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Beauty.swift#L608-L659)。
-- 体检清理相似：[LibraryStore+Health.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Health.swift#L348-L378)。
-- PhotoKit 基础封装：[PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/PhotoKitBridge.swift#L51-L180)。
+- 写回门槛：[LibraryStore+SystemAlbums.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemAlbums.swift#L14-L34)。
+- 收藏 / 隐藏：[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemLibrary.swift#L809-L881)。
+- 相簿增删改与排序：[LibraryStore+SystemAlbums.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemAlbums.swift#L61-L187)。
+- 美化写回：[LibraryStore+Beauty.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Beauty.swift#L608-L659)。
+- 体检清理相似：[LibraryStore+Health.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Health.swift#L348-L378)。
+- PhotoKit 基础封装：[PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/PhotoKitBridge.swift#L51-L180)。
 
 #### 4.7.6 本次重构需要补的 PhotoKit 能力
 
@@ -720,18 +720,18 @@ store.canOverlayMetadata
 
 | 模块 | 现状 | 改造 |
 | --- | --- | --- |
-| [LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/LibraryPaths.swift) | 同时维护 `metadataFile`、`systemIndexFile`、`systemThumbs` | 只保留一个 Luma 可写库路径 `PhotosLuma.sqlite`；移除 `SystemIndex-*.sqlite`；缓存目录收敛到库内 `resources/` |
-| [MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/MetadataStore.swift) | `assets`、`asset_overlays`、`system_analysis`、`cloud_*` 分散 | 新建 `PhotosLuma.sqlite`；旧 `PhotosClone.sqlite` 不读取、改名隔离；升级 schema v7；建 `luma_*` 表 |
-| [SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex.swift) | 独立索引库 / 直连模式 | 改为 `NativeLibrarySync`：把 Photos.sqlite 同步进 `luma_assets`；删除独立索引文件 |
-| [SystemIndex+Direct.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex+Direct.swift) | 直连查询 `Photos.sqlite` | 保留为同步器的读取实现，不再作为第二套浏览模型 |
-| [SystemPhotosLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemPhotosLibrary.swift) | 生成 `SystemLibrarySnapshot` | 合并到 NativeLibrarySync，输出统一的 `[PhotoItem]` / 分页查询 |
-| [LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemLibrary.swift) | `systemLibraryPath`、`system_libraries`、连接/切换 | 拆成 `CurrentLibrary`、`LinkedLibraries`、`NativeSync`、`NativeWrite` |
-| [LibraryStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore.swift) | `photos` 与 `systemPhotos` 两套状态 | 一个资产源；过渡期保留计算别名 |
-| [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift) | `isSystemScope` 分支 50+ 处 | 改为统一查询 + 能力判断；Scope 只用于导航 |
-| [LibraryStore+Selection.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Selection.swift) / Deletion / Organize / Intelligence / Beauty / Health | 按 scope 分叉 | 统一 Repository；按能力选择原生或本地 |
-| [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift) | `isNativeContainer` 分支 | 统一当前图库树；链接图库分区复用现有行样式 |
-| [PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/PhotoKitBridge.swift) | 编辑、删除、收藏、相簿 | 增加导入、文件夹、ChangeObserver；补齐能力检测 |
-| [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Domain/Models.swift) | `PhotoSource`、`SidebarItem.system*`、`PinnedSidebarItem.system*` | 内部改为 `origin` + 通用 scope；旧 case 先保留转发 |
+| [LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/LibraryPaths.swift) | 同时维护 `metadataFile`、`systemIndexFile`、`systemThumbs` | 只保留一个 Luma 可写库路径 `PhotosLuma.sqlite`；移除 `SystemIndex-*.sqlite`；缓存目录收敛到库内 `resources/` |
+| [MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/MetadataStore.swift) | `assets`、`asset_overlays`、`system_analysis`、`cloud_*` 分散 | 新建 `PhotosLuma.sqlite`；旧 `PhotosClone.sqlite` 不读取、改名隔离；升级 schema v7；建 `luma_*` 表 |
+| [SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex.swift) | 独立索引库 / 直连模式 | 改为 `NativeLibrarySync`：把 Photos.sqlite 同步进 `luma_assets`；删除独立索引文件 |
+| [SystemIndex+Direct.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex+Direct.swift) | 直连查询 `Photos.sqlite` | 保留为同步器的读取实现，不再作为第二套浏览模型 |
+| [SystemPhotosLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemPhotosLibrary.swift) | 生成 `SystemLibrarySnapshot` | 合并到 NativeLibrarySync，输出统一的 `[PhotoItem]` / 分页查询 |
+| [LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemLibrary.swift) | `systemLibraryPath`、`system_libraries`、连接/切换 | 拆成 `CurrentLibrary`、`LinkedLibraries`、`NativeSync`、`NativeWrite` |
+| [LibraryStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore.swift) | `photos` 与 `systemPhotos` 两套状态 | 一个资产源；过渡期保留计算别名 |
+| [LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift) | `isSystemScope` 分支 50+ 处 | 改为统一查询 + 能力判断；Scope 只用于导航 |
+| [LibraryStore+Selection.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Selection.swift) / Deletion / Organize / Intelligence / Beauty / Health | 按 scope 分叉 | 统一 Repository；按能力选择原生或本地 |
+| [SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift) | `isNativeContainer` 分支 | 统一当前图库树；链接图库分区复用现有行样式 |
+| [PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/PhotoKitBridge.swift) | 编辑、删除、收藏、相簿 | 增加导入、文件夹、ChangeObserver；补齐能力检测 |
+| [Models.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaDomain/Models.swift) | `PhotoSource`、`SidebarItem.system*`、`PinnedSidebarItem.system*` | 内部改为 `origin` + 通用 scope；旧 case 先保留转发 |
 
 新增核心类型：
 
@@ -873,11 +873,11 @@ Apple Photos 的 `Photos.sqlite` 是 Core Data 持久化存储，不是公开 AP
 
 ## 附录 B：当前代码证据
 
-- 两个库文件路径：`metadataFile` 与 `systemIndexFile`（[LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/LibraryPaths.swift#L54-L70)）。
-- 两套数据库 schema：`assets / asset_overlays / system_analysis / cloud_*`（[MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/MetadataStore.swift#L356-L558)）。
-- 系统图库索引与直连：`SystemIndex`（[SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex.swift#L32-L45)）、`SystemDirectSource`（[SystemIndex+Direct.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/SystemIndex+Direct.swift#L12-L33)）。
-- 切换/连接系统图库：`switchLibraryContainer`、`connectSystemLibrary`、`system_library_path`、`system_libraries`（[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemLibrary.swift#L490-L549)、[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+SystemLibrary.swift#L624-L687)）。
-- 侧边栏原生分支（[SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L43-L150)）。
-- 只读范围判断（[LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Store/LibraryStore+Query.swift#L256)）。
-- PhotoKit 写回能力（[PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Media/PhotoKitBridge.swift#L51-L180)）。
-- 原生库识别依赖 `database/Photos.sqlite` 是否存在（[LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/PhotosClone/Services/Library/LibraryPaths.swift#L190-L198)）。
+- 两个库文件路径：`metadataFile` 与 `systemIndexFile`（[LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/LibraryPaths.swift#L54-L70)）。
+- 两套数据库 schema：`assets / asset_overlays / system_analysis / cloud_*`（[MetadataStore.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/MetadataStore.swift#L356-L558)）。
+- 系统图库索引与直连：`SystemIndex`（[SystemIndex.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex.swift#L32-L45)）、`SystemDirectSource`（[SystemIndex+Direct.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/SystemIndex+Direct.swift#L12-L33)）。
+- 切换/连接系统图库：`switchLibraryContainer`、`connectSystemLibrary`、`system_library_path`、`system_libraries`（[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemLibrary.swift#L490-L549)、[LibraryStore+SystemLibrary.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+SystemLibrary.swift#L624-L687)）。
+- 侧边栏原生分支（[SidebarView.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Features/Sidebar/SidebarView.swift#L43-L150)）。
+- 只读范围判断（[LibraryStore+Query.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Store/Library/LibraryStore+Query.swift#L256)）。
+- PhotoKit 写回能力（[PhotoKitBridge.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/Luma/Services/Media/PhotoKitBridge.swift#L51-L180)）。
+- 原生库识别依赖 `database/Photos.sqlite` 是否存在（[LibraryPaths.swift](file:///Users/lijialong/Documents/gitlab/photos/Sources/LumaPersistence/LibraryPaths.swift#L190-L198)）。

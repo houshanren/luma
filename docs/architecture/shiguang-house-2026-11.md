@@ -8,6 +8,11 @@
 | 前置文档 | [iOS 版可行性报告](../product/luma-ios-feasibility.md)、[模块化与公共抽象建议](modularization-abstraction-2026-11.md)、[多模式内容框架评估](multi-mode-architecture-2026-11.md) |
 | 核心结论 | 产品拆成**记忆域**与**内容域**；记忆域用「一个资产表 + 一张来源出现表」承载所有个人影像；手机是只读挂载源，原图默认不落盘、按需流式读取；不接任何云厂商账号 API |
 
+> **当前落地情况（2026-11-26 核对）**
+>
+> - **尚未开始**：`asset_sources` 表不存在；`SourceKind` 仍是 5 个（`library` / `cloudMount` / `cinemaFeed` / `catalogSite` / `iptv`），没有 `deviceLibrary` / `messaging` / `webArchive` / `personalCloud`。
+> - 本文仍是设计稿，§8 的 P0–P3 均未进入实施；动工前以 §8 分期与 §9 改动清单为准。
+
 ---
 
 ## 0. 一句话
@@ -23,7 +28,7 @@
 | 现象 | 代码事实 | 后果 |
 | --- | --- | --- |
 | 资产没有来源概念 | `assets` 表只有 `filename / content_hash / perceptual_hash`，没有 `source_id` | 无法回答「这张照片是从哪来的」「来源断了怎么撤」 |
-| 云盘照片另存一套 | `cloud_assets` 与 `assets` 互不相通，见 [MetadataStore.swift](../../Sources/PhotosClone/Services/Library/MetadataStore.swift#L653) | 网盘里的老照片永远进不了主时间线 |
+| 云盘照片另存一套 | `cloud_assets` 与 `assets` 互不相通，见 [MetadataStore.swift](../../Sources/LumaPersistence/MetadataStore.swift#L653) | 网盘里的老照片永远进不了主时间线 |
 | 只有当前图库能写 | `SourceKind.ownsWriteSession` 仅 `library` 为真 | 所有新来源都被迫伪装成「图库」 |
 | 同一张照片多处存在 | 去重靠 `content_hash` 单键 | 只能合并文件，不能记录「它同时出现在微信和 NAS」 |
 | 侧边栏层级扁平 | 一级分区只有图库 / 云盘 / 资源 / 影院 / 电视 | 来源一多就只能平铺，语义断裂 |
@@ -281,7 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 
 ### 4.2 改动：`assets`
 
-现有 `content_hash` / `perceptual_hash` 已经具备（见 [MetadataStore.swift](../../Sources/PhotosClone/Services/Library/MetadataStore.swift#L717-L723)），去重基础不动，只补三列：
+现有 `content_hash` / `perceptual_hash` 已经具备（见 [MetadataStore.swift](../../Sources/LumaPersistence/MetadataStore.swift#L717-L723)），去重基础不动，只补三列：
 
 | 列 | 用途 |
 | --- | --- |
@@ -339,38 +344,38 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 | `parent_name*` | 母公司/集团（预留：官网 / 维基） |
 | `status*` | 活跃/停业（预留：官网） |
 
-现状：464 个厂商；14 条简介、42 个官网、**34 个真实 Logo**（`fetch_studio_logos.py` 从官网 og:image / apple-touch-icon 取得，8 个站点 403 跳过）、45 条番号前缀（只覆盖 13 个厂商）。
+现状：498 个厂商；14 条简介、42 个官网、**34 个真实 Logo**（`fetch_studio_logos.py` 从官网 og:image / apple-touch-icon 取得，8 个站点 403 跳过）、45 条番号前缀（只覆盖 13 个厂商）。
 
 #### 新增表
 
 | 表 | 关键字段 | 用途 |
 | --- | --- | --- |
-| `external_ids*` | `entity_type`、`entity_id`、`source`、`external_id`、`url`、`updated_at` | 跨站 ID，避免继续靠名字模糊匹配；现有 29,957 条（JavBus 14,049 / 日文维基 3,905 / JavRate 3,693 / Instagram 2,644 / Twitter 2,197 / 微博 2,195 / 中文维基 736 / DMM 240 / XCITY 213 / 抖音 65 / B 站 15 / 小红书 5）；`(source, external_id)` 已无重复 |
-| `person_links*` | `actress_id`、`source`、`kind`、`url`、`title`、`published_at` | 人物主页 / 社交链接；现有 32,207 条（作品已统一进 `works`，两处不再双写） |
+| `external_ids*` | `entity_type`、`entity_id`、`source`、`external_id`、`url`、`updated_at` | 跨站 ID，避免继续靠名字模糊匹配；现有 40,970 条（JavBus 14,915 / Twitter 5,259 / Instagram 4,827 / Wikidata 4,489 / 日文维基 3,907 / JavRate 3,692 / 微博 2,185 / 中文维基 725 / YouTube 433 / DMM 240 / XCITY 213 / 抖音 65 / B 站 15 / 小红书 5）；`(source, external_id)` 已无重复 |
+| `person_links*` | `actress_id`、`source`、`kind`、`url`、`title`、`published_at` | 人物主页 / 社交链接；现有 43,431 条（作品已统一进 `works`，两处不再双写） |
 | `person_studios*` | `actress_id`、`studio_id`、`kind`、`source` | 人物 ↔ 事务所/写真机构/专属厂牌；现有 raw 证据不足，暂空 |
-| `works*` | `content_id`、`dvd_id`、`code`、`kind`、`title_ja/zh/en`、`release_date`、`runtime_min`、`director`、`studio_id`、`label`、`series`、`genres`、`cover_url`、`sample_urls`、`trailer_url`、`source_url`、`rating`、`popularity` | 作品底座（唯一来源）；现有 132,018 条国内套图/写真（秀色女神 22,861 / xiurenwang 18,060 / coshe 17,734 / cosmeitu 14,633 / cos2cy 13,179 / tuquge 10,390 / costuan 6,287 / 狐樱社 6,151 / sluyu 5,993 / 影语阁 5,408 / 52cos 3,753 / tuinvlang 2,836 / coscd 1,412 / kkkhai 676 / 图罗记 614 / qiliguan 587 / 潮图集 368 / 虾仁猪心 280 / N5次元 253 / 喵风向 240 / 元气领域 234 / 乐妖图 69），日本作品待 R18/DMM 导入 |
-| `work_actresses*` | `work_id`、`actress_id` | 作品 ↔ 人物；现有 132,398 条；双向索引（PK `work_id,actress_id` + `idx_work_actresses_actress`），详情页「TA 的作品」走索引不再全表扫 |
-| `person_avatars*` | `actress_id`（主键）、`base64` | 头像独立表：现有 19,849 条 96×96 JPEG base64；主表只留 `has_avatar` 标志，按主键单条取，人物名字典启动不再整库加载大文本 |
-| `studio_avatars*` | `studio_id`（主键）、`base64` | 厂牌头像独立表：现有 464 条（34 真实 logo + 430 品牌字母头像） |
-| `person_tags*` | `actress_id`、`tag` | 标签关联表：现有 52,041 个「人-标签」对；按角色/IP 筛选走 `idx_person_tags_tag`，不再靠 `tags` JSON 全表 LIKE。`actresses.tags` 保留给 app 全量加载 |
-| `actress_search*`（FTS5） | `text`（rowid = `actress_id`） | 名字搜索虚拟表：汉字按单字切分建索引，2 字中文名也能命中（trigram 对 2 字无效）；现有 27,021 行，查询用 `MATCH '"水" AND "淼"'` |
+| `works*` | `content_id`、`dvd_id`、`code`、`kind`、`title_ja/zh/en`、`release_date`、`runtime_min`、`director`、`studio_id`、`label`、`series`、`genres`、`cover_url`、`sample_urls`、`trailer_url`、`source_url`、`rating`、`popularity` | 作品底座（唯一来源）；现有 148,516 条国内套图/写真（艺图湾 38,207 / 秀色女神 20,918 / xiurenwang 17,903 / coshe 17,573 / myxiuren 8,534 / cos2cy 7,383 / cosmeitu 6,026 / tuquge 5,665 / 狐樱社 4,265 / sluyu 4,171 / costuan 3,612 / 影语阁 3,478 / 52cos 3,142 / tuinvlang 1,816 / jvheku 1,798 / coscd 1,402 / kkkhai 668 / 其余长尾），日本作品待 R18/DMM 导入 |
+| `work_actresses*` | `work_id`、`actress_id` | 作品 ↔ 人物；现有 150,930 条；双向索引（PK `work_id,actress_id` + `idx_work_actresses_actress`），详情页「TA 的作品」走索引不再全表扫 |
+| `person_avatars*` | `actress_id`（主键）、`base64` | 头像独立表：现有 19,968 条 96×96 JPEG base64；主表只留 `has_avatar` 标志，按主键单条取，人物名字典启动不再整库加载大文本 |
+| `studio_avatars*` | `studio_id`（主键）、`base64` | 厂牌头像独立表：现有 498 条（34 真实 logo + 464 品牌字母头像） |
+| `person_tags*` | `actress_id`、`tag` | 标签关联表：现有 56,497 个「人-标签」对（160 种标签，其中角色/IP 468 条）；按角色/IP 筛选走 `idx_person_tags_tag`，不再靠 `tags` JSON 全表 LIKE。`actresses.tags` 保留给 app 全量加载 |
+| `actress_search*`（FTS5） | `text`（rowid = `actress_id`） | 名字搜索虚拟表：汉字按单字切分建索引，2 字中文名也能命中（trigram 对 2 字无效）；现有 31,912 行，查询用 `MATCH '"水" AND "淼"'` |
 
 #### 本轮实际写入
 
 | 指标 | 数量 |
 | --- | ---: |
-| 人物 | 27,021 |
-| 厂商 | 464 |
+| 人物 | 31,912 |
+| 厂商 | 498 |
 | 爱好 | 9,249 |
-| 生日（精度 day / year） | 15,635 / 553 |
-| 血型 / 出身地 / 出道年 / 事务所 / 官网 | 6,614 / 13,100 / 3,279 / 1,712 / 1,952 |
-| 头像（独立表） | `person_avatars` 19,849 条 + `studio_avatars` 464 条（厂牌：34 真实 logo + 430 品牌字母头像） |
-| 标签种类 | 157 |
-| 角色/IP 标签 | 501 |
-| 跨站 ID | 29,957 |
-| 人物链接 | 32,207（主页/社交；作品已并入 works） |
-| 作品（国内套图/写真） | 132,018 |
-| 作品 ↔ 人物 | 132,398 |
+| 生日（精度 day / year） | 19,314 / 553 |
+| 血型 / 出身地 / 出道年 / 事务所 / 官网 | 6,615 / 13,101 / 3,279 / 1,712 / 3,038 |
+| 头像（独立表） | `person_avatars` 19,968 条 + `studio_avatars` 498 条（厂牌：34 真实 logo + 464 品牌字母头像） |
+| 标签种类 | 160 |
+| 角色/IP 标签 | 468 |
+| 跨站 ID | 40,970 |
+| 人物链接 | 43,431（主页/社交；作品已并入 works） |
+| 作品（国内套图/写真） | 148,516 |
+| 作品 ↔ 人物 | 150,930 |
 | 厂牌 Logo | 34 |
 
 本轮最后两道工序是**同名重复人物合并**：其一，JavBus 演员改名后同一个人会落成两条（旧名页带括号注记全名、新名页剥括号现用名，日文名互换导致常规合并被「日文名冲突」规则挡下），`build_catalog_db.py` 新增 `merge_rename_twins` 按「剥掉括号段后的归一键」连边合并，地区或生日冲突的一律不并（保护同名不同人）。两次调用（`consolidate_actresses` 后 + `fix_script_regions` 展示名定型后）共合并 73 条，人物 26,470 → 26,397；剥括号归一后的重名组 91 → 30 组，剩余每组都带地区或生日冲突证据（如 `Yuna` korea/china、`愛染恭子` 生日差 28 年），无冲突未合组为 0。其二，**大陆人物跨源同名收敛**：国产写真模特在微博 / 秀色女神 / 萌萌社等源各留一版艺名（中英混写「水淼aqua vs 水淼」、站名前缀「模范模特方子萱 vs 方子萱」、相册艺名 vs 微博真名「果儿 vs 张杨果而」），全名归一对不上、`merge_domestic_variants` 的 3 字变体键又收不掉 2 字名；新增 `merge_cn_variants` 按 CJK 核心归一 + xsnvshen 相册封面同 URL（每人唯一的 album id 是人物指纹，公共图床假信号不算）+ 生日一致收敛，生日/身高/三围冲突一律不并，共收敛 113 条（「果儿 / 果儿Victoria / 果儿celia」三个生日不同正确保留三人，日本区 17,763 分毫未动），人物 26,397 → 26,284。
@@ -390,7 +395,9 @@ CREATE INDEX IF NOT EXISTS idx_asset_sources_origin ON asset_sources(origin_kind
 说明：`ruby` 列已建但解析期未取到（日文维基抓取只存了解析结果，没留原 wikitext），后续接 DMM 读音或重抓一次页面正文即可填；`person_studios` 等机构/模特页抓取后再写，不用现有标签硬凑关系；日本这边 `status` 只有 444 条，是行文推断，非事务所权威状态。维基「公式サイト」里指向 DMM / XCITY / 新闻稿的链接不算官方站，但其中的演员 ID 已抽出来写进 `external_ids`（DMM 240 / XCITY 213）。
 国内部分是 2026-11-25 第三～六轮补录：新增 `cn_profiles_web*.json`（COS社 / 吾爱cos / 秀人 / coser喵 / 泡面站 / 梗语百科 / 影语阁 / 乐妖图 / 图罗记 / 喵风向 / 元气领域 / 虾仁猪心 / 狐樱社 / 潮图集 / N5次元 / cos2cy / sluyu / 女神空 / costuan / tuquge / tuinvlang / qiliguan / fulill 共 23 站，另加秀人网镜像 xiurenwang 为第 24 站）与 `cn_profiles_manual*.json`（27 位重点人物人工核对），作品目录来自各站合集页；第六轮另引入秀色女神全站档案 `cn_profiles_xsnvshen.json`（11,060 位结构化档案 + 2.3 万条作品，是本轮大陆字段覆盖率跃升的主来源）。这些站自己标注「公开资料整合，仅供参考」，所以每条都保留 `source` 与 `source_url`。SEO 标题站一律用「库内姓名反查标题」的方式匹配，只补已有条目、不新增来历不明的人；秀色女神是结构化资料页，直接入档；秀人网镜像以站方标签定人名（标签是真人名，套名与 cosplay 角色名不进标签），因此可以直接入档新增。
 
-2026-11-26 又做了一轮新源勘探（只探测可达性与数据结构，未抓取）：Wikidata SPARQL（9,191 位女性成人演员，生日/身高/社交覆盖高）、jvheku（韩系 web pictorial 4.28 万篇）、xiurenz（微密圈约 600 名网红）、myxiuren（约 150 位新模特）、yituwan（100+ 写真机构）等可用；R18.dev dump 仍受 403/SSL 限制。**本轮不涉及 schema 变更**，只是后续 `actresses` / `works` / `studios` 的增量来源，实测规模、去重规则与优先级见 [资料库数据体检与补全方案 §4.15](../catalog/catalog-data-enrichment-2026-11.md)。
+2026-11-26 又做了一轮新源勘探（只探测可达性与数据结构，未抓取）：Wikidata SPARQL（9,191 位女性成人演员，生日/身高/社交覆盖高）、jvheku（韩系 web pictorial 4.28 万篇）、xiurenz（微密圈约 600 名网红）、myxiuren（约 150 位新模特）、yituwan（100+ 写真机构）等可用；R18.dev dump 仍受 403/SSL 限制。**勘探不涉及 schema 变更**，实测规模、去重规则与优先级见 [资料库数据体检与补全方案 §4.15](../catalog/catalog-data-enrichment-2026-11.md)。
+
+随后按 P0+P1 落地抓取并重建：Wikidata 6,972 条、myxiuren 591 人、xiurenz 1,181 人、jvheku 609 人、yituwan 3,809 人 + 113 机构、七图社 1,381 人、颜蜜社 1,112 人；人物 27,021 → **31,912**，作品 132,018 → **148,516**，跨站 ID → **40,970**，链接 → **43,431**，头像 → **19,968**。作品去重在本轮改为「**必须同一 actress_id** + NO. 号分桶 + 归一标题相似度 + 共享人名/套名/日期」四重约束（同人物去重 59,831 条），避免不同 Coser 的同名套图被并成一件作品；`works` / `studios` / `person_links` 结构沿用，无迁移。
 
 #### 4.4.1 完整 DDL（catalog.sqlite）
 
@@ -602,7 +609,7 @@ meta                                  构建元信息（版本 / 数量 / 来源
 
 ## 6. 侧边栏结构
 
-侧边栏可以膨胀，但要**两级 + 分组**：[SidebarView.swift](../../Sources/PhotosClone/Features/Sidebar/SidebarView.swift#L42-L52) 已有 `collapsedSections` 与顶层手风琴（展开一个自动收起其余），这套机制就是为来源增多准备的。
+侧边栏可以膨胀，但要**两级 + 分组**：[SidebarView.swift](../../Sources/Luma/Features/Sidebar/SidebarView.swift#L42-L52) 已有 `collapsedSections` 与顶层手风琴（展开一个自动收起其余），这套机制就是为来源增多准备的。
 
 ```
 图库          当前库 / 链接库
@@ -732,11 +739,11 @@ P3 的「清出空间」是唯一的高风险写操作：必须显示「已在 M
 | --- | --- |
 | [Source.swift](../../Sources/LumaContentCore/Source/Source.swift) | `SourceKind` 增加 `deviceLibrary` / `messaging` / `webArchive` / `personalCloud`；`SourceID` 增加对应构造器；`ContentCapabilities` 增加 `remoteIndex`、`onDemandOriginal` |
 | [SourceSession.swift](../../Sources/LumaContentCore/Source/SourceSession.swift) | 新增 `SourceRole`（host / agent）；`SourceLifecycle` 增加 `pair()` |
-| [MetadataStore.swift](../../Sources/PhotosClone/Services/Library/MetadataStore.swift) | 新建 `asset_sources`；`assets` 补三列；迁移保持幂等 |
-| [LibraryStore+SourceRegistry.swift](../../Sources/PhotosClone/Store/LibraryStore+SourceRegistry.swift) | 足迹源的注册、分组、排序与健康状态 |
-| [SidebarView.swift](../../Sources/PhotosClone/Features/Sidebar/SidebarView.swift) | 新增「个人足迹」分区，复用现有折叠与手风琴 |
-| [AppModules.swift](../../Sources/PhotosClone/Features/Settings/AppModules.swift) | 足迹源映射到 `library` 模块，不新增模块开关 |
-| [SearchTypes.swift](../../Sources/PhotosClone/Services/Search/SearchTypes.swift) | `SearchSourceKind` 增补足迹；胶囊仍按 kind 生成 |
+| [MetadataStore.swift](../../Sources/LumaPersistence/MetadataStore.swift) | 新建 `asset_sources`；`assets` 补三列；迁移保持幂等 |
+| [LibraryStore+SourceRegistry.swift](../../Sources/Luma/Store/Shared/LibraryStore+SourceRegistry.swift) | 足迹源的注册、分组、排序与健康状态 |
+| [SidebarView.swift](../../Sources/Luma/Features/Sidebar/SidebarView.swift) | 新增「个人足迹」分区，复用现有折叠与手风琴 |
+| [AppModules.swift](../../Sources/Luma/Features/Settings/AppModules.swift) | 足迹源映射到 `library` 模块，不新增模块开关 |
+| [SearchTypes.swift](../../Sources/Luma/Services/Search/SearchTypes.swift) | `SearchSourceKind` 增补足迹；胶囊仍按 kind 生成 |
 | [IngestService.swift](../../Sources/LumaContentCore/Ingest/IngestService.swift) | `IngestRequest.Payload` 增加 `deviceAsset`（远端原图按需） |
 | 新增 `Services/Trace/` | `TraceIngestCoordinator`、`FolderTraceScanner`、`WeChatTraceScanner`、`DeviceAgentClient`、`WebClipReceiver` |
 

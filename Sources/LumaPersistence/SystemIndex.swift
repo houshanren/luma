@@ -2,12 +2,12 @@ import Foundation
 import LumaDomain
 import LumaCore
 
-public enum SystemIndexError: LocalizedError {
+package enum SystemIndexError: LocalizedError {
     case invalidLibrary
     case buildFailed(String)
     case unreadable(String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .invalidLibrary: return "不是有效的照片图库（缺少 database/Photos.sqlite）"
         case .buildFailed(let message): return "无法建立系统图库索引：\(message)"
@@ -17,19 +17,19 @@ public enum SystemIndexError: LocalizedError {
 }
 
 /// 系统图库索引的聚合结果。
-public struct SystemIndexCounts {
-    public var active = 0
-    public var hidden = 0
-    public var trash = 0
-    public var duplicate = 0
-    public var recentlySaved = 0
-    public var imports = 0
-    public var portrait = 0
-    public var screenshots = 0
-    public var totalBytes: Int64 = 0
-    public var earliest: Date?
-    public var latest: Date?
-    public init(
+package struct SystemIndexCounts {
+    package var active = 0
+    package var hidden = 0
+    package var trash = 0
+    package var duplicate = 0
+    package var recentlySaved = 0
+    package var imports = 0
+    package var portrait = 0
+    package var screenshots = 0
+    package var totalBytes: Int64 = 0
+    package var earliest: Date?
+    package var latest: Date?
+    package init(
         active: Int = 0,
         hidden: Int = 0,
         trash: Int = 0,
@@ -61,7 +61,7 @@ public struct SystemIndexCounts {
 /// 百万级图库不再把整库 `[PhotoItem]` 装进内存：网格、计数、年/月总览、相簿与人物
 /// 全部按窗口查询这个只读索引，常驻内存只有当前页与相簿名这类小数据。
 /// `Photos.sqlite` 始终只读，索引文件写在当前图库自己的 `resources/system-cache/`。
-public final class SystemIndex {
+package final class SystemIndex {
     /// schema 或字段映射变化时递增，旧索引自动失效。
     /// v2：人物收录未命名聚类（与官方「照片」人物列表对齐），旧索引需要重建。
     /// v4：相簿 / 文件夹改用 Z_FOK_PARENTFOLDER 手动排序键，与官方「照片」侧边栏顺序对齐。
@@ -73,52 +73,52 @@ public final class SystemIndex {
     /// 「连拍快照」改为按组展示代表照片，旧索引需要重建。
     /// v9：人物裁切图改为只取与关键照片一致的那条（官方头像口径），旧索引需要重建。
     /// v10：共享相簿项目的缩略图改取 scopes/cloudsharing 下的封面帧，旧索引需要重建。
-    public static let version = 10
+    package static let version = 10
     /// 低于这个规模继续沿用内存快照（小库启动更快）。
-    public static let largeLibraryThreshold = 100_000
+    package static let largeLibraryThreshold = 100_000
 
-    public let database: SQLiteDatabase
-    public let libraryURL: URL
-    public let name: String
+    package let database: SQLiteDatabase
+    package let libraryURL: URL
+    package let name: String
     /// 索引里收录的项目数。
-    public let total: Int
+    package let total: Int
     /// 图库真实总数。
-    public let trueTotal: Int
-    public let hasDerivatives: Bool
+    package let trueTotal: Int
+    package let hasDerivatives: Bool
     /// 非空表示直连模式：database 指向系统 `Photos.sqlite`，不再维护本地索引。
-    public let direct: SystemDirectSource?
+    package let direct: SystemDirectSource?
     /// 直连模式的侧边栏计数快照（精确值由后台任务补齐）。
-    public var directCounts: SystemDirectCounts?
-    public var directCountsWarmupTask: Task<Void, Never>?
+    package var directCounts: SystemDirectCounts?
+    package var directCountsWarmupTask: Task<Void, Never>?
     /// 直连模式的地图 / 位置数据（全量带定位照片），由后台任务填充。
-    public var directGeoPhotos: [PhotoItem]?
+    package var directGeoPhotos: [PhotoItem]?
     /// 直连模式的地点名 → 资产 UUID：地名只存在二进制归档里，搜索时按它换算成 SQL 条件。
-    public var directPlaceTokenIndex: [String: [String]]?
+    package var directPlaceTokenIndex: [String: [String]]?
     /// 导入批次概览缓存：一个批次的拍摄跨度不会变，按会话 id 缓存。
-    public var directImportSummaryCache: [Int64: SystemImportSessionSummary] = [:]
-    public var directGeoWarmupTask: Task<Void, Never>?
+    package var directImportSummaryCache: [Int64: SystemImportSessionSummary] = [:]
+    package var directGeoWarmupTask: Task<Void, Never>?
     /// 后台快照就绪时通知界面刷新（侧边栏计数、地图样本共用）。
-    public var onDirectCountsReady: (() -> Void)?
-    public var directPageCursors: [String: (offset: Int, value: Double, pk: Int64)] = [:]
-    public let directCursorLock = NSLock()
+    package var onDirectCountsReady: (() -> Void)?
+    package var directPageCursors: [String: (offset: Int, value: Double, pk: Int64)] = [:]
+    package let directCursorLock = NSLock()
     /// 直连模式的时间轴密度（官方 `ZMOMENT` 的每个时刻与项目数），滚动条定位用。
-    public var directTimelineBuckets: [SystemTimelineBucket]?
-    public let directTimelineLock = NSLock()
+    package var directTimelineBuckets: [SystemTimelineBucket]?
+    package let directTimelineLock = NSLock()
     /// 相簿封面 / 数量的直连缓存：相簿概览会在 SwiftUI body 里逐个读取，
     /// 每次都查库会让上万相簿的滚动持续卡顿。系统库只读，本会话内不会变化。
-    public var directAlbumPreviewCache: [String: [PhotoItem]] = [:]
-    public var directImportSessionsCache: [SystemImportSession]?
-    public var directImportCoverCache: [Int64: PhotoItem] = [:]
-    public var directAlbumFirstCache: [Int64: PhotoItem] = [:]
-    public var directAlbumCountCache: [Int64: Int] = [:]
-    public var directFolderAlbumsCache: [Int64: [Int64]] = [:]
+    package var directAlbumPreviewCache: [String: [PhotoItem]] = [:]
+    package var directImportSessionsCache: [SystemImportSession]?
+    package var directImportCoverCache: [Int64: PhotoItem] = [:]
+    package var directAlbumFirstCache: [Int64: PhotoItem] = [:]
+    package var directAlbumCountCache: [Int64: Int] = [:]
+    package var directFolderAlbumsCache: [Int64: [Int64]] = [:]
     /// 官方相簿 / 文件夹的父子表：整库只扫一次，侧边栏逐层展开时不再重复读 `ZGENERICALBUM`。
-    public var directFolderChildrenMap: [Int64: [Int64]]?
-    public var directFolderKindsMap: [Int64: Int]?
-    public var directFolderPreviewCache: [String: [UUID]] = [:]
-    public let directAlbumCacheLock = NSLock()
+    package var directFolderChildrenMap: [Int64: [Int64]]?
+    package var directFolderKindsMap: [Int64: Int]?
+    package var directFolderPreviewCache: [String: [UUID]] = [:]
+    package let directAlbumCacheLock = NSLock()
 
-    public init(database: SQLiteDatabase,
+    package init(database: SQLiteDatabase,
          libraryURL: URL,
          name: String,
          total: Int,
@@ -137,7 +137,7 @@ public final class SystemIndex {
     // MARK: - 打开 / 建立
 
     /// 官方图库的项目总数（含隐藏与最近删除，不含视频外的其它类型）。
-    public static func assetCount(libraryURL: URL) -> Int? {
+    package static func assetCount(libraryURL: URL) -> Int? {
         let url = libraryURL.appendingPathComponent("database/Photos.sqlite")
         guard let db = try? SQLiteDatabase(path: url.path, readonly: true) else { return nil }
         return try? db.query("SELECT COUNT(*) AS c FROM ZASSET WHERE ZKIND IN (0, 1)")
@@ -147,7 +147,7 @@ public final class SystemIndex {
     /// 官方「照片」图库自带的关键词：`ZKEYWORD` 通过 `Z_1KEYWORDS` 关联到
     /// `ZADDITIONALASSETATTRIBUTES`，再由 `ZASSET` 得到资产 UUID。
     /// 返回「关键词 → 资产（按拍摄时间从新到旧）」及反查表；Photos.sqlite 只读。
-    public static func nativeKeywordMap(libraryURL: URL)
+    package static func nativeKeywordMap(libraryURL: URL)
         -> (byKeyword: [String: [UUID]], byAsset: [UUID: [String]]) {
         let url = libraryURL.appendingPathComponent("database/Photos.sqlite")
         guard let db = try? SQLiteDatabase(path: url.path, readonly: true) else {
@@ -178,7 +178,7 @@ public final class SystemIndex {
     /// 只查某一个关键词命中的资产：先在小表 `ZKEYWORD` 里筛，再按 PK 关联，
     /// 避免每次搜索都把整个关键词关联表 join 一遍（百万级图库上要好几秒）。
     /// `limit == 0` 表示不限制条数。
-    public static func nativeKeywordAssetIDs(libraryURL: URL, keyword: String, limit: Int = 0) -> [UUID] {
+    package static func nativeKeywordAssetIDs(libraryURL: URL, keyword: String, limit: Int = 0) -> [UUID] {
         let url = libraryURL.appendingPathComponent("database/Photos.sqlite")
         guard let db = try? SQLiteDatabase(path: url.path, readonly: true) else { return [] }
         let escaped = keyword
@@ -205,7 +205,7 @@ public final class SystemIndex {
     }
 
     /// 打开已存在且与当前图库匹配的索引；不匹配返回 nil。
-    public static func openIfFresh(libraryURL: URL) -> SystemIndex? {
+    package static func openIfFresh(libraryURL: URL) -> SystemIndex? {
         guard let file = LibraryPaths.systemIndexFile(for: libraryURL),
               FileManager.default.fileExists(atPath: file.path),
               let signature = signature(for: libraryURL),
@@ -225,7 +225,7 @@ public final class SystemIndex {
     /// 返回可用索引：命中缓存直接打开，否则从 `Photos.sqlite` 重建。
     /// 建立失败时抛错，由调用方回退到内存快照。
     /// `onBatch` 让重建过程也能逐批把照片交给界面，百万级图库不必等索引写完才出图。
-    public static func prepare(libraryURL: URL,
+    package static func prepare(libraryURL: URL,
                         progress: ((Int) -> Void)? = nil,
                         isCancelled: () -> Bool = { false },
                         onBatch: (([PhotoItem]) -> Void)? = nil) throws -> SystemIndex {
@@ -239,7 +239,7 @@ public final class SystemIndex {
                          onBatch: onBatch)
     }
 
-    public static func metaValues(_ db: SQLiteDatabase) -> [String: String]? {
+    package static func metaValues(_ db: SQLiteDatabase) -> [String: String]? {
         guard let rows = try? db.query("SELECT key, value FROM meta") else { return nil }
         var meta: [String: String] = [:]
         for row in rows {
@@ -251,7 +251,7 @@ public final class SystemIndex {
     }
 
     /// 以 Photos.sqlite 的大小与修改时间判断图库是否变化。
-    public static func signature(for libraryURL: URL) -> String? {
+    package static func signature(for libraryURL: URL) -> String? {
         let dbURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
         guard let values = try? dbURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
               let size = values.fileSize,
@@ -259,7 +259,7 @@ public final class SystemIndex {
         return "\(size)-\(Int(modified.timeIntervalSince1970))"
     }
 
-    public static func build(libraryURL: URL,
+    package static func build(libraryURL: URL,
                               progress: ((Int) -> Void)?,
                               isCancelled: () -> Bool,
                               onBatch: (([PhotoItem]) -> Void)?) throws -> SystemIndex {
@@ -660,7 +660,7 @@ public final class SystemIndex {
                            trueTotal: trueTotal)
     }
 
-    public static func createSchema(_ db: SQLiteDatabase) throws {
+    package static func createSchema(_ db: SQLiteDatabase) throws {
         try db.execute("""
             CREATE TABLE assets(
                 pk INTEGER PRIMARY KEY, uuid TEXT NOT NULL, filename TEXT NOT NULL,
@@ -702,7 +702,7 @@ public final class SystemIndex {
     }
 
     /// 实况照片的配对视频：同名 MOV 与图片在同一图库中分别存储。
-    public static func linkLiveVideos(_ db: SQLiteDatabase, byStem: [String: String]) throws {
+    package static func linkLiveVideos(_ db: SQLiteDatabase, byStem: [String: String]) throws {
         guard !byStem.isEmpty else { return }
         guard let rows = try? db.query("SELECT uuid, stem FROM assets WHERE islive = 1") else { return }
         for row in rows {
@@ -713,7 +713,7 @@ public final class SystemIndex {
         }
     }
 
-    public static func indexAlbums(source: SQLiteDatabase,
+    package static func indexAlbums(source: SQLiteDatabase,
                                     target: SQLiteDatabase,
                                     assetCount: Int) throws {
         let albumColumns = (try? source.query("PRAGMA table_info(ZGENERICALBUM)"))?
@@ -784,7 +784,7 @@ public final class SystemIndex {
         }
     }
 
-    public static func indexPeople(source: SQLiteDatabase,
+    package static func indexPeople(source: SQLiteDatabase,
                                     target: SQLiteDatabase,
                                     isCancelled: () -> Bool) throws {
         let personColumns = (try? source.query("PRAGMA table_info(ZPERSON)"))?

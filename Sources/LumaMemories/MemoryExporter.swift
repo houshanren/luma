@@ -3,6 +3,7 @@ import AVFoundation
 import AppKit
 import CoreGraphics
 import CoreVideo
+import LumaDomain
 
 /// 回忆影片导出失败时给用户看的中文原因。
 enum MemoryExportError: LocalizedError {
@@ -24,14 +25,14 @@ enum MemoryExportError: LocalizedError {
 
 /// 把回忆渲染成无声 H.264 mp4：1280×720、24fps，照片之间交叉淡化。
 /// 渲染完全在本机完成，不依赖 ffmpeg。
-enum MemoryExporter {
+package enum MemoryExporter {
     static let width = 1280
     static let height = 720
     static let fps: Int32 = 24
     static let slideDuration: Double = 3.6
     static let fadeDuration: Double = 0.5
 
-    static func export(memory: PhotoMemory,
+    package static func export(memory: PhotoMemory,
                        style: MemoryStyle,
                        to url: URL,
                        progress: @escaping @Sendable (Double) -> Void) async throws {
@@ -55,7 +56,7 @@ enum MemoryExporter {
         var images: [CGImage] = []
         for (index, photo) in photos.enumerated() {
             autoreleasepool {
-                if let image = ImageLoader.displayImage(for: photo, maxPixel: 1600),
+                if let image = MemoryFrameLoader.image(for: photo, maxPixel: 1600),
                    let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
                     images.append(cgImage)
                 }

@@ -3,21 +3,21 @@ import LumaCore
 
 /// 一组重复项目：同一张照片的多个副本（文件大小与像素尺寸相同）。
 /// `photos` 已按建议保留顺序排列，第一张为推荐保留项。
-public struct DuplicateGroup: Identifiable {
-    public let photos: [PhotoItem]
-    public let pick: DuplicatePick
+package struct DuplicateGroup: Identifiable {
+    package let photos: [PhotoItem]
+    package let pick: DuplicatePick
 
     /// 推荐保留项的照片 ID，全局唯一，可直接作为列表标识。
-    public var id: UUID { pick.photo.id }
-    public var keepID: UUID { pick.photo.id }
-    public var keepReasons: [String] { pick.reasons }
-    public var capturedAt: Date { pick.photo.capturedAt }
+    package var id: UUID { pick.photo.id }
+    package var keepID: UUID { pick.photo.id }
+    package var keepReasons: [String] { pick.reasons }
+    package var capturedAt: Date { pick.photo.capturedAt }
 
     /// 合并后可释放的字节数（保留项以外的副本总和）。
-    public var reclaimableBytes: Int64 {
+    package var reclaimableBytes: Int64 {
         photos.reduce(Int64(0)) { $0 + ($1.id == keepID ? 0 : $1.fileSize) }
     }
-    public init(
+    package init(
         photos: [PhotoItem],
         pick: DuplicatePick
     ) {
@@ -27,10 +27,10 @@ public struct DuplicateGroup: Identifiable {
 }
 
 /// 组内推荐保留的照片与理由（用于界面标注「建议保留」）。
-public struct DuplicatePick {
-    public let photo: PhotoItem
-    public let reasons: [String]
-    public init(
+package struct DuplicatePick {
+    package let photo: PhotoItem
+    package let reasons: [String]
+    package init(
         photo: PhotoItem,
         reasons: [String]
     ) {
@@ -41,11 +41,11 @@ public struct DuplicatePick {
 
 /// 重复项目检测：按「文件大小 + 像素尺寸」聚合，再按可保留价值挑出建议保留项。
 /// 纯计算，不读写文件与数据库。
-public enum DuplicateDetector {
+package enum DuplicateDetector {
     /// 返回按可释放空间从大到小排序的重复组。
     /// `mergeFlagged` 为 true 时（系统图库），再把官方标记为重复、但文件大小与主分组对不上的项目
     /// 按「像素尺寸 + 原文件名」补成额外分组，覆盖元数据不同导致体积不一致的副本。
-    public static func groups(from photos: [PhotoItem],
+    package static func groups(from photos: [PhotoItem],
                        albumMembership: [UUID: Int] = [:],
                        mergeFlagged: Bool = false) -> [DuplicateGroup] {
         var buckets: [String: [PhotoItem]] = [:]
@@ -153,12 +153,12 @@ public enum DuplicateDetector {
 
 /// 相似照片组：按感知哈希 + 拍摄时间窗口 + 宽高比接近归组。
 /// 只用于展示与人工判断，不自动合并；避免把同一场景的不同瞬间误删。
-public struct SimilarPhotoGroup: Identifiable {
-    public let photos: [PhotoItem]
-    public let representative: PhotoItem
+package struct SimilarPhotoGroup: Identifiable {
+    package let photos: [PhotoItem]
+    package let representative: PhotoItem
 
-    public var id: UUID { representative.id }
-    public init(
+    package var id: UUID { representative.id }
+    package init(
         photos: [PhotoItem],
         representative: PhotoItem
     ) {
@@ -167,8 +167,8 @@ public struct SimilarPhotoGroup: Identifiable {
     }
 }
 
-public enum SimilarPhotoDetector {
-    public static func groups(from photos: [PhotoItem],
+package enum SimilarPhotoDetector {
+    package static func groups(from photos: [PhotoItem],
                        threshold: Int = 10,
                        timeWindow: TimeInterval = 600) -> [SimilarPhotoGroup] {
         let candidates = photos.filter {

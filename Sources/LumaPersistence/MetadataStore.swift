@@ -5,16 +5,16 @@ import LumaCore
 /// 当前图库的元数据存储（SQLite）。除本地 `assets` 等表外，还保存系统图库 / 网盘的派生缓存
 /// （`system_analysis`、`derived_reports`、`cloud_assets`、`cloud_people`）；
 /// Apple 的 `Photos.sqlite` 始终只读，真实写入只经 PhotoKit。
-public final class MetadataStore {
-    public let db: SQLiteDatabase
-    public let queue = DispatchQueue(label: "com.baymax.luma.metadata")
+package final class MetadataStore {
+    package let db: SQLiteDatabase
+    package let queue = DispatchQueue(label: "com.baymax.luma.metadata")
     private var pendingData: LibraryData?
     private var isWriting = false
     /// 网盘缓存行的轻量副本（不含 feature BLOB）：按挂载缓存，切换目录时不再重复查库。
     /// 只在 `queue` 内读写；任何写库都会让对应挂载的缓存失效。
-    public var cloudAssetsRowCache: [UUID: [String: CloudAssetCacheRow]] = [:]
+    package var cloudAssetsRowCache: [UUID: [String: CloudAssetCacheRow]] = [:]
 
-    public init(url: URL) throws {
+    package init(url: URL) throws {
         db = try SQLiteDatabase(path: url.path, readonly: false)
         try migrateSchema()
         try migrateLegacyJSONIfNeeded()
@@ -22,21 +22,21 @@ public final class MetadataStore {
 
     // MARK: - Public API
 
-    public func loadLibrary() -> LibraryData {
+    package func loadLibrary() -> LibraryData {
         queue.sync {
             (try? readLibrary()) ?? LibraryData()
         }
     }
 
     /// 启动分片：只读相簿 / 文件夹这类小表，资产交给 `loadAssets` 按页补。
-    public func loadLibraryShell() -> LibraryData {
+    package func loadLibraryShell() -> LibraryData {
         queue.sync {
             (try? readLibraryShell()) ?? LibraryData()
         }
     }
 
     /// 资产总数：分片加载时用来判断还要不要继续读下一页。
-    public func assetCount() -> Int {
+    package func assetCount() -> Int {
         queue.sync {
             guard let rows = try? db.query("SELECT COUNT(*) AS c FROM assets"),
                   let value = rows.first?["c"]?.int else { return 0 }
@@ -47,7 +47,7 @@ public final class MetadataStore {
     /// 按 captured_at 倒序读一页资产：启动时先渲染第一片，其余在后台补齐。
     /// 不按文件是否存在过滤：外置盘未挂载 / 文件被外部删除时，过滤出的空结果一旦被
     /// save() 写回会清空整库元数据；缺失文件交给缩略图占位展示。
-    public func loadAssets(limit: Int, offset: Int) -> [PhotoItem] {
+    package func loadAssets(limit: Int, offset: Int) -> [PhotoItem] {
         queue.sync {
             guard let rows = try? db.query("""
                 SELECT * FROM assets ORDER BY captured_at DESC LIMIT ? OFFSET ?
@@ -59,7 +59,7 @@ public final class MetadataStore {
     // MARK: - 影院刮削索引
 
     /// 读取某个影院的全部刮削结果：一条一行，启动时按 scope 分批读。
-    public func cinemaEntries(scope: String) -> [CinemaEntry] {
+    package func cinemaEntries(scope: String) -> [CinemaEntry] {
         queue.sync {
             guard let rows = try? db.query("""
                 SELECT payload FROM cinema_entries WHERE scope = ? ORDER BY updated_at DESC
@@ -74,7 +74,7 @@ public final class MetadataStore {
     }
 
     /// 写回一个影院的全部结果：在数据库队列里整表替换，不占主线程。
-    public func saveCinemaEntries(_ entries: [CinemaEntry], scope: String) {
+    package func saveCinemaEntries(_ entries: [CinemaEntry], scope: String) {
         queue.async { [weak self] in
             guard let self else { return }
             let encoder = JSONEncoder()
@@ -97,14 +97,14 @@ public final class MetadataStore {
         }
     }
 
-    public func clearCinemaEntries(scope: String) {
+    package func clearCinemaEntries(scope: String) {
         queue.async { [weak self] in
             try? self?.db.execute("DELETE FROM cinema_entries WHERE scope = ?", [scope])
         }
     }
 
     /// 刮削结果的体积（payload 字节数之和）：资源页展示与清理用。
-    public func cinemaEntriesBytes() -> Int64 {
+    package func cinemaEntriesBytes() -> Int64 {
         queue.sync {
             guard let rows = try? db.query(
                 "SELECT COALESCE(SUM(LENGTH(payload)), 0) AS total FROM cinema_entries"),
@@ -114,13 +114,13 @@ public final class MetadataStore {
     }
 
     /// 一次清空所有影院的刮削结果：条目、详情补全与推荐全部释放，下次进入影院重新刮削。
-    public func clearAllCinemaEntries() {
+    package func clearAllCinemaEntries() {
         queue.async { [weak self] in
             try? self?.db.execute("DELETE FROM cinema_entries")
         }
     }
 
-    public func save(_ data: LibraryData) {
+    package func save(_ data: LibraryData) {
         queue.async { [weak self] in
             guard let self else { return }
             self.pendingData = data
@@ -138,7 +138,7 @@ public final class MetadataStore {
         }
     }
 
-    public func flush() {
+    package func flush() {
         queue.sync {
             while let next = pendingData {
                 pendingData = nil
@@ -148,14 +148,14 @@ public final class MetadataStore {
     }
 
     /// 保险库备份前把 WAL 合并回主库，避免复制到一半的日志。
-    public func checkpoint() {
+    package func checkpoint() {
         queue.sync {
             try? db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         }
     }
 
     /// 增量写入导入产生的新照片，避免每批都全量重写 assets 表。
-    public func appendPhotos(_ items: [PhotoItem]) {
+    package func appendPhotos(_ items: [PhotoItem]) {
         guard !items.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
@@ -171,13 +171,13 @@ public final class MetadataStore {
         }
     }
 
-    public func setting(_ key: String) -> String? {
+    package func setting(_ key: String) -> String? {
         queue.sync {
             (try? db.query("SELECT value FROM settings WHERE key = ?", [key]).first?["value"]?.string) ?? nil
         }
     }
 
-    public func setSetting(_ key: String, _ value: String?) {
+    package func setSetting(_ key: String, _ value: String?) {
         queue.sync {
             if let value {
                 try? db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", [key, value])
@@ -188,7 +188,7 @@ public final class MetadataStore {
     }
 
     /// 异步写设置：启动迁移时清掉大 JSON 用，避免占住主线程。
-    public func setSettingAsync(_ key: String, _ value: String?) {
+    package func setSettingAsync(_ key: String, _ value: String?) {
         queue.async { [weak self] in
             guard let self else { return }
             if let value {
@@ -201,7 +201,7 @@ public final class MetadataStore {
 
     // MARK: - 系统照片的补充元数据
 
-    public func loadOverlays() -> [UUID: AssetOverlay] {
+    package func loadOverlays() -> [UUID: AssetOverlay] {
         queue.sync {
             let rows = (try? db.query("SELECT * FROM asset_overlays")) ?? []
             var result: [UUID: AssetOverlay] = [:]
@@ -224,7 +224,7 @@ public final class MetadataStore {
         }
     }
 
-    public func saveOverlay(_ id: UUID, _ overlay: AssetOverlay) {
+    package func saveOverlay(_ id: UUID, _ overlay: AssetOverlay) {
         queue.sync {
             guard !overlay.isEmpty else {
                 try? db.execute("DELETE FROM asset_overlays WHERE asset_id = ?", [id.uuidString])
@@ -258,7 +258,7 @@ public final class MetadataStore {
 
     // MARK: - 智能分析（场景标签 / OCR / 特征向量）
 
-    public func loadAnalysisIndex() -> [(id: UUID, labels: String, text: String)] {
+    package func loadAnalysisIndex() -> [(id: UUID, labels: String, text: String)] {
         queue.sync {
             guard let rows = try? db.query("SELECT asset_id, labels, text FROM asset_analysis") else { return [] }
             return rows.compactMap { row in
@@ -269,7 +269,7 @@ public final class MetadataStore {
         }
     }
 
-    public func saveAnalysis(_ entries: [(id: UUID, labels: String, text: String, feature: Data?)]) {
+    package func saveAnalysis(_ entries: [(id: UUID, labels: String, text: String, feature: Data?)]) {
         guard !entries.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
@@ -285,7 +285,7 @@ public final class MetadataStore {
         }
     }
 
-    public func removeAnalysis(_ ids: Set<UUID>) {
+    package func removeAnalysis(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
@@ -296,14 +296,14 @@ public final class MetadataStore {
     }
 
     /// 清空全部本地图库的分析结果（「重置」用）：标签、文字与特征向量一并删除。
-    public func purgeAnalysis() {
+    package func purgeAnalysis() {
         queue.async { [weak self] in
             guard let self else { return }
             try? self.db.execute("DELETE FROM asset_analysis", [])
         }
     }
 
-    public func feature(for id: UUID) -> Data? {
+    package func feature(for id: UUID) -> Data? {
         queue.sync {
             (try? db.query("SELECT feature FROM asset_analysis WHERE asset_id = ?", [id.uuidString]))?
                 .first?["feature"]?.data
@@ -311,7 +311,7 @@ public final class MetadataStore {
     }
 
     /// 全部已分析照片的特征向量；`limit` 用于限制聚类规模（相似分组是 O(n·组数)）。
-    public func allFeatures(limit: Int = 3000) -> [(id: UUID, feature: Data)] {
+    package func allFeatures(limit: Int = 3000) -> [(id: UUID, feature: Data)] {
         queue.sync {
             guard let rows = try? db.query("""
                 SELECT asset_id, feature FROM asset_analysis
@@ -327,7 +327,7 @@ public final class MetadataStore {
     }
 
     /// 按特征向量找相似照片（余弦相似度，向量在写入时已归一化）。
-    public func similarPhotos(to feature: Data, excluding id: UUID,
+    package func similarPhotos(to feature: Data, excluding id: UUID,
                        limit: Int = 80, minimumScore: Float = 0.72) -> [UUID] {
         queue.sync {
             guard let rows = try? db.query(
@@ -357,7 +357,7 @@ public final class MetadataStore {
 
     // MARK: - 人物聚类
 
-    public func loadPeople() -> [LocalPerson] {
+    package func loadPeople() -> [LocalPerson] {
         queue.sync {
             guard let rows = try? db.query("SELECT * FROM people ORDER BY face_count DESC") else { return [] }
             var members: [String: [UUID]] = [:]
@@ -384,7 +384,7 @@ public final class MetadataStore {
         }
     }
 
-    public func savePeople(_ people: [LocalPerson]) {
+    package func savePeople(_ people: [LocalPerson]) {
         queue.async { [weak self] in
             guard let self else { return }
             try? self.db.transaction {
@@ -412,7 +412,7 @@ public final class MetadataStore {
         }
     }
 
-    public func loadScannedFaceIDs() -> Set<UUID> {
+    package func loadScannedFaceIDs() -> Set<UUID> {
         queue.sync {
             guard let rows = try? db.query("SELECT asset_id FROM scanned_faces") else { return [] }
             return Set(rows.compactMap { row in
@@ -421,7 +421,7 @@ public final class MetadataStore {
         }
     }
 
-    public func saveScannedFaceIDs(_ ids: Set<UUID>) {
+    package func saveScannedFaceIDs(_ ids: Set<UUID>) {
         queue.async { [weak self] in
             guard let self else { return }
             try? self.db.transaction {
@@ -437,7 +437,7 @@ public final class MetadataStore {
     /// 永久删除资产时清理与它绑定的端侧人脸数据、补充元数据与已扫标记。
     /// 直接在数据库里按 `asset_id` 删除，不依赖聚结果是否已经载入内存；
     /// 之后再把没有照片的人物一并移除，避免留下空人物。
-    public func removeAssetDerivedData(_ ids: Set<UUID>) {
+    package func removeAssetDerivedData(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
@@ -811,7 +811,7 @@ public final class MetadataStore {
 
     /// 资产行 → PhotoItem。跨库搜索会只读打开其它图库的数据库，
     /// 因此行解析不依赖当前 `MetadataStore` 实例，允许直接复用。
-    public static func photo(from row: [String: SQLiteValue]) -> PhotoItem? {
+    package static func photo(from row: [String: SQLiteValue]) -> PhotoItem? {
         guard let idString = row["id"]?.string, let id = UUID(uuidString: idString),
               let filename = row["filename"]?.string,
               let originalName = row["original_name"]?.string,
@@ -982,7 +982,7 @@ public final class MetadataStore {
     }
 
     /// 当前图库所有已知内容哈希（SHA-256 → 资产 ID），用于导入时精确查重。
-    public func contentHashes() -> [String: UUID] {
+    package func contentHashes() -> [String: UUID] {
         queue.sync {
             guard let rows = try? db.query("""
                 SELECT content_hash, id FROM assets
@@ -1001,7 +1001,7 @@ public final class MetadataStore {
     }
 
     /// 批量回写内容哈希 / 感知哈希（查重扫描与导入后校验使用）。
-    public func updateHashes(_ entries: [(id: UUID, contentHash: String?, perceptualHash: Int64?)]) {
+    package func updateHashes(_ entries: [(id: UUID, contentHash: String?, perceptualHash: Int64?)]) {
         guard !entries.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
@@ -1018,7 +1018,7 @@ public final class MetadataStore {
     }
 
     /// 记录一次查看（只更新单行，避免为一次打开重写整个资产表）。
-    public func setViewedAt(_ id: UUID, date: Date) {
+    package func setViewedAt(_ id: UUID, date: Date) {
         queue.async { [weak self] in
             try? self?.db.execute("UPDATE assets SET viewed_at = ? WHERE id = ?",
                                   [date.timeIntervalSince1970, id.uuidString])

@@ -616,9 +616,6 @@ private struct TVChannelsView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        Color.clear
-                            .frame(height: 0)
-                            .id("tv-top")
                         ForEach(groups, id: \.group) { section in
                             VStack(alignment: .leading, spacing: 10) {
                                 sectionHeader(section)
@@ -636,7 +633,10 @@ private struct TVChannelsView: View {
                         }
                     }
                     .padding(.horizontal, 22)
-                    .padding(.vertical, 18)
+                    .padding(.top, 8)
+                    .padding(.bottom, 18)
+                    // 滚动锚点挂在容器上：不再用零高度占位视图，顶部就不会多出一段空白。
+                    .id("tv-top")
                 }
                 // 换源时重建滚动视图：上一个源很可能滚到很深处，只剩偏移量会显示空白。
                 .id(tv.focusedPlaylistID?.uuidString ?? "tv-all")
@@ -655,7 +655,6 @@ private struct TVChannelsView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    Color.clear.frame(height: 0).id("tv-top")
                     ForEach(groups, id: \.group) { section in
                         VStack(alignment: .leading, spacing: 5) {
                             sectionHeader(section)
@@ -672,7 +671,9 @@ private struct TVChannelsView: View {
                     }
                 }
                 .padding(.horizontal, 22)
-                .padding(.vertical, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 14)
+                .id("tv-top")
             }
             .id(tv.focusedPlaylistID?.uuidString ?? "tv-all")
             .onChange(of: tv.groupFilter) { _, _ in scrollToTop(proxy) }

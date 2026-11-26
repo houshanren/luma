@@ -38,14 +38,14 @@
 
 ```
 photos/
-├── Package.swift              # 12 个 target，唯一产物 Luma
+├── Package.swift              # 13 个 target，唯一产物 Luma
 ├── build.sh                   # 组装 Luma.app（支持 preview / PACKAGE / NOTARIZE）
 ├── README.md                  # 对外的产品介绍
 ├── AGENTS.md                  # 开发规范（硬约束、文件职责、权限矩阵、行数上限）
 ├── CHANGELOG.md
 ├── .gitignore
 ├── Resources/                 # 随包资源，见 §2.1
-├── Sources/                   # 八个 target 的源码，见 §4
+├── Sources/                   # 九个 target 的源码，见 §4
 ├── Tests/                     # 三个可执行断言 target
 ├── Tools/                     # 构建 / 素材 / 资料库脚本，见 §2.2
 ├── Vendor/                    # 构建时下载的 ffmpeg，不入库
@@ -90,20 +90,21 @@ photos/
 
 ---
 
-## 3. 十二个 target
+## 3. 十三个 target
 
 `Package.swift` 只有 1 个 product（`Luma` 可执行文件），其余是库与可执行检查器。
 
 | target | 类型 | 路径 | 依赖 | 备注 |
 | --- | --- | --- | --- | --- |
-| `Luma` | executable | `Sources/Luma` | `LumaCore` `PlaybackCore` `LumaContentCore` `LumaDomain` `LumaPersistence` `LumaAI` `LumaUI` | 链接 sqlite3 / NetFS / Photos |
+| `Luma` | executable | `Sources/Luma` | `LumaCore` `PlaybackCore` `LumaContentCore` `LumaDomain` `LumaPersistence` `LumaAI` `LumaUI` `LumaMemories` | 链接 sqlite3 / NetFS / Photos |
 | `LumaCore` | library | `Sources/LumaCore` | — | 纯算法，无 UI、无 IO |
 | `PlaybackCore` | library | `Sources/PlaybackCore` | — | 仅 Foundation + AVFoundation + AVKit |
 | `LumaContentCore` | library | `Sources/LumaContentCore` | `LumaCore` `PlaybackCore` | 只有契约，没有实现 |
 | `LumaDomain` | library | `Sources/LumaDomain` | `LumaCore` `PlaybackCore` `LumaContentCore` | 模型 / 查询描述 / 格式判定，无 AppKit、无 IO |
 | `LumaPersistence` | library | `Sources/LumaPersistence` | `LumaDomain` `LumaCore` `LumaContentCore` | SQLite 与图库 / 电视 / 资源站库表 |
 | `LumaAI` | library | `Sources/LumaAI` | `LumaDomain` | 模型后端契约 / OpenAI 兼容实现 / 提示词上下文 / 工具定义 |
-| `LumaUI` | library | `Sources/LumaUI` | `LumaDomain` | 设计 token / 通用视图修饰器 / 拖放 · 键盘 · 窗口胶水 |
+| `LumaUI` | library | `Sources/LumaUI` | `LumaDomain` `LumaCore` | 设计 token / 通用视图修饰器 / 照片网格与缩略图组件 / 拖放 · 键盘 · 窗口胶水 |
+| `LumaMemories` | library | `Sources/LumaMemories` | `LumaDomain` `LumaContentCore` | 回忆影片：生成 / 导出 / 全窗口播放，宿主能力靠注入 |
 | `TestSupport` | library | `Tests/TestSupport` | — | 命令行断言记录器 |
 | `LumaCoreChecks` | executable | `Tests/LumaCoreChecks` | `TestSupport` `LumaCore` `PlaybackCore` | 命令行断言 |
 | `LumaContentChecks` | executable | `Tests/LumaContentChecks` | `TestSupport` `LumaContentCore` `PlaybackCore` | 命令行断言 |
@@ -114,7 +115,7 @@ photos/
 ## 4. `Sources/Luma` 目录清册
 
 5 个一级目录：`App` / `Features` / `Services` / `Store` / `UI`。
-`LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` 是独立 target，清单见 §4.3。
+`LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` / `LumaMemories` 是独立 target，清单见 §4.3。
 下面按目录列全部文件——**新增文件就加在这里**。
 
 ### 4.1 `App/`（6）
@@ -129,23 +130,23 @@ Shortcuts/ShortcutCatalog.swift
 - `RootView`：主界面骨架、覆盖层（查看器 / 搜索 / 播放器）的门禁；`store.needsLibrarySetup` 为真时直接渲染 `LibrarySetupView`。
 - `Shortcuts/ShortcutCatalog`：快捷键清单与帮助页数据源。
 
-### 4.2 `UI/`（14，通用界面层）
+### 4.2 `UI/`（13，通用界面层）
 
 ```
-Components/    AnimatedImageView.swift   Components.swift          PhotoCell.swift
-               PhotoMarqueeSelection.swift                        PhotoThumbnailView.swift
+Components/    AnimatedImageView.swift   Components.swift          PhotoContextMenu.swift
+               PhotoThumbnailLoader.swift
 Platform/      PhotoPicker.swift         PrintSupport.swift
 Shared/        AppKitLibraryUserInteraction.swift                 LibraryInteraction.swift
                LumaStateViews.swift       ModuleReadoutBar.swift    SourceErrorView.swift
                SourceJobStatusBar.swift   SourceTransferMenu.swift
 ```
 
-- `Components/`：跨页面复用的通用视图组件。`PhotoThumbnailView` / `PhotoThumbnailLoader` 是全应用**唯一**取缩略图的入口；`ThumbnailPurpose` 四种：`.grid(maxPixel:)` `.cover(_:)` `.filmstrip(_:)` `.preview(_:)`。
-- `Platform/`：需要 Store 或 App 服务的系统胶水——系统照片选择器（`PhotoPicker`，注入 `LibraryStore`）与打印（`PrintSupport`，依赖 `ImageLoader`）。零依赖的拖放 / 键盘 / 窗口访问已移入 `LumaUI`（见 §4.3.3）。
+- `Components/`：跨页面复用的通用视图组件。`PhotoThumbnailLoader` 是**唯一**取图管线（缓存命中、快速层、目标档位与取消），由 `LumaApp` 组合根注入给 `LumaUI` 的 `PhotoThumbnailView`；`ThumbnailPurpose` 四种：`.grid(maxPixel:)` `.cover(_:)` `.filmstrip(_:)` `.preview(_:)`。`PhotoContextMenu` 是网格 / 列表共用的右键菜单实现（菜单项全部是 Store 业务动作，所以留在 App）。
+- `Platform/`：需要 Store 或 App 服务的系统胶水——系统照片选择器（`PhotoPicker`，注入 `LibraryStore`）与打印（`PrintSupport`，依赖 `ImageLoader`）。零依赖的拖放 / 键盘 / 窗口访问、照片网格组件已移入 `LumaUI`（见 §4.3.3）。
 - `Shared/`：页面级共享视图 + 交互端口。`LibraryInteraction` 定义文件面板 / 确认弹窗的协议与请求模型；`AppKitLibraryUserInteraction` 是其 AppKit 实现，由 `LumaApp` 组合根注入，Store 不直接创建弹窗。
-- `PhotoGrids.swift` 不在这个目录，在 `Features/Gallery/`。
+- 网格布局 / 单元格 / 框选不在这个目录，在 `LumaUI`（见 §4.3.3）。
 
-### 4.3 `Sources/LumaDomain`（独立 target，41 个文件）
+### 4.3 `Sources/LumaDomain`（独立 target，42 个文件）
 
 ```
 AIAgentModels              AssetOverlay               BeautyRecommendation
@@ -157,11 +158,11 @@ ExportOptions              FavoritesDigest            ImportTypes
 LibraryData                LibraryHealth              LibraryHealthTuning
 LibraryOverview            LibraryVault               LocalPerson
 MediaTypeSupport           Models                     NetworkCinemaModels
-PersonInsight              PhotoQuery                 PhotoTags
-PlaceInsight               PlaceSupport               RevisitInsight
-SceneTags                  SearchQuery                SmartAlbum
-SystemQuery                TVEPGModels                TVModels
-VideoFormats               VideoHub
+PersonInsight              PhotoGridSurface           PhotoQuery
+PhotoTags                  PlaceInsight               PlaceSupport
+RevisitInsight             SceneTags                  SearchQuery
+SmartAlbum                 SystemQuery                TVEPGModels
+TVModels                   VideoFormats               VideoHub
 ```
 
 - 只放可序列化模型、查询描述、派生 DTO 与格式判定；不 import AppKit / SwiftUI，不读写文件、不发网络请求。
@@ -201,20 +202,39 @@ AITool                      LocalRuntimeScanner        OpenAICompatibleProvider
 - 每个业务域一个定义文件，自带工具定义、写操作白名单与确认文案：`AILibraryTools`（图库基础 + 参数解析 / 风险判定 / `describe` 兜底）、`AILibraryCatalogTools`、`AILibraryCinemaTools`、`AILibraryNetworkCinemaTools`、`AILibraryTVTools`。
 - 需要 `LibraryStore` 的执行侧留在 App：`Services/AI/Integrations/AIIntegration.swift`、`Services/AI/Tools/AIToolProviders.swift`（执行分派）、`Store/AI/LibraryStore+AITools*.swift`（各业务域执行）。
 
-### 4.3.3 `Sources/LumaUI`（独立 target，5 个文件）
+### 4.3.3 `Sources/LumaUI`（独立 target，10 个文件）
 
 ```
 DragSupport        KeyboardMonitor           LumaDesign
+PhotoCell          PhotoGridHost             PhotoGrids
+PhotoMarqueeSelection                        PhotoThumbnailView
 ViewSupport        WindowAccessor
 ```
 
-- 只依赖 `LumaDomain`，不依赖 Store 或任何功能模块；跨 target 成员统一用 `package` 标注，不再逐个写 `public`。
+- 只依赖 `LumaDomain` / `LumaCore`，不依赖 Store 或任何功能模块；跨 target 成员统一用 `package` 标注，不再逐个写 `public`。
 - `LumaDesign`：`LumaMetrics`（间距 / 圆角 / 侧边栏尺寸）、`LumaBrand`（官网六色与渐变）、环境光背景、磨砂卡片 / 胶囊、行高亮、面包屑。
 - `ViewSupport`：`searchableIf` 与 `PhotoColorLabel` / `PhotoFlag` 的展示色。
 - `DragSupport` / `KeyboardMonitor` / `WindowAccessor`：站内拖拽、窗口级按键监听与粘贴快捷键兜底、窗口尺寸访问。
+- `PhotoThumbnailView`：`ThumbnailPurpose` + 组件本体；取图走 `ThumbnailLoaderRegistry` 的一次闭包调用，管线（缓存 / 快速层 / 解码 / 取消）仍在 App 的 `PhotoThumbnailLoader`，由 `LumaApp` 组合根注入，性能路径不变。
+- `PhotoGridHost`：网格组件与宿主的唯一交互面——展示参数（`thumbSize` / `smallCoverRadius` / `accentColor` / `metadata` / 动效 / `photoOpenMode`）+ 选中 / 堆叠 / 点击 / 拖放 / 右键菜单闭包。组件只读这里、不感知 `LibraryStore`。
+- `PhotoCell` / `PhotoGrids` / `PhotoMarqueeSelection`：单元格、四种网格（正方形 / 完整比例 / 瀑布流 / 列表）与空白框选；`GridLayout` / `ThumbnailSizing` 仍来自 `LumaCore`，布局与档位不变。
+- App 侧桥接：`Store/Shared/LibraryPhotoGridBridge.swift` 把 `LibraryStore` / `AppSettings` / `SelectionModel` 的值与动作填进 `PhotoGridHost`，由 `LumaApp` 在根视图注入一次；右键菜单实现留在 App（`UI/Components/PhotoContextMenu.swift`）。
 - 依赖 Store 的界面胶水仍留在 `UI/Platform/`：`PhotoPicker`（注入 `LibraryStore`）、`PrintSupport`（依赖 `ImageLoader`）。
 
-### 4.4 `Features/`（21 个子目录，144 个文件）
+### 4.3.4 `Sources/LumaMemories`（独立 target，4 个文件）
+
+```
+Memories        MemoryExporter            MemoryFrameLoader
+MemoryMovieView MemoryHost
+Trips
+```
+
+- 回忆影片的完整功能片：`MemoryBuilder` / `TripBuilder` 生成候选，`MemoryExporter` 渲染无声 mp4，`MemoryMovieView` 是全窗口播放界面。
+- 不依赖 `LibraryStore`：视图只面向 `MemoryHost`（任务中心 + 提示 + 关闭回忆），取图走 `MemoryFrameLoader`，两者都由组合根注入。
+- `Luma` 侧适配：`Store/Shared/LibraryStore+FeatureHosts.swift` 实现 `MemoryHost`，`LumaApp.init` 把 `ImageLoader.displayImage` 注入 `MemoryFrameLoader.load`。
+- 这是 Feature target 的试点模式：功能模块自包含视图与服务，App 只实现宿主协议与调用点。
+
+### 4.4 `Features/`（21 个子目录，146 个文件）
 
 ```
 AI/            AIAssistantView
@@ -246,12 +266,11 @@ Editor/        EditAdvanced · EditPoster · EditPro · EditState+Beauty
 Gallery/       DeleteConfirmView · DuplicatesView · GalleryChrome
                GalleryView · GalleryView+Chrome · GalleryView+Content
                GalleryView+Keyboard · GalleryView+ModuleReadout
-               GalleryView+VideoHub · PhotoGrids · SearchResultsPage
+               GalleryView+VideoHub · SearchResultsPage
                TimelineOverviewView
 Import/        ImportView
 Maps/          FootprintPlaybackView · MapCanvas · MapPlaceGridView
                PhotoMapView · PlaceDetailView · PlaceStatisticsView
-Memories/      MemoryMovieView
 NetworkCinema/ NetworkCinemaDetailView · NetworkCinemaHubPages
                NetworkCinemaHubView · NetworkCinemaPersonView
                NetworkCinemaSidebarRow
@@ -281,12 +300,12 @@ Viewer/        FilmstripView · InfoPanelView · LivePhotoLayerView
 
 分工要点：
 
-- `Gallery/` 是图库主界面：`GalleryView` 是容器（网格 / 工具栏 / 拖放 / 框选），`+Content` `+Chrome` `+Keyboard` `+ModuleReadout` `+VideoHub` 是它的扩展；`PhotoGrids` 是四种网格布局；`SearchResultsPage` 是搜索结果页（虽然叫 Search，但它属于图库页）。
+- `Gallery/` 是图库主界面：`GalleryView` 是容器（网格 / 工具栏 / 拖放 / 框选），`+Content` `+Chrome` `+Keyboard` `+ModuleReadout` `+VideoHub` 是它的扩展；`SearchResultsPage` 是搜索结果页（虽然叫 Search，但它属于图库页）。四种网格布局已上移到 `LumaUI`（见 §4.3.3）。
 - `Viewer/` 同时承载图片查看器与视频播放界面：`PhotoViewer`、`FilmstripView`、`InfoPanelView`、`SlideshowView` 是图片侧；`VideoPlayback` / `VideoPlaybackUI` / `VideoScrubThumbnails` / `TVPlaybackOverlay` 是视频侧。
 - `Catalog/` = 网络资源（站点聚合、海报墙、详情、演员、片单、追更）；`NetworkCinema/` = 网络影院（影视源聚合）；两者数据源同类但页面不同，不要互相引用视图。
 - `Settings/AppModules.swift` 定义 `AppModule` 的 5 个模块（`library` / `cloud` / `catalog` / `television` / `cinema`），控制侧边栏入口、搜索来源与文案；关闭模块不删数据。
 
-### 4.5 `Services/`（20 个子目录，138 个文件）
+### 4.5 `Services/`（19 个子目录，138 个文件）
 
 ```
 AI/            Integrations/ · Media/ · Tools/
@@ -327,7 +346,6 @@ Media/         ArtworkCache · EditLUTLoader · FFmpegPrewarm · ImageLoader
                PhotoKitBridge · PhotoKitThumbnailProvider · PhotoQuality
                RawSupport · SigLIPEngine · SigLIPTokenizer
                ThumbnailFileIndex · VideoSupport
-Memories/      Memories · MemoryExporter · Trips
 Maps/          BaiduTileService
 Models/        ModelInstaller · ModelManifest · ModelRegistry
 People/        FaceClustering
@@ -355,7 +373,7 @@ Video/         DisplayModeMatcher · EmbeddedSubtitleLoader · NowPlayingCenter
 - `Services/App/UpdateChecker` 是唯一对外网络访问（GitHub Releases）；`Diagnostics` 生成不含照片与凭据的诊断报告。
 - `Services/App/UIBenchmarkRunner` 只在 `LUMA_UI_BENCH` 环境变量下运行，正常启动不注册 display link、不采样图片加载；`UIPerformanceMonitor` 采样帧间隔并驱动 NSScrollView，`UIPerformanceMetrics` 记录缩略图 / 海报加载耗时。
 
-### 4.6 `Store/`（59 个文件，其中 50 个 `LibraryStore+*` 扩展；按领域分 7 组）
+### 4.6 `Store/`（68 个文件，其中 58 个 `LibraryStore+*` 扩展；按领域分 7 组）
 
 ```
 Library/   LibraryStore.swift
@@ -376,7 +394,8 @@ Cinema/    LibraryStore+Cinema · +CinemaBrowse · +CinemaDetail · +CinemaFiles
 Cloud/     CloudBrowserModel
            LibraryStore+AliyunCookie · +Cloud · +CloudCache · +CloudInfo
            +CloudInsight · +CloudLocal · +CloudSnapshot · +Pan115 · +Quark
-Shared/    LibraryStore+SourceJobs · +SourceRegistry · SourceHubModel
+Shared/    LibraryPhotoGridBridge · LibraryStore+FeatureHosts · +SourceJobs
+           +SourceRegistry · SourceHubModel
 TV/        IPTVBrowserModel · LibraryStore+TV
 ```
 
@@ -398,11 +417,16 @@ SourceHubModel · ViewerModel
 
 ```
 Luma (SwiftUI / AppKit / Store / Services)
+ ├─ LumaMemories     ── LumaDomain ── LumaContentCore ── PlaybackCore ── LumaCore
+ ├─ LumaUI           ── LumaDomain ── LumaCore
+ ├─ LumaAI           ── LumaDomain
  ├─ LumaContentCore  ── PlaybackCore ── LumaCore
  ├─ LumaDomain       ── PlaybackCore ── LumaCore
  ├─ LumaPersistence  ── LumaDomain ── LumaContentCore ── LumaCore
  └─ LumaCore
 ```
+
+- `LumaMemories` / `LumaUI` / `LumaAI` 只向下依赖 Domain / ContentCore / Core；需要 App 能力时用宿主协议或注入出口（`MemoryHost` / `MemoryFrameLoader` / `PhotoGridHost` / `ThumbnailLoaderRegistry` / `PhotoTagCatalog.resourceResolver`），不得反向引用 Store。
 
 - 依赖只向下。UI 不直接 import `PlaybackCore` 的内部类型，统一走 `Services/Video/PlaybackCoreBridge`。
 - Luma 内部固定为 `Features → Store → Services（UseCases → Infrastructure）→ LumaPersistence（MetadataStore / SystemIndex / TVDatabase / CatalogDatabase / SQLite）→ SQLite / 文件 / 网络`；`LumaPersistence` 只依赖 `LumaDomain` 与路径入口，不得反向引用 Store、Services 或视图。
@@ -419,7 +443,8 @@ Luma (SwiftUI / AppKit / Store / Services)
 SwiftUI View ──读 @Published / 调方法──▶ LibraryStore(@MainActor) ──▶ MetadataStore(Luma.sqlite)
       │                                        │
       │                                        └──▶ LibraryPaths（本地文件）
-      └── PhotoThumbnailView ◀── ImageLoader ◀── LibraryPaths / CloudPaths / 网络
+      ├── PhotoThumbnailView / PhotoCell(LumaUI) ◀── ThumbnailLoaderRegistry ◀── PhotoThumbnailLoader ◀── ImageLoader ◀── LibraryPaths / CloudPaths / 网络
+      └── PhotoGrids(LumaUI) ◀── PhotoGridHost ◀── LibraryPhotoGridBridge ◀── LibraryStore / AppSettings / SelectionModel
 ```
 
 - **唯一状态源**：`LibraryStore`（`@MainActor` + `ObservableObject`，见 `Store/Library/LibraryStore.swift`）。

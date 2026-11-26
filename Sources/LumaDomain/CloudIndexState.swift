@@ -1,15 +1,15 @@
 import Foundation
 
 /// 网盘索引的扫描状态：属于展示与缓存判断用的 DTO，不绑定数据库实现。
-public struct CloudIndexState {
-    public var folderCount: Int
-    public var mediaCount: Int
-    public var truncated: Bool
-    public var complete: Bool
-    public var pathVersion: Int
-    public var scopeSignature: String
-    public var updatedAt: Date
-    public init(
+package struct CloudIndexState {
+    package var folderCount: Int
+    package var mediaCount: Int
+    package var truncated: Bool
+    package var complete: Bool
+    package var pathVersion: Int
+    package var scopeSignature: String
+    package var updatedAt: Date
+    package init(
         folderCount: Int,
         mediaCount: Int,
         truncated: Bool,

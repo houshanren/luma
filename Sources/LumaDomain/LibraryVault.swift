@@ -2,14 +2,14 @@ import Foundation
 
 /// 图库保险库清单：记录 originals / database / renders 的相对路径、大小与 SHA-256。
 /// 清单写在备份目录根部，恢复时只依赖清单，不读取任何第三方索引。
-public struct VaultManifest: Codable {
-    public var version: Int = 1
-    public var libraryName: String
-    public var createdAt: Date
-    public var entries: [VaultEntry]
+package struct VaultManifest: Codable {
+    package var version: Int = 1
+    package var libraryName: String
+    package var createdAt: Date
+    package var entries: [VaultEntry]
 
-    public var totalBytes: Int64 { entries.reduce(0) { $0 + $1.size } }
-    public init(
+    package var totalBytes: Int64 { entries.reduce(0) { $0 + $1.size } }
+    package init(
         version: Int = 1,
         libraryName: String,
         createdAt: Date,
@@ -22,14 +22,14 @@ public struct VaultManifest: Codable {
     }
 }
 
-public struct VaultEntry: Codable, Identifiable, Hashable {
+package struct VaultEntry: Codable, Identifiable, Hashable {
     /// 相对图库根目录的路径，例如 `originals/a/<uuid>.heic`。
-    public var path: String
-    public var size: Int64
-    public var sha256: String
+    package var path: String
+    package var size: Int64
+    package var sha256: String
 
-    public var id: String { path }
-    public init(
+    package var id: String { path }
+    package init(
         path: String,
         size: Int64,
         sha256: String
@@ -40,12 +40,12 @@ public struct VaultEntry: Codable, Identifiable, Hashable {
     }
 }
 
-public enum VaultIssueKind: String, Codable {
+package enum VaultIssueKind: String, Codable {
     case missing
     case modified
     case extra
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .missing: return "缺失"
         case .modified: return "损坏"
@@ -54,13 +54,13 @@ public enum VaultIssueKind: String, Codable {
     }
 }
 
-public struct VaultIssue: Identifiable, Hashable {
-    public let id: String
-    public let kind: VaultIssueKind
-    public let path: String
-    public let detail: String
+package struct VaultIssue: Identifiable, Hashable {
+    package let id: String
+    package let kind: VaultIssueKind
+    package let path: String
+    package let detail: String
 
-    public init(kind: VaultIssueKind, path: String, detail: String) {
+    package init(kind: VaultIssueKind, path: String, detail: String) {
         self.id = "\(kind.rawValue)|\(path)"
         self.kind = kind
         self.path = path
@@ -68,17 +68,17 @@ public struct VaultIssue: Identifiable, Hashable {
     }
 }
 
-public struct VaultReport {
-    public let createdAt: Date
-    public let manifestCreatedAt: Date
-    public let checked: Int
-    public let issues: [VaultIssue]
+package struct VaultReport {
+    package let createdAt: Date
+    package let manifestCreatedAt: Date
+    package let checked: Int
+    package let issues: [VaultIssue]
 
-    public var missingCount: Int { issues.filter { $0.kind == .missing }.count }
-    public var modifiedCount: Int { issues.filter { $0.kind == .modified }.count }
-    public var extraCount: Int { issues.filter { $0.kind == .extra }.count }
-    public var isHealthy: Bool { issues.isEmpty }
-    public init(
+    package var missingCount: Int { issues.filter { $0.kind == .missing }.count }
+    package var modifiedCount: Int { issues.filter { $0.kind == .modified }.count }
+    package var extraCount: Int { issues.filter { $0.kind == .extra }.count }
+    package var isHealthy: Bool { issues.isEmpty }
+    package init(
         createdAt: Date,
         manifestCreatedAt: Date,
         checked: Int,
@@ -91,25 +91,25 @@ public struct VaultReport {
     }
 }
 
-public struct VaultProgress {
-    public enum Phase: String {
+package struct VaultProgress {
+    package enum Phase: String {
         case scanning = "扫描"
         case backingUp = "备份"
         case verifying = "校验"
         case restoring = "恢复"
     }
 
-    public var phase: Phase
-    public var completed: Int
-    public var total: Int
-    public var bytes: Int64
-    public var message: String
+    package var phase: Phase
+    package var completed: Int
+    package var total: Int
+    package var bytes: Int64
+    package var message: String
 
-    public var fraction: Double {
+    package var fraction: Double {
         guard total > 0 else { return 0 }
         return min(1, Double(completed) / Double(total))
     }
-    public init(
+    package init(
         phase: Phase,
         completed: Int,
         total: Int,

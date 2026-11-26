@@ -1,13 +1,14 @@
 import Foundation
 import CoreGraphics
+import LumaDomain
 
 /// 回忆影片的风格模板：控制 Ken Burns 的方向、幅度与画面比例。
-enum MemoryStyle: String, CaseIterable, Identifiable, Hashable {
+package enum MemoryStyle: String, CaseIterable, Identifiable, Hashable {
     case classic
     case cinematic
     case fresh
 
-    var id: String { rawValue }
+    package var id: String { rawValue }
 
     var title: String {
         switch self {
@@ -48,24 +49,38 @@ enum MemoryStyle: String, CaseIterable, Identifiable, Hashable {
 }
 
 /// 自动生成的回忆影片。
-struct PhotoMemory: Identifiable, Hashable {
-    enum Kind: String, Hashable {
+package struct PhotoMemory: Identifiable, Hashable {
+    package enum Kind: String, Hashable {
         case month
         case place
         case favorites
         case throwback
     }
 
-    let id: String
-    let title: String
-    let subtitle: String
-    let kind: Kind
-    let photos: [PhotoItem]
-    var style: MemoryStyle = .classic
+    package let id: String
+    package let title: String
+    package let subtitle: String
+    package let kind: Kind
+    package let photos: [PhotoItem]
+    package var style: MemoryStyle
+
+    package init(id: String,
+                 title: String,
+                 subtitle: String,
+                 kind: Kind,
+                 photos: [PhotoItem],
+                 style: MemoryStyle = .classic) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.kind = kind
+        self.photos = photos
+        self.style = style
+    }
 }
 
-enum MemoryBuilder {
-    static func build(from photos: [PhotoItem], limit: Int = 10) -> [PhotoMemory] {
+package enum MemoryBuilder {
+    package static func build(from photos: [PhotoItem], limit: Int = 10) -> [PhotoMemory] {
         let candidates = photos.filter { $0.deletedAt == nil && !$0.isHidden && !$0.isVideo }
         guard candidates.count >= 12 else { return [] }
 

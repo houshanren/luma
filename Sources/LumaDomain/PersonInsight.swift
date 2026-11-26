@@ -2,16 +2,16 @@ import Foundation
 
 /// 「人物」页的聚合筛选：全部 / 已命名 / 待命名 / 宠物。
 /// 参考「位置」页的聚合层级切换，只影响卡片分组与展示，不改变识别结果。
-public enum PeopleGroupFilter: String, CaseIterable, Identifiable {
+package enum PeopleGroupFilter: String, CaseIterable, Identifiable {
     case all
     case named
     case unnamed
     case pets
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
     /// 切换控件上的标签。
-    public var shortTitle: String {
+    package var shortTitle: String {
         switch self {
         case .all: return "全部"
         case .named: return "已命名"
@@ -20,9 +20,9 @@ public enum PeopleGroupFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    public var title: String { shortTitle }
+    package var title: String { shortTitle }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .all: return "person.2"
         case .named: return "person.crop.circle.badge.checkmark"
@@ -31,7 +31,7 @@ public enum PeopleGroupFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    public var help: String {
+    package var help: String {
         switch self {
         case .all: return "显示全部人物与宠物"
         case .named: return "只看已命名的人物"
@@ -41,7 +41,7 @@ public enum PeopleGroupFilter: String, CaseIterable, Identifiable {
     }
 
     /// 筛选后为空时的标题与说明。
-    public var emptyTitle: String {
+    package var emptyTitle: String {
         switch self {
         case .all: return "没有人物"
         case .named: return "还没有已命名的人物"
@@ -50,7 +50,7 @@ public enum PeopleGroupFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    public var emptyHint: String {
+    package var emptyHint: String {
         switch self {
         case .all: return "连接 macOS 官方「照片」图库或分析本机照片后，这里会显示人物与宠物。"
         case .named: return "在官方「照片」里给人物命名后，这里会自动出现；本机聚类可右键卡片重命名。"
@@ -61,15 +61,15 @@ public enum PeopleGroupFilter: String, CaseIterable, Identifiable {
 }
 
 /// 经常同框的人：人物摘要与地点摘要共用。
-public struct PhotoCompanion: Identifiable, Equatable {
-    public let id: String
-    public let name: String
-    public let count: Int
+package struct PhotoCompanion: Identifiable, Equatable {
+    package let id: String
+    package let name: String
+    package let count: Int
     /// 头像来源：拾光本地照片 ID 或系统图库关键照片 ID。
-    public let coverPhotoID: UUID?
+    package let coverPhotoID: UUID?
     /// 官方图库直接给出的人脸裁切图。
-    public let coverData: Data?
-    public init(
+    package let coverData: Data?
+    package init(
         id: String,
         name: String,
         count: Int,
@@ -85,12 +85,12 @@ public struct PhotoCompanion: Identifiable, Equatable {
 }
 
 /// 人物详情「摘要」的派生数据：只由当前人物的可见照片与同框关系计算，纯内存、不落库。
-public struct PersonInsight {
-    public struct YearCount: Identifiable, Equatable {
-        public let year: Int
-        public let count: Int
-        public var id: Int { year }
-        public init(
+package struct PersonInsight {
+    package struct YearCount: Identifiable, Equatable {
+        package let year: Int
+        package let count: Int
+        package var id: Int { year }
+        package init(
             year: Int,
             count: Int
         ) {
@@ -99,11 +99,11 @@ public struct PersonInsight {
         }
     }
 
-    public struct PlaceCount: Identifiable, Equatable {
-        public let name: String
-        public let count: Int
-        public var id: String { name }
-        public init(
+    package struct PlaceCount: Identifiable, Equatable {
+        package let name: String
+        package let count: Int
+        package var id: String { name }
+        package init(
             name: String,
             count: Int
         ) {
@@ -112,12 +112,12 @@ public struct PersonInsight {
         }
     }
 
-    public struct PeriodSlice: Identifiable, Equatable {
-        public let title: String
-        public let count: Int
-        public let fraction: Double
-        public var id: String { title }
-        public init(
+    package struct PeriodSlice: Identifiable, Equatable {
+        package let title: String
+        package let count: Int
+        package let fraction: Double
+        package var id: String { title }
+        package init(
             title: String,
             count: Int,
             fraction: Double
@@ -129,40 +129,40 @@ public struct PersonInsight {
     }
 
     /// 与当前人物经常同框的其他人（本地聚类或官方识别结果）。
-    public typealias Companion = PhotoCompanion
+    package typealias Companion = PhotoCompanion
 
-    public var photoCount: Int = 0
-    public var videoCount: Int = 0
-    public var firstDate: Date?
-    public var lastDate: Date?
-    public var years: [YearCount] = []
-    public var places: [PlaceCount] = []
+    package var photoCount: Int = 0
+    package var videoCount: Int = 0
+    package var firstDate: Date?
+    package var lastDate: Date?
+    package var years: [YearCount] = []
+    package var places: [PlaceCount] = []
     /// 按时段（清晨 / 白天 / 傍晚 / 夜晚）统计，顺序固定。
-    public var periods: [PeriodSlice] = []
-    public var companions: [Companion] = []
+    package var periods: [PeriodSlice] = []
+    package var companions: [Companion] = []
     /// 每年挑一张最值得回看的照片，按拍摄时间倒序。
-    public var highlights: [PhotoItem] = []
+    package var highlights: [PhotoItem] = []
     /// 用于「色彩气质」采样的照片，最多 10 张。
-    public var palettePhotos: [PhotoItem] = []
+    package var palettePhotos: [PhotoItem] = []
 
-    public var totalCount: Int { photoCount + videoCount }
+    package var totalCount: Int { photoCount + videoCount }
 
-    public var activeYear: YearCount? {
+    package var activeYear: YearCount? {
         years.max { lhs, rhs in
             lhs.count == rhs.count ? lhs.year < rhs.year : lhs.count < rhs.count
         }
     }
 
-    public var dominantPeriod: PeriodSlice? {
+    package var dominantPeriod: PeriodSlice? {
         periods.max { $0.fraction < $1.fraction }
     }
 
     /// 摘要页头图的候选：优先横图，避免大封面被竖图裁得只剩一条。
-    public var coverPhoto: PhotoItem? {
+    package var coverPhoto: PhotoItem? {
         highlights.first { $0.aspectRatio >= 1.05 } ?? highlights.first
     }
 
-    public var countText: String {
+    package var countText: String {
         var parts: [String] = []
         if photoCount > 0 { parts.append("\(photoCount.formatted()) 张照片") }
         if videoCount > 0 { parts.append("\(videoCount.formatted()) 个视频") }
@@ -170,20 +170,20 @@ public struct PersonInsight {
         return parts.joined(separator: "、")
     }
 
-    public var dateRangeText: String {
+    package var dateRangeText: String {
         guard let firstDate, let lastDate else { return "" }
         let first = DateText.monthFormatter.string(from: firstDate)
         let last = DateText.monthFormatter.string(from: lastDate)
         return first == last ? first : "\(first) – \(last)"
     }
 
-    public var subtitle: String {
+    package var subtitle: String {
         let range = dateRangeText
         return range.isEmpty ? countText : "\(countText) · \(range)"
     }
 
     /// 一句话人物画像：只陈述能从照片里直接得出的结论。
-    public var narrative: String {
+    package var narrative: String {
         var parts: [String] = []
         if let firstDate, let lastDate, firstDate != lastDate {
             parts.append("\(DateText.monthFormatter.string(from: firstDate)) 到 \(DateText.monthFormatter.string(from: lastDate))，镜头里留下了 \(totalCount.formatted()) 个瞬间")
@@ -210,7 +210,7 @@ public struct PersonInsight {
     // MARK: - 从照片生成
 
     /// 本地图库 / 系统图库快照模式：照片已经在内存里，直接派生。
-    public static func make(photos: [PhotoItem]) -> PersonInsight {
+    package static func make(photos: [PhotoItem]) -> PersonInsight {
         let sorted = photos.sorted { $0.capturedAt > $1.capturedAt }
         var insight = PersonInsight()
         insight.photoCount = sorted.reduce(0) { $0 + ($1.isVideo ? 0 : 1) }
@@ -226,7 +226,7 @@ public struct PersonInsight {
     }
 
     /// SQL 聚合模式（系统图库索引）：各字段由 `SystemIndex` 直接给出。
-    public static func make(photoCount: Int,
+    package static func make(photoCount: Int,
                      videoCount: Int,
                      firstDate: Date?,
                      lastDate: Date?,
@@ -249,7 +249,7 @@ public struct PersonInsight {
     }
 
     /// 把「小时 → 张数」翻译成固定的四段时段。
-    public static func periods(fromHourCounts counts: [Int: Int]) -> [PeriodSlice] {
+    package static func periods(fromHourCounts counts: [Int: Int]) -> [PeriodSlice] {
         let titles = ["清晨", "白天", "傍晚", "夜晚"]
         var buckets = [Int](repeating: 0, count: titles.count)
         for (hour, count) in counts {
@@ -303,7 +303,7 @@ public struct PersonInsight {
         }
         return periods(fromHourCounts: counts)
     }
-    public init(
+    package init(
         photoCount: Int = 0,
         videoCount: Int = 0,
         firstDate: Date? = nil,
@@ -329,9 +329,9 @@ public struct PersonInsight {
 }
 
 /// 人物 / 地点摘要共用的照片挑选规则：高光时刻与色彩采样。
-public enum PhotoInsightSamples {
+package enum PhotoInsightSamples {
     /// 每年一张「高光」：收藏优先，其次分辨率与编辑状态，其余用收藏 / 最近的照片补齐。
-    public static func highlights(_ photos: [PhotoItem], limit: Int = 8) -> [PhotoItem] {
+    package static func highlights(_ photos: [PhotoItem], limit: Int = 8) -> [PhotoItem] {
         let candidates = photos.filter { !$0.isVideo }
         guard !candidates.isEmpty else { return [] }
         var picks: [PhotoItem] = []
@@ -360,7 +360,7 @@ public enum PhotoInsightSamples {
         return picks.sorted { $0.capturedAt > $1.capturedAt }
     }
 
-    public static func paletteSamples(_ photos: [PhotoItem],
+    package static func paletteSamples(_ photos: [PhotoItem],
                                highlights: [PhotoItem],
                                limit: Int = 10) -> [PhotoItem] {
         var result = highlights

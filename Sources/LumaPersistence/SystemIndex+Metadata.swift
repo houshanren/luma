@@ -4,7 +4,7 @@ import LumaCore
 
 /// 系统图库的相簿 / 文件夹 / 人物元数据与计数。
 
-public extension SystemIndex {
+package extension SystemIndex {
     // MARK: - 相簿 / 文件夹 / 人物元数据
 
     /// 只读取相簿 / 文件夹结构（不含照片成员）：系统图库扫描或重建索引期间，

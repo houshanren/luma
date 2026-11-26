@@ -1,27 +1,6 @@
 import SwiftUI
 import AppKit
 
-struct MetadataOptions: Codable, Equatable {
-    var title = false
-    var capturedDate = false
-    var keywords = false
-    var edited = false
-    var fileType = false
-    var favorite = true
-    var location = false
-    var resolution = false
-    var fileSize = false
-    var camera = false
-    var source = false
-    var duration = true
-
-    /// 除「个人收藏」「视频时长」这类角标外，是否还有文字信息需要遮罩。
-    var hasTextOverlay: Bool {
-        title || capturedDate || keywords || edited || fileType
-            || location || resolution || fileSize || camera || source
-    }
-}
-
 /// 缩略图角标与文字的快速预设。
 enum MetadataPreset {
     case minimal
@@ -134,47 +113,6 @@ enum AppAccent: String, CaseIterable, Identifiable {
 
     var swatch: Color {
         color ?? Color.accentColor
-    }
-}
-
-enum PhotoOpenMode: String, CaseIterable, Identifiable {
-    case viewer
-    case editor
-    case systemApp
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .viewer: return "在本 App 中查看"
-        case .editor: return "直接进入编辑（仅照片）"
-        case .systemApp: return "用系统默认应用打开"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .viewer: return "双击照片打开查看器，视频直接播放。"
-        case .editor: return "双击照片进入编辑；视频和只读项目仍用查看器。"
-        case .systemApp: return "双击交给「预览」等默认应用；云端项目仍用查看器。"
-        }
-    }
-
-    /// 设置卡片上的短标题与图标。
-    var shortTitle: String {
-        switch self {
-        case .viewer: return "App 内查看"
-        case .editor: return "直接编辑"
-        case .systemApp: return "系统应用"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .viewer: return "eye"
-        case .editor: return "slider.horizontal.3"
-        case .systemApp: return "arrow.up.forward.app"
-        }
     }
 }
 

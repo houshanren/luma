@@ -1,24 +1,24 @@
 import Foundation
 
 /// 解析后的自然语言搜索：场景词 + 时间范围 + 类型/状态限定 + 人物。
-public struct SearchQuery: Equatable {
-    public var tokens: [String] = []
-    public var startDate: Date?
-    public var endDate: Date?
-    public var onlyFavorites = false
-    public var onlyVideos = false
-    public var onlyPhotos = false
-    public var onlyScreenshots = false
-    public var onlyLivePhotos = false
-    public var onlyEdited = false
-    public var personIDs: Set<UUID> = []
+package struct SearchQuery: Equatable {
+    package var tokens: [String] = []
+    package var startDate: Date?
+    package var endDate: Date?
+    package var onlyFavorites = false
+    package var onlyVideos = false
+    package var onlyPhotos = false
+    package var onlyScreenshots = false
+    package var onlyLivePhotos = false
+    package var onlyEdited = false
+    package var personIDs: Set<UUID> = []
 
-    public var isEmpty: Bool {
+    package var isEmpty: Bool {
         tokens.isEmpty && startDate == nil && endDate == nil
             && !onlyFavorites && !onlyVideos && !onlyPhotos && !onlyScreenshots
             && !onlyLivePhotos && !onlyEdited && personIDs.isEmpty
     }
-    public init(
+    package init(
         tokens: [String] = [],
         startDate: Date? = nil,
         endDate: Date? = nil,
@@ -44,8 +44,8 @@ public struct SearchQuery: Equatable {
 }
 
 /// 把「去年 海边 狗」「2024年5月 有文字的截图」这类输入拆成可下推的筛选条件。
-public enum SearchQueryParser {
-    public static func parse(_ text: String, now: Date = Date(), calendar: Calendar = .current) -> SearchQuery {
+package enum SearchQueryParser {
+    package static func parse(_ text: String, now: Date = Date(), calendar: Calendar = .current) -> SearchQuery {
         var query = SearchQuery()
         let tokens = text
             .trimmingCharacters(in: .whitespacesAndNewlines)

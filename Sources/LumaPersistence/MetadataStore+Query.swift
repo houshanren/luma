@@ -3,10 +3,10 @@ import LumaDomain
 import LumaCore
 
 /// 一次查询的总量与视频数，供底部计数胶囊使用，避免为了显示数字而载入全部照片。
-public struct PhotoQuerySummary: Equatable {
-    public let total: Int
-    public let videos: Int
-    public init(
+package struct PhotoQuerySummary: Equatable {
+    package let total: Int
+    package let videos: Int
+    package init(
         total: Int,
         videos: Int
     ) {
@@ -17,7 +17,7 @@ public struct PhotoQuerySummary: Equatable {
 
 /// 把 `PhotoQuery` 编译成 SQL 的分页查询层。
 /// 所有方法都会占用 `MetadataStore` 自己的串行队列，调用方可以从后台线程直接调用。
-public extension MetadataStore {
+package extension MetadataStore {
     private static let rawExtensions = [
         "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "raf", "orf",
         "rw2", "pef", "srw", "raw", "3fr", "erf", "mef", "mos", "iiq", "rwl"
@@ -219,11 +219,11 @@ public extension MetadataStore {
             guard let rows = try? db.query(sql, binds) else { return [] }
 
             struct MonthDraft {
-                public var order: [String] = []
-                public var samples: [String: [PhotoItem]] = [:]
-                public var counts: [String: Int] = [:]
-                public var firstDates: [String: Date] = [:]
-                public var dayCount: Int = 0
+                package var order: [String] = []
+                package var samples: [String: [PhotoItem]] = [:]
+                package var counts: [String: Int] = [:]
+                package var firstDates: [String: Date] = [:]
+                package var dayCount: Int = 0
             }
             var monthOrder: [String] = []
             var drafts: [String: MonthDraft] = [:]

@@ -2,17 +2,17 @@ import Foundation
 import LumaCore
 
 /// 场景分类：由端侧识别标签聚合而来，用于侧边栏「场景」与语义搜索。
-public struct SceneCategory: Identifiable, Hashable {
-    public let id: String
-    public let title: String
-    public let icon: String
+package struct SceneCategory: Identifiable, Hashable {
+    package let id: String
+    package let title: String
+    package let icon: String
     /// 旧版权威标签（Vision 英文标签），用于兼容历史分析结果。
-    public let labels: Set<String>
+    package let labels: Set<String>
     /// 新模型的统一中文标准标签。
-    public var tags: Set<String> = []
+    package var tags: Set<String> = []
     /// OCR 文字关键词：票据、证件、名胜这类没有分类标签的对象靠文字判定。
-    public var keywords: [String] = []
-    public init(
+    package var keywords: [String] = []
+    package init(
         id: String,
         title: String,
         icon: String,
@@ -30,20 +30,20 @@ public struct SceneCategory: Identifiable, Hashable {
 }
 
 /// 端侧智能分析结果（场景标签 + OCR 文本），只保存在当前图库。
-public struct PhotoAnalysis: Hashable {
-    public let labels: Set<String>
-    public let text: String
+package struct PhotoAnalysis: Hashable {
+    package let labels: Set<String>
+    package let text: String
     /// 预先拼好的小写检索串（标签 + 文字），搜索时直接 contains。
-    public let searchBlob: String
+    package let searchBlob: String
 
     /// 是否属于某个场景：命中标准标签 / 旧的 Vision 标签，或命中 OCR 关键词。
-    public func belongs(to category: SceneCategory) -> Bool {
+    package func belongs(to category: SceneCategory) -> Bool {
         if !category.tags.isEmpty, !category.tags.isDisjoint(with: labels) { return true }
         if !category.labels.isDisjoint(with: labels) { return true }
         guard !category.keywords.isEmpty, !text.isEmpty else { return false }
         return category.keywords.contains { text.contains($0) }
     }
-    public init(
+    package init(
         labels: Set<String>,
         text: String,
         searchBlob: String
@@ -55,11 +55,11 @@ public struct PhotoAnalysis: Hashable {
 }
 
 /// 「查找相似照片」的临时范围。
-public struct SimilarityScope: Equatable {
-    public let sourceID: UUID
-    public let title: String
-    public let ids: Set<UUID>
-    public init(
+package struct SimilarityScope: Equatable {
+    package let sourceID: UUID
+    package let title: String
+    package let ids: Set<UUID>
+    package init(
         sourceID: UUID,
         title: String,
         ids: Set<UUID>
@@ -71,8 +71,8 @@ public struct SimilarityScope: Equatable {
 }
 
 /// 场景目录与中英检索词表。
-public enum SceneCatalog {
-    public static let categories: [SceneCategory] = [
+package enum SceneCatalog {
+    package static let categories: [SceneCategory] = [
         SceneCategory(id: "people", title: "人物", icon: "person.crop.square", labels: [
             "person", "people", "human", "portrait", "selfie", "face", "crowd", "baby", "child"
         ], tags: [
@@ -198,12 +198,12 @@ public enum SceneCatalog {
         ], tags: ["天空", "云朵", "彩虹", "雾", "雨", "雪景", "日落", "日出", "星空"])
     ]
 
-    public static func category(id: String) -> SceneCategory? {
+    package static func category(id: String) -> SceneCategory? {
         categories.first { $0.id == id }
     }
 
     /// 场景命中：Vision 标签 / OCR 关键词；「名胜古迹」额外接受地理位置命中。
-    public static func matches(_ category: SceneCategory,
+    package static func matches(_ category: SceneCategory,
                         analysis: PhotoAnalysis,
                         photo: PhotoItem?) -> Bool {
         if analysis.belongs(to: category) { return true }
@@ -213,7 +213,7 @@ public enum SceneCatalog {
 
     /// 地标名：优先用 EXIF 坐标就近命中内置地标表，其次用 POI / 城市 / 区县文字匹配。
     /// 坐标来自拍摄时的 GPS，不联网、不上传。
-    public static func landmarkName(for photo: PhotoItem) -> String? {
+    package static func landmarkName(for photo: PhotoItem) -> String? {
         if let latitude = photo.latitude, let longitude = photo.longitude,
            let landmark = LandmarkCatalog.nearest(latitude: latitude, longitude: longitude) {
             return landmark.name
@@ -225,7 +225,7 @@ public enum SceneCatalog {
     }
 
     /// 中文（及常见英文）查询词 → 检索串里可能出现的标准标签。
-    public static func searchLabels(for token: String) -> [String] {
+    package static func searchLabels(for token: String) -> [String] {
         var result = aliases[token] ?? []
         if let mapped = PhotoTagCatalog.shared?.searchTitles(for: token) {
             result.append(contentsOf: mapped)

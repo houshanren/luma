@@ -1,12 +1,18 @@
 import SwiftUI
 import AppKit
 import LumaCore
+import LumaDomain
 
-struct SectionHeaderView: View {
-    let title: String
-    let count: Int
+package struct SectionHeaderView: View {
+    package let title: String
+    package let count: Int
 
-    var body: some View {
+    package init(title: String, count: Int) {
+        self.title = title
+        self.count = count
+    }
+
+    package var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(title)
                 .font(.system(size: 22, weight: .bold))
@@ -44,24 +50,34 @@ struct SectionHeaderView: View {
     }
 }
 
-struct SquarePhotoGrid: View {
-    @EnvironmentObject private var store: LibraryStore
-    let photos: [PhotoItem]
-    let availableWidth: CGFloat
+package struct SquarePhotoGrid: View {
+    @EnvironmentObject private var host: PhotoGridHost
+    package let photos: [PhotoItem]
+    package let availableWidth: CGFloat
     /// 非图库网格（人物详情等）打开查看器时的顺序基准。
-    var viewerContext: [PhotoItem]?
+    package var viewerContext: [PhotoItem]?
     /// 堆叠网格：显示堆叠角标并支持双击展开。
-    var stacked: Bool = false
+    package var stacked: Bool = false
 
     private let spacing: CGFloat = 2
 
-    var body: some View {
+    package init(photos: [PhotoItem],
+                 availableWidth: CGFloat,
+                 viewerContext: [PhotoItem]? = nil,
+                 stacked: Bool = false) {
+        self.photos = photos
+        self.availableWidth = availableWidth
+        self.viewerContext = viewerContext
+        self.stacked = stacked
+    }
+
+    package var body: some View {
         // 网格直接铺满内容区，左右不再留白（对齐系统「照片」的满宽网格）。
         let contentWidth = max(120, availableWidth)
-        let target = CGFloat(store.thumbSize)
+        let target = CGFloat(host.thumbSize)
         let columns = GridLayout.columns(contentWidth: contentWidth, targetSize: target, spacing: spacing)
         let cell = GridLayout.squareCellWidth(contentWidth: contentWidth, columns: columns, spacing: spacing)
-        let stacks = stacked ? store.stackBadges() : [:]
+        let stacks = stacked ? host.stackBadges() : [:]
         LazyVGrid(
             columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
             spacing: spacing
@@ -85,28 +101,44 @@ struct SquarePhotoGrid: View {
     }
 }
 
-struct JustifiedRowEntry: Identifiable {
-    let photo: PhotoItem
-    let width: CGFloat
-    let height: CGFloat
-    var id: UUID { photo.id }
+package struct JustifiedRowEntry: Identifiable {
+    package let photo: PhotoItem
+    package let width: CGFloat
+    package let height: CGFloat
+    package var id: UUID { photo.id }
+
+    package init(photo: PhotoItem, width: CGFloat, height: CGFloat) {
+        self.photo = photo
+        self.width = width
+        self.height = height
+    }
 }
 
-struct JustifiedPhotoGrid: View {
-    @EnvironmentObject private var store: LibraryStore
-    let photos: [PhotoItem]
-    let availableWidth: CGFloat
-    let targetHeight: CGFloat
+package struct JustifiedPhotoGrid: View {
+    @EnvironmentObject private var host: PhotoGridHost
+    package let photos: [PhotoItem]
+    package let availableWidth: CGFloat
+    package let targetHeight: CGFloat
     /// 堆叠网格：显示堆叠角标并支持双击展开。
-    var stacked: Bool = false
+    package var stacked: Bool = false
 
     private let spacing: CGFloat = 2
 
-    var body: some View {
+    package init(photos: [PhotoItem],
+                 availableWidth: CGFloat,
+                 targetHeight: CGFloat,
+                 stacked: Bool = false) {
+        self.photos = photos
+        self.availableWidth = availableWidth
+        self.targetHeight = targetHeight
+        self.stacked = stacked
+    }
+
+    package var body: some View {
         let contentWidth = max(120, availableWidth)
         let rows = Self.buildRows(photos: photos, width: contentWidth,
                                   targetHeight: max(60, targetHeight), spacing: spacing)
-        let stacks = stacked ? store.stackBadges() : [:]
+        let stacks = stacked ? host.stackBadges() : [:]
         // 完整宽高比模式：每张缩略图保持原始比例、同一行的顶边与底边对齐。
         // 文件名不再常驻在图下方（会让行高参差、整页显得杂乱），改为悬停提示里查看。
         LazyVStack(alignment: .leading, spacing: spacing) {
@@ -133,8 +165,8 @@ struct JustifiedPhotoGrid: View {
         }
     }
 
-    static func buildRows(photos: [PhotoItem], width: CGFloat,
-                          targetHeight: CGFloat, spacing: CGFloat) -> [[JustifiedRowEntry]] {
+    package static func buildRows(photos: [PhotoItem], width: CGFloat,
+                                  targetHeight: CGFloat, spacing: CGFloat) -> [[JustifiedRowEntry]] {
         let aspects = photos.map(\.aspectRatio)
         return GridLayout.justifiedRows(aspects: aspects,
                                         width: width,
@@ -151,23 +183,35 @@ struct JustifiedPhotoGrid: View {
 
 /// 瀑布流：等宽多列、每列高度自适应，保留原始宽高比，竖图横图混排也不留空洞。
 /// 卡片比其它网格更大，并常驻投影，让照片从背景里浮出来。
-struct MasonryPhotoGrid: View {
-    @EnvironmentObject private var store: LibraryStore
-    let photos: [PhotoItem]
-    let availableWidth: CGFloat
-    let targetWidth: CGFloat
+package struct MasonryPhotoGrid: View {
+    @EnvironmentObject private var host: PhotoGridHost
+    package let photos: [PhotoItem]
+    package let availableWidth: CGFloat
+    package let targetWidth: CGFloat
     /// 非图库网格（地点详情等）打开查看器时的顺序基准。
-    var viewerContext: [PhotoItem]?
+    package var viewerContext: [PhotoItem]?
     /// 堆叠网格：显示堆叠角标并支持双击展开。
-    var stacked: Bool = false
+    package var stacked: Bool = false
 
     private let spacing: CGFloat = 8
     private let maxColumns = 6
 
+    package init(photos: [PhotoItem],
+                 availableWidth: CGFloat,
+                 targetWidth: CGFloat,
+                 viewerContext: [PhotoItem]? = nil,
+                 stacked: Bool = false) {
+        self.photos = photos
+        self.availableWidth = availableWidth
+        self.targetWidth = targetWidth
+        self.viewerContext = viewerContext
+        self.stacked = stacked
+    }
+
     /// 瀑布流卡片比正方形网格大 1.5 倍，减少列数、放大单张，观感更接近「瀑布」。
     private var cardWidth: CGFloat { max(180, targetWidth * 1.5) }
 
-    var body: some View {
+    package var body: some View {
         let contentWidth = max(120, availableWidth)
         let columns = min(maxColumns,
                           GridLayout.columns(contentWidth: contentWidth,
@@ -178,7 +222,7 @@ struct MasonryPhotoGrid: View {
                                                      spacing: spacing)
         let buckets = GridLayout.masonryColumns(aspects: photos.map(\.aspectRatio),
                                                 columns: columns)
-        let stacks = stacked ? store.stackBadges() : [:]
+        let stacks = stacked ? host.stackBadges() : [:]
         HStack(alignment: .top, spacing: spacing) {
             ForEach(buckets.indices, id: \.self) { column in
                 LazyVStack(spacing: spacing) {
@@ -217,20 +261,26 @@ struct MasonryPhotoGrid: View {
 }
 
 /// 列表：一行一项，缩略图 + 文件名 + 拍摄日期 / 尺寸 / 大小，适合快速查找与核对元数据。
-struct PhotoListView: View {
-    @EnvironmentObject private var store: LibraryStore
-    let photos: [PhotoItem]
-    let availableWidth: CGFloat
+package struct PhotoListView: View {
+    @EnvironmentObject private var host: PhotoGridHost
+    package let photos: [PhotoItem]
+    package let availableWidth: CGFloat
     /// 堆叠网格：列表里标注整组张数。
-    var stacked: Bool = false
+    package var stacked: Bool = false
+
+    package init(photos: [PhotoItem], availableWidth: CGFloat, stacked: Bool = false) {
+        self.photos = photos
+        self.availableWidth = availableWidth
+        self.stacked = stacked
+    }
 
     /// 列表缩略图跟随工具栏缩放（56…360 → 28…96）。
-    private var thumbSide: CGFloat { min(96, max(28, CGFloat(store.thumbSize) * 0.34)) }
+    private var thumbSide: CGFloat { min(96, max(28, CGFloat(host.thumbSize) * 0.34)) }
     private var showsResolution: Bool { availableWidth >= 820 }
     private var showsFileSize: Bool { availableWidth >= 700 }
 
-    var body: some View {
-        let stacks = stacked ? store.stackBadges() : [:]
+    package var body: some View {
+        let stacks = stacked ? host.stackBadges() : [:]
         LazyVStack(spacing: 0) {
             header
             ForEach(photos) { photo in
@@ -274,9 +324,7 @@ struct PhotoListView: View {
 }
 
 private struct PhotoListRow: View {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var settings: AppSettings
-    @EnvironmentObject private var selectionModel: SelectionModel
+    @EnvironmentObject private var host: PhotoGridHost
     let photo: PhotoItem
     let thumbSide: CGFloat
     let showsResolution: Bool
@@ -288,10 +336,10 @@ private struct PhotoListRow: View {
 
     @State private var isHovering = false
 
-    private var isSelected: Bool { selectionModel.ids.contains(photo.id) }
+    private var isSelected: Bool { host.selectedIDs.contains(photo.id) }
 
     private var actionIDs: Set<UUID> {
-        selectionModel.ids.contains(photo.id) && !selectionModel.ids.isEmpty ? selectionModel.ids : [photo.id]
+        host.selectedIDs.contains(photo.id) && !host.selectedIDs.isEmpty ? host.selectedIDs : [photo.id]
     }
 
     private var kindText: String {
@@ -315,7 +363,7 @@ private struct PhotoListRow: View {
         HStack(spacing: 12) {
             PhotoThumbnailView(photo: photo, purpose: .cover(thumbSide))
                 .frame(width: thumbSide, height: thumbSide)
-                .clipShape(RoundedRectangle(cornerRadius: settings.smallCoverRadius, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: host.smallCoverRadius, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
@@ -385,25 +433,25 @@ private struct PhotoListRow: View {
                 // 与网格一致：单击只负责选择，⌘ / ⇧ 单击多选，双击打开。
                 let flags = NSEvent.modifierFlags
                 if flags.contains(.command) || flags.contains(.shift) {
-                    store.handleTap(photo.id)
-                } else if selectionModel.ids.contains(photo.id), selectionModel.ids.count > 1 {
-                    store.selectionAnchorID = photo.id
+                    host.handleTap(photo.id)
+                } else if host.selectedIDs.contains(photo.id), host.selectedIDs.count > 1 {
+                    host.setSelectionAnchor(photo.id)
                 } else {
-                    store.handleTap(photo.id)
+                    host.handleTap(photo.id)
                 }
             },
             double: {
                 if stackCount > 1, !stackIsBurst {
-                    withAnimation(settings.motion.layout) {
-                        store.toggleStackExpansion(photo.id)
+                    withAnimation(host.layoutAnimation) {
+                        host.toggleStackExpansion(photo.id)
                     }
                 } else {
-                    store.openPhoto(photo.id, by: settings.photoOpenMode)
+                    host.openPhoto(photo.id, host.photoOpenMode)
                 }
             }
         )
         .contextMenu {
-            PhotoContextMenu(photo: photo, actionIDs: actionIDs)
+            host.contextMenu(photo, actionIDs)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(photo.displayTitle)

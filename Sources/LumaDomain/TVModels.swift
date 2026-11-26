@@ -6,11 +6,11 @@ import LumaContentCore
 /// 电视频道搜索的检索词归一。
 /// 用户习惯说「上海电视台」「湖南卫视台」这类带后缀的名字，而源里的频道名往往不带后缀，
 /// 直接按整串匹配会一条都搜不到；这里统一拆成可用于包含匹配的关键词。
-public enum TVSearchQuery {
+package enum TVSearchQuery {
     private static let suffixes = ["广播电视台", "电视台", "频道", "直播", "高清", "uhd", "hd", "台"]
 
     /// 返回原词与去后缀后的词（去重）；「上海电视台」→ ["上海电视台", "上海"]。
-    public static func tokens(_ raw: String) -> [String] {
+    package static func tokens(_ raw: String) -> [String] {
         let keyword = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !keyword.isEmpty else { return [] }
         var tokens = [keyword]
@@ -32,7 +32,7 @@ public enum TVSearchQuery {
 
     /// 频道是否命中关键词：频道名 / 分组 / 省份归属逐项判断。
     /// 省份归属让「上海」也能找到东方卫视、哈哈炫动这类不带省名的本地台。
-    public static func matchesChannelIdentity(_ channel: TVChannel, tokens: [String]) -> Bool {
+    package static func matchesChannelIdentity(_ channel: TVChannel, tokens: [String]) -> Bool {
         guard !tokens.isEmpty else { return false }
         if tokens.contains(where: { channel.name.localizedCaseInsensitiveContains($0) }) {
             return true
@@ -46,7 +46,7 @@ public enum TVSearchQuery {
 }
 
 /// 默认接入的地区。大陆优先央视与地方卫视，其他地区取自公开国家列表。
-public enum TVRegion: String, Codable, CaseIterable, Identifiable, Hashable {
+package enum TVRegion: String, Codable, CaseIterable, Identifiable, Hashable {
     case mainland
     case hongKong
     case taiwan
@@ -59,9 +59,9 @@ public enum TVRegion: String, Codable, CaseIterable, Identifiable, Hashable {
     case italy
     case singapore
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .mainland: return "大陆"
         case .hongKong: return "香港"
@@ -79,21 +79,21 @@ public enum TVRegion: String, Codable, CaseIterable, Identifiable, Hashable {
 }
 
 /// 一条 M3U 播放列表来源。默认不接入任何源，由用户自行接入。
-public struct TVPlaylist: Identifiable, Codable, Hashable {
-    public var id: UUID
-    public var name: String
-    public var urlString: String
-    public var region: TVRegion
-    public var isEnabled: Bool
+package struct TVPlaylist: Identifiable, Codable, Hashable {
+    package var id: UUID
+    package var name: String
+    package var urlString: String
+    package var region: TVRegion
+    package var isEnabled: Bool
     /// 最近一次连接检测的结果：延迟、频道数与错误信息。
-    public var lastCheckedAt: Date?
-    public var lastLatencyMilliseconds: Int?
-    public var lastChannelCount: Int?
-    public var lastError: String?
+    package var lastCheckedAt: Date?
+    package var lastLatencyMilliseconds: Int?
+    package var lastChannelCount: Int?
+    package var lastError: String?
     /// XMLTV 节目单地址：优先从 M3U 头部的 `url-tvg` / `x-tvg-url` 读取，也可手动填写。
-    public var epgURLString: String?
+    package var epgURLString: String?
 
-    public init(
+    package init(
         id: UUID,
         name: String,
         urlString: String,
@@ -116,7 +116,7 @@ public struct TVPlaylist: Identifiable, Codable, Hashable {
         self.lastError = lastError
         self.epgURLString = epgURLString
     }
-    public init(id: UUID = UUID(),
+    package init(id: UUID = UUID(),
          name: String,
          urlString: String,
          region: TVRegion,
@@ -132,7 +132,7 @@ public struct TVPlaylist: Identifiable, Codable, Hashable {
 
 }
 
-public extension TVPlaylist {
+package extension TVPlaylist {
     /// 界面上显示的来源地址：本地导入的列表只说明「本地播放列表」，不铺一串文件路径。
     var displayAddress: String {
         urlString.lowercased().hasPrefix("file://") ? "本地播放列表（已复制到图库）" : urlString
@@ -168,43 +168,43 @@ public extension TVPlaylist {
 }
 
 /// 一条可播放的电视频道（同一频道只保留最高画质线路）。
-public struct TVChannel: Identifiable, Hashable {
-    public var id: String
-    public var name: String
-    public var group: String
-    public var logoURL: String?
-    public var streamURL: String
-    public var headers: [String: String]
-    public var isHLS: Bool
-    public var qualityLabel: String?
-    public var playlistID: UUID
-    public var region: TVRegion
+package struct TVChannel: Identifiable, Hashable {
+    package var id: String
+    package var name: String
+    package var group: String
+    package var logoURL: String?
+    package var streamURL: String
+    package var headers: [String: String]
+    package var isHLS: Bool
+    package var qualityLabel: String?
+    package var playlistID: UUID
+    package var region: TVRegion
     /// 地方台所属省份（大陆列表才有）：用于「按省份」聚合展示。
-    public var province: String? = nil
+    package var province: String? = nil
     /// M3U 的 `tvg-id`：EPG 节目单与回看映射的稳定键。
-    public var tvgID: String? = nil
+    package var tvgID: String? = nil
     /// 回看地址模板（`catchup-source`），可能含 `${start}` / `${end}` 等占位符。
-    public var catchUpSource: String? = nil
+    package var catchUpSource: String? = nil
     /// 源声明的回看天数。
-    public var catchUpDays: Int? = nil
+    package var catchUpDays: Int? = nil
     /// 实际可回看天数：源没声明时按 3 天收敛——实测公共源的回看窗口多为 3～4 天，
     /// 给 7 天只会让后面几天点开是空的。
-    public var effectiveCatchUpDays: Int { max(1, catchUpDays ?? 3) }
+    package var effectiveCatchUpDays: Int { max(1, catchUpDays ?? 3) }
     /// 当前播放的是回看而不是直播：只影响播放模式与界面标识。
-    public var isCatchUp: Bool = false
+    package var isCatchUp: Bool = false
     /// M3U 里同一频道的候选线路数（含当前线路）；信号页显示「N 线路」。
-    public var lineCount: Int = 1
+    package var lineCount: Int = 1
     /// 备用线路：播放失败时按顺序顺延，信号详情里可设为默认。
-    public var alternateStreamURLs: [String] = []
+    package var alternateStreamURLs: [String] = []
 
     /// 线路列表：当前线路在最前，后面是去重后的备用线路。
-    public var streamLines: [String] {
+    package var streamLines: [String] {
         var seen = Set<String>()
         return ([streamURL] + alternateStreamURLs).filter { seen.insert($0).inserted }
     }
 
     /// 同名频道匹配用的归一化名称：去掉空白与画质后缀，便于跨源找备用线路。
-    public static func normalizedName(_ name: String) -> String {
+    package static func normalizedName(_ name: String) -> String {
         var value = name.lowercased().replacingOccurrences(of: " ", with: "")
         let suffixes = ["超高清", "高清", "超清", "蓝光", "4k", "ipv6", "hd", "sd"]
         var changed = true
@@ -217,7 +217,7 @@ public struct TVChannel: Identifiable, Hashable {
         }
         return value
     }
-    public init(
+    package init(
         id: String,
         name: String,
         group: String,
@@ -258,21 +258,21 @@ public struct TVChannel: Identifiable, Hashable {
 
 /// 播放器里的一条线路：除地址外还记住它属于哪个接入平台、在该平台里是第几条。
 /// 同一个台在多个源里都有线路时，播放器的「线路」菜单按平台分组展示，可逐条手动切换。
-public struct TVLineInfo: Identifiable, Hashable {
-    public var id: String { url }
-    public let url: String
-    public let sourceID: UUID
-    public let sourceName: String
-    public let channelName: String
+package struct TVLineInfo: Identifiable, Hashable {
+    package var id: String { url }
+    package let url: String
+    package let sourceID: UUID
+    package let sourceName: String
+    package let channelName: String
     /// 在该平台里的序号（从 1 起）。
-    public let lineIndex: Int
+    package let lineIndex: Int
     /// 该平台里共有几条。
-    public let lineCount: Int
+    package let lineCount: Int
 
-    public var title: String {
+    package var title: String {
         lineCount > 1 ? "线路 \(lineIndex) / \(lineCount)" : "线路 1"
     }
-    public init(
+    package init(
         url: String,
         sourceID: UUID,
         sourceName: String,
@@ -290,12 +290,12 @@ public struct TVLineInfo: Identifiable, Hashable {
 }
 
 /// 按接入平台分组的线路：播放器的线路菜单直接渲染这层结构。
-public struct TVLineGroup: Identifiable {
-    public var id: UUID { sourceID }
-    public let sourceID: UUID
-    public let sourceName: String
-    public var lines: [TVLineInfo]
-    public init(
+package struct TVLineGroup: Identifiable {
+    package var id: UUID { sourceID }
+    package let sourceID: UUID
+    package let sourceName: String
+    package var lines: [TVLineInfo]
+    package init(
         sourceID: UUID,
         sourceName: String,
         lines: [TVLineInfo]
@@ -309,15 +309,15 @@ public struct TVLineGroup: Identifiable {
 /// 频道展示顺序，贴合国内用户的找台习惯：
 /// 央视 1~N → 中央其他（CGTN / 4K / 海外版）→ 凤凰 → 各省（卫视优先）→ 港澳台 / 海外。
 /// 只决定展示顺序，不影响源本身的接入顺序。
-public enum TVChannelOrder {
+package enum TVChannelOrder {
     private struct Key {
-        public var bucket: Int
-        public var ordinal: Int
-        public var provinceRank: Int
-        public var satellite: Int
+        package var bucket: Int
+        package var ordinal: Int
+        package var provinceRank: Int
+        package var satellite: Int
     }
 
-    public static func sorted(_ channels: [TVChannel]) -> [TVChannel] {
+    package static func sorted(_ channels: [TVChannel]) -> [TVChannel] {
         channels
             .map { (key: key(for: $0), channel: $0) }
             .sorted { lhs, rhs in
@@ -448,15 +448,15 @@ public enum TVChannelOrder {
 
 /// 一条直播线路的播放元数据：并入其它源的同名频道后，各线路的协议与请求头可能不同
 /// （运营商 IPTV 常是 HLS 且不需要 UA，公网源常是 HTTP-FLV 且必须带 UA）。
-public struct TVLineMetadata: Hashable {
-    public var headers: [String: String]
-    public var isHLS: Bool
+package struct TVLineMetadata: Hashable {
+    package var headers: [String: String]
+    package var isHLS: Bool
 
     /// 地址本身是否 HLS：只有显式 .m3u8 才算，`.php` / 无扩展名交给地址推断。
-    public static func inferredHLS(for url: String) -> Bool {
+    package static func inferredHLS(for url: String) -> Bool {
         url.lowercased().contains(".m3u8")
     }
-    public init(
+    package init(
         headers: [String: String],
         isHLS: Bool
     ) {
@@ -466,12 +466,12 @@ public struct TVLineMetadata: Hashable {
 }
 
 /// 一个源下的分类（按类型分组），用于侧边栏的二级层级。
-public struct TVCategory: Identifiable, Hashable {
-    public var group: String
-    public var count: Int
+package struct TVCategory: Identifiable, Hashable {
+    package var group: String
+    package var count: Int
 
-    public var id: String { group }
-    public init(
+    package var id: String { group }
+    package init(
         group: String,
         count: Int
     ) {
@@ -482,16 +482,16 @@ public struct TVCategory: Identifiable, Hashable {
 
 /// 网络电视总览的分页：直播 / 夜航 / 节目回看 / 信号 / 源库。
 /// 「夜航」把赛事、黄金时段、综艺与人物纪录按晚间时段重新编排。
-public enum TVHubTab: String, CaseIterable, Identifiable, Hashable {
+package enum TVHubTab: String, CaseIterable, Identifiable, Hashable {
     case channels
     case tonight
     case guide
     case status
     case overview
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .channels: return "直播"
         case .tonight: return "夜航"
@@ -501,7 +501,7 @@ public enum TVHubTab: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    public var symbol: String {
+    package var symbol: String {
         switch self {
         case .channels: return "tv"
         case .tonight: return "moon.stars.fill"
@@ -512,7 +512,7 @@ public enum TVHubTab: String, CaseIterable, Identifiable, Hashable {
     }
 
     /// 上次停留的分页：旧的「总览 / 频道 / 状态」映射到新的「源库 / 直播 / 信号」。
-    public static func persisted(_ raw: String?) -> TVHubTab {
+    package static func persisted(_ raw: String?) -> TVHubTab {
         switch raw {
         case "sources": return .overview
         case "live": return .channels
@@ -524,14 +524,14 @@ public enum TVHubTab: String, CaseIterable, Identifiable, Hashable {
 }
 
 /// 频道墙的分组方式：按频道类型（新闻 / 体育…）、按省份聚合地方台，或按国家 / 地区。
-public enum TVGroupingMode: String, CaseIterable, Identifiable, Hashable {
+package enum TVGroupingMode: String, CaseIterable, Identifiable, Hashable {
     case category
     case province
     case country
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .category: return "按类型"
         case .province: return "按省份"
@@ -543,11 +543,11 @@ public enum TVGroupingMode: String, CaseIterable, Identifiable, Hashable {
 /// 频道所属国家 / 地区：「按国家」聚合与筛选共用。
 /// 先看分组标题与台名里的国家关键词（iptv-org 这类多国混排的列表只能靠它），
 /// 认不出来再退回列表声明的地区。
-public enum TVCountries {
-    public static let order = ["中国大陆", "香港", "澳门", "台湾", "日本", "韩国",
+package enum TVCountries {
+    package static let order = ["中国大陆", "香港", "澳门", "台湾", "日本", "韩国",
                         "美国", "英国", "法国", "德国", "意大利", "新加坡", "其他"]
 
-    public static func country(for channel: TVChannel) -> String {
+    package static func country(for channel: TVChannel) -> String {
         let text = "\(channel.group) \(channel.name)".lowercased()
         for (country, keywords) in table where keywords.contains(where: { text.contains($0) }) {
             return country
@@ -555,7 +555,7 @@ public enum TVCountries {
         return country(for: channel.region)
     }
 
-    public static func country(for region: TVRegion) -> String {
+    package static func country(for region: TVRegion) -> String {
         switch region {
         case .mainland: return "中国大陆"
         case .hongKong: return "香港"
@@ -571,7 +571,7 @@ public enum TVCountries {
         }
     }
 
-    public static func rank(_ country: String) -> Int {
+    package static func rank(_ country: String) -> Int {
         order.firstIndex(of: country) ?? order.count
     }
 
@@ -594,20 +594,20 @@ public enum TVCountries {
 }
 
 /// 频道墙的快捷筛选：收藏 / 最近。
-public enum TVQuickFilter: String, CaseIterable, Identifiable, Hashable {
+package enum TVQuickFilter: String, CaseIterable, Identifiable, Hashable {
     case favorites
     case recent
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .favorites: return "收藏"
         case .recent: return "最近"
         }
     }
 
-    public var symbol: String {
+    package var symbol: String {
         switch self {
         case .favorites: return "star.fill"
         case .recent: return "clock"
@@ -617,18 +617,18 @@ public enum TVQuickFilter: String, CaseIterable, Identifiable, Hashable {
 
 /// 关注的球队 / 联赛：节目标题里命中关键词，就被当成「我的主队」。
 /// 关注只影响夜航的高亮、筛选与提醒，不会修改节目单。
-public struct TVSportFollow: Codable, Identifiable, Hashable {
-    public enum Kind: String, Codable, Hashable {
+package struct TVSportFollow: Codable, Identifiable, Hashable {
+    package enum Kind: String, Codable, Hashable {
         case team
         case league
     }
 
-    public var keyword: String
-    public var kind: Kind
-    public var createdAt: Date
+    package var keyword: String
+    package var kind: Kind
+    package var createdAt: Date
 
-    public var id: String { keyword }
-    public init(
+    package var id: String { keyword }
+    package init(
         keyword: String,
         kind: Kind,
         createdAt: Date
@@ -641,8 +641,8 @@ public struct TVSportFollow: Codable, Identifiable, Hashable {
 
 /// 一条电视录制：定时等待 → 录制中 → 完成 / 失败 / 取消。
 /// 录制本身复用 `IngestService` 的远端片段能力，文件落在图库里。
-public struct TVRecording: Codable, Identifiable, Hashable {
-    public enum State: String, Codable, Hashable {
+package struct TVRecording: Codable, Identifiable, Hashable {
+    package enum State: String, Codable, Hashable {
         case scheduled
         case recording
         case finished
@@ -650,29 +650,29 @@ public struct TVRecording: Codable, Identifiable, Hashable {
         case cancelled
     }
 
-    public var id: UUID
-    public var channelID: String
-    public var channelName: String
+    package var id: UUID
+    package var channelID: String
+    package var channelName: String
     /// 所属播放列表：登记任务中心时用作源 ID。
-    public var playlistID: UUID
-    public var title: String
-    public var streamURL: String
-    public var headers: [String: String]
-    public var isHLS: Bool
-    public var start: Date
+    package var playlistID: UUID
+    package var title: String
+    package var streamURL: String
+    package var headers: [String: String]
+    package var isHLS: Bool
+    package var start: Date
     /// 计划录制时长（秒）。
-    public var duration: TimeInterval
-    public var state: State
+    package var duration: TimeInterval
+    package var state: State
     /// 完成后落进图库的条目 id。
-    public var photoID: String?
-    public var note: String?
-    public var createdAt: Date
+    package var photoID: String?
+    package var note: String?
+    package var createdAt: Date
 
-    public var end: Date { start.addingTimeInterval(duration) }
-    public var isPending: Bool { state == .scheduled || state == .recording }
+    package var end: Date { start.addingTimeInterval(duration) }
+    package var isPending: Bool { state == .scheduled || state == .recording }
     /// 错过开始太久（10 分钟）就不再补录，避免打开应用时突然抓一堆旧节目。
-    public var isExpired: Bool { Date().timeIntervalSince(start) > 600 }
-    public init(
+    package var isExpired: Bool { Date().timeIntervalSince(start) > 600 }
+    package init(
         id: UUID,
         channelID: String,
         channelName: String,
@@ -706,14 +706,14 @@ public struct TVRecording: Codable, Identifiable, Hashable {
 }
 
 /// 频道分组：把 iptv-org 的英文 group-title 映射成中文，并固定展示顺序。
-public enum TVGrouping {
-    public static let order: [String] = [
+package enum TVGrouping {
+    package static let order: [String] = [
         "央视", "卫视", "港澳台", "地方", "新闻", "综合", "财经", "体育", "电影", "剧集",
         "娱乐", "少儿", "纪实", "文化", "音乐", "生活", "购物", "宗教",
         "家庭", "教育", "科教", "天气", "旅游", "汽车", "美食", "户外", "未分类", "其他"
     ]
 
-    public static func display(_ raw: String?) -> String {
+    package static func display(_ raw: String?) -> String {
         guard let raw, !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return "其他" }
         switch raw.lowercased() {
         case "news": return "新闻"
@@ -744,12 +744,12 @@ public enum TVGrouping {
         }
     }
 
-    public static func rank(_ group: String) -> Int {
+    package static func rank(_ group: String) -> Int {
         order.firstIndex(of: group) ?? order.count
     }
 
     /// 大陆列表里按频道名细分央视 / 卫视，优先于原 group-title。
-    public static func refine(_ group: String, name: String, region: TVRegion) -> String {
+    package static func refine(_ group: String, name: String, region: TVRegion) -> String {
         guard region == .mainland else { return group }
         let upper = name.uppercased()
         if upper.hasPrefix("CCTV") || upper.hasPrefix("CGTN") { return "央视" }

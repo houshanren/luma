@@ -4,7 +4,7 @@ import LumaCore
 
 /// 系统图库直连：连拍、相簿 / 人物与导入会话。
 
-public extension SystemIndex {
+package extension SystemIndex {
     /// 直连模式的连拍组成员（按拍摄时间升序）：`ZAVALANCHEUUID = ?` 命中 Apple 的
     /// 连拍部分索引，单组通常几十张、毫秒级；查看器组内浏览与连播放用。
     /// 成员里已含收藏 / 主题等全部字段，选择与处理动作不需要二次回查。

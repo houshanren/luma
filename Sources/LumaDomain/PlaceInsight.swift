@@ -2,12 +2,12 @@ import Foundation
 
 /// 地点详情「摘要」的派生数据：到访轨迹、四季、时段、地标、同框人物与高光照片。
 /// 全部由当前地点的可见照片及其元数据在内存里计算，不落库、不上传。
-public struct PlaceInsight {
-    public struct YearCount: Identifiable, Equatable {
-        public let year: Int
-        public let count: Int
-        public var id: Int { year }
-        public init(
+package struct PlaceInsight {
+    package struct YearCount: Identifiable, Equatable {
+        package let year: Int
+        package let count: Int
+        package var id: Int { year }
+        package init(
             year: Int,
             count: Int
         ) {
@@ -16,13 +16,13 @@ public struct PlaceInsight {
         }
     }
 
-    public struct SeasonCount: Identifiable, Equatable {
-        public let name: String
-        public let count: Int
-        public let fraction: Double
-        public let symbol: String
-        public var id: String { name }
-        public init(
+    package struct SeasonCount: Identifiable, Equatable {
+        package let name: String
+        package let count: Int
+        package let fraction: Double
+        package let symbol: String
+        package var id: String { name }
+        package init(
             name: String,
             count: Int,
             fraction: Double,
@@ -35,11 +35,11 @@ public struct PlaceInsight {
         }
     }
 
-    public struct Spot: Identifiable, Equatable {
-        public let name: String
-        public let count: Int
-        public var id: String { name }
-        public init(
+    package struct Spot: Identifiable, Equatable {
+        package let name: String
+        package let count: Int
+        package var id: String { name }
+        package init(
             name: String,
             count: Int
         ) {
@@ -48,12 +48,12 @@ public struct PlaceInsight {
         }
     }
 
-    public struct PeriodSlice: Identifiable, Equatable {
-        public let title: String
-        public let count: Int
-        public let fraction: Double
-        public var id: String { title }
-        public init(
+    package struct PeriodSlice: Identifiable, Equatable {
+        package let title: String
+        package let count: Int
+        package let fraction: Double
+        package var id: String { title }
+        package init(
             title: String,
             count: Int,
             fraction: Double
@@ -64,42 +64,42 @@ public struct PlaceInsight {
         }
     }
 
-    public var title = ""
-    public var province: String?
-    public var group = ""
-    public var latitude = 0.0
-    public var longitude = 0.0
-    public var photoCount = 0
-    public var videoCount = 0
-    public var firstDate: Date?
-    public var lastDate: Date?
-    public var years: [YearCount] = []
-    public var seasons: [SeasonCount] = []
-    public var periods: [PeriodSlice] = []
+    package var title = ""
+    package var province: String?
+    package var group = ""
+    package var latitude = 0.0
+    package var longitude = 0.0
+    package var photoCount = 0
+    package var videoCount = 0
+    package var firstDate: Date?
+    package var lastDate: Date?
+    package var years: [YearCount] = []
+    package var seasons: [SeasonCount] = []
+    package var periods: [PeriodSlice] = []
     /// 细化到景点 / 街道的地标统计。
-    public var spots: [Spot] = []
-    public var companions: [PhotoCompanion] = []
-    public var highlights: [PhotoItem] = []
-    public var palettePhotos: [PhotoItem] = []
+    package var spots: [Spot] = []
+    package var companions: [PhotoCompanion] = []
+    package var highlights: [PhotoItem] = []
+    package var palettePhotos: [PhotoItem] = []
     /// 每年四季张数（春、夏、秋、冬），用于「全部」页的年份条。
-    public var yearSeasons: [Int: [Int]] = [:]
+    package var yearSeasons: [Int: [Int]] = [:]
 
-    public var totalCount: Int { photoCount + videoCount }
-    public var visitYearCount: Int { years.count }
+    package var totalCount: Int { photoCount + videoCount }
+    package var visitYearCount: Int { years.count }
 
-    public var activeSeason: SeasonCount? {
+    package var activeSeason: SeasonCount? {
         seasons.max { $0.fraction < $1.fraction }
     }
 
-    public var dominantPeriod: PeriodSlice? {
+    package var dominantPeriod: PeriodSlice? {
         periods.max { $0.fraction < $1.fraction }
     }
 
-    public var coverPhoto: PhotoItem? {
+    package var coverPhoto: PhotoItem? {
         highlights.first { $0.aspectRatio >= 1.1 } ?? highlights.first
     }
 
-    public var countText: String {
+    package var countText: String {
         var parts: [String] = []
         if photoCount > 0 { parts.append("\(photoCount.formatted()) 张照片") }
         if videoCount > 0 { parts.append("\(videoCount.formatted()) 个视频") }
@@ -107,14 +107,14 @@ public struct PlaceInsight {
         return parts.joined(separator: "、")
     }
 
-    public var dateRangeText: String {
+    package var dateRangeText: String {
         guard let firstDate, let lastDate else { return "" }
         let first = DateText.monthFormatter.string(from: firstDate)
         let last = DateText.monthFormatter.string(from: lastDate)
         return first == last ? first : "\(first) – \(last)"
     }
 
-    public var subtitle: String {
+    package var subtitle: String {
         var parts: [String] = []
         if let province, !province.isEmpty, province != title {
             parts.append(province)
@@ -126,14 +126,14 @@ public struct PlaceInsight {
         return parts.joined(separator: " · ")
     }
 
-    public var coordinateText: String {
+    package var coordinateText: String {
         let lat = String(format: "%.2f°%@", abs(latitude), latitude >= 0 ? "N" : "S")
         let lon = String(format: "%.2f°%@", abs(longitude), longitude >= 0 ? "E" : "W")
         return "\(lat) · \(lon)"
     }
 
     /// 地点画像：只陈述能从照片里直接得出的事实。
-    public var narrative: String {
+    package var narrative: String {
         var parts: [String] = []
         if let firstDate, let lastDate, firstDate != lastDate {
             parts.append("\(DateText.monthFormatter.string(from: firstDate)) 第一次来到这里，最近一次是 \(DateText.monthFormatter.string(from: lastDate))")
@@ -161,7 +161,7 @@ public struct PlaceInsight {
 
     // MARK: - 从照片生成
 
-    public static func make(place: PlaceCluster,
+    package static func make(place: PlaceCluster,
                      photos: [PhotoItem],
                      companions: [PhotoCompanion]) -> PlaceInsight {
         let sorted = photos
@@ -257,7 +257,7 @@ public struct PlaceInsight {
                         fraction: Double(buckets[index]) / Double(total))
         }
     }
-    public init(
+    package init(
         title: String = "",
         province: String? = nil,
         group: String = "",

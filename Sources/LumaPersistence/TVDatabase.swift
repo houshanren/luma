@@ -8,8 +8,8 @@ import LumaContentCore
 ///
 /// 源顺序就是表里的 `position`，侧边栏拖动后只重写这一张表；
 /// 频道按源替换写入，刷新或连接检测成功后立即落盘，下次启动可以先用缓存首屏。
-public final class TVDatabase {
-    public static let shared = TVDatabase()
+package final class TVDatabase {
+    package static let shared = TVDatabase()
 
     private let lock = NSRecursiveLock()
     private var connection: SQLiteDatabase?
@@ -138,7 +138,7 @@ public final class TVDatabase {
 
     // MARK: - 源
 
-    public func loadPlaylists() -> [TVPlaylist] {
+    package func loadPlaylists() -> [TVPlaylist] {
         guard let db = database() else { return [] }
         migrateLegacyPlaylistsIfNeeded(db)
         let rows = (try? db.query("""
@@ -165,7 +165,7 @@ public final class TVDatabase {
         }
     }
 
-    public func savePlaylists(_ playlists: [TVPlaylist]) {
+    package func savePlaylists(_ playlists: [TVPlaylist]) {
         guard let db = database() else { return }
         writePlaylists(playlists, to: db)
     }
@@ -204,7 +204,7 @@ public final class TVDatabase {
 
     // MARK: - 频道缓存
 
-    public func loadChannels(for playlistID: UUID) -> [TVChannel] {
+    package func loadChannels(for playlistID: UUID) -> [TVChannel] {
         guard let db = database() else { return [] }
         let rows = (try? db.query("""
             SELECT * FROM tv_channels WHERE playlist_id = ? ORDER BY position ASC;
@@ -247,7 +247,7 @@ public final class TVDatabase {
     }
 
     /// 整源替换：刷新成功后一次性写入，旧线路全部作废。
-    public func replaceChannels(_ channels: [TVChannel], for playlistID: UUID) {
+    package func replaceChannels(_ channels: [TVChannel], for playlistID: UUID) {
         guard let db = database() else { return }
         let rows: [[Any?]] = channels.enumerated().map { index, channel in
             let headersJSON = (try? JSONEncoder().encode(channel.headers))
@@ -289,13 +289,13 @@ public final class TVDatabase {
         }
     }
 
-    public func deleteChannels(for playlistID: UUID) {
+    package func deleteChannels(for playlistID: UUID) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM tv_channels WHERE playlist_id = ?;", [playlistID.uuidString])
     }
 
     /// 频道缓存总览：行数 + 电视库文件占用（频道、源与设置共用同一个库文件）。
-    public func channelCacheStats() -> (rows: Int, bytes: Int64) {
+    package func channelCacheStats() -> (rows: Int, bytes: Int64) {
         guard let db = database() else { return (0, 0) }
         let rows = (try? db.query("SELECT COUNT(*) AS count FROM tv_channels;"))?
             .first?["count"]?.int ?? 0
@@ -306,20 +306,20 @@ public final class TVDatabase {
     }
 
     /// 清空所有频道缓存（电视源保留）：下次进入源时重新拉取播放列表。
-    public func deleteAllChannels() {
+    package func deleteAllChannels() {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM tv_channels;")
     }
 
     // MARK: - 设置
 
-    public func setting(_ key: String) -> String? {
+    package func setting(_ key: String) -> String? {
         guard let db = database() else { return nil }
         return (try? db.query("SELECT value FROM tv_settings WHERE key = ?;", [key]))?
             .first?["value"]?.string
     }
 
-    public func setSetting(_ key: String, _ value: String?) {
+    package func setSetting(_ key: String, _ value: String?) {
         guard let db = database() else { return }
         if let value {
             writeSetting(value, key: key, to: db)

@@ -3,7 +3,7 @@ import LumaDomain
 
 /// 网络资源工具：来源、检索、稍后看与档案关注。
 /// 定义、写操作白名单与确认文案都收在这个文件；执行分派在 `AIToolProviders.catalog`。
-public extension AILibraryTools {
+package extension AILibraryTools {
     /// 需要用户确认的写操作。
     static let catalogWriteToolNames: Set<String> = [
         "set_catalog_watchlist", "follow_catalog_person"

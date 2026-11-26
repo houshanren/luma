@@ -462,7 +462,7 @@ struct RootView: View {
         }
 
         if let memory = store.activeMemory {
-            MemoryMovieView(memory: memory)
+            MemoryMovieView<LibraryStore>(memory: memory)
                 .environmentObject(store)
                 .transition(.opacity)
                 .zIndex(7)

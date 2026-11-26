@@ -2,15 +2,15 @@ import Foundation
 import LumaDomain
 import LumaCore
 
-public struct SystemLibrarySnapshot {
-    public let name: String
-    public let photos: [PhotoItem]
-    public let albums: [SystemAlbumInfo]
-    public let folders: [SystemFolderInfo]
-    public let people: [SystemPersonInfo]
+package struct SystemLibrarySnapshot {
+    package let name: String
+    package let photos: [PhotoItem]
+    package let albums: [SystemAlbumInfo]
+    package let folders: [SystemFolderInfo]
+    package let people: [SystemPersonInfo]
     /// 图库实际可浏览的项目总数；`photos.count` 可能因加载上限而更少。
-    public var totalAssetCount: Int? = nil
-    public init(
+    package var totalAssetCount: Int? = nil
+    package init(
         name: String,
         photos: [PhotoItem],
         albums: [SystemAlbumInfo],
@@ -29,27 +29,27 @@ public struct SystemLibrarySnapshot {
 
 /// 官方图库里的人物 / 宠物（读取端侧识别结果，不额外做识别）。
 /// 官方「照片」的人物列表包含尚未命名的聚类，这里同样收录，未命名时用「未命名」占位。
-public struct SystemPersonInfo: Identifiable, Hashable, Codable {
-    public let id: Int64
-    public let name: String
-    public let faceCount: Int
-    public let isPet: Bool
-    public let assetIDs: [UUID]
-    public let keyAssetID: UUID?
-    public let cropData: Data?
+package struct SystemPersonInfo: Identifiable, Hashable, Codable {
+    package let id: Int64
+    package let name: String
+    package let faceCount: Int
+    package let isPet: Bool
+    package let assetIDs: [UUID]
+    package let keyAssetID: UUID?
+    package let cropData: Data?
     /// 关键人脸的几何信息（Photos.sqlite `ZDETECTEDFACE`，0-1 归一化）：
     /// `faceCenterX` 相对图宽、`faceCenterY` 相对图高且原点在左下、`faceSize` 相对图对角线。
     /// 官方「照片」的人物头像就是按这组几何从关键照片现算裁切的；缺失时回退整张照片。
-    public let faceCenterX: Double?
-    public let faceCenterY: Double?
-    public let faceSize: Double?
+    package let faceCenterX: Double?
+    package let faceCenterY: Double?
+    package let faceSize: Double?
 
     /// 官方图库里尚未命名的聚类统一叫「未命名」。
-    public var isUnnamed: Bool {
+    package var isUnnamed: Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed == "未命名"
     }
-    public init(
+    package init(
         id: Int64,
         name: String,
         faceCount: Int,
@@ -74,11 +74,11 @@ public struct SystemPersonInfo: Identifiable, Hashable, Codable {
     }
 }
 
-public enum SystemLibraryError: LocalizedError {
+package enum SystemLibraryError: LocalizedError {
     case invalidLibrary
     case unsupported(String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .invalidLibrary: return "不是有效的照片图库（缺少 database/Photos.sqlite）"
         case .unsupported(let message): return "无法读取照片图库：\(message)"
@@ -87,8 +87,8 @@ public enum SystemLibraryError: LocalizedError {
 }
 
 /// 只读解析 macOS 官方「照片」图库（Photos.sqlite）。
-public enum SystemPhotosLibrary {
-    public static func scan(libraryURL: URL,
+package enum SystemPhotosLibrary {
+    package static func scan(libraryURL: URL,
                      progress: ((Int) -> Void)? = nil,
                      onBatch: (([PhotoItem]) -> Void)? = nil) throws -> SystemLibrarySnapshot {
         let databaseURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
@@ -561,10 +561,10 @@ public enum SystemPhotosLibrary {
     }
 
     private struct AlbumAssetJoin {
-        public let table: String
-        public let albumColumn: String
-        public let assetColumn: String
-        public let orderColumn: String?
+        package let table: String
+        package let albumColumn: String
+        package let assetColumn: String
+        package let orderColumn: String?
     }
 
     private static func findAlbumAssetJoin(_ db: SQLiteDatabase) throws -> AlbumAssetJoin? {
@@ -595,23 +595,23 @@ public enum SystemPhotosLibrary {
 
 /// 系统图库扫描结果缓存：命中时直接展示，避免每次重新解析 Photos.sqlite 与缩略图目录。
 /// 只缓存索引与元数据，原图仍然直接从 macOS「照片」图库读取。
-public enum SystemLibraryCache {
+package enum SystemLibraryCache {
     /// 解析逻辑或快照结构变更时递增，旧缓存会自动失效。
     /// v5：扫描时记录官方 derivative 路径，旧缓存需要重扫一次。
     /// v6：缓存记录载入上限，调整上限后旧快照不再被当成最新缓存。
     /// v7：人物收录未命名聚类（与官方「照片」人物列表对齐），旧缓存需要重扫一次。
     /// v8：相簿 / 文件夹改用 Z_FOK_PARENTFOLDER 手动排序键，旧缓存需要重扫一次。
     /// v9：移除载入上限，旧缓存可能是截断结果，需要重扫一次。
-    public static let version = 9
+    package static let version = 9
     private static let maxCacheFiles = 8
     /// 超大快照不做缓存，避免编码/解码占用过多内存。
     private static let maxCachedPhotos = 250_000
 
-    public struct Loaded {
-        public let snapshot: SystemLibrarySnapshot
+    package struct Loaded {
+        package let snapshot: SystemLibrarySnapshot
         /// Photos.sqlite 未变化，缓存即最新，无需再扫描。
-        public let isFresh: Bool
-        public init(
+        package let isFresh: Bool
+        package init(
             snapshot: SystemLibrarySnapshot,
             isFresh: Bool
         ) {
@@ -621,17 +621,17 @@ public enum SystemLibraryCache {
     }
 
     private struct Payload: Codable {
-        public var version: Int
-        public var signature: String
-        public var name: String
-        public var photos: [PhotoItem]
-        public var albums: [SystemAlbumInfo]
-        public var folders: [SystemFolderInfo]
-        public var people: [SystemPersonInfo]
-        public var totalAssetCount: Int?
+        package var version: Int
+        package var signature: String
+        package var name: String
+        package var photos: [PhotoItem]
+        package var albums: [SystemAlbumInfo]
+        package var folders: [SystemFolderInfo]
+        package var people: [SystemPersonInfo]
+        package var totalAssetCount: Int?
     }
 
-    public static func load(for libraryURL: URL) -> Loaded? {
+    package static func load(for libraryURL: URL) -> Loaded? {
         guard let signature = signature(for: libraryURL),
               let file = cacheFile(for: libraryURL),
               let data = try? Data(contentsOf: file),
@@ -647,7 +647,7 @@ public enum SystemLibraryCache {
         return Loaded(snapshot: snapshot, isFresh: isFresh)
     }
 
-    public static func save(_ snapshot: SystemLibrarySnapshot, for libraryURL: URL) {
+    package static func save(_ snapshot: SystemLibrarySnapshot, for libraryURL: URL) {
         guard snapshot.photos.count <= maxCachedPhotos,
               let signature = signature(for: libraryURL),
               let file = cacheFile(for: libraryURL) else { return }

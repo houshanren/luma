@@ -4,7 +4,7 @@ import LumaCore
 
 /// 系统图库的查询接口。
 
-public extension SystemIndex {
+package extension SystemIndex {
     // MARK: - 查询
 
     func summary(_ query: SystemQuery) -> PhotoQuerySummary {
@@ -308,10 +308,10 @@ public extension SystemIndex {
         guard let rows = try? database.query(sql, fromBinds + binds) else { return [] }
 
         struct MonthDraft {
-            public var order: [String] = []
-            public var samples: [String: [PhotoItem]] = [:]
-            public var counts: [String: Int] = [:]
-            public var firstDates: [String: Date] = [:]
+            package var order: [String] = []
+            package var samples: [String: [PhotoItem]] = [:]
+            package var counts: [String: Int] = [:]
+            package var firstDates: [String: Date] = [:]
         }
         var monthOrder: [String] = []
         var drafts: [String: MonthDraft] = [:]
@@ -707,10 +707,10 @@ public extension SystemIndex {
     }
 
     struct AlbumAssetJoin {
-        public let table: String
-        public let albumColumn: String
-        public let assetColumn: String
-        public let orderColumn: String?
+        package let table: String
+        package let albumColumn: String
+        package let assetColumn: String
+        package let orderColumn: String?
     }
 
     static func findAlbumAssetJoin(_ db: SQLiteDatabase) -> AlbumAssetJoin? {

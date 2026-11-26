@@ -3,7 +3,7 @@ import LumaDomain
 
 /// 网络影院工具：聚合列表、跨源搜索、续看与播放。
 /// 定义收在这个文件；执行分派在 `AIToolProviders.networkCinema`。
-public extension AILibraryTools {
+package extension AILibraryTools {
     static var networkCinemaToolDefinitions: [AIRequestTool] {
         [listNetworkCinemaSources, listNetworkCinema, searchNetworkCinema,
          networkCinemaHistory, playNetworkCinema]

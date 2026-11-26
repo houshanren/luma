@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 
 /// 框选共用的命名坐标系：网格单元格把自身矩形上报到这个空间，手指/鼠标位置也按它换算。
-enum PhotoMarqueeSpace {
-    static let name = "photoMarqueeGrid"
+package enum PhotoMarqueeSpace {
+    package static let name = "photoMarqueeGrid"
 }
 
 /// 给照片网格加上「从空白处拖动框选」。
@@ -11,11 +11,10 @@ enum PhotoMarqueeSpace {
 /// - 单元格通过 `PhotoFramePreferenceKey` 上报矩形；
 /// - `fillHeight` 传滚动视口高度，内容不足一屏时下方空白也能起框；
 /// - 从照片内部按下时让位给系统拖拽（拖到桌面 / Finder / 相簿）。
-struct PhotoMarqueeModifier: ViewModifier {
-    @EnvironmentObject private var store: LibraryStore
-    @EnvironmentObject private var selectionModel: SelectionModel
+package struct PhotoMarqueeModifier: ViewModifier {
+    @EnvironmentObject private var host: PhotoGridHost
 
-    var fillHeight: CGFloat?
+    package var fillHeight: CGFloat?
 
     @State private var frames: [UUID: CGRect] = [:]
     @State private var start: CGPoint?
@@ -23,6 +22,10 @@ struct PhotoMarqueeModifier: ViewModifier {
     @State private var base: Set<UUID> = []
     /// 从照片内部按下时让位给系统拖拽，避免同时触发框选。
     @State private var blockedStart: CGPoint?
+
+    package init(fillHeight: CGFloat? = nil) {
+        self.fillHeight = fillHeight
+    }
 
     private var marqueeRect: CGRect? {
         guard let start, let current else { return nil }
@@ -32,7 +35,7 @@ struct PhotoMarqueeModifier: ViewModifier {
                       height: abs(current.y - start.y))
     }
 
-    func body(content: Content) -> some View {
+    package func body(content: Content) -> some View {
         content
             .frame(maxWidth: .infinity, minHeight: fillHeight, alignment: .top)
             .contentShape(Rectangle())
@@ -50,7 +53,7 @@ struct PhotoMarqueeModifier: ViewModifier {
             .onEnded { value in
                 let hitPhoto = frames.values.contains { $0.contains(value.location) }
                 guard !hitPhoto else { return }
-                store.clearSelection()
+                host.clearSelection()
             }
     }
 
@@ -84,15 +87,15 @@ struct PhotoMarqueeModifier: ViewModifier {
                     start = value.startLocation
                     let flags = NSEvent.modifierFlags
                     let additive = flags.contains(.command) || flags.contains(.shift)
-                    base = additive ? selectionModel.ids : []
+                    base = additive ? host.selectedIDs : []
                     if !additive {
-                        store.clearSelection()
+                        host.clearSelection()
                     }
                 }
                 current = value.location
                 guard let rect = marqueeRect else { return }
                 let hits = frames.filter { $0.value.intersects(rect) }.map(\.key)
-                selectionModel.ids = base.union(hits)
+                host.setSelectedIDs(base.union(hits))
             }
             .onEnded { _ in
                 start = nil
@@ -105,7 +108,7 @@ struct PhotoMarqueeModifier: ViewModifier {
 
 extension View {
     /// 在照片网格容器上加「空白处拖拽框选」；`fillHeight` 传滚动视口高度。
-    func photoMarqueeSelection(fillHeight: CGFloat? = nil) -> some View {
+    package func photoMarqueeSelection(fillHeight: CGFloat? = nil) -> some View {
         modifier(PhotoMarqueeModifier(fillHeight: fillHeight))
     }
 }

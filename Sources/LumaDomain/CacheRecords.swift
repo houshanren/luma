@@ -2,19 +2,19 @@ import Foundation
 
 /// 网盘照片的持久化缓存行：EXIF、端侧识别结果、特征向量、查看记录都写在这里。
 /// 以 `mountID + path` 为键，远端文件大小变化时整行作废。
-public struct CloudAssetCacheRow {
-    public var path: String
-    public var size: Int64?
-    public var remoteModified: Date?
-    public var exif: CloudPhotoEXIF?
-    public var labels: String?
-    public var text: String?
-    public var feature: Data?
-    public var viewedAt: Date?
-    public var metadataAt: Date?
-    public var analyzedAt: Date?
-    public var peopleAt: Date?
-    public init(
+package struct CloudAssetCacheRow {
+    package var path: String
+    package var size: Int64?
+    package var remoteModified: Date?
+    package var exif: CloudPhotoEXIF?
+    package var labels: String?
+    package var text: String?
+    package var feature: Data?
+    package var viewedAt: Date?
+    package var metadataAt: Date?
+    package var analyzedAt: Date?
+    package var peopleAt: Date?
+    package init(
         path: String,
         size: Int64? = nil,
         remoteModified: Date? = nil,
@@ -42,12 +42,12 @@ public struct CloudAssetCacheRow {
 }
 
 /// 派生报告的缓存键：本地 / 系统图库 / 网盘各自独立，互不串结果。
-public enum DerivedReportKey {
-    public static func local(_ kind: String) -> String { "local|\(kind)" }
-    public static func system(_ path: String, _ kind: String) -> String { "system|\(path)|\(kind)" }
-    public static func cloud(_ mountID: UUID, _ path: String, _ kind: String) -> String {
+package enum DerivedReportKey {
+    package static func local(_ kind: String) -> String { "local|\(kind)" }
+    package static func system(_ path: String, _ kind: String) -> String { "system|\(path)|\(kind)" }
+    package static func cloud(_ mountID: UUID, _ path: String, _ kind: String) -> String {
         "cloud|\(mountID.uuidString)|\(path)|\(kind)"
     }
-    public static func cloudMountPrefix(_ mountID: UUID) -> String { "cloud|\(mountID.uuidString)|" }
-    public static func systemPrefix(_ path: String) -> String { "system|\(path)|" }
+    package static func cloudMountPrefix(_ mountID: UUID) -> String { "cloud|\(mountID.uuidString)|" }
+    package static func systemPrefix(_ path: String) -> String { "system|\(path)|" }
 }

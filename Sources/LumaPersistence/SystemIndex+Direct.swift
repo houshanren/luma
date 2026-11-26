@@ -4,12 +4,12 @@ import LumaCore
 
 /// 官方相簿的「关键照片」关系（`Z_33KEYASSETS` 一类的 Core Data 联接表）。
 /// Apple 已经为每个相簿挑好封面与候选封面，按 `Z_FOK_*` 顺序读出即可。
-public struct SystemAlbumKeyAssetJoin: Sendable {
-    public let table: String
-    public let albumColumn: String
-    public let assetColumn: String
-    public let orderColumn: String?
-    public init(
+package struct SystemAlbumKeyAssetJoin: Sendable {
+    package let table: String
+    package let albumColumn: String
+    package let assetColumn: String
+    package let orderColumn: String?
+    package init(
         table: String,
         albumColumn: String,
         assetColumn: String,
@@ -24,26 +24,26 @@ public struct SystemAlbumKeyAssetJoin: Sendable {
 
 /// 「索引直连」模式：不再把整库元数据复制一份，而是直接分页查询系统 `Photos.sqlite`。
 /// 只缓存极小的派生数据（侧边栏计数快照），网格、相簿、人物都按需查询。
-public struct SystemDirectSource: Sendable {
-    public let derivativesRoot: String?
-    public let hasExtended: Bool
-    public let albumTable: String?
-    public let albumColumn: String?
-    public let assetColumn: String?
-    public let albumOrderColumn: String?
+package struct SystemDirectSource: Sendable {
+    package let derivativesRoot: String?
+    package let hasExtended: Bool
+    package let albumTable: String?
+    package let albumColumn: String?
+    package let assetColumn: String?
+    package let albumOrderColumn: String?
     /// `ZGENERICALBUM` 实际存在的列：不同系统版本的相簿表并不完全一致。
-    public let albumColumns: Set<String>
+    package let albumColumns: Set<String>
     /// `Z_33KEYASSETS` 联接表（官方相簿封面 / 关键照片），旧版图库没有时为 nil。
-    public let keyAssetJoin: SystemAlbumKeyAssetJoin?
+    package let keyAssetJoin: SystemAlbumKeyAssetJoin?
     /// `ZPHOTOSHIGHLIGHT` 与 ZASSET 上的反向关键照片列（年 / 月总览封面）。
-    public let hasHighlightKeyAssets: Bool
+    package let hasHighlightKeyAssets: Bool
     /// ZASSET 是否带官方美学评分（人物高光、最佳照片排序用）。
-    public let hasAestheticScore: Bool
+    package let hasAestheticScore: Bool
     /// ZASSET 是否有 UTI 列（RAW 识别走 `Z_Asset_byUniformTypeIdentifierIndex`）。
-    public let hasUniformTypeIdentifier: Bool
+    package let hasUniformTypeIdentifier: Bool
     /// ZASSET 是否有空间媒体列（旧版图库没有 ZSPATIALTYPE）。
-    public let hasSpatialType: Bool
-    public init(
+    package let hasSpatialType: Bool
+    package init(
         derivativesRoot: String? = nil,
         hasExtended: Bool,
         albumTable: String? = nil,
@@ -73,11 +73,11 @@ public struct SystemDirectSource: Sendable {
 }
 
 /// 官方 `ZMOMENT` 里的一个「时刻」：起止时间（Unix 秒）与项目数。
-public struct SystemTimelineBucket: Sendable {
-    public let start: Double
-    public let end: Double
-    public let count: Int
-    public init(
+package struct SystemTimelineBucket: Sendable {
+    package let start: Double
+    package let end: Double
+    package let count: Int
+    package init(
         start: Double,
         end: Double,
         count: Int
@@ -89,56 +89,56 @@ public struct SystemTimelineBucket: Sendable {
 }
 
 /// 侧边栏计数快照：直连模式下精确计数要扫全库，先落盘缓存，首次在后台补。
-public struct SystemDirectCounts: Codable {
+package struct SystemDirectCounts: Codable {
     /// 快照版本：计数口径变化时递增，旧快照直接忽略并在后台重算。
     /// v4：连拍快照改为按组计数（DISTINCT ZAVALANCHEUUID）。
-    public static let currentVersion = 4
-    public var version: Int? = nil
-    public var active = 0
-    public var hidden = 0
-    public var trash = 0
-    public var duplicate = 0
-    public var recentlySaved = 0
-    public var imports = 0
-    public var portrait = 0
-    public var screenshots = 0
-    public var totalBytes: Int64 = 0
-    public var earliest: TimeInterval?
-    public var latest: TimeInterval?
+    package static let currentVersion = 4
+    package var version: Int? = nil
+    package var active = 0
+    package var hidden = 0
+    package var trash = 0
+    package var duplicate = 0
+    package var recentlySaved = 0
+    package var imports = 0
+    package var portrait = 0
+    package var screenshots = 0
+    package var totalBytes: Int64 = 0
+    package var earliest: TimeInterval?
+    package var latest: TimeInterval?
     // 媒体类型计数：与 mediaTypeSummary 一一对应，避免逐类单独扫全库。
-    public var videos = 0
-    public var selfies = 0
-    public var livePhotos = 0
-    public var panoramas = 0
-    public var timelapse = 0
-    public var slowMotion = 0
-    public var cinematic = 0
-    public var spatial = 0
-    public var bursts = 0
-    public var screenRecordings = 0
-    public var animated = 0
-    public var raws = 0
+    package var videos = 0
+    package var selfies = 0
+    package var livePhotos = 0
+    package var panoramas = 0
+    package var timelapse = 0
+    package var slowMotion = 0
+    package var cinematic = 0
+    package var spatial = 0
+    package var bursts = 0
+    package var screenRecordings = 0
+    package var animated = 0
+    package var raws = 0
     // 版本 2 新增：更多项目入口的精确计数（旧快照缺字段时按 0 处理）
-    public var favorites: Int? = nil
-    public var edited: Int? = nil
-    public var recentlyViewed: Int? = nil
-    public var revisit: Int? = nil
-    public var located: Int? = nil
+    package var favorites: Int? = nil
+    package var edited: Int? = nil
+    package var recentlyViewed: Int? = nil
+    package var revisit: Int? = nil
+    package var located: Int? = nil
     /// 媒体类型封面：`MediaTypeKey.rawValue` → 资产 UUID（后台补，旧快照可能没有）
-    public var covers: [String: String]? = nil
+    package var covers: [String: String]? = nil
     /// 年 / 月总览：按月统计的有效数量（"yyyy-MM" → count）
-    public var monthCounts: [String: Int]? = nil
-    public var monthVideos: [String: Int]? = nil
-    public var monthFavorites: [String: Int]? = nil
+    package var monthCounts: [String: Int]? = nil
+    package var monthVideos: [String: Int]? = nil
+    package var monthFavorites: [String: Int]? = nil
     /// 年 / 月总览卡片样本（"yyyy-MM" / "yyyy" → 最多 4 个 UUID）
-    public var monthSamples: [String: [String]]? = nil
-    public var yearSamples: [String: [String]]? = nil
+    package var monthSamples: [String: [String]]? = nil
+    package var yearSamples: [String: [String]]? = nil
     /// 年 / 月总览封面：`ZPHOTOSHIGHLIGHT` 里 Apple 已挑好的关键照片（"yyyy-MM" / "yyyy" → UUID）
-    public var monthCovers: [String: String]? = nil
-    public var yearCovers: [String: String]? = nil
+    package var monthCovers: [String: String]? = nil
+    package var yearCovers: [String: String]? = nil
     /// 生成快照时 Photos.sqlite / -wal 的大小与修改时间；未变化时启动直接复用，完全不扫库。
-    public var fingerprint: String? = nil
-    public init(
+    package var fingerprint: String? = nil
+    package init(
         version: Int? = nil,
         active: Int = 0,
         hidden: Int = 0,
@@ -219,7 +219,7 @@ public struct SystemDirectCounts: Codable {
     }
 }
 
-public extension SystemIndex {
+package extension SystemIndex {
 
     /// 与拾光「最近保存 / 最近查看」保持一致的 30 天窗口。
     static var directSavedCutoff: Date {
@@ -800,10 +800,10 @@ public extension SystemIndex {
 
     /// 带定位照片的快照：图库没变时直接复用，跳过每次启动都要扫一遍地点索引（外接盘约数秒）。
     struct SystemDirectGeoSnapshot: Codable {
-        public static let currentVersion = 1
-        public var version: Int
-        public var fingerprint: String
-        public var photos: [PhotoItem]
+        package static let currentVersion = 1
+        package var version: Int
+        package var fingerprint: String
+        package var photos: [PhotoItem]
     }
 
     static func directGeoFile(libraryPath: String) -> URL {
@@ -1021,12 +1021,12 @@ public extension SystemIndex {
 
     /// 一次分页查询的 SQL 拼装结果。
     struct DirectSQLPlan {
-        public var from: String
-        public var whereSQL: String
-        public var binds: [Any?]
-        public var extraConditions: [String]
+        package var from: String
+        package var whereSQL: String
+        package var binds: [Any?]
+        package var extraConditions: [String]
         /// 自定义排序（相簿手动顺序等）；为空时按拍摄 / 添加时间排。
-        public var orderSQL: String? = nil
+        package var orderSQL: String? = nil
     }
 
     /// 成员集合（相簿 / 文件夹 / 人物）小于这个规模时，从成员表驱动查询。

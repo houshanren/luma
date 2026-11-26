@@ -3,7 +3,7 @@ import Foundation
 // MARK: - 智能相簿
 
 /// 智能相簿的条件字段，覆盖官方「照片」里常用的判定维度。
-public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
+package enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
     case mediaType
     case favorite
     case edited
@@ -25,9 +25,9 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
     /// 图内文字内容。
     case ocrText
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .mediaType: return "媒体类型"
         case .favorite: return "个人收藏"
@@ -49,7 +49,7 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .mediaType: return "square.stack.3d.up"
         case .favorite: return "heart"
@@ -69,7 +69,7 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public enum ValueKind {
+    package enum ValueKind {
         case choice([String])
         case toggle
         case text
@@ -77,7 +77,7 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
         case number
     }
 
-    public var valueKind: ValueKind {
+    package var valueKind: ValueKind {
         switch self {
         case .mediaType: return .choice(["照片", "视频", "截屏", "全景", "自拍"])
         case .scene: return .choice(SceneCatalog.categories.map(\.title))
@@ -88,7 +88,7 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var defaultValue: String {
+    package var defaultValue: String {
         switch valueKind {
         case .choice(let options): return options.first ?? ""
         case .toggle: return "是"
@@ -98,7 +98,7 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var placeholder: String {
+    package var placeholder: String {
         switch self {
         case .minMegapixels: return "例如 8"
         case .minFileSizeMB: return "例如 5"
@@ -113,7 +113,7 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public static func mediaKind(for label: String) -> MediaKind? {
+    package static func mediaKind(for label: String) -> MediaKind? {
         switch label {
         case "照片": return .photo
         case "视频": return .video
@@ -125,12 +125,12 @@ public enum SmartAlbumField: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-public struct SmartRule: Identifiable, Codable, Hashable {
-    public var id: UUID = UUID()
-    public var field: SmartAlbumField = .keyword
-    public var value: String = ""
+package struct SmartRule: Identifiable, Codable, Hashable {
+    package var id: UUID = UUID()
+    package var field: SmartAlbumField = .keyword
+    package var value: String = ""
 
-    public var summary: String {
+    package var summary: String {
         let display = value.isEmpty ? "…" : value
         switch field {
         case .mediaType: return "媒体类型为「\(display)」"
@@ -153,7 +153,7 @@ public struct SmartRule: Identifiable, Codable, Hashable {
         }
     }
 
-    public func matches(_ photo: PhotoItem, analysis: PhotoAnalysis? = nil) -> Bool {
+    package func matches(_ photo: PhotoItem, analysis: PhotoAnalysis? = nil) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let needle = trimmed.lowercased()
         switch field {
@@ -216,7 +216,7 @@ public struct SmartRule: Identifiable, Codable, Hashable {
             return (analysis?.text.lowercased().contains(needle) ?? false)
         }
     }
-    public init(
+    package init(
         id: UUID = UUID(),
         field: SmartAlbumField = .keyword,
         value: String = ""
@@ -227,13 +227,13 @@ public struct SmartRule: Identifiable, Codable, Hashable {
     }
 }
 
-public struct SmartAlbum: Identifiable, Codable, Hashable {
-    public var id: UUID = UUID()
-    public var name: String = "新建智能相簿"
-    public var matchAll: Bool = true
-    public var rules: [SmartRule] = [SmartRule()]
+package struct SmartAlbum: Identifiable, Codable, Hashable {
+    package var id: UUID = UUID()
+    package var name: String = "新建智能相簿"
+    package var matchAll: Bool = true
+    package var rules: [SmartRule] = [SmartRule()]
 
-    public func matches(_ photo: PhotoItem, analysis: PhotoAnalysis? = nil) -> Bool {
+    package func matches(_ photo: PhotoItem, analysis: PhotoAnalysis? = nil) -> Bool {
         guard !rules.isEmpty else { return true }
         if matchAll {
             return rules.allSatisfy { $0.matches(photo, analysis: analysis) }
@@ -241,10 +241,10 @@ public struct SmartAlbum: Identifiable, Codable, Hashable {
         return rules.contains { $0.matches(photo, analysis: analysis) }
     }
 
-    public var summary: String {
+    package var summary: String {
         rules.isEmpty ? "没有条件" : rules.map(\.summary).joined(separator: matchAll ? " 且 " : " 或 ")
     }
-    public init(
+    package init(
         id: UUID = UUID(),
         name: String = "新建智能相簿",
         matchAll: Bool = true,
@@ -257,19 +257,19 @@ public struct SmartAlbum: Identifiable, Codable, Hashable {
     }
 }
 
-public enum SmartAlbumDate {
-    public static let formatter: DateFormatter = {
+package enum SmartAlbumDate {
+    package static let formatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
 
-    public static func date(from string: String) -> Date? {
+    package static func date(from string: String) -> Date? {
         formatter.date(from: string)
     }
 
-    public static func string(from date: Date) -> String {
+    package static func string(from date: Date) -> String {
         formatter.string(from: date)
     }
 }

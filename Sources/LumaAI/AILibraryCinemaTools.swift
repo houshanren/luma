@@ -3,7 +3,7 @@ import LumaDomain
 
 /// 影院模块的智能助手工具：浏览、检索、播放、收藏 / 想看 / 评分、清单、
 /// 忽略、元数据刷新、跳过片头与观看记录。写操作统一走 LibraryStore 现有方法。
-public extension AILibraryTools {
+package extension AILibraryTools {
     /// 影院写操作：与其它工具一样，执行前需要用户确认。
     static let cinemaWriteToolNames: Set<String> = [
         "update_cinema_state", "manage_cinema_list",

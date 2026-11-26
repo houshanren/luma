@@ -57,8 +57,8 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 
 依赖方向固定为：`Features → Store → Services（UseCases → Infrastructure）→ Persistence（MetadataStore / SystemIndex / TVDatabase / CatalogDatabase）→ SQLite / 文件 / 网络`。`Domain` 与 `LumaCore` 不依赖上层。
 
-- `LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` 是独立 SwiftPM target：Domain 只依赖 `LumaCore` / `PlaybackCore` / `LumaContentCore`，不得 import AppKit / SwiftUI，也不得引用 Store / Services；Persistence 只依赖 Domain 与这三个基础库；AI 只依赖 Domain，执行侧（需要 `LibraryStore`）留在 App；UI 只依赖 Domain，只放设计 token、通用视图修饰器与拖放 / 键盘 / 窗口胶水。四者都不得依赖 Store / Services / 功能模块。
-- 跨 target 的 API 必须显式标注 `public`，同一 package 内可标注 `package`（`LumaUI` 采用 `package`）；struct 还要写显式 init。`Luma` 通过 `App/ModuleExports.swift` 的 `@_exported import` 统一转发，普通文件不需要重复 import。
+- `LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` / `LumaMemories` 是独立 SwiftPM target：Domain 只依赖 `LumaCore` / `PlaybackCore` / `LumaContentCore`，不得 import AppKit / SwiftUI，也不得引用 Store / Services；Persistence 只依赖 Domain 与这三个基础库；AI 只依赖 Domain，执行侧（需要 `LibraryStore`）留在 App；UI 只依赖 Domain，只放设计 token、通用视图修饰器与拖放 / 键盘 / 窗口胶水；Memories 只依赖 Domain / ContentCore，宿主能力走 `MemoryHost` 协议与 `MemoryFrameLoader` 注入。五者都不得依赖 Store / Services / 功能模块。
+- 跨 target 的 API 必须显式标注访问级别：`LumaDomain` / `LumaPersistence` / `LumaAI` / `LumaUI` / `LumaMemories` 统一用同包可见的 `package`，struct 还要写显式 init；`Luma` 通过 `App/ModuleExports.swift` 的 `@_exported import` 统一转发，普通文件不需要重复 import。
 - 需要 App 能力（日志、模型资源路径）时由组合根注入（`PersistenceLog.sink`、`PhotoTagCatalog.resourceResolver`），不要在 Domain / Persistence 里反向引用 App 类型。
 
 - `Features` 不得直接使用 `MetadataStore`、`SystemIndex`、`SQLiteDatabase`、`PhotoKitBridge`、`WebDAVClient` 或 `URLSession`；系统媒体读取走 Store 包装（如 `systemOriginalImageData(for:)` / `systemVideoAsset(for:)`）。
@@ -140,7 +140,10 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Sources/LumaDomain/` | 独立 target：可序列化模型、查询描述、派生 DTO、格式与坐标判定（`Models` / `PhotoQuery` / `VideoFormats` / `PlaceSupport`） | IO、SQL、AppKit/SwiftUI、Store/Services 引用 |
 | `Sources/LumaPersistence/` | 独立 target：SQLite 封装、图库元数据、系统图库索引、电视 / 资源站库表与路径入口 | Store/Services/UI、App 的 `Diagnostics`（日志走 `PersistenceLog` 注入） |
 | `Sources/LumaAI/` | 独立 target：模型后端契约、OpenAI 兼容实现、提示词上下文、工具定义与注册表 | 需要 `LibraryStore` 的执行代码（留在 `Services/AI` / `Store/AI`） |
-| `Sources/LumaUI/` | 独立 target：设计 token（`LumaMetrics` / `LumaBrand`）、磨砂 / 环境光等通用视图修饰器、拖放 / 键盘 / 窗口胶水 | Store / 业务状态、具体页面视图 |
+| `Sources/LumaUI/` | 独立 target：设计 token（`LumaMetrics` / `LumaBrand`）、磨砂 / 环境光等通用视图修饰器、拖放 / 键盘 / 窗口胶水、照片网格组件（单元格 / 四种网格 / 框选 / 缩略图） | Store / 业务状态、具体页面视图 |
+| `Sources/LumaMemories/` | 独立 target：回忆影片候选生成、mp4 导出与全窗口播放视图；宿主能力通过 `MemoryHost` / `MemoryFrameLoader` 注入 | `LibraryStore`、Store / Services 引用 |
+| `LumaMemories/MemoryHost.swift` | 回忆功能需要的最小宿主协议：任务中心、提示与关闭回忆 | 业务执行、数据库写入 |
+| `Store/Shared/LibraryStore+FeatureHosts.swift` | 功能 target 的宿主适配（当前实现 `MemoryHost`） | 业务逻辑散落 |
 | `LumaUI/LumaDesign.swift` | 环境光背景、磨砂卡片 / 胶囊、行高亮、面包屑与品牌色 | 业务状态、页面级布局 |
 | `LumaUI/ViewSupport.swift` | 通用视图修饰器（`searchableIf`）与颜色 / 标记的展示色 | 业务规则 |
 | `LumaPersistence/LibraryPaths.swift` | 图库与系统路径的唯一入口 | 业务规则、UI |
@@ -160,9 +163,14 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Store/Library/LibraryStore+SystemAlbums.swift` | 系统图库相簿增删改、照片加入移出与手动排序、写回前校验与内存同步 | 视图绘制、SQL、直接改 `Photos.sqlite` |
 | `LumaDomain/Models.swift` | 纯数据模型与枚举 | 网络/IO |
 | `Features/Gallery/GalleryView.swift` | 网格容器、工具栏、拖放与框选 | 文件写入、缩略图解码细节 |
-| `Features/Gallery/PhotoGrids.swift` | 正方形/瀑布流网格布局 | 业务规则 |
-| `UI/Components/PhotoCell.swift` | 网格单元格（选择、悬停、拖放、右键菜单） | 缩略图解码细节（复用 `PhotoThumbnailLoader`）、路径拼接 |
-| `UI/Components/PhotoThumbnailView.swift` | `PhotoThumbnailView` / `PhotoThumbnailLoader`：所有缩略图取图 | 业务规则、视图状态 |
+| `LumaUI/PhotoGridHost.swift` | 网格组件与宿主的唯一交互面：展示参数（缩略图尺寸 / 圆角 / 强调色 / 元数据开关 / 动效 / 打开方式）+ 选中 / 堆叠 / 点击 / 拖放 / 右键菜单闭包 | 业务规则、Store 引用 |
+| `LumaUI/PhotoGrids.swift` | 正方形 / 完整比例 / 瀑布流 / 列表四种网格布局 | 业务规则 |
+| `LumaUI/PhotoCell.swift` | 网格单元格（选择、悬停、拖放、元数据浮层） | 右键菜单实现（`PhotoContextMenu` 留在 App）、缩略图解码细节 |
+| `LumaUI/PhotoMarqueeSelection.swift` | 空白处拖拽框选 | 业务规则 |
+| `Store/Shared/LibraryPhotoGridBridge.swift` | 把 `LibraryStore` / `AppSettings` / `SelectionModel` 桥接进 `PhotoGridHost`（值拷贝 + 变更广播） | 新布局 / 新缩略图路径 |
+| `UI/Components/PhotoContextMenu.swift` | 网格 / 列表共用的照片右键菜单与相簿层级子菜单 | 网格布局、缩略图解码 |
+| `LumaUI/PhotoThumbnailView.swift` | `ThumbnailPurpose` / `PhotoThumbnailView` 与取图出口 `ThumbnailLoaderRegistry`：组件层所有缩略图入口 | 解码顺序、缓存、Store 引用 |
+| `UI/Components/PhotoThumbnailLoader.swift` | 取图管线：缓存命中、快速层、目标档位解码与取消（由组合根注入给 `LumaUI`） | 业务规则、视图状态 |
 | `Features/Viewer/InfoPanelView.swift` | 查看器信息面板 + `PhotoInfoContent`（网格浮动信息卡共用同一份完整字段） | 另一套独立的详情字段（新字段只改这里） |
 | `Features/Cloud/CloudWizard*.swift` | 网盘接入向导：根视图 + 各接入方式的步骤视图与动作扩展 | 网盘协议实现、凭据持久化 |
 | `Features/Gallery/TimelineOverviewView.swift` | 年/月总览卡片 | 数据分组规则（复用 `store.sections`） |
@@ -260,7 +268,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 ### 缩略图与缓存
 
 - 缩略图统一走 `ImageLoader.thumbnail(for:)`：内存 `NSCache` + 磁盘文件；`cacheKey` 含 `editVersion`，编辑保存后必须 `ImageLoader.invalidate`。
-- 视图层取图统一走 `PhotoThumbnailView(photo:purpose:)`（内部 `PhotoThumbnailLoader` 负责缓存命中、快速层与目标档位）：按实际显示尺寸选 `.grid(maxPixel:)` / `.cover(pt)` / `.filmstrip(pt)` / `.preview(pt)`，禁止在视图里另写解码顺序，也禁止封面类一律解码 1200px。
+- 视图层取图统一走 `PhotoThumbnailView(photo:purpose:)`（组件在 `LumaUI`，取图管线 `PhotoThumbnailLoader` 在 `UI/Components`，由组合根注入）：按实际显示尺寸选 `.grid(maxPixel:)` / `.cover(pt)` / `.filmstrip(pt)` / `.preview(pt)`，禁止在视图里另写解码顺序，也禁止封面类一律解码 1200px。
 - 不得把 `NSImage` 存入 `PhotoItem` 或任何 `Codable` 模型。
 - 网盘缩略图优先服务端缩略图；WebDAV 走 `Range: bytes=0-262143` + EXIF/渐进式探测，禁止为了缩略图整文件下载。
 

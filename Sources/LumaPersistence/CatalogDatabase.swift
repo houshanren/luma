@@ -3,14 +3,14 @@ import LumaDomain
 import LumaCore
 
 /// 单个源的海报缓存占用（统计面板用）。
-public struct CatalogArtworkSummary: Identifiable {
-    public var sourceID: UUID
-    public var bytes: Int64
-    public var files: Int
-    public var lastUsed: Date?
+package struct CatalogArtworkSummary: Identifiable {
+    package var sourceID: UUID
+    package var bytes: Int64
+    package var files: Int
+    package var lastUsed: Date?
 
-    public var id: UUID { sourceID }
-    public init(
+    package var id: UUID { sourceID }
+    package init(
         sourceID: UUID,
         bytes: Int64,
         files: Int,
@@ -29,8 +29,8 @@ public struct CatalogArtworkSummary: Identifiable {
 /// 快照按页存、LRU 用 SQL 淘汰，不再整块重写 JSON。
 /// 源列表、关注、片单等零散配置留在 `catalog_kv`，键名沿用 JSON 时期的 key，
 /// 首次启动会把 `resources/catalog/*.json` 全量导入后删除。
-public final class CatalogDatabase {
-    public static let shared = CatalogDatabase()
+package final class CatalogDatabase {
+    package static let shared = CatalogDatabase()
 
     private let lock = NSRecursiveLock()
     private var connection: SQLiteDatabase?
@@ -123,13 +123,13 @@ public final class CatalogDatabase {
 
     // MARK: - 键值（零散配置）
 
-    public func data(forKey key: String) -> Data? {
+    package func data(forKey key: String) -> Data? {
         guard let db = database() else { return nil }
         let rows = try? db.query("SELECT value FROM catalog_kv WHERE key = ? LIMIT 1", [key])
         return rows?.first?["value"]?.data
     }
 
-    public func set(_ data: Data?, forKey key: String) {
+    package func set(_ data: Data?, forKey key: String) {
         guard let db = database() else { return }
         guard let data else {
             try? db.execute("DELETE FROM catalog_kv WHERE key = ?", [key])
@@ -142,7 +142,7 @@ public final class CatalogDatabase {
     }
 
     /// 某个前缀下的键值占用（字节）：影院列表快照 / TMDB 补全这类可再生缓存展示用。
-    public func keyValueBytes(prefix: String) -> Int64 {
+    package func keyValueBytes(prefix: String) -> Int64 {
         guard let db = database() else { return 0 }
         let rows = try? db.query("""
             SELECT COALESCE(SUM(LENGTH(value)), 0) AS total FROM catalog_kv WHERE key LIKE ?
@@ -151,14 +151,14 @@ public final class CatalogDatabase {
     }
 
     /// 删掉某个前缀下的键值：清理影院列表快照与 TMDB 补全，下次进入重新聚合。
-    public func clearKeyValues(prefix: String) {
+    package func clearKeyValues(prefix: String) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_kv WHERE key LIKE ?", [prefix + "%"])
     }
 
     // MARK: - 播放进度
 
-    public func loadProgress() -> [String: CatalogProgress] {
+    package func loadProgress() -> [String: CatalogProgress] {
         guard let db = database() else { return [:] }
         var result: [String: CatalogProgress] = [:]
         try? db.forEachRow("""
@@ -171,7 +171,7 @@ public final class CatalogDatabase {
         return result
     }
 
-    public func saveProgress(_ record: CatalogProgress) {
+    package func saveProgress(_ record: CatalogProgress) {
         guard let db = database() else { return }
         try? db.execute("""
             INSERT INTO catalog_progress(key, source_id, item_id, episode, seconds, duration, title, cover_url, updated_at)
@@ -189,12 +189,12 @@ public final class CatalogDatabase {
              record.updatedAt.timeIntervalSince1970])
     }
 
-    public func deleteProgress(keys: [String]) {
+    package func deleteProgress(keys: [String]) {
         guard !keys.isEmpty, let db = database() else { return }
         try? db.executeMany("DELETE FROM catalog_progress WHERE key = ?", rows: keys.map { [$0] })
     }
 
-    public func deleteProgress(sourceID: UUID) {
+    package func deleteProgress(sourceID: UUID) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_progress WHERE source_id = ?", [sourceID.uuidString])
     }
@@ -217,7 +217,7 @@ public final class CatalogDatabase {
 
     // MARK: - 更新日历
 
-    public func loadCalendar() -> [CatalogCalendarItem] {
+    package func loadCalendar() -> [CatalogCalendarItem] {
         guard let db = database() else { return [] }
         let decoder = JSONDecoder()
         var result: [CatalogCalendarItem] = []
@@ -232,7 +232,7 @@ public final class CatalogDatabase {
     }
 
     /// 新看到的条目：同一条只插一次，站点重复出现不会覆盖已有日期。
-    public func insertCalendar(_ items: [CatalogCalendarItem]) {
+    package func insertCalendar(_ items: [CatalogCalendarItem]) {
         guard !items.isEmpty, let db = database() else { return }
         let encoder = JSONEncoder()
         let rows: [[Any?]] = items.compactMap { item in
@@ -250,7 +250,7 @@ public final class CatalogDatabase {
     }
 
     /// 整表替换：只用于一次性回填 / 迁移。
-    public func replaceCalendar(_ items: [CatalogCalendarItem]) {
+    package func replaceCalendar(_ items: [CatalogCalendarItem]) {
         guard let db = database() else { return }
         let encoder = JSONEncoder()
         let rows: [[Any?]] = items.compactMap { item in
@@ -269,7 +269,7 @@ public final class CatalogDatabase {
     }
 
     /// 按录入顺序保留最近若干条（rowid 就是插入顺序）。
-    public func pruneCalendar(limit: Int) {
+    package func pruneCalendar(limit: Int) {
         guard let db = database() else { return }
         try? db.execute("""
             DELETE FROM catalog_calendar WHERE rowid NOT IN (
@@ -278,14 +278,14 @@ public final class CatalogDatabase {
             """, [limit])
     }
 
-    public func deleteCalendar(sourceID: UUID) {
+    package func deleteCalendar(sourceID: UUID) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_calendar WHERE source_id = ?", [sourceID.uuidString])
     }
 
     // MARK: - 列表快照
 
-    public func loadSnapshots() -> [String: CatalogPageSnapshot] {
+    package func loadSnapshots() -> [String: CatalogPageSnapshot] {
         guard let db = database() else { return [:] }
         let decoder = JSONDecoder()
         var result: [String: CatalogPageSnapshot] = [:]
@@ -298,14 +298,14 @@ public final class CatalogDatabase {
         return result
     }
 
-    public func saveSnapshot(_ snapshot: CatalogPageSnapshot, forKey key: String) {
+    package func saveSnapshot(_ snapshot: CatalogPageSnapshot, forKey key: String) {
         guard let db = database(),
               let payload = try? JSONEncoder().encode(snapshot) else { return }
         saveSnapshotData(payload, savedAt: snapshot.savedAt, forKey: key)
     }
 
     /// 通用快照写入：网络影院的列表快照也落在这张表里，与资源页共用同一套淘汰与清理。
-    public func saveSnapshotData(_ payload: Data, savedAt: Date, forKey key: String) {
+    package func saveSnapshotData(_ payload: Data, savedAt: Date, forKey key: String) {
         guard let db = database() else { return }
         try? db.execute("""
             INSERT INTO catalog_snapshots(page_key, payload, saved_at) VALUES(?, ?, ?)
@@ -313,7 +313,7 @@ public final class CatalogDatabase {
             """, [key, payload, savedAt.timeIntervalSince1970])
     }
 
-    public func snapshotData(forKey key: String) -> Data? {
+    package func snapshotData(forKey key: String) -> Data? {
         guard let db = database() else { return nil }
         var result: Data?
         try? db.forEachRow("SELECT payload FROM catalog_snapshots WHERE page_key = ?", [key]) { row in
@@ -322,13 +322,13 @@ public final class CatalogDatabase {
         return result
     }
 
-    public func deleteSnapshots(prefix: String) {
+    package func deleteSnapshots(prefix: String) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_snapshots WHERE page_key LIKE ?", [prefix + "%"])
     }
 
     /// 先丢过期快照，再按最近保存保留若干个。
-    public func pruneSnapshots(cutoff: Date, limit: Int) {
+    package func pruneSnapshots(cutoff: Date, limit: Int) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_snapshots WHERE saved_at < ?",
                         [cutoff.timeIntervalSince1970])
@@ -339,7 +339,7 @@ public final class CatalogDatabase {
             """, [limit])
     }
 
-    public func clearSnapshots() {
+    package func clearSnapshots() {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_snapshots;")
     }
@@ -347,7 +347,7 @@ public final class CatalogDatabase {
     // MARK: - 海报缓存索引
 
     /// 海报文件本身留在磁盘上，这张表只负责「谁占了多少、多久没用」，用于统计与 LRU。
-    public func recordArtwork(path: String, sourceID: UUID, bytes: Int64) {
+    package func recordArtwork(path: String, sourceID: UUID, bytes: Int64) {
         guard let db = database() else { return }
         try? db.execute("""
             INSERT INTO catalog_artwork(path, source_id, bytes, last_used) VALUES(?, ?, ?, ?)
@@ -356,14 +356,14 @@ public final class CatalogDatabase {
     }
 
     /// 批量刷新最近使用时间：网格滚动时先在内存里攒，隔一段时间合并成一次写入。
-    public func touchArtwork(paths: [String]) {
+    package func touchArtwork(paths: [String]) {
         guard !paths.isEmpty, let db = database() else { return }
         let now = Date().timeIntervalSince1970
         try? db.executeMany("UPDATE catalog_artwork SET last_used = ? WHERE path = ?",
                             rows: paths.map { [now, $0] })
     }
 
-    public func artworkSummaries() -> [CatalogArtworkSummary] {
+    package func artworkSummaries() -> [CatalogArtworkSummary] {
         guard let db = database() else { return [] }
         reindexArtworkIfNeeded(db)
         let rows = (try? db.query("""
@@ -384,7 +384,7 @@ public final class CatalogDatabase {
 
     /// 超出容量时按最久未使用删除文件与索引，降到目标的 90% 以下。
     @discardableResult
-    public func evictArtwork(targetBytes: Int64) -> Int {
+    package func evictArtwork(targetBytes: Int64) -> Int {
         guard let db = database() else { return 0 }
         reindexArtworkIfNeeded(db)
         let total = Int64(artworkTotalBytes())
@@ -406,18 +406,18 @@ public final class CatalogDatabase {
         return removed
     }
 
-    public func artworkTotalBytes() -> Int64 {
+    package func artworkTotalBytes() -> Int64 {
         guard let db = database() else { return 0 }
         let rows = try? db.query("SELECT COALESCE(SUM(bytes), 0) AS total FROM catalog_artwork")
         return Int64(rows?.first?["total"]?.int64 ?? 0)
     }
 
-    public func deleteArtwork(sourceID: UUID) {
+    package func deleteArtwork(sourceID: UUID) {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_artwork WHERE source_id = ?", [sourceID.uuidString])
     }
 
-    public func deleteAllArtwork() {
+    package func deleteAllArtwork() {
         guard let db = database() else { return }
         try? db.execute("DELETE FROM catalog_artwork;")
     }
@@ -502,7 +502,7 @@ public final class CatalogDatabase {
     }
 
     private struct LegacySnapshotEnvelope: Decodable {
-        public var version: Int
-        public var snapshots: [String: CatalogPageSnapshot]
+        package var version: Int
+        package var snapshots: [String: CatalogPageSnapshot]
     }
 }

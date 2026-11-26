@@ -2,7 +2,7 @@ import Foundation
 import LumaDomain
 
 /// 网络电视的智能助手工具：源库、频道、节目单、直播 / 回看、收藏与导航。
-public extension AILibraryTools {
+package extension AILibraryTools {
     static let tvWriteToolNames: Set<String> = ["favorite_tv_channel"]
 
     static var tvToolDefinitions: [AIRequestTool] {

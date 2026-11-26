@@ -2,7 +2,7 @@ import Foundation
 
 /// 系统「照片」图库的索引查询范围：全部可翻译成 `SystemIndex.sqlite` 的 SQL。
 /// 只描述“查什么”，不做 IO。
-public enum SystemQueryScope: Equatable, Sendable {
+package enum SystemQueryScope: Equatable, Sendable {
     case all
     case favorites
     case videos
@@ -35,7 +35,7 @@ public enum SystemQueryScope: Equatable, Sendable {
     case folder(Int64)
     case person(Int64)
 
-    public var rawKey: String {
+    package var rawKey: String {
         switch self {
         case .all: return "all"
         case .favorites: return "favorites"
@@ -72,48 +72,48 @@ public enum SystemQueryScope: Equatable, Sendable {
 }
 
 /// 大图库的系统图库分页查询描述：筛选、排序、范围全部交给索引库，内存只保留当前窗口。
-public struct SystemQuery: Equatable, Sendable {
-    public var scope: SystemQueryScope = .all
-    public var filter: PhotoFilter = .all
-    public var sortKey: SortKey = .capturedAt
-    public var ascending: Bool = false
+package struct SystemQuery: Equatable, Sendable {
+    package var scope: SystemQueryScope = .all
+    package var filter: PhotoFilter = .all
+    package var sortKey: SortKey = .capturedAt
+    package var ascending: Bool = false
     /// 相簿使用图库保存的手动顺序（Photos.sqlite 关联表的 `Z_FOK_3ASSETS`）。
-    public var manualOrder = false
+    package var manualOrder = false
     /// 搜索解析出的时间范围。
-    public var startDate: Date?
-    public var endDate: Date?
-    public var onlyFavorites = false
-    public var onlyVideos = false
-    public var onlyPhotos = false
-    public var onlyScreenshots = false
-    public var onlyLivePhotos = false
-    public var onlyEdited = false
+    package var startDate: Date?
+    package var endDate: Date?
+    package var onlyFavorites = false
+    package var onlyVideos = false
+    package var onlyPhotos = false
+    package var onlyScreenshots = false
+    package var onlyLivePhotos = false
+    package var onlyEdited = false
     /// 只看带有效定位的照片：人物详情的「地图」在索引里直接裁掉没有 GPS 的行，
     /// 不必把整个人的照片读进内存再过滤。
-    public var onlyLocated = false
+    package var onlyLocated = false
     /// 搜索词（空格分词，全部命中才算匹配）。
-    public var tokens: [String] = []
+    package var tokens: [String] = []
     /// 直连模式的地点名命中：`Photos.sqlite` 里的地名只有二进制归档，SQL 无法直接比对，
     /// 这里按 token 传入「地点名匹配到的资产 UUID」，在 SQL 里作为该 token 的 OR 条件。
-    public var tokenPlaceIDs: [String: [String]]?
+    package var tokenPlaceIDs: [String: [String]]?
     /// 关键词 / AI 标签 / OCR 命中的资产：`Photos.sqlite` 与索引里都没有这些字段，
     /// 按 token 传入内存索引算出的 UUID，在 SQL 里作为该 token 的 OR 条件。
-    public var tokenKeywordIDs: [String: [String]]?
+    package var tokenKeywordIDs: [String: [String]]?
     /// 关键词筛选命中的照片 ID（来自拾光补充元数据，索引里没有这些数据）。
-    public var overlayKeywordIDs: [String]?
+    package var overlayKeywordIDs: [String]?
     /// 地点聚类等派生范围：只在这些 ID 里查（索引无法表达同样的聚类规则）。
-    public var includeIDs: [String]?
+    package var includeIDs: [String]?
     /// 拾光补充元数据对收藏 / 隐藏的覆盖：索引里是 Photos.sqlite 的原值，这里参与查询。
-    public var favoriteAdds: [String] = []
-    public var favoriteRemoves: [String] = []
-    public var hiddenAdds: [String] = []
-    public var hiddenRemoves: [String] = []
+    package var favoriteAdds: [String] = []
+    package var favoriteRemoves: [String] = []
+    package var hiddenAdds: [String] = []
+    package var hiddenRemoves: [String] = []
     /// 「最近保存 / 最近查看」的截止时间。
-    public var savedCutoff: Date?
-    public var viewedCutoff: Date?
+    package var savedCutoff: Date?
+    package var viewedCutoff: Date?
 
     /// 影响窗口内容与顺序的指纹。
-    public var key: String {
+    package var key: String {
         var parts: [String] = []
         parts.append(scope.rawKey)
         parts.append(filter.rawValue)
@@ -146,7 +146,7 @@ public struct SystemQuery: Equatable, Sendable {
         parts.append(viewedCutoff.map { String($0.timeIntervalSince1970) } ?? "")
         return parts.joined(separator: "|")
     }
-    public init(
+    package init(
         scope: SystemQueryScope = .all,
         filter: PhotoFilter = .all,
         sortKey: SortKey = .capturedAt,
@@ -201,7 +201,7 @@ public struct SystemQuery: Equatable, Sendable {
     }
 }
 
-public extension SidebarItem {
+package extension SidebarItem {
     /// 能完整翻译成索引 SQL 的系统图库范围；返回 nil 表示该范围不返回照片网格。
     var systemQueryScope: SystemQueryScope? {
         switch self {

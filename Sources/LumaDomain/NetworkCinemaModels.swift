@@ -3,7 +3,7 @@ import Foundation
 /// 网络影院的分页：影院管理 / 榜单 / 电影 / 电视剧 / 日历 / 足迹 / 关注。
 /// 与「网络存储」里的影院完全独立：这里只聚合网络影视源（苹果CMS 等）的条目。
 /// 版式对齐「网络资源」与「网络存储」：管理、发现、浏览、回看各占一页，切换入口在窗口工具栏。
-public enum NetworkCinemaTab: String, CaseIterable, Identifiable {
+package enum NetworkCinemaTab: String, CaseIterable, Identifiable {
     case manage
     case ranking
     case movies
@@ -12,9 +12,9 @@ public enum NetworkCinemaTab: String, CaseIterable, Identifiable {
     case history
     case following
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .manage: return "影院管理"
         case .ranking: return "榜单"
@@ -26,7 +26,7 @@ public enum NetworkCinemaTab: String, CaseIterable, Identifiable {
         }
     }
 
-    public var symbol: String {
+    package var symbol: String {
         switch self {
         case .manage: return "slider.horizontal.3"
         case .ranking: return "chart.bar.fill"
@@ -39,14 +39,14 @@ public enum NetworkCinemaTab: String, CaseIterable, Identifiable {
     }
 
     /// 只有电影 / 电视剧会去影视源拉列表；管理、榜单、日历、足迹、关注都读本机聚合数据。
-    public var browsesContent: Bool {
+    package var browsesContent: Bool {
         self == .movies || self == .shows
     }
 
     /// 分页记忆：重开应用后仍停在上一页。
-    public static let storageKey = "networkCinema.tab.v1"
+    package static let storageKey = "networkCinema.tab.v1"
 
-    public static var persisted: NetworkCinemaTab {
+    package static var persisted: NetworkCinemaTab {
         guard let raw = UserDefaults.standard.string(forKey: storageKey),
               let tab = NetworkCinemaTab(rawValue: raw) else { return .movies }
         return tab
@@ -55,18 +55,18 @@ public enum NetworkCinemaTab: String, CaseIterable, Identifiable {
 
 /// 聚合后的一个条目：保留所属源，点击时直接走该源的详情与播放。
 /// Codable 用于列表快照：重新进入网络影院时先用上次内容铺满。
-public struct NetworkCinemaItem: Identifiable, Hashable, Codable {
-    public var source: CatalogSource
-    public var item: CatalogItem
+package struct NetworkCinemaItem: Identifiable, Hashable, Codable {
+    package var source: CatalogSource
+    package var item: CatalogItem
     /// 用来决定 TMDB 按电影还是电视剧检索，以及卡片上的类型标记。
-    public var isTV: Bool
+    package var isTV: Bool
 
-    public var id: String { "\(source.id.uuidString)|\(item.id)" }
+    package var id: String { "\(source.id.uuidString)|\(item.id)" }
 
-    public var enrichmentKey: String {
+    package var enrichmentKey: String {
         NetworkCinemaEnrichment.key(title: item.title, isTV: isTV)
     }
-    public init(
+    package init(
         source: CatalogSource,
         item: CatalogItem,
         isTV: Bool
@@ -78,31 +78,31 @@ public struct NetworkCinemaItem: Identifiable, Hashable, Codable {
 }
 
 /// TMDB 补全的元数据：海报、评分、简介、年份与类型。
-public struct NetworkCinemaEnrichment: Codable, Hashable {
-    public var tmdbID: Int
-    public var isTV: Bool
-    public var title: String
-    public var originalTitle: String?
-    public var year: Int?
-    public var posterURL: String?
-    public var backdropURL: String?
-    public var overview: String?
-    public var rating: Double?
-    public var voteCount: Int?
-    public var genres: [String] = []
+package struct NetworkCinemaEnrichment: Codable, Hashable {
+    package var tmdbID: Int
+    package var isTV: Bool
+    package var title: String
+    package var originalTitle: String?
+    package var year: Int?
+    package var posterURL: String?
+    package var backdropURL: String?
+    package var overview: String?
+    package var rating: Double?
+    package var voteCount: Int?
+    package var genres: [String] = []
 
     /// 缓存键：标题归一化 + 电影/剧集，避免同名电影与剧集互相覆盖。
-    public static func key(title: String, isTV: Bool) -> String {
+    package static func key(title: String, isTV: Bool) -> String {
         normalized(cleanedTitle(title)) + "|" + (isTV ? "tv" : "movie")
     }
 
     /// 只保留字母与数字：中文标题里的空格、标点、副标题符号都不参与比较。
-    public static func normalized(_ text: String) -> String {
+    package static func normalized(_ text: String) -> String {
         text.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     /// 去掉年份、括号说明与常见清晰度 / 语言后缀，提升 TMDB 命中率。
-    public static func cleanedTitle(_ raw: String) -> String {
+    package static func cleanedTitle(_ raw: String) -> String {
         var text = raw
         text = text.replacingOccurrences(of: #"[\(\[【（][^\)\]】）]*[\)\]】）]"#,
                                          with: " ", options: .regularExpression)
@@ -114,13 +114,13 @@ public struct NetworkCinemaEnrichment: Codable, Hashable {
     }
 
     /// 从标题里认出年份（常见写法「沙丘2 (2024)」），没有就返回 nil。
-    public static func year(in raw: String) -> Int? {
+    package static func year(in raw: String) -> Int? {
         guard let range = raw.range(of: #"(19|20)\d{2}"#, options: .regularExpression) else {
             return nil
         }
         return Int(raw[range])
     }
-    public init(
+    package init(
         tmdbID: Int,
         isTV: Bool,
         title: String,

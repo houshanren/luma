@@ -3,9 +3,9 @@ import CoreLocation
 
 // MARK: - 坐标有效性
 
-public enum CoordinateValidator {
+package enum CoordinateValidator {
     /// 官方图库对没有位置的照片会写入 (-180, -180) 之类的哨兵值，需要过滤。
-    public static func isValid(latitude: Double?, longitude: Double?) -> Bool {
+    package static func isValid(latitude: Double?, longitude: Double?) -> Bool {
         guard let latitude, let longitude,
               latitude.isFinite, longitude.isFinite else { return false }
         guard abs(latitude) <= 90, abs(longitude) <= 180 else { return false }
@@ -17,19 +17,19 @@ public enum CoordinateValidator {
 // MARK: - 地点信息
 
 /// 一张照片对应的地点信息，来自官方图库的反向地理编码数据，或本地逆地理编码。
-public struct PlaceInfo: Codable, Hashable {
-    public var country: String?
-    public var province: String?
-    public var city: String?
-    public var district: String?
-    public var poi: String?
+package struct PlaceInfo: Codable, Hashable {
+    package var country: String?
+    package var province: String?
+    package var city: String?
+    package var district: String?
+    package var poi: String?
 
-    public var isEmpty: Bool {
+    package var isEmpty: Bool {
         country == nil && province == nil && city == nil && district == nil && poi == nil
     }
 
     /// 展示名称：优先「城市，区县」。
-    public var displayName: String? {
+    package var displayName: String? {
         var parts: [String] = []
         if let city, !city.isEmpty { parts.append(city) }
         if let district, !district.isEmpty, district != city { parts.append(district) }
@@ -41,7 +41,7 @@ public struct PlaceInfo: Codable, Hashable {
     }
 
     /// 统计分组：中国大陆 / 其他国家或地区。
-    public var regionGroup: String {
+    package var regionGroup: String {
         guard let country, !country.isEmpty else { return "其他地点" }
         if country.contains("中国"),
            !country.contains("香港"),
@@ -51,7 +51,7 @@ public struct PlaceInfo: Codable, Hashable {
         }
         return country
     }
-    public init(
+    package init(
         country: String? = nil,
         province: String? = nil,
         city: String? = nil,
@@ -70,16 +70,16 @@ public struct PlaceInfo: Codable, Hashable {
 
 /// 「位置」页的地点聚合层级：省 / 市 / 区县 / 街道。
 /// 层级只影响聚类与标题，不改变照片本身的地名数据。
-public enum PlaceGranularity: String, CaseIterable, Identifiable {
+package enum PlaceGranularity: String, CaseIterable, Identifiable {
     case province
     case city
     case district
     case street
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
     /// 切换控件上的短标签。
-    public var shortTitle: String {
+    package var shortTitle: String {
         switch self {
         case .province: return "省"
         case .city: return "市"
@@ -89,7 +89,7 @@ public enum PlaceGranularity: String, CaseIterable, Identifiable {
     }
 
     /// 完整名称，用于提示文案。
-    public var title: String {
+    package var title: String {
         switch self {
         case .province: return "省份"
         case .city: return "城市"
@@ -101,26 +101,26 @@ public enum PlaceGranularity: String, CaseIterable, Identifiable {
 
 // MARK: - 地点聚类
 
-public struct PlaceCluster: Identifiable {
-    public let id: String
-    public let title: String
-    public let subtitle: String?
-    public let group: String
-    public let photos: [PhotoItem]
-    public let latitude: Double
-    public let longitude: Double
+package struct PlaceCluster: Identifiable {
+    package let id: String
+    package let title: String
+    package let subtitle: String?
+    package let group: String
+    package let photos: [PhotoItem]
+    package let latitude: Double
+    package let longitude: Double
     /// 照片经纬度包围盒：视野统计先按簇整体剔除，避免每次平移都逐张检查全部照片。
-    public let minLatitude: Double
-    public let maxLatitude: Double
-    public let minLongitude: Double
-    public let maxLongitude: Double
+    package let minLatitude: Double
+    package let maxLatitude: Double
+    package let minLongitude: Double
+    package let maxLongitude: Double
 
-    public var count: Int { photos.count }
-    public var cover: PhotoItem? { photos.first }
-    public var coordinate: CLLocationCoordinate2D {
+    package var count: Int { photos.count }
+    package var cover: PhotoItem? { photos.first }
+    package var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
-    public init(
+    package init(
         id: String,
         title: String,
         subtitle: String? = nil,
@@ -147,8 +147,8 @@ public struct PlaceCluster: Identifiable {
     }
 }
 
-public enum PlaceClusterBuilder {
-    public static func key(for photo: PhotoItem,
+package enum PlaceClusterBuilder {
+    package static func key(for photo: PhotoItem,
                     granularity: PlaceGranularity = .district) -> (id: String, title: String, subtitle: String?, group: String) {
         let country = clean(photo.placeCountry)
         let province = clean(photo.placeProvince)
@@ -222,7 +222,7 @@ public enum PlaceClusterBuilder {
         return values.isEmpty ? nil : values.joined(separator: "，")
     }
 
-    public static func clusters(from photos: [PhotoItem],
+    package static func clusters(from photos: [PhotoItem],
                          granularity: PlaceGranularity = .district) -> [PlaceCluster] {
         // 用引用类型的桶就地累加：值类型桶每次 append 都要整份拷出再写回，
         // 大图库（上万张带定位照片）会明显拖慢地图页打开速度。
@@ -273,7 +273,7 @@ public enum PlaceClusterBuilder {
 
 /// 地点文案：查看器顶栏、信息面板与网格地点标签共用同一套层级与回退顺序，
 /// 避免同一个地点在不同位置显示成不同的名字。
-public extension PhotoItem {
+package extension PhotoItem {
     /// 统一的地点标题：街道 → 城市 → 区县 → 省份 → 国家。
     var placeTitle: String? {
         if let poi = photoPlaceText(placePOI) { return poi }
@@ -307,18 +307,18 @@ public extension PhotoItem {
 
 /// 地点聚类过程中的累加桶（引用类型，避免结构体写回时的整份拷贝）。
 private final class PlaceBucket {
-    public let title: String
-    public let subtitle: String?
-    public let group: String
-    public var photos: [PhotoItem] = []
-    public var latitudeSum = 0.0
-    public var longitudeSum = 0.0
-    public var minLatitude = Double.infinity
-    public var maxLatitude = -Double.infinity
-    public var minLongitude = Double.infinity
-    public var maxLongitude = -Double.infinity
+    package let title: String
+    package let subtitle: String?
+    package let group: String
+    package var photos: [PhotoItem] = []
+    package var latitudeSum = 0.0
+    package var longitudeSum = 0.0
+    package var minLatitude = Double.infinity
+    package var maxLatitude = -Double.infinity
+    package var minLongitude = Double.infinity
+    package var maxLongitude = -Double.infinity
 
-    public init(key: (id: String, title: String, subtitle: String?, group: String)) {
+    package init(key: (id: String, title: String, subtitle: String?, group: String)) {
         title = key.title
         subtitle = key.subtitle
         group = key.group
@@ -329,7 +329,7 @@ private final class PlaceBucket {
 
 /// 解析 `ZREVERSELOCATIONDATA`（NSKeyedArchiver 二进制 plist）。
 /// 其中包含 `CNPostalAddress`（国家/省/市/区/街道），无需联网即可得到官方地名。
-public enum ReverseGeoArchive {
+package enum ReverseGeoArchive {
     private static let uidValueFunction: ((CFTypeRef) -> UInt32)? = {
         guard let handle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_NOW),
               let symbol = dlsym(handle, "_CFKeyedArchiverUIDGetValue") else { return nil }
@@ -342,7 +342,7 @@ public enum ReverseGeoArchive {
         return unsafeBitCast(symbol, to: (@convention(c) () -> CFTypeID).self)
     }()
 
-    public static func decode(_ data: Data) -> PlaceInfo? {
+    package static func decode(_ data: Data) -> PlaceInfo? {
         guard !data.isEmpty,
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
               let root = plist as? [String: Any],
@@ -407,16 +407,16 @@ public enum ReverseGeoArchive {
 // MARK: - 坐标系纠偏
 
 /// WGS-84 / GCJ-02 / BD-09 之间的转换，用于高德、百度底图对齐。
-public enum CoordinateShift {
+package enum CoordinateShift {
     private static let axis = 6378245.0
     private static let eccentricity = 0.00669342162296594323
     private static let xPi = Double.pi * 3000.0 / 180.0
 
-    public static func isOutOfChina(latitude: Double, longitude: Double) -> Bool {
+    package static func isOutOfChina(latitude: Double, longitude: Double) -> Bool {
         longitude < 72.004 || longitude > 137.8347 || latitude < 0.8293 || latitude > 55.8271
     }
 
-    public static func wgs84ToGcj02(latitude: Double, longitude: Double) -> (latitude: Double, longitude: Double) {
+    package static func wgs84ToGcj02(latitude: Double, longitude: Double) -> (latitude: Double, longitude: Double) {
         guard !isOutOfChina(latitude: latitude, longitude: longitude) else {
             return (latitude, longitude)
         }
@@ -431,13 +431,13 @@ public enum CoordinateShift {
         return (latitude + deltaLat, longitude + deltaLon)
     }
 
-    public static func gcj02ToBd09(latitude: Double, longitude: Double) -> (latitude: Double, longitude: Double) {
+    package static func gcj02ToBd09(latitude: Double, longitude: Double) -> (latitude: Double, longitude: Double) {
         let z = sqrt(longitude * longitude + latitude * latitude) + 0.00002 * sin(latitude * xPi)
         let theta = atan2(latitude, longitude) + 0.000003 * cos(longitude * xPi)
         return (z * sin(theta) + 0.006, z * cos(theta) + 0.0065)
     }
 
-    public static func wgs84ToBd09(latitude: Double, longitude: Double) -> (latitude: Double, longitude: Double) {
+    package static func wgs84ToBd09(latitude: Double, longitude: Double) -> (latitude: Double, longitude: Double) {
         let gcj = wgs84ToGcj02(latitude: latitude, longitude: longitude)
         return gcj02ToBd09(latitude: gcj.latitude, longitude: gcj.longitude)
     }
@@ -467,7 +467,7 @@ public enum CoordinateShift {
     ]
 
     /// BD-09 经纬度 → 百度墨卡托（米）。
-    public static func bd09ToMercator(latitude: Double, longitude: Double) -> (x: Double, y: Double) {
+    package static func bd09ToMercator(latitude: Double, longitude: Double) -> (x: Double, y: Double) {
         let absLon = abs(longitude)
         let absLat = abs(latitude)
         var coefficient: [Double]?
@@ -488,7 +488,7 @@ public enum CoordinateShift {
     }
 
     /// 百度瓦片编号（256px）。
-    public static func baiduTile(latitude: Double, longitude: Double, zoom: Int) -> (x: Int, y: Int) {
+    package static func baiduTile(latitude: Double, longitude: Double, zoom: Int) -> (x: Int, y: Int) {
         let bd = wgs84ToBd09(latitude: latitude, longitude: longitude)
         let mc = bd09ToMercator(latitude: bd.latitude, longitude: bd.longitude)
         let resolution = 0.597164283559817 * pow(2.0, Double(18 - zoom))

@@ -3,13 +3,13 @@ import LumaDomain
 import LumaCore
 import SQLite3
 
-public enum SQLiteError: LocalizedError {
+package enum SQLiteError: LocalizedError {
     case open(String)
     case prepare(String)
     case step(String)
     case execute(String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .open(let message): return "无法打开数据库：\(message)"
         case .prepare(let message): return "SQL 准备失败：\(message)"
@@ -19,14 +19,14 @@ public enum SQLiteError: LocalizedError {
     }
 }
 
-public enum SQLiteValue {
+package enum SQLiteValue {
     case null
     case integer(Int64)
     case real(Double)
     case text(String)
     case blob(Data)
 
-    public var int64: Int64? {
+    package var int64: Int64? {
         switch self {
         case .integer(let value): return value
         case .real(let value): return Int64(value)
@@ -35,11 +35,11 @@ public enum SQLiteValue {
         }
     }
 
-    public var int: Int? {
+    package var int: Int? {
         int64.map { Int($0) }
     }
 
-    public var double: Double? {
+    package var double: Double? {
         switch self {
         case .real(let value): return value
         case .integer(let value): return Double(value)
@@ -48,7 +48,7 @@ public enum SQLiteValue {
         }
     }
 
-    public var string: String? {
+    package var string: String? {
         switch self {
         case .text(let value): return value
         case .integer(let value): return String(value)
@@ -58,28 +58,28 @@ public enum SQLiteValue {
         }
     }
 
-    public var data: Data? {
+    package var data: Data? {
         if case .blob(let data) = self { return data }
         return nil
     }
 
-    public var bool: Bool {
+    package var bool: Bool {
         (int64 ?? 0) != 0
     }
 }
 
-public final class SQLiteDatabase {
+package final class SQLiteDatabase {
     private var handle: OpaquePointer?
     /// 系统 libsqlite3 以 THREADSAFE=2（multi-thread）编译：同一个连接禁止跨线程并发使用。
     /// 索引库会被主线程（计数、地点、侧边栏）和多个后台 Task 同时查询，
     /// 并发操作同一 handle 会写坏连接内部的 lookaside / 内存分配，
     /// 表现为 sqlite3RunParser 里的随机 SIGSEGV / SIGBUS。这里把所有入口串行化。
     private let lock = NSRecursiveLock()
-    public let path: String
+    package let path: String
 
     /// `wal` 只对可写库有效：索引是一次性构建、之后只读打开，
     /// 必须保持普通回滚日志模式，否则 WAL 旁路文件一旦没跟着主文件走，只读连接会全部查询失败。
-    public init(path: String, readonly: Bool, wal: Bool = true) throws {
+    package init(path: String, readonly: Bool, wal: Bool = true) throws {
         self.path = path
         let flags: Int32 = readonly
             ? SQLITE_OPEN_READONLY
@@ -109,7 +109,7 @@ public final class SQLiteDatabase {
         }
     }
 
-    public func execute(_ sql: String, _ binds: [Any?] = []) throws {
+    package func execute(_ sql: String, _ binds: [Any?] = []) throws {
         lock.lock()
         defer { lock.unlock() }
         let statement = try prepare(sql, binds)
@@ -123,7 +123,7 @@ public final class SQLiteDatabase {
         }
     }
 
-    public func query(_ sql: String, _ binds: [Any?] = []) throws -> [[String: SQLiteValue]] {
+    package func query(_ sql: String, _ binds: [Any?] = []) throws -> [[String: SQLiteValue]] {
         lock.lock()
         defer { lock.unlock() }
         let statement = try prepare(sql, binds)
@@ -155,7 +155,7 @@ public final class SQLiteDatabase {
 
     /// 批量执行同一条 INSERT：只准备一次语句，逐行绑定后重置。
     /// 百万级索引写入时，反复 prepare 会成为主要开销。
-    public func executeMany(_ sql: String, rows: [[Any?]]) throws {
+    package func executeMany(_ sql: String, rows: [[Any?]]) throws {
         lock.lock()
         defer { lock.unlock() }
         var statement: OpaquePointer?
@@ -177,7 +177,7 @@ public final class SQLiteDatabase {
         }
     }
 
-    public func transaction(_ block: () throws -> Void) throws {
+    package func transaction(_ block: () throws -> Void) throws {
         lock.lock()
         defer { lock.unlock() }
         try execute("BEGIN IMMEDIATE;")
@@ -191,7 +191,7 @@ public final class SQLiteDatabase {
     }
 
     /// 逐行读取，避免一次性把所有行物化成字典（大图库可省下大量内存）。
-    public func forEachRow(_ sql: String, _ binds: [Any?] = [],
+    package func forEachRow(_ sql: String, _ binds: [Any?] = [],
                     _ body: ([String: SQLiteValue]) throws -> Void) throws {
         lock.lock()
         defer { lock.unlock() }

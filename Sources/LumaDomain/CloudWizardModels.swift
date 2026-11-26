@@ -1,14 +1,14 @@
 import Foundation
 
-public enum AlistProvider: String, CaseIterable, Identifiable {
+package enum AlistProvider: String, CaseIterable, Identifiable {
     case aliyun
     case baidu
     case quark
     case pan115
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .aliyun: return "阿里云盘"
         case .baidu: return "百度网盘"
@@ -17,7 +17,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var subtitle: String {
+    package var subtitle: String {
         switch self {
         case .aliyun: return "扫码授权，内置公共应用"
         case .baidu: return "授权码换取刷新令牌"
@@ -26,7 +26,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var brand: CloudBrand {
+    package var brand: CloudBrand {
         switch self {
         case .aliyun: return .aliyun
         case .baidu: return .baidu
@@ -35,7 +35,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var mountPath: String {
+    package var mountPath: String {
         switch self {
         case .aliyun: return "/aliyun"
         case .baidu: return "/baidu"
@@ -44,7 +44,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var steps: [String] {
+    package var steps: [String] {
         switch self {
         case .aliyun:
             return [
@@ -76,7 +76,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var notes: [String] {
+    package var notes: [String] {
         switch self {
         case .aliyun:
             return [
@@ -100,7 +100,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var docsURL: String {
+    package var docsURL: String {
         switch self {
         case .aliyun: return "https://alistgo.com/guide/drivers/aliyundrive_open.html"
         case .baidu: return "https://alist.nn.ci/guide/drivers/baidu.html#refresh-token"
@@ -109,7 +109,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    public var extraLink: (title: String, url: String)? {
+    package var extraLink: (title: String, url: String)? {
         switch self {
         case .aliyun:
             return ("获取令牌页面", "https://alistgo.com/tool/aliyundrive/request")
@@ -125,7 +125,7 @@ public enum AlistProvider: String, CaseIterable, Identifiable {
 
 // MARK: - 向导流程
 
-public enum CloudWizardFlow: String, CaseIterable, Identifiable {
+package enum CloudWizardFlow: String, CaseIterable, Identifiable {
     case aliyunCookie
     case baidu
     case quark
@@ -134,9 +134,9 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
     case webdav
     case alist
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .aliyunCookie: return "阿里云盘"
         case .baidu: return "百度网盘"
@@ -148,7 +148,7 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
         }
     }
 
-    public var subtitle: String {
+    package var subtitle: String {
         switch self {
         case .aliyunCookie: return "浏览器 Cookie · 免开发者应用"
         case .baidu: return "官方 OAuth · 直链播放"
@@ -160,7 +160,7 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .aliyunCookie: return "cloud"
         case .baidu: return "cloud.fill"
@@ -173,7 +173,7 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
     }
 
     /// 官方网盘的品牌图标；SMB / WebDAV / AList 用系统符号。
-    public var brand: CloudBrand? {
+    package var brand: CloudBrand? {
         switch self {
         case .aliyunCookie: return .aliyun
         case .baidu: return .baidu
@@ -183,7 +183,7 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
         }
     }
 
-    public var kind: CloudKind? {
+    package var kind: CloudKind? {
         switch self {
         case .aliyunCookie: return nil
         case .baidu: return .baidu
@@ -195,7 +195,7 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
         }
     }
 
-    public var steps: [String] {
+    package var steps: [String] {
         switch self {
         case .baidu: return ["应用凭据", "授权登录", "接入范围", "完成"]
         case .aliyunCookie, .quark, .pan115: return ["粘贴 Cookie", "确认添加"]
@@ -205,7 +205,7 @@ public enum CloudWizardFlow: String, CaseIterable, Identifiable {
     }
 
     /// 走浏览器 Cookie / 令牌的接入方式。
-    public var usesCookie: Bool { self == .aliyunCookie || self == .quark || self == .pan115 }
+    package var usesCookie: Bool { self == .aliyunCookie || self == .quark || self == .pan115 }
 
-    public var requiresDeveloperApp: Bool { self == .baidu }
+    package var requiresDeveloperApp: Bool { self == .baidu }
 }

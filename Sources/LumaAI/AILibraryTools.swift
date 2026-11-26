@@ -3,9 +3,9 @@ import LumaDomain
 
 /// 提供给智能助手的本地工具：检索、浏览、相簿、文件夹、图片与视频。
 /// 所有写操作都先经过用户确认，再走 LibraryStore 现有方法落盘。
-public enum AILibraryTools {
+package enum AILibraryTools {
     /// 需要用户确认的写操作。
-    public static let writeToolNames: Set<String> = Set([
+    package static let writeToolNames: Set<String> = Set([
         "create_albums", "add_photos_to_album", "remove_photos_from_album",
         "rename_album", "delete_album", "move_album", "set_album_cover",
         "create_folder", "rename_folder", "delete_folder",
@@ -17,7 +17,7 @@ public enum AILibraryTools {
         .union(catalogWriteToolNames)
         .union(tvWriteToolNames)
 
-    public static var definitions: [AIRequestTool] {
+    package static var definitions: [AIRequestTool] {
         [searchPhotos, unifiedSearch, listAlbums, listFolders, listVideos,
          getPhotoInfo, listKeywords, listPeople, libraryOverview,
          navigate, selectPhotos, openPhoto, openSearchResult,
@@ -30,7 +30,7 @@ public enum AILibraryTools {
     }
 
     /// 工具总数（界面展示用，避免每次重算 schema）。影院 / 资源 / 网络影院 / 网络电视工具由 provider 单独提供。
-    public static let count = definitions.count
+    package static let count = definitions.count
         + catalogToolDefinitions.count
         + cinemaToolDefinitions.count
         + networkCinemaToolDefinitions.count
@@ -38,7 +38,7 @@ public enum AILibraryTools {
 
     /// 高风险写工具：「仅高风险」审批模式下仍然弹窗。
     /// 只收会删除、覆盖原文件或批量改大量数据的操作。
-    public static let riskyToolNames: Set<String> = [
+    package static let riskyToolNames: Set<String> = [
         "trash_photos", "compress_photos",
         "delete_album", "delete_folder",
         "scrape_cinema", "refresh_cinema_metadata",
@@ -46,7 +46,7 @@ public enum AILibraryTools {
     ]
 
     /// 同一次工具调用是否属于高风险；少数工具要按 action 判断。
-    public static func isRisky(_ call: AIToolCall) -> Bool {
+    package static func isRisky(_ call: AIToolCall) -> Bool {
         if riskyToolNames.contains(call.name) { return true }
         if call.name == "manage_cinema_list" {
             let args = arguments(call.arguments)
@@ -57,7 +57,7 @@ public enum AILibraryTools {
     }
 
     /// 工具的中文短名：助手运行中用一句话说明「正在做什么」。
-    public static func shortTitle(for name: String) -> String {
+    package static func shortTitle(for name: String) -> String {
         switch name {
         case "search_photos", "unified_search", "list_videos", "list_albums", "list_folders",
              "search_cinema_library", "search_catalog", "list_catalog_watchlist",
@@ -549,39 +549,39 @@ public enum AILibraryTools {
                     description: "照片或视频的 id（UUID，也支持候选编号 #3 或唯一文件名）")
     }
 
-    public static func objectSchema(_ properties: [String: Any],
+    package static func objectSchema(_ properties: [String: Any],
                              required: [String] = []) -> [String: Any] {
         var schema: [String: Any] = ["type": "object", "properties": properties]
         if !required.isEmpty { schema["required"] = required }
         return schema
     }
 
-    public static func arraySchema(_ items: [String: Any], description: String) -> [String: Any] {
+    package static func arraySchema(_ items: [String: Any], description: String) -> [String: Any] {
         ["type": "array", "items": items, "description": description]
     }
 
-    public static func stringSchema(_ description: String) -> [String: Any] {
+    package static func stringSchema(_ description: String) -> [String: Any] {
         ["type": "string", "description": description]
     }
 
-    public static func booleanSchema(_ description: String) -> [String: Any] {
+    package static func booleanSchema(_ description: String) -> [String: Any] {
         ["type": "boolean", "description": description]
     }
 
-    public static func integerSchema(_ description: String,
+    package static func integerSchema(_ description: String,
                               minimum: Int,
                               maximum: Int) -> [String: Any] {
         ["type": "integer", "description": description,
          "minimum": minimum, "maximum": maximum]
     }
 
-    public static func enumSchema(_ values: [String], _ description: String) -> [String: Any] {
+    package static func enumSchema(_ values: [String], _ description: String) -> [String: Any] {
         ["type": "string", "description": description, "enum": values]
     }
 
     // MARK: - 参数解析
 
-    public static func arguments(_ raw: String) -> [String: Any] {
+    package static func arguments(_ raw: String) -> [String: Any] {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // 少数模型会把参数包在 Markdown 代码块里。
         if text.hasPrefix("```") {
@@ -597,33 +597,33 @@ public enum AILibraryTools {
         return object
     }
 
-    public static func stringArray(_ value: Any?) -> [String] {
+    package static func stringArray(_ value: Any?) -> [String] {
         if let list = value as? [String] { return list }
         if let list = value as? [Any] { return list.compactMap { $0 as? String } }
         if let string = value as? String { return [string] }
         return []
     }
 
-    public static func objectArray(_ value: Any?) -> [[String: Any]] {
+    package static func objectArray(_ value: Any?) -> [[String: Any]] {
         if let list = value as? [[String: Any]] { return list }
         if let list = value as? [Any] { return list.compactMap { $0 as? [String: Any] } }
         return []
     }
 
-    public static func integer(_ value: Any?, fallback: Int) -> Int {
+    package static func integer(_ value: Any?, fallback: Int) -> Int {
         if let int = value as? Int { return int }
         if let number = value as? NSNumber { return number.intValue }
         if let string = value as? String, let int = Int(string) { return int }
         return fallback
     }
 
-    public static func bool(_ value: Any?, fallback: Bool) -> Bool {
+    package static func bool(_ value: Any?, fallback: Bool) -> Bool {
         if let bool = value as? Bool { return bool }
         if let number = value as? NSNumber { return number.boolValue }
         return fallback
     }
 
-    public static func string(_ value: Any?) -> String? {
+    package static func string(_ value: Any?) -> String? {
         guard let text = value as? String else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -633,7 +633,7 @@ public enum AILibraryTools {
 
     /// 影院顶栏「一键智能整理」的预设指令：怎么分组、怎么判断电影 / 剧集、季集怎么对齐，
     /// 全交给模型；工具只负责提供目录树、候选与写回。
-    public static func cinemaAutoMatchPrompt(scopeName: String) -> String {
+    package static func cinemaAutoMatchPrompt(scopeName: String) -> String {
         """
         请帮我把当前影院「\(scopeName)」整理匹配好。全程只写元数据与海报，不移动、不改名、不删除任何视频文件。
 
@@ -666,7 +666,7 @@ public enum AILibraryTools {
 
     /// 用于确认弹窗的可读描述。
     /// 各业务域先自行认领（影院 / 网络资源 / 网络电视），剩下的图库工具在这里兜底。
-    public static func describe(_ call: AIToolCall) -> String {
+    package static func describe(_ call: AIToolCall) -> String {
         if let text = describeCinema(call) ?? describeCatalog(call) ?? describeTV(call) {
             return text
         }

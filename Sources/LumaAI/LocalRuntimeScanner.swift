@@ -2,18 +2,18 @@ import Foundation
 import LumaDomain
 
 /// 本机可用的 OpenAI 兼容推理服务（不内置 GGUF 运行时，先接入用户已有的服务）。
-public struct LocalRuntimeCandidate: Identifiable, Hashable {
-    public let baseURL: String
-    public let models: [String]
+package struct LocalRuntimeCandidate: Identifiable, Hashable {
+    package let baseURL: String
+    package let models: [String]
 
-    public var id: String { baseURL }
+    package var id: String { baseURL }
 
-    public var title: String {
+    package var title: String {
         if baseURL.contains("11434") { return "Ollama" }
         if baseURL.contains("1234") { return "LM Studio" }
         return baseURL
     }
-    public init(
+    package init(
         baseURL: String,
         models: [String]
     ) {
@@ -22,14 +22,14 @@ public struct LocalRuntimeCandidate: Identifiable, Hashable {
     }
 }
 
-public enum LocalRuntimeScanner {
-    public static let defaultEndpoints = [
+package enum LocalRuntimeScanner {
+    package static let defaultEndpoints = [
         "http://127.0.0.1:11434/v1",   // Ollama
         "http://127.0.0.1:1234/v1"     // LM Studio
     ]
 
     /// 逐个探测本机常见端口；当前配置的地址也会一起探测。
-    public static func scan(extra baseURL: String? = nil) async -> [LocalRuntimeCandidate] {
+    package static func scan(extra baseURL: String? = nil) async -> [LocalRuntimeCandidate] {
         var endpoints = defaultEndpoints
         if let baseURL, !baseURL.isEmpty, !endpoints.contains(baseURL) {
             endpoints.insert(baseURL, at: 0)
@@ -43,7 +43,7 @@ public enum LocalRuntimeScanner {
         return results
     }
 
-    public static func models(at baseURL: String) async -> [String]? {
+    package static func models(at baseURL: String) async -> [String]? {
         var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !base.isEmpty else { return nil }
         while base.hasSuffix("/") { base.removeLast() }

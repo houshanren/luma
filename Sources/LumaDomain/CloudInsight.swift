@@ -1,7 +1,7 @@
 import Foundation
 
 /// 网络存储的浏览范围：侧边栏条目与网格筛选共用同一份枚举，互斥切换。
-public enum CloudScope: Hashable {
+package enum CloudScope: Hashable {
     case all
     case videos
     case photos
@@ -41,7 +41,7 @@ public enum CloudScope: Hashable {
     /// 单个关键词下的网盘照片。
     case keyword(String)
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .all: return "全部项目"
         case .videos: return "视频"
@@ -71,7 +71,7 @@ public enum CloudScope: Hashable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .all: return "photo.stack"
         case .videos: return "video"
@@ -101,7 +101,7 @@ public enum CloudScope: Hashable {
     }
 
     /// 侧边栏行标识（用于悬停状态与测试定位）。
-    public var key: String {
+    package var key: String {
         switch self {
         case .all: return "all"
         case .videos: return "videos"
@@ -132,7 +132,7 @@ public enum CloudScope: Hashable {
     }
 
     /// 需要先做端侧识别才能用的范围。
-    public var requiresAnalysis: Bool {
+    package var requiresAnalysis: Bool {
         switch self {
         case .text, .scene: return true
         default: return false
@@ -141,7 +141,7 @@ public enum CloudScope: Hashable {
 
     /// 地图 / 位置 / 人物 / 重复项目 / 关键词 / 值得重看 / 图库整理 / 最近编辑 / 最近删除 /
     /// 导入项目在网盘里使用各自的页面，而不是普通照片网格。
-    public var usesDedicatedView: Bool {
+    package var usesDedicatedView: Bool {
         switch self {
         case .map, .places, .people, .duplicates, .health, .keywords, .revisit,
              .ratings, .recentlyEdited, .trash, .imports:
@@ -152,14 +152,14 @@ public enum CloudScope: Hashable {
     }
 
     /// 关键词范围能否一键返回关键词总览。
-    public var keywordOverviewParent: CloudScope? {
+    package var keywordOverviewParent: CloudScope? {
         if case .keyword = self { return .keywords }
         return nil
     }
 
     /// 「更多项目」入口顺序：与系统图库完全一致，包括只读能力入口（右侧给出对应的只读页面）。
     /// 数量为 0 的重复项目与尚未识别的包含文字按系统图库的规则隐藏。
-    public static func moreItems(counts: CloudScopeCounts, analyzedCount: Int) -> [CloudScope] {
+    package static func moreItems(counts: CloudScopeCounts, analyzedCount: Int) -> [CloudScope] {
         var scopes: [CloudScope] = [.favorites, .health, .ratings, .revisit]
         if counts.duplicates > 0 { scopes.append(.duplicates) }
         scopes += [.map, .places, .people, .keywords]
@@ -171,7 +171,7 @@ public enum CloudScope: Hashable {
 
 /// 网盘的媒体类型与拾光共用同一组标题、图标与顺序；
 /// 网盘只能按文件名 / 扩展名 / 像素比例判断，所以只提供能可靠推断的几种类型。
-public extension MediaTypeKey {
+package extension MediaTypeKey {
     var cloudScope: CloudScope? {
         switch self {
         case .videos: return .videos
@@ -193,15 +193,15 @@ public extension MediaTypeKey {
 
 
 /// 网盘的分区总览：与拾光 / 系统图库一样，点侧边栏分区标题进入卡片墙。
-public enum CloudOverviewSection: String, Identifiable, Equatable {
+package enum CloudOverviewSection: String, Identifiable, Equatable {
     case mediaTypes
     case moreItems
     case scenes
     case folders
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .mediaTypes: return "媒体类型"
         case .moreItems: return "更多项目"
@@ -212,29 +212,29 @@ public enum CloudOverviewSection: String, Identifiable, Equatable {
 }
 
 /// 网盘当前列表的分类计数：一次遍历得出，随目录版本与识别进度缓存。
-public struct CloudScopeCounts {
-    public var videos = 0
-    public var photos = 0
-    public var screenshots = 0
-    public var animated = 0
-    public var raws = 0
-    public var panoramas = 0
-    public var screenRecordings = 0
-    public var favorites = 0
-    public var text = 0
-    public var recentlyViewed = 0
-    public var recentlySaved = 0
-    public var ratings = 0
-    public var revisit = 0
-    public var located = 0
-    public var people = 0
-    public var duplicates = 0
-    public var health = 0
-    public var scenes: [String: Int] = [:]
+package struct CloudScopeCounts {
+    package var videos = 0
+    package var photos = 0
+    package var screenshots = 0
+    package var animated = 0
+    package var raws = 0
+    package var panoramas = 0
+    package var screenRecordings = 0
+    package var favorites = 0
+    package var text = 0
+    package var recentlyViewed = 0
+    package var recentlySaved = 0
+    package var ratings = 0
+    package var revisit = 0
+    package var located = 0
+    package var people = 0
+    package var duplicates = 0
+    package var health = 0
+    package var scenes: [String: Int] = [:]
     /// 每个关键词对应的照片数；键数量即关键词总数。
-    public var keywords: [String: Int] = [:]
+    package var keywords: [String: Int] = [:]
 
-    public func count(for scope: CloudScope) -> Int {
+    package func count(for scope: CloudScope) -> Int {
         switch scope {
         case .all: return photos + videos
         case .videos: return videos
@@ -260,7 +260,7 @@ public struct CloudScopeCounts {
         case .keyword(let name): return keywords[name] ?? 0
         }
     }
-    public init(
+    package init(
         videos: Int = 0,
         photos: Int = 0,
         screenshots: Int = 0,
@@ -304,13 +304,13 @@ public struct CloudScopeCounts {
 }
 
 /// 网盘照片在本机的评分 / 旗标 / 色标：只写当前图库的 settings（`cloud_marks`），不写回网盘。
-public struct CloudMark: Codable, Hashable {
-    public var rating: Int?
-    public var flag: PhotoFlag?
-    public var colorLabel: PhotoColorLabel?
+package struct CloudMark: Codable, Hashable {
+    package var rating: Int?
+    package var flag: PhotoFlag?
+    package var colorLabel: PhotoColorLabel?
 
-    public var isEmpty: Bool { rating == nil && flag == nil && colorLabel == nil }
-    public init(
+    package var isEmpty: Bool { rating == nil && flag == nil && colorLabel == nil }
+    package init(
         rating: Int? = nil,
         flag: PhotoFlag? = nil,
         colorLabel: PhotoColorLabel? = nil
@@ -322,9 +322,9 @@ public struct CloudMark: Codable, Hashable {
 }
 
 /// 网盘媒体类型按文件名与扩展名推断；EXIF（拍摄时间 / 相机 / GPS）由 `CloudEXIF` 读取文件头部得到。
-public enum CloudMediaNaming {
+package enum CloudMediaNaming {
     /// 截屏：主流平台导出的文件名都带 Screenshot / 截屏 等字样。
-    public static func looksLikeScreenshot(_ name: String) -> Bool {
+    package static func looksLikeScreenshot(_ name: String) -> Bool {
         let lower = name.lowercased()
         let english = ["screenshot", "screen shot", "screencapture"]
         if english.contains(where: { lower.contains($0) }) { return true }
@@ -333,7 +333,7 @@ public enum CloudMediaNaming {
     }
 
     /// 录屏：视频文件名带 Screen Recording / 录屏 等字样。
-    public static func looksLikeScreenRecording(_ name: String) -> Bool {
+    package static func looksLikeScreenRecording(_ name: String) -> Bool {
         let lower = name.lowercased()
         let english = ["screen recording", "screenrecording", "screen capture", "screencapture"]
         if english.contains(where: { lower.contains($0) }) { return true }
@@ -342,7 +342,7 @@ public enum CloudMediaNaming {
     }
 
     /// 全景：文件名带 Pano / 全景，或像素宽高比达到手机全景的常见比例（先看已读到的尺寸）。
-    public static func looksLikePanorama(_ name: String, pixelWidth: Int, pixelHeight: Int) -> Bool {
+    package static func looksLikePanorama(_ name: String, pixelWidth: Int, pixelHeight: Int) -> Bool {
         let lower = name.lowercased()
         if lower.contains("pano") { return true }
         if name.contains("全景") { return true }

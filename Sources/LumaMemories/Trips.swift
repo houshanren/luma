@@ -1,27 +1,28 @@
 import Foundation
 import CoreLocation
+import LumaDomain
 
 /// 旅行中的一天。
-struct TripDay: Identifiable, Hashable {
-    let date: Date
-    let photos: [PhotoItem]
+package struct TripDay: Identifiable, Hashable {
+    package let date: Date
+    package let photos: [PhotoItem]
 
-    var id: Date { date }
+    package var id: Date { date }
 }
 
 /// 由时间与地点自动识别的一次出行。
-struct TripStory: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let startDate: Date
-    let endDate: Date
-    let photos: [PhotoItem]
-    let dayCount: Int
-    let placeCount: Int
+package struct TripStory: Identifiable, Hashable {
+    package let id: String
+    package let title: String
+    package let subtitle: String
+    package let startDate: Date
+    package let endDate: Date
+    package let photos: [PhotoItem]
+    package let dayCount: Int
+    package let placeCount: Int
 
     /// 按天分组，用于故事线详情。
-    var days: [TripDay] {
+    package var days: [TripDay] {
         let calendar = Calendar.current
         let grouped = Dictionary(grouping: photos) { calendar.startOfDay(for: $0.capturedAt) }
         return grouped.keys.sorted().map { day in
@@ -32,8 +33,8 @@ struct TripStory: Identifiable, Hashable {
 }
 
 /// 从带定位的照片里切分出旅行：时间间隔过大或移动距离过远就视为新的一次出行。
-enum TripBuilder {
-    static func build(from photos: [PhotoItem], limit: Int = 12) -> [TripStory] {
+package enum TripBuilder {
+    package static func build(from photos: [PhotoItem], limit: Int = 12) -> [TripStory] {
         let calendar = Calendar.current
         let candidates = photos.filter { $0.deletedAt == nil && !$0.isHidden }
         let located = candidates

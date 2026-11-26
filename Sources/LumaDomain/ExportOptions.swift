@@ -1,16 +1,16 @@
 import Foundation
 import UniformTypeIdentifiers
 
-public enum ExportImageFormat: String, CaseIterable, Identifiable {
+package enum ExportImageFormat: String, CaseIterable, Identifiable {
     case original
     case jpeg
     case heic
     case png
     case tiff
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .original: return "原格式"
         case .jpeg: return "JPEG"
@@ -20,7 +20,7 @@ public enum ExportImageFormat: String, CaseIterable, Identifiable {
         }
     }
 
-    public var fileExtension: String? {
+    package var fileExtension: String? {
         switch self {
         case .original: return nil
         case .jpeg: return "jpg"
@@ -30,7 +30,7 @@ public enum ExportImageFormat: String, CaseIterable, Identifiable {
         }
     }
 
-    public var utType: UTType? {
+    package var utType: UTType? {
         switch self {
         case .original: return nil
         case .jpeg: return .jpeg
@@ -41,20 +41,20 @@ public enum ExportImageFormat: String, CaseIterable, Identifiable {
     }
 
     /// 只有有损格式才需要质量参数。
-    public var supportsQuality: Bool {
+    package var supportsQuality: Bool {
         self == .jpeg || self == .heic
     }
 }
 
-public enum ExportFilenameRule: String, CaseIterable, Identifiable {
+package enum ExportFilenameRule: String, CaseIterable, Identifiable {
     case original
     case title
     case dateSequence
     case sequence
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .original: return "原始文件名"
         case .title: return "标题"
@@ -63,7 +63,7 @@ public enum ExportFilenameRule: String, CaseIterable, Identifiable {
         }
     }
 
-    public var example: String {
+    package var example: String {
         switch self {
         case .original: return "IMG_0001.HEIC"
         case .title: return "西湖日落.jpg"
@@ -73,24 +73,24 @@ public enum ExportFilenameRule: String, CaseIterable, Identifiable {
     }
 }
 
-public struct ExportOptions {
-    public var format: ExportImageFormat = .original
+package struct ExportOptions {
+    package var format: ExportImageFormat = .original
     /// 仅对 JPEG / HEIC 生效，0.3…1.0。
-    public var quality: Double = 0.9
+    package var quality: Double = 0.9
     /// 0 表示保持原始像素尺寸。
-    public var maxDimension: Int = 0
+    package var maxDimension: Int = 0
     /// 重新编码时是否写入拍摄时间等基础元数据（原始格式导出始终保留完整元数据）。
-    public var includeMetadata: Bool = true
-    public var filenameRule: ExportFilenameRule = .original
+    package var includeMetadata: Bool = true
+    package var filenameRule: ExportFilenameRule = .original
     /// 导出未修改的原片（忽略裁剪、旋转与调色）。
-    public var exportOriginal: Bool = false
+    package var exportOriginal: Bool = false
 
-    public static let maxDimensionChoices: [Int] = [0, 4096, 2048, 1024, 640]
+    package static let maxDimensionChoices: [Int] = [0, 4096, 2048, 1024, 640]
 
-    public static func maxDimensionTitle(_ value: Int) -> String {
+    package static func maxDimensionTitle(_ value: Int) -> String {
         value == 0 ? "原始尺寸" : "最长边 \(value) px"
     }
-    public init(
+    package init(
         format: ExportImageFormat = .original,
         quality: Double = 0.9,
         maxDimension: Int = 0,

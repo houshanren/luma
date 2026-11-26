@@ -4,7 +4,7 @@ import LumaCore
 
 /// 跨范围派生缓存的读写：系统图库识别、体检 / 美化报告、网盘 EXIF 与人物。
 /// 全部写当前图库自己的 `Luma.sqlite`，绝不写 Apple 的 `Photos.sqlite`。
-public extension MetadataStore {
+package extension MetadataStore {
     // MARK: - 系统图库缓存
 
     func systemAnalysisSignature(_ libraryPath: String) -> String? {

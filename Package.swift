@@ -48,16 +48,24 @@ let package = Package(
             dependencies: ["LumaDomain"],
             path: "Sources/LumaAI"
         ),
-        // UI 基础层：设计 token、磨砂 / 环境光等通用视图修饰器、拖放 / 键盘 / 窗口胶水。
-        // 只依赖 LumaDomain，不依赖 Store 或任何功能模块。
+        // UI 基础层：设计 token、磨砂 / 环境光等通用视图修饰器、拖放 / 键盘 / 窗口胶水，
+        // 以及照片网格组件（单元格 / 网格 / 框选）；网格与宿主的交互只经 `PhotoGridHost`。
+        // 依赖 LumaCore 的布局与缩略图档位策略，不依赖 Store 或任何功能模块。
         .target(
             name: "LumaUI",
-            dependencies: ["LumaDomain"],
+            dependencies: ["LumaDomain", "LumaCore"],
             path: "Sources/LumaUI"
+        ),
+        // 回忆影片功能：照片回忆 / 旅行故事的生成与导出，以及全窗口播放界面。
+        // 只依赖 LumaDomain / LumaContentCore；取图与任务中心由 MemoryFrameLoader / MemoryHost 注入。
+        .target(
+            name: "LumaMemories",
+            dependencies: ["LumaDomain", "LumaContentCore"],
+            path: "Sources/LumaMemories"
         ),
         .executableTarget(
             name: "Luma",
-            dependencies: ["LumaCore", "PlaybackCore", "LumaContentCore", "LumaDomain", "LumaPersistence", "LumaAI", "LumaUI"],
+            dependencies: ["LumaCore", "PlaybackCore", "LumaContentCore", "LumaDomain", "LumaPersistence", "LumaAI", "LumaUI", "LumaMemories"],
             path: "Sources/Luma",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

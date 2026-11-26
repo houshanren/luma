@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-public enum MediaKind: String, Codable {
+package enum MediaKind: String, Codable {
     case photo
     case video
     case screenshot
@@ -9,21 +9,21 @@ public enum MediaKind: String, Codable {
     case selfie
 }
 
-public enum PhotoSource: String, Codable {
+package enum PhotoSource: String, Codable {
     case local
     case system
     case cloud
 }
 
 /// 选片旗标：与评分、色标共同构成轻量元数据工作流。
-public enum PhotoFlag: String, Codable, CaseIterable, Identifiable {
+package enum PhotoFlag: String, Codable, CaseIterable, Identifiable {
     case none
     case pick
     case reject
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .none: return "无旗标"
         case .pick: return "留用"
@@ -31,7 +31,7 @@ public enum PhotoFlag: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .none: return "flag"
         case .pick: return "flag.fill"
@@ -41,7 +41,7 @@ public enum PhotoFlag: String, Codable, CaseIterable, Identifiable {
 }
 
 /// 色标：用于交付状态、主题分组等；与评分相互独立。
-public enum PhotoColorLabel: String, Codable, CaseIterable, Identifiable {
+package enum PhotoColorLabel: String, Codable, CaseIterable, Identifiable {
     case none
     case red
     case orange
@@ -51,9 +51,9 @@ public enum PhotoColorLabel: String, Codable, CaseIterable, Identifiable {
     case purple
     case gray
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .none: return "无色标"
         case .red: return "红色"
@@ -70,15 +70,15 @@ public enum PhotoColorLabel: String, Codable, CaseIterable, Identifiable {
 // MARK: - 整理工作室
 
 /// 整理工作室的浏览维度：评分 / 旗标 / 色标 / 关键词。
-public enum OrganizeDimension: String, CaseIterable, Identifiable {
+package enum OrganizeDimension: String, CaseIterable, Identifiable {
     case rating
     case flag
     case colorLabel
     case keyword
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .rating: return "评分"
         case .flag: return "旗标"
@@ -87,7 +87,7 @@ public enum OrganizeDimension: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .rating: return "star.fill"
         case .flag: return "flag.fill"
@@ -96,7 +96,7 @@ public enum OrganizeDimension: String, CaseIterable, Identifiable {
         }
     }
 
-    public var caption: String {
+    package var caption: String {
         switch self {
         case .rating: return "用 0–5 星排出先后，把值得留下的照片顶上来。"
         case .flag: return "留用与排除，让第一轮初筛更快完成。"
@@ -107,21 +107,21 @@ public enum OrganizeDimension: String, CaseIterable, Identifiable {
 }
 
 /// 整理工作室的分布统计（当前图库范围）。
-public struct OrganizeStudioStats: Equatable {
-    public var total = 0
+package struct OrganizeStudioStats: Equatable {
+    package var total = 0
     /// 下标 0…5：未评分与 1–5 星，各自的数量。
-    public var ratingCounts = [Int](repeating: 0, count: 6)
-    public var pick = 0
-    public var reject = 0
-    public var unflagged = 0
+    package var ratingCounts = [Int](repeating: 0, count: 6)
+    package var pick = 0
+    package var reject = 0
+    package var unflagged = 0
     /// key 为 `PhotoColorLabel.rawValue`。
-    public var colorCounts: [String: Int] = [:]
-    public var rated = 0
-    public var flagged = 0
-    public var labeled = 0
+    package var colorCounts: [String: Int] = [:]
+    package var rated = 0
+    package var flagged = 0
+    package var labeled = 0
     /// 至少有一个关键词的照片数量（本地图库）。
-    public var keyworded = 0
-    public init(
+    package var keyworded = 0
+    package init(
         total: Int = 0,
         ratingCounts: [Int] = [Int](repeating: 0, count: 6),
         pick: Int = 0,
@@ -146,180 +146,180 @@ public struct OrganizeStudioStats: Equatable {
     }
 }
 
-public struct PhotoItem: Identifiable, Codable, Hashable {
-    public var id: UUID = UUID()
-    public var filename: String
-    public var editedFilename: String?
-    public var originalName: String
+package struct PhotoItem: Identifiable, Codable, Hashable {
+    package var id: UUID = UUID()
+    package var filename: String
+    package var editedFilename: String?
+    package var originalName: String
     /// 用户自定义标题（与官方「照片」的标题一致，可与文件名不同）。
-    public var title: String?
-    public var capturedAt: Date
-    public var addedAt: Date = Date()
+    package var title: String?
+    package var capturedAt: Date
+    package var addedAt: Date = Date()
     /// 同一批导入共用的批次 ID，用于「导入项目」按批次分组。
-    public var importBatchID: UUID?
-    public var pixelWidth: Int
-    public var pixelHeight: Int
-    public var fileSize: Int64
-    public var kind: MediaKind = .photo
-    public var isFavorite: Bool = false
-    public var isHidden: Bool = false
-    public var deletedAt: Date?
-    public var editVersion: Int = 0
-    public var duration: Double?
+    package var importBatchID: UUID?
+    package var pixelWidth: Int
+    package var pixelHeight: Int
+    package var fileSize: Int64
+    package var kind: MediaKind = .photo
+    package var isFavorite: Bool = false
+    package var isHidden: Bool = false
+    package var deletedAt: Date?
+    package var editVersion: Int = 0
+    package var duration: Double?
     /// 非破坏性旋转：0/90/180/270，顺时针。为兼容旧数据使用可选值。
-    public var rotation: Int?
+    package var rotation: Int?
 
-    public var make: String?
-    public var model: String?
-    public var lens: String?
-    public var focalLength: String?
-    public var aperture: String?
-    public var shutterSpeed: String?
-    public var iso: String?
-    public var latitude: Double?
-    public var longitude: Double?
-    public var placeCountry: String?
-    public var placeProvince: String?
-    public var placeCity: String?
-    public var placeDistrict: String?
-    public var placePOI: String?
-    public var keywords: [String]?
+    package var make: String?
+    package var model: String?
+    package var lens: String?
+    package var focalLength: String?
+    package var aperture: String?
+    package var shutterSpeed: String?
+    package var iso: String?
+    package var latitude: Double?
+    package var longitude: Double?
+    package var placeCountry: String?
+    package var placeProvince: String?
+    package var placeCity: String?
+    package var placeDistrict: String?
+    package var placePOI: String?
+    package var keywords: [String]?
     /// 星级评分 0–5；nil 视为 0，兼容旧库与旧 JSON。
-    public var rating: Int?
+    package var rating: Int?
     /// 选片旗标；nil 视为无旗标。
-    public var flag: PhotoFlag?
+    package var flag: PhotoFlag?
     /// 色标；nil 视为无色标。
-    public var colorLabel: PhotoColorLabel?
+    package var colorLabel: PhotoColorLabel?
     /// 原文件内容哈希（SHA-256），用于导入查重与内容级重复检测。
-    public var contentHash: String?
+    package var contentHash: String?
     /// 图像感知哈希（64 位 dHash），用于发现重压缩 / 缩放 / 轻微编辑副本。
-    public var perceptualHash: Int64?
+    package var perceptualHash: Int64?
 
-    public var source: PhotoSource?
-    public var systemOriginalPath: String?
-    public var systemThumbnailPath: String?
+    package var source: PhotoSource?
+    package var systemOriginalPath: String?
+    package var systemThumbnailPath: String?
     /// 编辑配方（EditState 的 JSON），用于再次进入编辑器与复制/粘贴编辑点。
-    public var editRecipe: String?
-    public var isPortraitCapture: Bool = false
-    public var isDuplicateItem: Bool = false
-    public var isDeviceImport: Bool = false
+    package var editRecipe: String?
+    package var isPortraitCapture: Bool = false
+    package var isDuplicateItem: Bool = false
+    package var isDeviceImport: Bool = false
     /// 官方图库中的实况照片 / 连拍项目（仅官方库可判定）。
-    public var isLivePhoto: Bool = false
-    public var isBurstItem: Bool = false
+    package var isLivePhoto: Bool = false
+    package var isBurstItem: Bool = false
     /// 连拍组 ID（Photos.sqlite 的 ZAVALANCHEUUID）：同一组内共享，非连拍为 nil。
-    public var burstGroupID: String?
+    package var burstGroupID: String?
     /// 连拍组的代表照片（键照片，ZAVALANCHEPICKTYPE & 16；单成员组自身即代表）。
-    public var isBurstKeyPhoto: Bool = false
+    package var isBurstKeyPhoto: Bool = false
     /// 本地实况照片的配对视频文件名（位于 originals/<分片>/）。
-    public var livePhotoFilename: String?
+    package var livePhotoFilename: String?
     /// 系统图库实况照片的配对视频绝对路径。
-    public var livePhotoVideoPath: String?
+    package var livePhotoVideoPath: String?
     /// 慢动作视频（系统图库按 ZKINDSUBTYPE = 101 判定）。
-    public var isSlowMotion: Bool = false
+    package var isSlowMotion: Bool = false
     /// 录屏视频（系统图库按 ZISDETECTEDSCREENSHOT 或 ZKINDSUBTYPE = 103 判定）。
-    public var isScreenRecording: Bool = false
+    package var isScreenRecording: Bool = false
     /// 动图（系统图库按 ZPLAYBACKSTYLE = 2 判定）。
-    public var isAnimated: Bool = false
+    package var isAnimated: Bool = false
     /// 延时摄影（系统图库按 ZKINDSUBTYPE = 102 判定）。
-    public var isTimelapse: Bool = false
+    package var isTimelapse: Bool = false
     /// 电影效果（`Photos.sqlite` 没有稳定字段，集合由 PhotoKit 智能相簿提供）。
-    public var isCinematic: Bool = false
+    package var isCinematic: Bool = false
     /// 空间照片 / 空间视频（系统图库按 ZSPATIALTYPE <> 0 判定）。
-    public var isSpatial: Bool = false
+    package var isSpatial: Bool = false
     /// 长曝光（系统图库由 PhotoKit 智能相簿判定）。
-    public var isLongExposure: Bool = false
+    package var isLongExposure: Bool = false
     /// 最近查看 / 最近编辑时间（仅系统图库可读，本地库为 nil）。
-    public var viewedAt: Date?
-    public var editedAt: Date?
+    package var viewedAt: Date?
+    package var editedAt: Date?
 
-    public var cloudMountID: UUID?
-    public var cloudPath: String?
-    public var cloudRemoteID: String?
-    public var cloudThumbnailURL: String?
+    package var cloudMountID: UUID?
+    package var cloudPath: String?
+    package var cloudRemoteID: String?
+    package var cloudThumbnailURL: String?
     /// 库外媒体（蓝光目录 / 光盘镜像）：原文件不复制进 originals，直接引用这个路径。
     /// 有值时 `filename` 为空，播放与缩略图都从这里取源。
-    public var externalPath: String?
+    package var externalPath: String?
     /// 网盘端已把该文件标记为受限内容（夸克 risk_type ≠ 0），无法取得播放地址。
-    public var cloudRestricted: Bool?
+    package var cloudRestricted: Bool?
     /// 网盘返回的视频编码（如 hevc），用于转封装时写正确的 hvc1 标签。
-    public var videoCodec: String?
+    package var videoCodec: String?
 
     /// 展示 / 刮削用的文件名。蓝光原盘与 ISO 不复制进 originals，filename 为空，
     /// 这里回退到 originalName（目录名或镜像名），影院才能按名字识别成电影。
-    public var displayFilename: String {
+    package var displayFilename: String {
         if let editedFilename, !editedFilename.isEmpty { return editedFilename }
         return filename.isEmpty ? originalName : filename
     }
     /// 展示用标题：优先用户标题，否则用原始文件名。
-    public var displayTitle: String {
+    package var displayTitle: String {
         if let title, !title.isEmpty { return title }
         return originalName
     }
-    public var isVideo: Bool { kind == .video }
-    public var hasEdits: Bool { editedFilename != nil }
+    package var isVideo: Bool { kind == .video }
+    package var hasEdits: Bool { editedFilename != nil }
     /// 按扩展名判定 RAW（导入与系统图库都适用）。
-    public var isRAWFile: Bool {
+    package var isRAWFile: Bool {
         let ext = (originalName as NSString).pathExtension.lowercased()
         return Self.rawExtensions.contains(ext)
     }
     /// 按扩展名判定动图（系统图库另有 isAnimated）。
-    public var isAnimatedFile: Bool {
+    package var isAnimatedFile: Bool {
         ["gif", "webp", "apng"].contains((originalName as NSString).pathExtension.lowercased())
     }
 
     /// 查看器是否按动图播放；已编辑的照片是静态渲染结果，不再播放。
-    public var playsAnimation: Bool {
+    package var playsAnimation: Bool {
         !isVideo && (isAnimated || isAnimatedFile) && !hasEdits
     }
 
-    public static let rawExtensions: Set<String> = [
+    package static let rawExtensions: Set<String> = [
         "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "raf", "orf",
         "rw2", "pef", "srw", "raw", "3fr", "erf", "mef", "mos", "iiq", "rwl"
     ]
 
-    public var isSystem: Bool { source == .system }
-    public var isCloud: Bool { source == .cloud }
-    public var isReadOnly: Bool { source == .system || source == .cloud }
-    public var cacheKey: String { "\(source?.rawValue ?? "local")-\(id.uuidString)-\(editVersion)" }
-    public var rotationAngle: Int {
+    package var isSystem: Bool { source == .system }
+    package var isCloud: Bool { source == .cloud }
+    package var isReadOnly: Bool { source == .system || source == .cloud }
+    package var cacheKey: String { "\(source?.rawValue ?? "local")-\(id.uuidString)-\(editVersion)" }
+    package var rotationAngle: Int {
         let value = ((rotation ?? 0) % 360 + 360) % 360
         return [0, 90, 180, 270].contains(value) ? value : 0
     }
-    public var isRotated: Bool { rotationAngle != 0 }
-    public var displayPixelWidth: Int {
+    package var isRotated: Bool { rotationAngle != 0 }
+    package var displayPixelWidth: Int {
         rotationAngle == 90 || rotationAngle == 270 ? pixelHeight : pixelWidth
     }
-    public var displayPixelHeight: Int {
+    package var displayPixelHeight: Int {
         rotationAngle == 90 || rotationAngle == 270 ? pixelWidth : pixelHeight
     }
-    public var aspectRatio: CGFloat {
+    package var aspectRatio: CGFloat {
         guard displayPixelHeight > 0 else { return 1 }
         return CGFloat(displayPixelWidth) / CGFloat(displayPixelHeight)
     }
-    public var isDeleted: Bool { deletedAt != nil }
-    public var hasLocation: Bool { CoordinateValidator.isValid(latitude: latitude, longitude: longitude) }
-    public var tags: [String] { keywords ?? [] }
+    package var isDeleted: Bool { deletedAt != nil }
+    package var hasLocation: Bool { CoordinateValidator.isValid(latitude: latitude, longitude: longitude) }
+    package var tags: [String] { keywords ?? [] }
 
     /// 0–5 的稳定评分值；旧数据与越界值都会被收敛。
-    public var starRating: Int { min(5, max(0, rating ?? 0)) }
-    public var pickFlag: PhotoFlag { flag ?? .none }
-    public var labelColor: PhotoColorLabel { colorLabel ?? .none }
+    package var starRating: Int { min(5, max(0, rating ?? 0)) }
+    package var pickFlag: PhotoFlag { flag ?? .none }
+    package var labelColor: PhotoColorLabel { colorLabel ?? .none }
 
     /// 层级关键词使用 `/` 分隔，例如「旅行/日本/京都」。
-    public static func keywordComponents(_ path: String) -> [String] {
+    package static func keywordComponents(_ path: String) -> [String] {
         path.split(separator: "/", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
 
-    public static func keywordLeaf(_ path: String) -> String {
+    package static func keywordLeaf(_ path: String) -> String {
         keywordComponents(path).last ?? path
     }
 
-    public static func keywordDepth(_ path: String) -> Int {
+    package static func keywordDepth(_ path: String) -> Int {
         max(0, keywordComponents(path).count - 1)
     }
-    public init(
+    package init(
         id: UUID = UUID(),
         filename: String,
         editedFilename: String? = nil,
@@ -459,15 +459,15 @@ public struct PhotoItem: Identifiable, Codable, Hashable {
 }
 
 /// 媒体类型总览里的分类：标题、图标、匹配规则与对应的侧边栏范围。
-public enum MediaTypeKey: String, CaseIterable, Identifiable {
+package enum MediaTypeKey: String, CaseIterable, Identifiable {
     // 顺序与系统「照片」的媒体类型列表一致。
     case videos, selfies, livePhotos, portraits, longExposure, panoramas,
          timelapse, slowMotion, cinematic, spatial, bursts, screenshots,
          screenRecordings, animated, raws
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .videos: return "视频"
         case .selfies: return "自拍"
@@ -487,7 +487,7 @@ public enum MediaTypeKey: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .videos: return "video"
         case .selfies: return "person.crop.circle"
@@ -508,7 +508,7 @@ public enum MediaTypeKey: String, CaseIterable, Identifiable {
     }
 
     /// 只有官方「照片」图库才会提供的分类，本地图库不展示。
-    public var isSystemOnly: Bool {
+    package var isSystemOnly: Bool {
         switch self {
         case .portraits, .slowMotion, .screenRecordings,
              .longExposure, .timelapse, .cinematic, .spatial, .bursts:
@@ -517,9 +517,9 @@ public enum MediaTypeKey: String, CaseIterable, Identifiable {
         }
     }
 
-    public static var localCases: [MediaTypeKey] { allCases.filter { !$0.isSystemOnly } }
+    package static var localCases: [MediaTypeKey] { allCases.filter { !$0.isSystemOnly } }
 
-    public func matches(_ photo: PhotoItem) -> Bool {
+    package func matches(_ photo: PhotoItem) -> Bool {
         switch self {
         case .videos: return photo.isVideo
         case .selfies: return !photo.isVideo && photo.kind == .selfie
@@ -539,7 +539,7 @@ public enum MediaTypeKey: String, CaseIterable, Identifiable {
         }
     }
 
-    public func item(system: Bool) -> SidebarItem {
+    package func item(system: Bool) -> SidebarItem {
         if system {
             switch self {
             case .videos: return .systemVideos
@@ -575,10 +575,10 @@ public enum MediaTypeKey: String, CaseIterable, Identifiable {
 }
 
 /// 媒体类型总览用的汇总：数量与封面各一次遍历算完。
-public struct MediaTypeSummary {
-    public var counts: [MediaTypeKey: Int] = [:]
-    public var covers: [MediaTypeKey: PhotoItem] = [:]
-    public init(
+package struct MediaTypeSummary {
+    package var counts: [MediaTypeKey: Int] = [:]
+    package var covers: [MediaTypeKey: PhotoItem] = [:]
+    package init(
         counts: [MediaTypeKey: Int] = [:],
         covers: [MediaTypeKey: PhotoItem] = [:]
     ) {
@@ -587,11 +587,11 @@ public struct MediaTypeSummary {
     }
 }
 
-public struct KeywordOption: Identifiable {
-    public let name: String
-    public let count: Int
-    public var id: String { name }
-    public init(
+package struct KeywordOption: Identifiable {
+    package let name: String
+    package let count: Int
+    package var id: String { name }
+    package init(
         name: String,
         count: Int
     ) {
@@ -601,11 +601,11 @@ public struct KeywordOption: Identifiable {
 }
 
 /// 相簿 / 文件夹层级面包屑：点任意一级可跳回该层。
-public struct AlbumBreadcrumb: Identifiable, Hashable {
-    public let id: String
-    public let title: String
-    public let item: SidebarItem
-    public init(
+package struct AlbumBreadcrumb: Identifiable, Hashable {
+    package let id: String
+    package let title: String
+    package let item: SidebarItem
+    package init(
         id: String,
         title: String,
         item: SidebarItem
@@ -616,15 +616,15 @@ public struct AlbumBreadcrumb: Identifiable, Hashable {
     }
 }
 
-public struct Album: Identifiable, Codable, Hashable {
-    public var id: UUID = UUID()
-    public var name: String
-    public var createdAt: Date = Date()
-    public var photoIDs: [UUID] = []
-    public var folderID: UUID?
+package struct Album: Identifiable, Codable, Hashable {
+    package var id: UUID = UUID()
+    package var name: String
+    package var createdAt: Date = Date()
+    package var photoIDs: [UUID] = []
+    package var folderID: UUID?
     /// 用户指定的封面（可为照片或视频）；为空时取相簿内第一张。
-    public var coverPhotoID: UUID?
-    public init(
+    package var coverPhotoID: UUID?
+    package init(
         id: UUID = UUID(),
         name: String,
         createdAt: Date = Date(),
@@ -641,12 +641,12 @@ public struct Album: Identifiable, Codable, Hashable {
     }
 }
 
-public struct AlbumFolder: Identifiable, Codable, Hashable {
-    public var id: UUID = UUID()
-    public var name: String
-    public var parentID: UUID?
-    public var createdAt: Date = Date()
-    public init(
+package struct AlbumFolder: Identifiable, Codable, Hashable {
+    package var id: UUID = UUID()
+    package var name: String
+    package var parentID: UUID?
+    package var createdAt: Date = Date()
+    package init(
         id: UUID = UUID(),
         name: String,
         parentID: UUID? = nil,
@@ -659,10 +659,10 @@ public struct AlbumFolder: Identifiable, Codable, Hashable {
     }
 }
 
-public struct FolderOption: Identifiable {
-    public let id: UUID
-    public let path: String
-    public init(
+package struct FolderOption: Identifiable {
+    package let id: UUID
+    package let path: String
+    package init(
         id: UUID,
         path: String
     ) {
@@ -671,7 +671,7 @@ public struct FolderOption: Identifiable {
     }
 }
 
-public enum SidebarItem: Hashable, Codable {
+package enum SidebarItem: Hashable, Codable {
     case library
     /// 影院：刮削后的电影 / 电视剧库。
     case cinema
@@ -789,7 +789,7 @@ public enum SidebarItem: Hashable, Codable {
     case iptv
 
     /// 是否属于只读的系统「照片」图库范围。
-    public var isSystemScope: Bool {
+    package var isSystemScope: Bool {
         switch self {
         case .systemLibrary, .systemCollections, .systemAlbum, .systemFolder,
              .systemFavorites, .systemVideos,
@@ -810,21 +810,21 @@ public enum SidebarItem: Hashable, Codable {
     }
 }
 
-public struct SystemAlbumInfo: Identifiable, Hashable, Codable {
-    public let id: Int64
-    public let name: String
-    public let parentFolder: Int64?
-    public let assetIDs: [UUID]
+package struct SystemAlbumInfo: Identifiable, Hashable, Codable {
+    package let id: Int64
+    package let name: String
+    package let parentFolder: Int64?
+    package let assetIDs: [UUID]
     /// 图库内原始顺序（Photos.sqlite 的 Z_PK），用于与官方「照片」保持一致的相簿排序。
-    public var sortIndex: Int64 = 0
+    package var sortIndex: Int64 = 0
     /// Photos.sqlite 的 ZUUID：用于映射 PhotoKit 的 localIdentifier（写回相簿时必需）。
-    public var uuid: String? = nil
+    package var uuid: String? = nil
     /// 官方图库给这个相簿保存的排序方式（`ZGENERICALBUM.ZCUSTOMSORTKEY`）。
     /// 位含义：1 = 按日期、2 = 按标题、4 = 手动拖拽顺序；0 表示跟随默认（拍摄日期降序）。
-    public var customSortKey: Int? = nil
+    package var customSortKey: Int? = nil
     /// 官方图库保存的排序方向（`ZGENERICALBUM.ZCUSTOMSORTASCENDING`）。
-    public var customSortAscending: Bool? = nil
-    public init(
+    package var customSortAscending: Bool? = nil
+    package init(
         id: Int64,
         name: String,
         parentFolder: Int64? = nil,
@@ -845,13 +845,13 @@ public struct SystemAlbumInfo: Identifiable, Hashable, Codable {
     }
 }
 
-public struct SystemFolderInfo: Identifiable, Hashable, Codable {
-    public let id: Int64
-    public let name: String
-    public let parent: Int64?
+package struct SystemFolderInfo: Identifiable, Hashable, Codable {
+    package let id: Int64
+    package let name: String
+    package let parent: Int64?
     /// 图库内原始顺序（Photos.sqlite 的 Z_PK）；与相簿共用同一序列，可混排。
-    public var sortIndex: Int64 = 0
-    public init(
+    package var sortIndex: Int64 = 0
+    package init(
         id: Int64,
         name: String,
         parent: Int64? = nil,
@@ -866,12 +866,12 @@ public struct SystemFolderInfo: Identifiable, Hashable, Codable {
 
 /// 官方「照片」的一次导入会话（Photos.sqlite 的 `ZGENERICALBUM.ZKIND = 1506`）。
 /// `id` 同时是 `ZASSET.ZIMPORTSESSION` 的外键，官方已缓存该批次数量。
-public struct SystemImportSession: Identifiable, Hashable {
-    public let id: Int64
-    public let createdAt: Date
-    public let count: Int
-    public let uuid: String?
-    public init(
+package struct SystemImportSession: Identifiable, Hashable {
+    package let id: Int64
+    package let createdAt: Date
+    package let count: Int
+    package let uuid: String?
+    package init(
         id: Int64,
         createdAt: Date,
         count: Int,
@@ -885,12 +885,12 @@ public struct SystemImportSession: Identifiable, Hashable {
 }
 
 /// 导入批次的补充概览：批内照片的拍摄跨度与视频数量，用于顶部栏的批次信息。
-public struct SystemImportSessionSummary {
-    public let earliest: Date?
-    public let latest: Date?
-    public let videoCount: Int
-    public let totalCount: Int
-    public init(
+package struct SystemImportSessionSummary {
+    package let earliest: Date?
+    package let latest: Date?
+    package let videoCount: Int
+    package let totalCount: Int
+    package init(
         earliest: Date? = nil,
         latest: Date? = nil,
         videoCount: Int,
@@ -904,18 +904,18 @@ public struct SystemImportSessionSummary {
 }
 
 /// 系统图库侧边栏的一个条目：文件夹与相簿按原始顺序混排。
-public enum SystemSidebarEntry: Identifiable {
+package enum SystemSidebarEntry: Identifiable {
     case folder(SystemFolderInfo)
     case album(SystemAlbumInfo)
 
-    public var id: String {
+    package var id: String {
         switch self {
         case .folder(let folder): return "folder-\(folder.id)"
         case .album(let album): return "album-\(album.id)"
         }
     }
 
-    public var sortIndex: Int64 {
+    package var sortIndex: Int64 {
         switch self {
         case .folder(let folder): return folder.sortIndex
         case .album(let album): return album.sortIndex
@@ -924,12 +924,12 @@ public enum SystemSidebarEntry: Identifiable {
 }
 
 /// 已连接的系统「照片」图库（可同时登记多个，侧边栏逐个展示）。
-public struct SystemLibraryRef: Identifiable, Codable, Hashable {
-    public var path: String
-    public var name: String
+package struct SystemLibraryRef: Identifiable, Codable, Hashable {
+    package var path: String
+    package var name: String
 
-    public var id: String { path }
-    public init(
+    package var id: String { path }
+    package init(
         path: String,
         name: String
     ) {
@@ -939,7 +939,7 @@ public struct SystemLibraryRef: Identifiable, Codable, Hashable {
 }
 
 /// 被固定到侧边栏「固定」分区的项目：系统智能项、相簿、智能相簿、文件夹或系统图库里的相簿 / 文件夹。
-public enum PinnedSidebarItem: Codable, Hashable, Identifiable {
+package enum PinnedSidebarItem: Codable, Hashable, Identifiable {
     case system(String)
     case album(UUID)
     case smartAlbum(UUID)
@@ -947,7 +947,7 @@ public enum PinnedSidebarItem: Codable, Hashable, Identifiable {
     case systemAlbum(Int64)
     case systemFolder(Int64)
 
-    public var id: String {
+    package var id: String {
         switch self {
         case .system(let key): return "system-\(key)"
         case .album(let id): return "album-\(id.uuidString)"
@@ -959,7 +959,7 @@ public enum PinnedSidebarItem: Codable, Hashable, Identifiable {
     }
 }
 
-public enum PhotoFilter: String, CaseIterable, Identifiable {
+package enum PhotoFilter: String, CaseIterable, Identifiable {
     case all
     case favorites
     case edited
@@ -969,9 +969,9 @@ public enum PhotoFilter: String, CaseIterable, Identifiable {
     case mine
     case notInAlbum
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .all: return "所有项目"
         case .favorites: return "个人收藏"
@@ -984,7 +984,7 @@ public enum PhotoFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .all: return "square.grid.2x2"
         case .favorites: return "heart"
@@ -998,7 +998,7 @@ public enum PhotoFilter: String, CaseIterable, Identifiable {
     }
 }
 
-public enum SortKey: String, CaseIterable, Identifiable {
+package enum SortKey: String, CaseIterable, Identifiable {
     case capturedAt
     case addedAt
     case title
@@ -1009,9 +1009,9 @@ public enum SortKey: String, CaseIterable, Identifiable {
     case place
     case duration
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .capturedAt: return "拍摄日期"
         case .addedAt: return "添加日期"
@@ -1025,7 +1025,7 @@ public enum SortKey: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .capturedAt: return "calendar"
         case .addedAt: return "tray.and.arrow.down"
@@ -1040,14 +1040,14 @@ public enum SortKey: String, CaseIterable, Identifiable {
     }
 
     /// 名称类默认升序，日期/大小类默认降序。
-    public var prefersAscending: Bool {
+    package var prefersAscending: Bool {
         switch self {
         case .title, .filename, .kind, .camera, .place: return true
         default: return false
         }
     }
 
-    public var directionTitle: String {
+    package var directionTitle: String {
         switch self {
         case .capturedAt, .addedAt: return "升序为最旧优先，降序为最新优先"
         case .title, .filename, .kind, .camera, .place: return "升序为 A→Z，降序为 Z→A"
@@ -1056,15 +1056,15 @@ public enum SortKey: String, CaseIterable, Identifiable {
     }
 }
 
-public enum ThumbnailAspect: String, CaseIterable, Identifiable {
+package enum ThumbnailAspect: String, CaseIterable, Identifiable {
     case square
     case actual
     case masonry
     case list
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .square: return "正方形"
         case .actual: return "完整宽高比"
@@ -1073,7 +1073,7 @@ public enum ThumbnailAspect: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .square: return "square.grid.2x2"
         case .actual: return "aspectratio"
@@ -1084,14 +1084,14 @@ public enum ThumbnailAspect: String, CaseIterable, Identifiable {
 }
 
 /// 相簿总览（「所有相簿」与文件夹层级）的展示形式。
-public enum AlbumDisplayStyle: String, CaseIterable, Identifiable {
+package enum AlbumDisplayStyle: String, CaseIterable, Identifiable {
     case grid
     case list
     case collage
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .grid: return "网格"
         case .list: return "列表"
@@ -1099,7 +1099,7 @@ public enum AlbumDisplayStyle: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .grid: return "square.grid.2x2"
         case .list: return "list.bullet"
@@ -1107,7 +1107,7 @@ public enum AlbumDisplayStyle: String, CaseIterable, Identifiable {
         }
     }
 
-    public var help: String {
+    package var help: String {
         switch self {
         case .grid: return "大卡片展示相簿封面"
         case .list: return "紧凑行展示封面、名称与数量"
@@ -1117,27 +1117,27 @@ public enum AlbumDisplayStyle: String, CaseIterable, Identifiable {
 }
 
 /// 「人物」总览的头像形状（圆形 / 圆角方形，参考官方照片 App 的方形大卡片），随当前图库保存。
-public enum PeopleDisplayStyle: String, CaseIterable, Identifiable {
+package enum PeopleDisplayStyle: String, CaseIterable, Identifiable {
     case circle
     case roundedSquare
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .circle: return "圆形"
         case .roundedSquare: return "圆角方形"
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .circle: return "circle"
         case .roundedSquare: return "roundedrect"
         }
     }
 
-    public var help: String {
+    package var help: String {
         switch self {
         case .circle: return "圆形头像卡片"
         case .roundedSquare: return "圆角方形头像卡片"
@@ -1145,14 +1145,14 @@ public enum PeopleDisplayStyle: String, CaseIterable, Identifiable {
     }
 }
 
-public enum GridGrouping: String, CaseIterable, Identifiable {
+package enum GridGrouping: String, CaseIterable, Identifiable {
     case years
     case months
     case all
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .years: return "年"
         case .months: return "月"
@@ -1162,14 +1162,14 @@ public enum GridGrouping: String, CaseIterable, Identifiable {
 }
 
 /// 网格的堆叠浏览形态：把连拍 / 同场景连拍收成一张代表图，展开后再看整组。
-public enum StackMode: String, CaseIterable, Identifiable {
+package enum StackMode: String, CaseIterable, Identifiable {
     case off
     case bursts
     case scenes
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .off: return "关闭堆叠"
         case .bursts: return "仅连拍"
@@ -1178,7 +1178,7 @@ public enum StackMode: String, CaseIterable, Identifiable {
     }
 
     /// 菜单 / 悬停提示里的完整说明。
-    public var detail: String {
+    package var detail: String {
         switch self {
         case .off: return "每张照片单独显示"
         case .bursts: return "同一连拍组收成一张代表图"
@@ -1186,7 +1186,7 @@ public enum StackMode: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .off: return "square.stack.3d.down.right"
         case .bursts, .scenes: return "square.stack.3d.down.right.fill"
@@ -1194,11 +1194,11 @@ public enum StackMode: String, CaseIterable, Identifiable {
     }
 }
 
-public struct PhotoSection: Identifiable {
-    public let id: String
-    public let title: String?
-    public let photos: [PhotoItem]
-    public init(
+package struct PhotoSection: Identifiable {
+    package let id: String
+    package let title: String?
+    package let photos: [PhotoItem]
+    package init(
         id: String,
         title: String? = nil,
         photos: [PhotoItem]
@@ -1209,7 +1209,7 @@ public struct PhotoSection: Identifiable {
     }
 }
 
-public enum CropAspect: String, Codable, CaseIterable, Identifiable {
+package enum CropAspect: String, Codable, CaseIterable, Identifiable {
     case original
     case square
     case fourThree
@@ -1218,9 +1218,9 @@ public enum CropAspect: String, Codable, CaseIterable, Identifiable {
     case nineSixteen
     case cinematic
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .original: return "原始"
         case .square: return "正方形"
@@ -1232,7 +1232,7 @@ public enum CropAspect: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var ratio: CGFloat? {
+    package var ratio: CGFloat? {
         switch self {
         case .original: return nil
         case .square: return 1
@@ -1245,7 +1245,7 @@ public enum CropAspect: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-public enum FilterPreset: String, Codable, CaseIterable, Identifiable {
+package enum FilterPreset: String, Codable, CaseIterable, Identifiable {
     case none
     case vivid
     case warm
@@ -1255,9 +1255,9 @@ public enum FilterPreset: String, Codable, CaseIterable, Identifiable {
     case noir
     case fade
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .none: return "原片"
         case .vivid: return "鲜明"
@@ -1270,7 +1270,7 @@ public enum FilterPreset: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var ciName: String? {
+    package var ciName: String? {
         switch self {
         case .none: return nil
         case .vivid: return "CIPhotoEffectChrome"
@@ -1284,36 +1284,36 @@ public enum FilterPreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-public enum DateText {
-    public static let monthFormatter: DateFormatter = {
+package enum DateText {
+    package static let monthFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "yyyy年M月"
         return f
     }()
 
-    public static let dayFormatter: DateFormatter = {
+    package static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "yyyy年M月d日"
         return f
     }()
 
-    public static let yearFormatter: DateFormatter = {
+    package static let yearFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "yyyy年"
         return f
     }()
 
-    public static let fullFormatter: DateFormatter = {
+    package static let fullFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "yyyy年M月d日 HH:mm"
         return f
     }()
 
-    public static let timeFormatter: DateFormatter = {
+    package static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "HH:mm"
@@ -1321,7 +1321,7 @@ public enum DateText {
     }()
 
     /// 精确到秒的时分秒：查看器顶栏与信息面板用它区分同一分钟内的连拍。
-    public static let secondTimeFormatter: DateFormatter = {
+    package static let secondTimeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "HH:mm:ss"
@@ -1329,7 +1329,7 @@ public enum DateText {
     }()
 
     /// 顶栏副标题用的紧凑日期范围：同一天只显示一个日期，同年省略年份、同月省略月份与年份。
-    public static func span(from start: Date, to end: Date) -> String {
+    package static func span(from start: Date, to end: Date) -> String {
         let calendar = Calendar.current
         let a = calendar.dateComponents([.year, .month, .day], from: start)
         let b = calendar.dateComponents([.year, .month, .day], from: end)
@@ -1342,11 +1342,11 @@ public enum DateText {
     }
 }
 
-public func formatFileSize(_ bytes: Int64) -> String {
+package func formatFileSize(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
 }
 
-public func formatDuration(_ seconds: Double) -> String {
+package func formatDuration(_ seconds: Double) -> String {
     let total = Int(seconds.rounded())
     return String(format: "%d:%02d", total / 60, total % 60)
 }

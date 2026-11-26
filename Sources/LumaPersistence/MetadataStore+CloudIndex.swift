@@ -11,17 +11,17 @@ import LumaCore
 /// - `cloud_index_state` 记录这轮扫描是否完整、接入范围签名、保存时间。
 ///
 /// 真实文件内容不落库；EXIF / 识别结果仍在 `cloud_assets` 里按需回填。
-public extension MetadataStore {
+package extension MetadataStore {
     // MARK: - 结构
 
     struct CloudIndexFolderRow {
-        public var path: String
-        public var name: String
-        public var parentPath: String
-        public var modifiedAt: Date?
-        public var mediaCount: Int
-        public var videoCount: Int
-        public var coverRecord: CloudScanRecord?
+        package var path: String
+        package var name: String
+        package var parentPath: String
+        package var modifiedAt: Date?
+        package var mediaCount: Int
+        package var videoCount: Int
+        package var coverRecord: CloudScanRecord?
     }
 
     func migrateCloudIndexSchema() throws {

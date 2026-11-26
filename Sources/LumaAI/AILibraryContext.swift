@@ -3,13 +3,13 @@ import LumaDomain
 
 /// 用户在统一搜索页看到的现场：由 `SearchCenter` 每次检索后写回，
 /// 让助手能「接着用户正在看的结果继续找」，而不是只看到一行搜索词。
-public struct AISearchOverview {
-    public struct SourceLine {
-        public let title: String
-        public let total: Int
+package struct AISearchOverview {
+    package struct SourceLine {
+        package let title: String
+        package let total: Int
         /// 该来源下的类型计数（中文类型名 → 数量）。
-        public let kinds: [(title: String, count: Int)]
-        public init(
+        package let kinds: [(title: String, count: Int)]
+        package init(
             title: String,
             total: Int,
             kinds: [(title: String, count: Int)]
@@ -20,16 +20,16 @@ public struct AISearchOverview {
         }
     }
 
-    public var query: String
-    public var total: Int
-    public var sources: [SourceLine]
-    public var activeSource: String?
-    public var activeKind: String?
-    public var activeOrigin: String?
-    public var activeCategory: String?
+    package var query: String
+    package var total: Int
+    package var sources: [SourceLine]
+    package var activeSource: String?
+    package var activeKind: String?
+    package var activeOrigin: String?
+    package var activeCategory: String?
     /// 各来源前几条命中，帮助模型快速确认这批结果讲的是什么。
-    public var samples: [String]
-    public init(
+    package var samples: [String]
+    package init(
         query: String,
         total: Int,
         sources: [SourceLine],
@@ -51,20 +51,20 @@ public struct AISearchOverview {
 }
 
 /// 本地组装给模型的图库快照：只包含当前范围、元数据与端侧 Vision 结果，不包含文件路径。
-public struct AILibraryContext {
-    public struct Candidate {
-        public let index: Int
-        public let id: UUID
-        public let title: String
-        public let dateText: String
-        public let sizeText: String
-        public let flags: String
-        public let keywords: String
-        public let place: String
-        public let labels: String
-        public let ocr: String
+package struct AILibraryContext {
+    package struct Candidate {
+        package let index: Int
+        package let id: UUID
+        package let title: String
+        package let dateText: String
+        package let sizeText: String
+        package let flags: String
+        package let keywords: String
+        package let place: String
+        package let labels: String
+        package let ocr: String
 
-        public var promptLine: String {
+        package var promptLine: String {
             var parts = ["#\(index)", "id=\(id.uuidString)"]
             parts.append(dateText)
             parts.append(title)
@@ -76,7 +76,7 @@ public struct AILibraryContext {
             if !ocr.isEmpty { parts.append("文字=\(ocr)") }
             return parts.joined(separator: " ")
         }
-        public init(
+        package init(
             index: Int,
             id: UUID,
             title: String,
@@ -101,12 +101,12 @@ public struct AILibraryContext {
         }
     }
 
-    public struct CinemaFolderLine {
-        public let name: String
-        public let path: String
-        public let videos: Int
-        public let matched: Int
-        public init(
+    package struct CinemaFolderLine {
+        package let name: String
+        package let path: String
+        package let videos: Int
+        package let matched: Int
+        package init(
             name: String,
             path: String,
             videos: Int,
@@ -119,14 +119,14 @@ public struct AILibraryContext {
         }
     }
 
-    public struct CinemaVideoLine {
-        public let filename: String
-        public let title: String
-        public let matched: Bool
-        public let season: Int?
-        public let episode: Int?
-        public let resolution: String
-        public init(
+    package struct CinemaVideoLine {
+        package let filename: String
+        package let title: String
+        package let matched: Bool
+        package let season: Int?
+        package let episode: Int?
+        package let resolution: String
+        package init(
             filename: String,
             title: String,
             matched: Bool,
@@ -144,15 +144,15 @@ public struct AILibraryContext {
     }
 
     /// 影院页的专属快照：照片图库那边可能是 0 项，但影院里有目录和视频。
-    public struct CinemaSnapshot {
-        public var scopeName: String
-        public var total: Int
-        public var matched: Int
-        public var folders: [CinemaFolderLine]
-        public var videos: [CinemaVideoLine]
+    package struct CinemaSnapshot {
+        package var scopeName: String
+        package var total: Int
+        package var matched: Int
+        package var folders: [CinemaFolderLine]
+        package var videos: [CinemaVideoLine]
 
-        public var unmatched: Int { max(0, total - matched) }
-        public init(
+        package var unmatched: Int { max(0, total - matched) }
+        package init(
             scopeName: String,
             total: Int,
             matched: Int,
@@ -167,17 +167,17 @@ public struct AILibraryContext {
         }
     }
 
-    public var scopeTitle: String
-    public var scopeCount: Int
-    public var libraryTotal: Int
-    public var filterTitle: String
-    public var searchText: String
-    public var selectionCount: Int
-    public var candidates: [Candidate]
-    public var cinema: CinemaSnapshot? = nil
-    public var searchOverview: AISearchOverview? = nil
+    package var scopeTitle: String
+    package var scopeCount: Int
+    package var libraryTotal: Int
+    package var filterTitle: String
+    package var searchText: String
+    package var selectionCount: Int
+    package var candidates: [Candidate]
+    package var cinema: CinemaSnapshot? = nil
+    package var searchOverview: AISearchOverview? = nil
 
-    public static let systemPrompt = """
+    package static let systemPrompt = """
     你是「拾光」里的智能助手，帮助用户理解、检索和整理当前照片图库，也能操作「网络资源」里的站点。
     你只能依据消息中提供的图库快照、图片与工具返回结果回答，不要编造快照里不存在的照片、数量或细节。
     回答使用简体中文，简洁清晰；引用照片时使用候选编号（如 #3）或名称，引用网络资源时使用 ref（如 #1）。
@@ -228,7 +228,7 @@ public struct AILibraryContext {
     """
 
     /// 会话模式追加到系统提示词：快速 / 标准 / 深度的行为差异。
-    public static func modeInstruction(_ mode: AIMode) -> String {
+    package static func modeInstruction(_ mode: AIMode) -> String {
         switch mode {
         case .fast:
             return "【模式：快速】优先直接回答；只有用户明确要求执行或必须拿到 id 时才调用工具，最多几步就给出结论，回答控制在几行内。"
@@ -239,7 +239,7 @@ public struct AILibraryContext {
         }
     }
 
-    public func promptText(question: String) -> String {
+    package func promptText(question: String) -> String {
         var lines: [String] = []
         lines.append("【当前范围】")
         lines.append("名称：\(scopeTitle)")
@@ -309,7 +309,7 @@ public struct AILibraryContext {
         lines.append(question)
         return lines.joined(separator: "\n")
     }
-    public init(
+    package init(
         scopeTitle: String,
         scopeCount: Int,
         libraryTotal: Int,
@@ -332,8 +332,8 @@ public struct AILibraryContext {
     }
 }
 
-public enum AIContextBuilder {
-    public static func make(scopeTitle: String,
+package enum AIContextBuilder {
+    package static func make(scopeTitle: String,
                      scopeCount: Int,
                      libraryTotal: Int,
                      filterTitle: String,
@@ -375,7 +375,7 @@ public enum AIContextBuilder {
     }
 
     /// 解析回答末尾的检索建议，并从展示文本中移除该行。
-    public static func parseDirective(from raw: String) -> (text: String, suggestion: AISearchSuggestion?) {
+    package static func parseDirective(from raw: String) -> (text: String, suggestion: AISearchSuggestion?) {
         guard let start = raw.range(of: "<<LUMA_SEARCH>>"),
               let end = raw.range(of: "<<END>>", range: start.upperBound..<raw.endIndex) else {
             return (raw.trimmingCharacters(in: .whitespacesAndNewlines), nil)

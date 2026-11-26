@@ -2,7 +2,7 @@ import Foundation
 
 /// 「个人收藏」的浏览方式：全部网格，或按年份 / 类型 / 地点 / 相机 / 人物汇总。
 /// 每个维度单独占一屏，先看分类卡片，再点卡片下钻。
-public enum FavoritesViewMode: String, CaseIterable, Identifiable {
+package enum FavoritesViewMode: String, CaseIterable, Identifiable {
     case all
     case years
     case kinds
@@ -10,9 +10,9 @@ public enum FavoritesViewMode: String, CaseIterable, Identifiable {
     case cameras
     case people
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .all: return "全部"
         case .years: return "年"
@@ -23,7 +23,7 @@ public enum FavoritesViewMode: String, CaseIterable, Identifiable {
         }
     }
 
-    public var hint: String {
+    package var hint: String {
         switch self {
         case .all: return "平铺显示所有收藏"
         case .years: return "按拍摄年份汇总收藏"
@@ -34,7 +34,7 @@ public enum FavoritesViewMode: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .all: return "square.grid.2x2"
         case .years: return "calendar"
@@ -47,7 +47,7 @@ public enum FavoritesViewMode: String, CaseIterable, Identifiable {
 }
 
 /// 收藏按类型分组时的互斥分桶：实况照片、截屏等优先于普通照片。
-public enum FavoriteKindBucket: String, CaseIterable, Identifiable {
+package enum FavoriteKindBucket: String, CaseIterable, Identifiable {
     case photos
     case videos
     case livePhotos
@@ -55,9 +55,9 @@ public enum FavoriteKindBucket: String, CaseIterable, Identifiable {
     case selfies
     case panoramas
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .photos: return "照片"
         case .videos: return "视频"
@@ -68,7 +68,7 @@ public enum FavoriteKindBucket: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .photos: return "photo"
         case .videos: return "video"
@@ -79,7 +79,7 @@ public enum FavoriteKindBucket: String, CaseIterable, Identifiable {
         }
     }
 
-    public static func bucket(for photo: PhotoItem) -> FavoriteKindBucket {
+    package static func bucket(for photo: PhotoItem) -> FavoriteKindBucket {
         if photo.isVideo { return .videos }
         if photo.isLivePhoto { return .livePhotos }
         switch photo.kind {
@@ -92,17 +92,17 @@ public enum FavoriteKindBucket: String, CaseIterable, Identifiable {
 }
 
 /// 地点 / 相机汇总共用的分组键：与照片元数据里的字段保持一致。
-public enum FavoritesDigestKeys {
-    public static func year(_ photo: PhotoItem) -> String {
+package enum FavoritesDigestKeys {
+    package static func year(_ photo: PhotoItem) -> String {
         String(Calendar.current.component(.year, from: photo.capturedAt))
     }
 
     /// 收藏按城市聚合；没有城市时逐级回退到省份 / 国家。
-    public static func place(_ photo: PhotoItem) -> String? {
+    package static func place(_ photo: PhotoItem) -> String? {
         firstNonEmpty(photo.placeCity, photo.placeProvince, photo.placeCountry)
     }
 
-    public static func placeSubtitle(for photo: PhotoItem, title: String) -> String? {
+    package static func placeSubtitle(for photo: PhotoItem, title: String) -> String? {
         let province = firstNonEmpty(photo.placeProvince)
         if let province, province != title { return province }
         let country = firstNonEmpty(photo.placeCountry)
@@ -110,7 +110,7 @@ public enum FavoritesDigestKeys {
     }
 
     /// 收藏按品牌聚合（相机 / 手机），便于用品牌插画展示。
-    public static func camera(_ photo: PhotoItem) -> String? {
+    package static func camera(_ photo: PhotoItem) -> String? {
         let text = [photo.make, photo.model]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -130,7 +130,7 @@ public enum FavoritesDigestKeys {
 }
 
 /// 收藏汇总里的相机 / 手机品牌：只做识别与命名，颜色与插画在视图层。
-public enum CameraBrand: String, CaseIterable {
+package enum CameraBrand: String, CaseIterable {
     case apple
     case canon
     case nikon
@@ -153,7 +153,7 @@ public enum CameraBrand: String, CaseIterable {
     case insta360
     case other
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .apple: return "Apple"
         case .canon: return "Canon"
@@ -180,7 +180,7 @@ public enum CameraBrand: String, CaseIterable {
     }
 
     /// 手机品牌使用手机插画，其余使用相机插画。
-    public var isPhone: Bool {
+    package var isPhone: Bool {
         switch self {
         case .apple, .xiaomi, .huawei, .samsung, .google, .oppo, .vivo, .oneplus:
             return true
@@ -189,7 +189,7 @@ public enum CameraBrand: String, CaseIterable {
         }
     }
 
-    public static func detect(_ text: String) -> CameraBrand {
+    package static func detect(_ text: String) -> CameraBrand {
         let value = text.lowercased()
         if value.contains("iphone") || value.contains("ipad") || value.contains("apple") { return .apple }
         if value.contains("canon") { return .canon }
@@ -216,8 +216,8 @@ public enum CameraBrand: String, CaseIterable {
 }
 
 /// 收藏汇总里的一个可下钻分类。
-public struct FavoritesBucketSelection: Identifiable, Hashable {
-    public enum Dimension: String, Hashable {
+package struct FavoritesBucketSelection: Identifiable, Hashable {
+    package enum Dimension: String, Hashable {
         case year
         case kind
         case place
@@ -225,16 +225,16 @@ public struct FavoritesBucketSelection: Identifiable, Hashable {
         case person
     }
 
-    public let dimension: Dimension
-    public let key: String
-    public let title: String
-    public let subtitle: String?
+    package let dimension: Dimension
+    package let key: String
+    package let title: String
+    package let subtitle: String?
     /// 人物维度：该人物名下的照片 ID，用于从收藏源里过滤。
-    public var assetIDs: Set<UUID> = []
+    package var assetIDs: Set<UUID> = []
 
-    public var id: String { "\(dimension.rawValue)|\(key)" }
+    package var id: String { "\(dimension.rawValue)|\(key)" }
 
-    public func matches(_ photo: PhotoItem) -> Bool {
+    package func matches(_ photo: PhotoItem) -> Bool {
         switch dimension {
         case .year:
             return FavoritesDigestKeys.year(photo) == key
@@ -248,7 +248,7 @@ public struct FavoritesBucketSelection: Identifiable, Hashable {
             return assetIDs.contains(photo.id)
         }
     }
-    public init(
+    package init(
         dimension: Dimension,
         key: String,
         title: String,
@@ -264,13 +264,13 @@ public struct FavoritesBucketSelection: Identifiable, Hashable {
 }
 
 /// 汇总卡片：封面最多保留 4 张，数量是完整统计值。
-public struct FavoritesDigestBucket: Identifiable {
-    public let selection: FavoritesBucketSelection
-    public let count: Int
-    public let photos: [PhotoItem]
+package struct FavoritesDigestBucket: Identifiable {
+    package let selection: FavoritesBucketSelection
+    package let count: Int
+    package let photos: [PhotoItem]
 
-    public var id: String { selection.id }
-    public init(
+    package var id: String { selection.id }
+    package init(
         selection: FavoritesBucketSelection,
         count: Int,
         photos: [PhotoItem]
@@ -282,13 +282,13 @@ public struct FavoritesDigestBucket: Identifiable {
 }
 
 /// 人物汇总的数据来源：本地聚类或官方人物，只展示已命名的人物。
-public struct FavoritesPersonSource {
-    public let id: String
-    public let name: String
-    public let isPet: Bool
-    public let isUnnamed: Bool
-    public let assetIDs: [UUID]
-    public init(
+package struct FavoritesPersonSource {
+    package let id: String
+    package let name: String
+    package let isPet: Bool
+    package let isUnnamed: Bool
+    package let assetIDs: [UUID]
+    package init(
         id: String,
         name: String,
         isPet: Bool,
@@ -304,28 +304,28 @@ public struct FavoritesPersonSource {
 }
 
 /// 「个人收藏」汇总：总量、时间跨度与五个分类维度。
-public struct FavoritesDigest {
-    public var total = 0
-    public var photoCount = 0
-    public var videoCount = 0
-    public var totalBytes: Int64 = 0
-    public var earliest: Date?
-    public var latest: Date?
-    public var years: [FavoritesDigestBucket] = []
-    public var kinds: [FavoritesDigestBucket] = []
-    public var places: [FavoritesDigestBucket] = []
-    public var cameras: [FavoritesDigestBucket] = []
-    public var people: [FavoritesDigestBucket] = []
+package struct FavoritesDigest {
+    package var total = 0
+    package var photoCount = 0
+    package var videoCount = 0
+    package var totalBytes: Int64 = 0
+    package var earliest: Date?
+    package var latest: Date?
+    package var years: [FavoritesDigestBucket] = []
+    package var kinds: [FavoritesDigestBucket] = []
+    package var places: [FavoritesDigestBucket] = []
+    package var cameras: [FavoritesDigestBucket] = []
+    package var people: [FavoritesDigestBucket] = []
     /// 系统图库收藏过多、只统计了最近一批时为 true。
-    public var isLimited = false
+    package var isLimited = false
 
-    public var hasContent: Bool { total > 0 }
+    package var hasContent: Bool { total > 0 }
 
     /// 汇总页头图：最新一张收藏。
-    public var heroPhoto: PhotoItem? {
+    package var heroPhoto: PhotoItem? {
         years.first?.photos.first
     }
-    public init(
+    package init(
         total: Int = 0,
         photoCount: Int = 0,
         videoCount: Int = 0,
@@ -354,8 +354,8 @@ public struct FavoritesDigest {
     }
 }
 
-public enum FavoritesDigestBuilder {
-    public static func make(photos: [PhotoItem],
+package enum FavoritesDigestBuilder {
+    package static func make(photos: [PhotoItem],
                      people: [FavoritesPersonSource],
                      isLimited: Bool,
                      maxPeople: Int = 20,
@@ -435,9 +435,9 @@ public enum FavoritesDigestBuilder {
     /// 相机 / 手机按品牌聚合，卡片副标题列出常见机型。
     private static func cameraBuckets(from photos: [PhotoItem], limit: Int) -> [FavoritesDigestBucket] {
         struct Group {
-            public let brand: CameraBrand
-            public var photos: [PhotoItem] = []
-            public var models: Set<String> = []
+            package let brand: CameraBrand
+            package var photos: [PhotoItem] = []
+            package var models: Set<String> = []
         }
         var order: [String] = []
         var groups: [String: Group] = [:]

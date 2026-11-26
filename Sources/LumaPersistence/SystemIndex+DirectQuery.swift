@@ -4,7 +4,7 @@ import LumaCore
 
 /// 系统图库直连：条件 / 排序、时间轴密度与年 / 月总览。
 
-public extension SystemIndex {
+package extension SystemIndex {
     // MARK: - 条件 / 排序
 
     func directWhere(_ query: SystemQuery,

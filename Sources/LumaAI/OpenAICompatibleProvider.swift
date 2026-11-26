@@ -3,17 +3,17 @@ import LumaDomain
 
 /// OpenAI 兼容的 chat/completions 后端：
 /// DeepSeek / Kimi / GLM / 通义千问 / 豆包 / OpenAI / 本地运行时 / 自定义。
-public struct OpenAICompatibleChatProvider: AIChatProvider {
-    public let descriptor: AIChatProviderDescriptor
+package struct OpenAICompatibleChatProvider: AIChatProvider {
+    package let descriptor: AIChatProviderDescriptor
 
-    public init(config: AIConfig) {
+    package init(config: AIConfig) {
         descriptor = AIChatProviderDescriptor(id: config.provider.rawValue,
                                              title: config.provider.title,
                                              capabilities: config.requestCapabilities,
                                              isLocal: config.provider == .local)
     }
 
-    public func complete(_ request: AIChatRequest) async throws -> AICompletion {
+    package func complete(_ request: AIChatRequest) async throws -> AICompletion {
         let config = request.config
         let key = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         // 本地运行时（Ollama / LM Studio）不校验 API Key。

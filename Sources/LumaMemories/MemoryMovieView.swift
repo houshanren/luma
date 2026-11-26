@@ -2,12 +2,18 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import LumaContentCore
+import LumaDomain
 
 /// 全窗口回忆影片：Ken Burns 推进 + 交叉淡入淡出。
-struct MemoryMovieView: View {
-    @EnvironmentObject private var store: LibraryStore
+/// 宿主能力由 `MemoryHost` 注入，不直接依赖 App 的 `LibraryStore`。
+package struct MemoryMovieView<Host: MemoryHost>: View {
+    @EnvironmentObject private var host: Host
 
-    let memory: PhotoMemory
+    package let memory: PhotoMemory
+
+    package init(memory: PhotoMemory) {
+        self.memory = memory
+    }
 
     @State private var index = 0
     @State private var isPlaying = true
@@ -28,7 +34,7 @@ struct MemoryMovieView: View {
         photos.indices.contains(index) ? photos[index] : nil
     }
 
-    var body: some View {
+    package var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
@@ -194,7 +200,7 @@ struct MemoryMovieView: View {
             .help("导出为视频…")
 
             Button {
-                store.activeMemory = nil
+                host.activeMemory = nil
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .bold))
@@ -255,12 +261,12 @@ struct MemoryMovieView: View {
         isExporting = true
         exportProgress = 0
         // 渲染 + 编码是分钟级任务：登记到统一任务中心，导出期间切页也能看到进度。
-        let jobID = store.beginSourceJob(
-            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
-                .standardizedFileURL.path),
+        let jobID = host.beginSourceJob(
+            SourceJob(sourceID: .library(host.memoryJobPath),
                       kind: .export,
                       title: "导出回忆影片",
-                      isCancellable: false)
+                      isCancellable: false),
+            cancel: nil
         )
 
         let snapshot = memory
@@ -270,23 +276,25 @@ struct MemoryMovieView: View {
                 try await MemoryExporter.export(memory: snapshot, style: chosenStyle, to: url) { value in
                     Task { @MainActor in
                         exportProgress = value
-                        store.updateSourceJob(jobID,
-                                              message: "正在导出 \(Int((value * 100).rounded()))%",
-                                              fraction: value)
+                        host.updateSourceJob(jobID,
+                                             completed: nil,
+                                             total: nil,
+                                             message: "正在导出 \(Int((value * 100).rounded()))%",
+                                             fraction: value)
                     }
                 }
                 await MainActor.run {
                     isExporting = false
                     isPlaying = wasPlaying
-                    store.finishSourceJob(jobID, message: "已导出 \(url.lastPathComponent)")
-                    store.showToast("已导出「\(url.lastPathComponent)」")
+                    host.finishSourceJob(jobID, message: "已导出 \(url.lastPathComponent)")
+                    host.showToast("已导出「\(url.lastPathComponent)」")
                 }
             } catch {
                 await MainActor.run {
                     isExporting = false
                     isPlaying = wasPlaying
-                    store.failSourceJob(jobID, message: error.localizedDescription)
-                    store.showToast("导出失败：\(error.localizedDescription)")
+                    host.failSourceJob(jobID, message: error.localizedDescription)
+                    host.showToast("导出失败：\(error.localizedDescription)")
                 }
             }
         }
@@ -317,7 +325,7 @@ struct MemoryMovieView: View {
         let photo = photos[position]
         Task {
             let loaded = await Task.detached(priority: .userInitiated) {
-                ImageLoader.displayImage(for: photo, maxPixel: 2600)
+                MemoryFrameLoader.image(for: photo, maxPixel: 2600)
             }.value
             if let loaded {
                 images[position] = loaded
@@ -340,7 +348,7 @@ struct MemoryMovieView: View {
             if isExporting { return nil }
 
             if event.keyCode == 53 {
-                store.activeMemory = nil
+                host.activeMemory = nil
                 return nil
             }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

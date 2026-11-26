@@ -1,15 +1,15 @@
 import Foundation
 
 /// 一个可重看的人物 / 地点 / 场景 / 年份主体。
-public enum RevisitSubjectKind: String, CaseIterable, Identifiable {
+package enum RevisitSubjectKind: String, CaseIterable, Identifiable {
     case people
     case places
     case scenes
     case years
 
-    public var id: String { rawValue }
+    package var id: String { rawValue }
 
-    public var title: String {
+    package var title: String {
         switch self {
         case .people: return "人物"
         case .places: return "地点"
@@ -18,7 +18,7 @@ public enum RevisitSubjectKind: String, CaseIterable, Identifiable {
         }
     }
 
-    public var icon: String {
+    package var icon: String {
         switch self {
         case .people: return "person.2"
         case .places: return "mappin.and.ellipse"
@@ -27,7 +27,7 @@ public enum RevisitSubjectKind: String, CaseIterable, Identifiable {
         }
     }
 
-    public var emptyHint: String {
+    package var emptyHint: String {
         switch self {
         case .people: return "完成人物分析后，这里会按人物归并旧照片。"
         case .places: return "旧照片需要带 GPS 地点信息才会按地点归并。"
@@ -38,13 +38,13 @@ public enum RevisitSubjectKind: String, CaseIterable, Identifiable {
 }
 
 /// 人物主体输入：只带重看分组需要的最小字段。
-public struct RevisitPersonSeed: Identifiable {
-    public let id: String
-    public let name: String
-    public let assetIDs: [UUID]
-    public let coverPhotoID: UUID?
-    public let coverData: Data?
-    public init(
+package struct RevisitPersonSeed: Identifiable {
+    package let id: String
+    package let name: String
+    package let assetIDs: [UUID]
+    package let coverPhotoID: UUID?
+    package let coverData: Data?
+    package init(
         id: String,
         name: String,
         assetIDs: [UUID],
@@ -61,12 +61,12 @@ public struct RevisitPersonSeed: Identifiable {
 
 /// 「值得重看」的派生数据：把所有旧照片按人物 / 地点 / 场景 / 年份拆成可重看的主体。
 /// 纯内存计算，不落库、不上传。
-public struct RevisitInsight {
-    public struct YearCount: Identifiable, Equatable {
-        public let year: Int
-        public let count: Int
-        public var id: Int { year }
-        public init(
+package struct RevisitInsight {
+    package struct YearCount: Identifiable, Equatable {
+        package let year: Int
+        package let count: Int
+        package var id: Int { year }
+        package init(
             year: Int,
             count: Int
         ) {
@@ -75,29 +75,29 @@ public struct RevisitInsight {
         }
     }
 
-    public struct Subject: Identifiable {
-        public let id: String
-        public let kind: RevisitSubjectKind
-        public let title: String
-        public let subtitle: String
-        public let icon: String
+    package struct Subject: Identifiable {
+        package let id: String
+        package let kind: RevisitSubjectKind
+        package let title: String
+        package let subtitle: String
+        package let icon: String
         /// 按拍摄时间升序，详情页默认「最早优先」。
-        public let photos: [PhotoItem]
+        package let photos: [PhotoItem]
         /// 人物主体的人脸裁切头像。
-        public let coverData: Data?
+        package let coverData: Data?
         /// 详情页的年份分层：点某一层就只看那一年的旧照片。
-        public let yearCounts: [YearCount]
-        public let photosByYear: [Int: [PhotoItem]]
+        package let yearCounts: [YearCount]
+        package let photosByYear: [Int: [PhotoItem]]
         /// 摘要文案：年份跨度 · 地点数 · 从未打开的张数。
-        public let narrative: String
-        public let placeCount: Int
-        public let unseenCount: Int
+        package let narrative: String
+        package let placeCount: Int
+        package let unseenCount: Int
 
-        public var count: Int { photos.count }
-        public var cover: PhotoItem? { photos.first }
-        public var firstYear: Int? { yearCounts.first?.year }
-        public var lastYear: Int? { yearCounts.last?.year }
-        public init(
+        package var count: Int { photos.count }
+        package var cover: PhotoItem? { photos.first }
+        package var firstYear: Int? { yearCounts.first?.year }
+        package var lastYear: Int? { yearCounts.last?.year }
+        package init(
             id: String,
             kind: RevisitSubjectKind,
             title: String,
@@ -126,18 +126,18 @@ public struct RevisitInsight {
         }
     }
 
-    public var photos: [PhotoItem] = []
-    public var onlyUnseen = false
-    public var unseenCount = 0
-    public var oldestDate: Date?
+    package var photos: [PhotoItem] = []
+    package var onlyUnseen = false
+    package var unseenCount = 0
+    package var oldestDate: Date?
     /// 最久没有被打开的照片，用于今日之选与「时光碎片」。
-    public var forgottenPhotos: [PhotoItem] = []
-    public var initialKind: RevisitSubjectKind = .people
+    package var forgottenPhotos: [PhotoItem] = []
+    package var initialKind: RevisitSubjectKind = .people
     private var buckets: [RevisitSubjectKind: [Subject]] = [:]
 
-    public var totalCount: Int { photos.count }
+    package var totalCount: Int { photos.count }
 
-    public var summaryText: String {
+    package var summaryText: String {
         var parts: [String] = ["\(totalCount.formatted()) 张值得重看"]
         if let oldestDate {
             parts.append("最早来自 \(Calendar.current.component(.year, from: oldestDate)) 年")
@@ -148,11 +148,11 @@ public struct RevisitInsight {
         return parts.joined(separator: " · ")
     }
 
-    public func subjects(for kind: RevisitSubjectKind) -> [Subject] {
+    package func subjects(for kind: RevisitSubjectKind) -> [Subject] {
         buckets[kind] ?? []
     }
 
-    public func allSubject() -> Subject? {
+    package func allSubject() -> Subject? {
         guard !photos.isEmpty else { return nil }
         return Self.makeSubject(id: "all",
                                 kind: .years,
@@ -163,7 +163,7 @@ public struct RevisitInsight {
                                 coverData: nil)
     }
 
-    public static func make(photos: [PhotoItem],
+    package static func make(photos: [PhotoItem],
                      onlyUnseen: Bool,
                      people: [RevisitPersonSeed],
                      analysis: [UUID: PhotoAnalysis]) -> RevisitInsight {
@@ -354,7 +354,7 @@ public struct RevisitInsight {
         let lastYear = Calendar.current.component(.year, from: last.capturedAt)
         return firstYear == lastYear ? "\(firstYear) 年" : "\(firstYear) – \(lastYear)"
     }
-    public init(
+    package init(
         photos: [PhotoItem] = [],
         onlyUnseen: Bool = false,
         unseenCount: Int = 0,

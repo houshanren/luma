@@ -1,12 +1,12 @@
 import Foundation
-public struct LibraryData: Codable {
-    public var photos: [PhotoItem] = []
-    public var albums: [Album] = []
-    public var folders: [AlbumFolder] = []
+package struct LibraryData: Codable {
+    package var photos: [PhotoItem] = []
+    package var albums: [Album] = []
+    package var folders: [AlbumFolder] = []
 
-    public init() {}
+    package init() {}
 
-    public init(photos: [PhotoItem] = [], albums: [Album] = [], folders: [AlbumFolder] = []) {
+    package init(photos: [PhotoItem] = [], albums: [Album] = [], folders: [AlbumFolder] = []) {
         self.photos = photos
         self.albums = albums
         self.folders = folders
@@ -18,7 +18,7 @@ public struct LibraryData: Codable {
 
 
 
-    public init(from decoder: Decoder) throws {
+    package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         photos = (try? container.decodeIfPresent([PhotoItem].self, forKey: .photos)) ?? []
         albums = (try? container.decodeIfPresent([Album].self, forKey: .albums)) ?? []

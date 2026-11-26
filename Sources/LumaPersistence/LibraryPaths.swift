@@ -7,10 +7,10 @@ import UniformTypeIdentifiers
 import AVFoundation
 import CoreImage
 
-public enum LibraryPaths {
+package enum LibraryPaths {
     /// 应用自己的数据目录：设置、已下载模型、索引缓存与旧版本地库都放这里。
     /// 旧版本用的是另一个目录名，首次启动时整体搬过来，用户不会丢设置与模型。
-    public static let applicationRoot: URL = {
+    package static let applicationRoot: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let root = base.appendingPathComponent("Luma", isDirectory: true)
         migrateLegacyApplicationRoot(in: base, to: root)
@@ -38,12 +38,12 @@ public enum LibraryPaths {
     private static let bootstrapFile = applicationRoot.appendingPathComponent("ContainerPath.txt")
 
     /// 用户设置的默认图库：启动时优先打开它（按住 Option 仍会先弹出图库选择器）。
-    public static let defaultLibraryKey = "settings.defaultLibraryPath.v1"
+    package static let defaultLibraryKey = "settings.defaultLibraryPath.v1"
     /// 只有用户主动点过「设为默认图库」才置位；旧版本自动挑出来的默认值不改变启动行为。
-    public static let defaultLibraryExplicitKey = "settings.defaultLibraryExplicit.v1"
+    package static let defaultLibraryExplicitKey = "settings.defaultLibraryExplicit.v1"
 
     /// 读取用户显式设置的默认图库；路径已失效时退回「上次打开的图库」。
-    public static func storedDefaultLibrary() -> URL? {
+    package static func storedDefaultLibrary() -> URL? {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: defaultLibraryExplicitKey),
               let path = defaults.string(forKey: defaultLibraryKey) else { return nil }
@@ -52,7 +52,7 @@ public enum LibraryPaths {
         return url
     }
 
-    public static func setStoredDefaultLibrary(_ url: URL) {
+    package static func setStoredDefaultLibrary(_ url: URL) {
         let path = url.standardizedFileURL.path
         UserDefaults.standard.set(path, forKey: defaultLibraryKey)
         UserDefaults.standard.set(true, forKey: defaultLibraryExplicitKey)
@@ -60,7 +60,7 @@ public enum LibraryPaths {
 
     /// 上次打开的图库（启动引导文件），仍然存在才算。
     /// 没有显式默认时，下次启动打开的就是它——界面上的「默认」标记也以它为准。
-    public static func lastOpenedLibraryURL() -> URL? {
+    package static func lastOpenedLibraryURL() -> URL? {
         guard let path = storedLastOpenedPath() else { return nil }
         let url = URL(fileURLWithPath: path)
         return isLibraryContainer(url) ? url : nil
@@ -68,22 +68,22 @@ public enum LibraryPaths {
 
     /// 启动引导里记录的图库路径（不校验是否仍然存在）。断开图库时要按原始路径清理，
     /// 否则失效的图库重新插上后还会被启动引导拉回来。
-    public static func storedLastOpenedPath() -> String? {
+    package static func storedLastOpenedPath() -> String? {
         guard let stored = readBootstrap(), stored != "local" else { return nil }
         return URL(fileURLWithPath: stored).standardizedFileURL.path
     }
 
     /// 「全部图库」与「最近打开」的全局持久化键。
-    public static let knownLibrariesKey = "settings.knownLibraries.v1"
-    public static let recentLibrariesKey = "settings.recentLibraries"
+    package static let knownLibrariesKey = "settings.knownLibraries.v1"
+    package static let recentLibrariesKey = "settings.recentLibraries"
 
-    public private(set) static var containerLibraryURL: URL?
-    public private(set) static var root: URL = applicationRoot
+    package private(set) static var containerLibraryURL: URL?
+    package private(set) static var root: URL = applicationRoot
 
     /// 拾光写进图库的所有旁挂数据都收在这个目录里：
     /// 图库根目录只保留 Apple 自己的结构（database / originals / resources / private / scopes …）。
     /// 尚未选择图库时 `root` 就是应用支持目录，此时直接用它，不再多套一层 `Luma/`。
-    public static var overlayRoot: URL { overlayDir(in: root) }
+    package static var overlayRoot: URL { overlayDir(in: root) }
 
     /// 某个图库的旁挂数据目录；应用支持目录本身（无图库）不再嵌套 `Luma/`。
     private static func overlayDir(in library: URL) -> URL {
@@ -92,39 +92,39 @@ public enum LibraryPaths {
             : library.appendingPathComponent("Luma", isDirectory: true)
     }
 
-    public static var databaseDir: URL { overlayRoot.appendingPathComponent("database", isDirectory: true) }
-    public static var originals: URL { overlayRoot.appendingPathComponent("originals", isDirectory: true) }
-    public static var derivatives: URL { overlayRoot.appendingPathComponent("resources/derivatives", isDirectory: true) }
-    public static var edited: URL { overlayRoot.appendingPathComponent("resources/renders", isDirectory: true) }
-    public static var transcodes: URL { overlayRoot.appendingPathComponent("resources/transcodes", isDirectory: true) }
-    public static var backups: URL { overlayRoot.appendingPathComponent("resources/backups", isDirectory: true) }
+    package static var databaseDir: URL { overlayRoot.appendingPathComponent("database", isDirectory: true) }
+    package static var originals: URL { overlayRoot.appendingPathComponent("originals", isDirectory: true) }
+    package static var derivatives: URL { overlayRoot.appendingPathComponent("resources/derivatives", isDirectory: true) }
+    package static var edited: URL { overlayRoot.appendingPathComponent("resources/renders", isDirectory: true) }
+    package static var transcodes: URL { overlayRoot.appendingPathComponent("resources/transcodes", isDirectory: true) }
+    package static var backups: URL { overlayRoot.appendingPathComponent("resources/backups", isDirectory: true) }
     /// 用户保存的编辑预设：跟着图库走，换库不串。
-    public static var presetsFile: URL { overlayRoot.appendingPathComponent("resources/presets.json") }
+    package static var presetsFile: URL { overlayRoot.appendingPathComponent("resources/presets.json") }
     /// 导入的 3D LUT：复制到库内，配方里只存相对文件名，搬库不丢。
-    public static var lutsDir: URL { overlayRoot.appendingPathComponent("resources/luts", isDirectory: true) }
-    public static var cloud: URL { overlayRoot.appendingPathComponent("cloud", isDirectory: true) }
-    public static var cloudThumbs: URL { cloud.appendingPathComponent("thumbs", isDirectory: true) }
+    package static var lutsDir: URL { overlayRoot.appendingPathComponent("resources/luts", isDirectory: true) }
+    package static var cloud: URL { overlayRoot.appendingPathComponent("cloud", isDirectory: true) }
+    package static var cloudThumbs: URL { cloud.appendingPathComponent("thumbs", isDirectory: true) }
     /// 网络资源的图库级配置：源、续看、收藏、片单、更新日历都写在当前图库里。
     /// 换图库时不加载上一个库的配置。
-    public static var catalogDir: URL { overlayRoot.appendingPathComponent("resources/catalog", isDirectory: true) }
+    package static var catalogDir: URL { overlayRoot.appendingPathComponent("resources/catalog", isDirectory: true) }
     /// 网络电视：源、频道缓存与开关都写在这个库自己的 SQLite 里。
-    public static var tvDir: URL { overlayRoot.appendingPathComponent("resources/tv", isDirectory: true) }
-    public static var tvDatabaseFile: URL { tvDir.appendingPathComponent("Television.sqlite") }
+    package static var tvDir: URL { overlayRoot.appendingPathComponent("resources/tv", isDirectory: true) }
+    package static var tvDatabaseFile: URL { tvDir.appendingPathComponent("Television.sqlite") }
     /// 本地导入的 M3U：复制进图库再登记，原文件被移动或删除都不影响播放。
-    public static var tvPlaylistsDir: URL { tvDir.appendingPathComponent("playlists", isDirectory: true) }
+    package static var tvPlaylistsDir: URL { tvDir.appendingPathComponent("playlists", isDirectory: true) }
     /// 网络电视的台标 / 预览图缓存。
-    public static var tvLogosDir: URL { overlayRoot.appendingPathComponent("tv-logos", isDirectory: true) }
-    public static var tvPreviewsDir: URL { overlayRoot.appendingPathComponent("tv-previews", isDirectory: true) }
+    package static var tvLogosDir: URL { overlayRoot.appendingPathComponent("tv-logos", isDirectory: true) }
+    package static var tvPreviewsDir: URL { overlayRoot.appendingPathComponent("tv-previews", isDirectory: true) }
     /// 网络源内容快照：换图库后快照跟着换。
-    public static var sourceSnapshotsDir: URL { overlayRoot.appendingPathComponent("source-snapshots", isDirectory: true) }
+    package static var sourceSnapshotsDir: URL { overlayRoot.appendingPathComponent("source-snapshots", isDirectory: true) }
     /// 系统图库缩略图缓存：同样放本机，避免为每个格子往图库所在（可能很慢的）磁盘写文件。
     /// 官方 derivative 仍然直接复用，这里只存按格子尺寸生成的小图。
-    public static var systemThumbs: URL {
+    package static var systemThumbs: URL {
         applicationRoot.appendingPathComponent("resources/system-thumbs", isDirectory: true)
     }
     /// 官方「照片」图库自己生成好的 derivative 目录（缩略图与视频封面帧）。
     /// 直接复用这些 JPEG，可以避免为每个格子解码 HEIC / RAW / 视频原文件。
-    public static func systemDerivatives(libraryURL: URL) -> URL {
+    package static func systemDerivatives(libraryURL: URL) -> URL {
         libraryURL.appendingPathComponent("resources/derivatives", isDirectory: true)
     }
 
@@ -132,7 +132,7 @@ public enum LibraryPaths {
     /// 视频没有 `_1_105_c`，官方只保留一张 `_1_102_o.jpeg` 封面帧。
     /// 共享相簿（scopes/cloudsharing）的项目不在库根 derivatives 下：
     /// 图片只有一张 500px 级别的 `_4_5005_c`，视频优先用本机已缓存的 `poster.JPG`。
-    public static func systemDerivativePath(libraryURL: URL, assetID: UUID, isVideo: Bool,
+    package static func systemDerivativePath(libraryURL: URL, assetID: UUID, isVideo: Bool,
                                      directory: String? = nil) -> String {
         let key = assetID.uuidString
         if let directory, directory.contains("/") {
@@ -155,25 +155,25 @@ public enum LibraryPaths {
         return directory.appendingPathComponent(name).path
     }
     /// 系统「照片」图库的扫描结果缓存（仅索引与元数据，不含原图），同样写进当前图库。
-    public static var systemLibraryCacheDir: URL {
+    package static var systemLibraryCacheDir: URL {
         overlayRoot.appendingPathComponent("resources/system-cache", isDirectory: true)
     }
     /// 原生图库导入的去重账本：源文件 SHA-256 → 已写入的系统资产标识。
     /// 只记录拾光自己写进去的项目，不解读 Photos 自己的数据库。
-    public static var systemImportManifest: URL {
+    package static var systemImportManifest: URL {
         systemLibraryCacheDir.appendingPathComponent("import-manifest.json", isDirectory: false)
     }
 
     /// 索引库固定写在本机应用目录，而不是图库所在磁盘：
     /// 系统图库常在外置盘上，边读几十 GB 的 Photos.sqlite 边把索引写回同一块盘，
     /// 会退化成随机读写，构建和翻页都会慢到不可用。
-    public static var systemIndexCacheDir: URL {
+    package static var systemIndexCacheDir: URL {
         applicationRoot.appendingPathComponent("resources/system-index", isDirectory: true)
     }
 
     /// 系统图库的只读索引库：百万级图库不再把整库装进内存，网格与计数按窗口查询它。
     /// 按系统图库路径哈希命名，同一 App 图库可缓存多个系统图库的索引。
-    public static func systemIndexFile(for libraryURL: URL) -> URL? {
+    package static func systemIndexFile(for libraryURL: URL) -> URL? {
         guard root != applicationRoot || containerLibraryURL != nil else { return nil }
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in libraryURL.standardizedFileURL.path.utf8 {
@@ -184,17 +184,17 @@ public enum LibraryPaths {
             .appendingPathComponent("SystemIndex-\(String(hash, radix: 16)).sqlite")
     }
     /// 应用自己的元数据库文件名：放在图库内 `Luma/database/` 下，与 Apple 的结构分开。
-    public static let metadataFileName = "Luma.sqlite"
-    public static var metadataFile: URL { databaseDir.appendingPathComponent(metadataFileName) }
+    package static let metadataFileName = "Luma.sqlite"
+    package static var metadataFile: URL { databaseDir.appendingPathComponent(metadataFileName) }
 
     /// 指定图库的元数据库路径（用于「全部图库」等跨库只读统计）。
-    public static func metadataFile(in library: URL) -> URL {
+    package static func metadataFile(in library: URL) -> URL {
         library.appendingPathComponent("Luma/database", isDirectory: true)
             .appendingPathComponent(metadataFileName)
     }
 
     /// 跨库只读时优先用新布局；旧版图库还没被打开过时退回旧位置与旧文件名。
-    public static func existingMetadataFile(in library: URL) -> URL? {
+    package static func existingMetadataFile(in library: URL) -> URL? {
         let fm = FileManager.default
         let candidates = [
             metadataFile(in: library),
@@ -208,11 +208,11 @@ public enum LibraryPaths {
         return legacyDatabaseFile(in: library.appendingPathComponent("database", isDirectory: true))
     }
 
-    public static var libraryFile: URL { applicationRoot.appendingPathComponent("Library.json") }
+    package static var libraryFile: URL { applicationRoot.appendingPathComponent("Library.json") }
 
     /// 拾光写进某个图库容器的旁挂数据：叠加元数据库、索引 / 快照缓存、缩略图与转码缓存。
     /// 全部位于图库内 `Luma/` 下，刻意不包含 Apple 自己的 `Photos.sqlite`、`originals`、`resources/derivatives`、`resources/renders`。
-    public static func sidecarArtifacts(in library: URL) -> [URL] {
+    package static func sidecarArtifacts(in library: URL) -> [URL] {
         let overlay = library.appendingPathComponent("Luma", isDirectory: true)
         let database = overlay.appendingPathComponent("database", isDirectory: true)
         let resources = overlay.appendingPathComponent("resources", isDirectory: true)
@@ -243,7 +243,7 @@ public enum LibraryPaths {
     private static let legacySidecarSubdirectory = "com.lijialong.photosclone"
 
     /// 旧版把数据放在 `private/com.lijialong.photosclone/`，升级后上移到包内 `Luma/`。
-    public static func legacySidecarPath(for library: URL) -> URL {
+    package static func legacySidecarPath(for library: URL) -> URL {
         library.appendingPathComponent("private", isDirectory: true)
             .appendingPathComponent(legacySidecarSubdirectory, isDirectory: true)
     }
@@ -260,7 +260,7 @@ public enum LibraryPaths {
     }
 
     /// 旧版本的应用元数据库文件名不同：把主文件与 WAL / SHM 一起改名为当前文件名（幂等，只做一次）。
-    public static func migrateMetadataFileIfNeeded(in library: URL) {
+    package static func migrateMetadataFileIfNeeded(in library: URL) {
         let fm = FileManager.default
         let directory = library.appendingPathComponent("database", isDirectory: true)
         guard fm.fileExists(atPath: directory.path),
@@ -276,7 +276,7 @@ public enum LibraryPaths {
 
     /// 旧版把旁挂数据直接摊在图库根目录；新布局统一收进图库内 `Luma/`。
     /// 幂等：目标已存在时只做合并，已迁移过的图库不会被重复搬动。
-    public static func migrateOverlayLayoutIfNeeded(at library: URL) {
+    package static func migrateOverlayLayoutIfNeeded(at library: URL) {
         // 没有图库时 root 就是应用支持目录，旧数据由 migrateLegacyLayoutIfNeeded 处理。
         guard library.standardizedFileURL != applicationRoot.standardizedFileURL else { return }
         let fm = FileManager.default
@@ -345,7 +345,7 @@ public enum LibraryPaths {
     }
 
     /// 更早版本的数据上移到图库内 `Luma/`（幂等，只移动一次）。
-    public static func migrateSidecarToLibraryRootIfNeeded(at library: URL) {
+    package static func migrateSidecarToLibraryRootIfNeeded(at library: URL) {
         let fm = FileManager.default
         let legacy = legacySidecarPath(for: library)
         guard fm.fileExists(atPath: legacy.path) else { return }
@@ -429,14 +429,14 @@ public enum LibraryPaths {
         }
     }
 
-    public static func isOfficialLibrary(_ url: URL) -> Bool {
+    package static func isOfficialLibrary(_ url: URL) -> Bool {
         isNativeLibrary(url)
     }
 
     /// 由官方「照片」创建的原生图库：带 Apple 的 Photos.sqlite。
     /// 结论不会在运行期变化，缓存起来：外置盘上一次 lstat 可能阻塞几秒，
     /// 而 SwiftUI body / 查询会高频访问这里，不能每次都碰磁盘。
-    public static func isNativeLibrary(_ url: URL) -> Bool {
+    package static func isNativeLibrary(_ url: URL) -> Bool {
         guard url.pathExtension.lowercased() == "photoslibrary" else { return false }
         let key = url.standardizedFileURL.path
         nativeLock.lock()
@@ -458,7 +458,7 @@ public enum LibraryPaths {
 
     /// 外置盘插拔后，之前缓存的「不是官方库」结论必须作废：
     /// 盘没插时判断过一次，插回来不能还按 App 图库对待。
-    public static func invalidateNativeCache() {
+    package static func invalidateNativeCache() {
         nativeLock.lock()
         nativeCache.removeAll()
         nativeLock.unlock()
@@ -467,7 +467,7 @@ public enum LibraryPaths {
     private static var volumeObservers: [NSObjectProtocol] = []
 
     /// 监听卷挂载 / 卸载，清掉官方库判断的缓存。幂等，重复调用不会重复注册。
-    public static func observeVolumeChanges() {
+    package static func observeVolumeChanges() {
         guard volumeObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
@@ -478,12 +478,12 @@ public enum LibraryPaths {
     }
 
     /// 路径是否存在：视图只读判断统一走这里，不直接调用 FileManager。
-    public static func exists(atPath path: String) -> Bool {
+    package static func exists(atPath path: String) -> Bool {
         FileManager.default.fileExists(atPath: path)
     }
 
     /// 任何 .photoslibrary 包（原生库或本 App 创建的库）都可作为容器。
-    public static func isLibraryContainer(_ url: URL) -> Bool {
+    package static func isLibraryContainer(_ url: URL) -> Bool {
         guard url.pathExtension.lowercased() == "photoslibrary" else { return false }
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
@@ -491,7 +491,7 @@ public enum LibraryPaths {
     }
 
     /// 创建与官方同款的 .photoslibrary 包结构，并建立旁挂元数据目录。
-    public static func createLibrary(at library: URL) -> Bool {
+    package static func createLibrary(at library: URL) -> Bool {
         guard library.pathExtension.lowercased() == "photoslibrary" else { return false }
         let fm = FileManager.default
         if fm.fileExists(atPath: library.path) {
@@ -504,7 +504,7 @@ public enum LibraryPaths {
 
     /// 读取启动配置：如果用户已经选择了 .photoslibrary，本地媒体与元数据都放进库内旁挂目录。
     /// 没有图库时不再在固定位置自动建库，只保留旧的本地库数据等待用户迁入新图库。
-    public static func configure() {
+    package static func configure() {
         let stored = readBootstrap()
         var library: URL?
         // 设过默认图库时优先进入它；目录被移走则照旧用上次打开的图库。
@@ -543,7 +543,7 @@ public enum LibraryPaths {
 
     /// 断开当前图库：释放容器路径并清掉启动引导，下次启动直接进入
     /// 「创建或打开图库」界面。磁盘上的图库文件不受影响。
-    public static func detach() {
+    package static func detach() {
         containerLibraryURL = nil
         root = applicationRoot
         invalidateNativeCache()
@@ -551,15 +551,15 @@ public enum LibraryPaths {
     }
 
     /// 清掉「上次打开的图库」引导文件。
-    public static func clearBootstrap() {
+    package static func clearBootstrap() {
         try? FileManager.default.removeItem(at: bootstrapFile)
     }
 
     /// 尚未选择任何图库，启动后必须先新建或打开一个图库。
-    public static var requiresLibrarySetup: Bool { containerLibraryURL == nil }
+    package static var requiresLibrarySetup: Bool { containerLibraryURL == nil }
 
     /// Application Support 里是否还残留旧版（没有图库包）的本地库数据。
-    public static var hasLocalLibraryData: Bool {
+    package static var hasLocalLibraryData: Bool {
         let fm = FileManager.default
         let candidates = [
             applicationRoot.appendingPathComponent("originals").path,
@@ -575,7 +575,7 @@ public enum LibraryPaths {
         return false
     }
 
-    public static func prepare() {
+    package static func prepare() {
         for dir in [root, overlayRoot, databaseDir, originals, derivatives, edited, transcodes, backups,
                     cloudThumbs, systemThumbs, systemLibraryCacheDir, catalogDir, tvDir,
                     tvLogosDir, tvPreviewsDir, sourceSnapshotsDir] {
@@ -584,7 +584,7 @@ public enum LibraryPaths {
         migrateOverlayLayoutIfNeeded(at: root)
     }
 
-    public static func thumbnailURL(for photo: PhotoItem) -> URL {
+    package static func thumbnailURL(for photo: PhotoItem) -> URL {
         if photo.isSystem {
             if let derivative = photo.systemThumbnailPath,
                FileManager.default.fileExists(atPath: derivative) {
@@ -598,7 +598,7 @@ public enum LibraryPaths {
     }
 
     /// 网格快速层缩略图（约 192px）：独立小文件，滚动时秒开，缺失时按需生成。
-    public static func quickThumbnailURL(for photo: PhotoItem) -> URL {
+    package static func quickThumbnailURL(for photo: PhotoItem) -> URL {
         if photo.isSystem {
             return systemThumbs.appendingPathComponent(photo.id.uuidString + "_q.jpg", isDirectory: false)
         }
@@ -607,7 +607,7 @@ public enum LibraryPaths {
             .appendingPathComponent(photo.id.uuidString + "_q.jpg", isDirectory: false)
     }
 
-    public static func sourceURL(for photo: PhotoItem) -> URL {
+    package static func sourceURL(for photo: PhotoItem) -> URL {
         if let externalPath = photo.externalPath, !externalPath.isEmpty {
             return URL(fileURLWithPath: externalPath)
         }
@@ -622,13 +622,13 @@ public enum LibraryPaths {
 
     /// 注意：单参数的 `appendingPathComponent` 会为了判断目录去 lstat，
     /// 图库常在外置盘上，这条路径每次打开预览都会被调用，必须显式给 isDirectory。
-    public static func originalURL(for photo: PhotoItem) -> URL {
+    package static func originalURL(for photo: PhotoItem) -> URL {
         originals
             .appendingPathComponent(shard(for: photo.id), isDirectory: true)
             .appendingPathComponent(photo.filename, isDirectory: false)
     }
 
-    public static func exportURL(for photo: PhotoItem) -> URL {
+    package static func exportURL(for photo: PhotoItem) -> URL {
         if photo.isSystem, let path = photo.systemOriginalPath {
             return URL(fileURLWithPath: path)
         }
@@ -639,7 +639,7 @@ public enum LibraryPaths {
     }
 
     /// 实况照片的配对视频路径（本地库或系统图库）。
-    public static func livePhotoURL(for photo: PhotoItem) -> URL? {
+    package static func livePhotoURL(for photo: PhotoItem) -> URL? {
         if let path = photo.livePhotoVideoPath, !path.isEmpty {
             return URL(fileURLWithPath: path)
         }
@@ -649,18 +649,18 @@ public enum LibraryPaths {
             .appendingPathComponent(filename, isDirectory: false)
     }
 
-    public static func shard(for id: UUID) -> String {
+    package static func shard(for id: UUID) -> String {
         String(id.uuidString.prefix(1))
     }
 
-    public static func shard(forFilename filename: String) -> String {
+    package static func shard(forFilename filename: String) -> String {
         String(filename.prefix(1))
     }
 
     /// 切换容器。migratingLocalData 为 true 时把当前本地库迁入新图库的旁挂目录；
     /// 新建空图库时传 false，避免把旧库内容带进新库。
     @discardableResult
-    public static func switchContainer(to library: URL, migratingLocalData: Bool = true) -> Bool {
+    package static func switchContainer(to library: URL, migratingLocalData: Bool = true) -> Bool {
         guard isLibraryContainer(library) else { return false }
         prepareLibraryStructure(at: library)
         migrateSidecarToLibraryRootIfNeeded(at: library)
@@ -696,7 +696,7 @@ public enum LibraryPaths {
     /// 异步版切换：迁移旧图库内容（逐个文件硬链接 / 复制）放到后台线程，
     /// 几十 GB 图库也不会把主线程卡住。其余步骤与同步版一致。
     @discardableResult
-    public static func switchContainerAsync(to library: URL, migratingLocalData: Bool = false) async -> Bool {
+    package static func switchContainerAsync(to library: URL, migratingLocalData: Bool = false) async -> Bool {
         guard isLibraryContainer(library) else { return false }
         prepareLibraryStructure(at: library)
         migrateSidecarToLibraryRootIfNeeded(at: library)
@@ -736,7 +736,7 @@ public enum LibraryPaths {
     }
 
     /// 确保图库内具备 `Luma/` 旁挂目录；Apple 自己的目录一律不动。
-    public static func prepareLibraryStructure(at library: URL) {
+    package static func prepareLibraryStructure(at library: URL) {
         migrateOverlayLayoutIfNeeded(at: library)
         let overlay = overlayDir(in: library)
         let directories = [
@@ -761,7 +761,7 @@ public enum LibraryPaths {
         }
     }
 
-    public static func openContainerInPhotos() {
+    package static func openContainerInPhotos() {
         guard let containerLibraryURL else { return }
         NSWorkspace.shared.open(containerLibraryURL)
     }

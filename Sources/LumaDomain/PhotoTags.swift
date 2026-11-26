@@ -1,14 +1,14 @@
 import Foundation
 
 /// 一个端侧识别标签：中文标准名、去重分组、检索别名与命中阈值。
-public struct PhotoTagDefinition: Decodable {
-    public let id: String
-    public let title: String
-    public let group: String
-    public let prompts: [String]
-    public let aliases: [String]
-    public let threshold: Double
-    public init(
+package struct PhotoTagDefinition: Decodable {
+    package let id: String
+    package let title: String
+    package let group: String
+    package let prompts: [String]
+    package let aliases: [String]
+    package let threshold: Double
+    package init(
         id: String,
         title: String,
         group: String,
@@ -27,15 +27,15 @@ public struct PhotoTagDefinition: Decodable {
 
 /// 端侧标签目录（`Resources/Models/SigLIP2/tags.json`）。
 /// 标准名唯一，分组用于互斥去重：同一组只保留得分最高的若干个，避免「猫 / 狗 / 动物」叠在一起。
-public final class PhotoTagCatalog: Decodable {
-    public let version: Int
-    public let embeddingDim: Int
-    public let defaultThreshold: Double
-    public let groupLimits: [String: Int]
-    public let tags: [PhotoTagDefinition]
+package final class PhotoTagCatalog: Decodable {
+    package let version: Int
+    package let embeddingDim: Int
+    package let defaultThreshold: Double
+    package let groupLimits: [String: Int]
+    package let tags: [PhotoTagDefinition]
 
     /// 分析结果里的版本标记：旧分析结果没有它，会按需重扫。
-    public static let sentinel = "siglip2"
+    package static let sentinel = "siglip2"
 
     private let orderIndex: [String: Int]
     private let aliasEntries: [(alias: String, title: String)]
@@ -45,10 +45,10 @@ public final class PhotoTagCatalog: Decodable {
     private static var loaded = false
 
     /// 模型资源定位由 App 注入：Domain 不直接依赖模型安装目录。
-    public static var resourceResolver: ((String) -> URL?)?
+    package static var resourceResolver: ((String) -> URL?)?
 
     /// 词表随模型一起安装，所以不能只做一次性静态缓存：模型后装也要能读到。
-    public static var shared: PhotoTagCatalog? {
+    package static var shared: PhotoTagCatalog? {
         sharedLock.lock()
         defer { sharedLock.unlock() }
         if !loaded {
@@ -59,7 +59,7 @@ public final class PhotoTagCatalog: Decodable {
     }
 
     /// 模型重新安装后调用，下一次读取会重新加载 tags.json。
-    public static func invalidateShared() {
+    package static func invalidateShared() {
         sharedLock.lock()
         defer { sharedLock.unlock() }
         cached = nil
@@ -70,7 +70,7 @@ public final class PhotoTagCatalog: Decodable {
         case version, embeddingDim, defaultThreshold, groupLimits, tags
     }
 
-    public required init(from decoder: Decoder) throws {
+    package required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         embeddingDim = try container.decodeIfPresent(Int.self, forKey: .embeddingDim) ?? 768
@@ -99,14 +99,14 @@ public final class PhotoTagCatalog: Decodable {
     }
 
     /// 按目录顺序整理已命中的标签，过滤掉版本标记与未知标签。
-    public func canonicalTitles(from labels: Set<String>) -> [String] {
+    package func canonicalTitles(from labels: Set<String>) -> [String] {
         labels
             .filter { orderIndex[$0] != nil }
             .sorted { (orderIndex[$0] ?? 0) < (orderIndex[$1] ?? 0) }
     }
 
     /// 检索词命中：先精确匹配别名，再允许「查询包含别名 / 别名包含查询」。
-    public func searchTitles(for token: String) -> [String] {
+    package func searchTitles(for token: String) -> [String] {
         let query = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
         var seen: Set<String> = []
@@ -131,7 +131,7 @@ public final class PhotoTagCatalog: Decodable {
         return hits
     }
 
-    public func definition(for title: String) -> PhotoTagDefinition? {
+    package func definition(for title: String) -> PhotoTagDefinition? {
         guard let index = orderIndex[title] else { return nil }
         return tags[index]
     }

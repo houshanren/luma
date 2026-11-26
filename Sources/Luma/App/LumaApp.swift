@@ -6,6 +6,8 @@ struct LumaApp: App {
     @NSApplicationDelegateAdaptor(LumaAppDelegate.self) private var appDelegate
     @StateObject private var store: LibraryStore
     @StateObject private var settings = AppSettings.shared
+    /// 照片网格组件（LumaUI）的宿主：组件不依赖 Store / 设置，由这里统一桥接。
+    @StateObject private var gridBridge: LibraryPhotoGridBridge
     /// 侧边栏可见性：菜单与工具栏按钮共用，收起后仍能重新打开。
     @StateObject private var sidebarChrome = SidebarChrome()
     /// 多图库聚合读数：图库总览页与窗口标题共用同一份数据。
@@ -23,10 +25,26 @@ struct LumaApp: App {
         PersistenceLog.sink = { Diagnostics.record($0) }
         // 领域层的模型资源定位：Domain 不依赖模型安装目录，由组合根注入解析器。
         PhotoTagCatalog.resourceResolver = { LumaModelResources.file($0) }
+        // 回忆影片的取图出口：功能 target 不依赖 ImageLoader，由组合根注入。
+        MemoryFrameLoader.load = { photo, maxPixel in
+            ImageLoader.displayImage(for: photo, maxPixel: maxPixel)
+        }
         // 组合根注入：Store 只依赖交互协议，AppKit 文件面板 / 弹窗实现留在视图层。
         let store = LibraryStore()
         store.userInteraction = AppKitLibraryUserInteraction()
+        // 缩略图组件（LumaUI）不依赖 Store：把原取图管线原样注入，缓存 / 解码 / 取消逻辑不变。
+        ThumbnailLoaderRegistry.load = { [weak store] photo, purpose, onQuick in
+            guard let store else { return nil }
+            return await PhotoThumbnailLoader.load(photo: photo,
+                                                  purpose: purpose,
+                                                  store: store,
+                                                  onQuick: onQuick)
+        }
         _store = StateObject(wrappedValue: store)
+        // 网格组件只认 PhotoGridHost：桥接一次，整棵视图树共用同一份。
+        _gridBridge = StateObject(wrappedValue: LibraryPhotoGridBridge(store: store,
+                                                                      settings: AppSettings.shared,
+                                                                      selection: store.selectionModel))
     }
 
     private var favoriteCommandTitle: String {
@@ -74,6 +92,7 @@ struct LumaApp: App {
             RootView()
                 .environmentObject(store)
                 .environmentObject(settings)
+                .environmentObject(gridBridge.host)
                 .environmentObject(store.selectionModel)
                 .environmentObject(store.viewerModel)
                 .environmentObject(store.cloudModel)

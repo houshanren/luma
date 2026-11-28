@@ -44,6 +44,11 @@ struct PhotoContextMenu: View {
     private var menuItems: some View {
         // 菜单文案按整选区状态显示，多选时不会出现「收藏」却实际批量取消的错觉。
         let flags = store.selectionCommonFlags(actionIDs)
+        Button("问 AI…") {
+            selectTargets()
+            store.askAI("帮我看看选中的 \(actionIDs.count) 项：")
+        }
+        Divider()
         if photo.isSystem {
             Button("打开") {
                 store.openViewer(photo.id)

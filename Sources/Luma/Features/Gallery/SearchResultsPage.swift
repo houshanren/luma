@@ -103,7 +103,7 @@ struct SearchResultsPage<PhotoContent: View>: View {
 
     private var hero: some View {
         HStack(alignment: .bottom, spacing: 18) {
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
                     Image(systemName: "sparkle.magnifyingglass")
                         .font(.system(size: 10, weight: .semibold))
@@ -112,19 +112,16 @@ struct SearchResultsPage<PhotoContent: View>: View {
                         .font(.system(size: 9.5, weight: .bold))
                         .tracking(2.4)
                         .foregroundStyle(.secondary)
-                    Text(center.scopes.map(\.title).joined(separator: " · "))
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
                 }
 
                 Text("「\(trimmedQuery)」")
-                    .font(.system(size: 29, weight: .bold, design: .rounded))
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
                     .lineLimit(1)
                     .truncationMode(.middle)
 
                 HStack(spacing: 6) {
                     Text("共 \(center.totalCount.formatted()) 项")
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     if center.isSearching || catalog.isGlobalSearching {
                         HStack(spacing: 4) {
@@ -161,8 +158,8 @@ struct SearchResultsPage<PhotoContent: View>: View {
             }
         }
         .padding(.horizontal, 26)
-        .padding(.top, 20)
-        .padding(.bottom, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .background {
             ZStack(alignment: .topTrailing) {
                 LinearGradient(colors: [Color.accentColor.opacity(0.10), .clear],
@@ -269,6 +266,7 @@ struct SearchResultsPage<PhotoContent: View>: View {
         case .channel, .program: return .iptv
         case .catalogItem(let sourceID, _): return .catalogSource(sourceID)
         case .networkCinemaItem: return .networkCinema
+        case .atlasPerson, .atlasWork: return .atlas
         }
     }
 

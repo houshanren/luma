@@ -9,12 +9,26 @@ actor HuangguoAddressResolver {
     static let shared = HuangguoAddressResolver()
 
     /// 官方地址发布页：pages.dev 优先，GitHub Pages 作为备份。
-    private static let discoveryPages: [URL] = [
+    private static let defaultDiscoveryPages: [URL] = [
         URL(string: "https://huangguoai.pages.dev/")!,
         URL(string: "https://huangguo88.pages.dev/")!,
         URL(string: "https://huang-guo.pages.dev/")!,
         URL(string: "https://huangguotv.github.io/")!
     ]
+
+    /// 源里配置的「永久地址 / 发布页」排在最前，其次才是内置的几条发布页。
+    /// 显式留空表示关闭自动找地址；为 nil 时使用内置默认。
+    private static func discoveryPages(for source: CatalogSource) -> [URL] {
+        var pages: [URL] = []
+        if let raw = source.addressPageURL {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return [] }
+            if let url = URL(string: trimmed) { pages.append(url) }
+        }
+        pages.append(contentsOf: defaultDiscoveryPages)
+        var seen = Set<String>()
+        return pages.filter { seen.insert($0.absoluteString).inserted }
+    }
 
     private static let storageKey = "catalog.huangguo.resolvedBases"
 
@@ -137,7 +151,7 @@ actor HuangguoAddressResolver {
     private static func discover(source: CatalogSource, excluding host: String?) async -> URL? {
         var pages: [(page: URL, html: String)] = []
         await withTaskGroup(of: (URL, String?).self) { group in
-            for page in discoveryPages {
+            for page in discoveryPages(for: source) {
                 group.addTask {
                     (page, await text(page, source: source, timeout: 4))
                 }
@@ -147,6 +161,13 @@ actor HuangguoAddressResolver {
             }
         }
         guard !Task.isCancelled, !pages.isEmpty else { return nil }
+
+        // 配置的发布页本身可能就是站点（永久入口）：直接当可用地址。
+        for (page, html) in pages
+        where html.count > 5_000
+            && (html.contains("hg-drama-card") || html.contains("data-nav-key=\"home\"")) {
+            return page
+        }
 
         // 发布页把域名写在 publish.js 里，脚本也要读。
         var texts = pages.map(\.html)

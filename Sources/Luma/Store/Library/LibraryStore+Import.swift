@@ -73,12 +73,19 @@ extension LibraryStore {
         }
     }
 
-    func runImport(entries: [(url: URL, folders: [String])], options: ImportOptions) {
+    func runImport(entries: [(url: URL, folders: [String])], options: ImportOptions,
+                   existingJobID: UUID? = nil,
+                   restoreSidebarItem: SidebarItem? = nil) {
         guard !entries.isEmpty else { return }
         // 官方「照片」图库作为当前图库时，导入必须走 PhotoKit 新增资产：
         // 不能复制进库包里的 originals，也不能改 Photos.sqlite。
         if isNativeContainer {
-            runSystemLibraryImport(entries: entries, options: options)
+            if let existingJobID {
+                // 系统图库导入自己会登记任务：把外层那条任务收尾，避免一直转圈。
+                finishSourceJob(existingJobID, message: "已转交系统图库导入")
+            }
+            runSystemLibraryImport(entries: entries, options: options,
+                                   restoreSidebarItem: restoreSidebarItem)
             return
         }
         // 磁盘空间预检：先把明显放不下的导入挡在复制之前。
@@ -89,6 +96,9 @@ extension LibraryStore {
            let capacity = values.volumeAvailableCapacityForImportantUsage,
            totalBytes > capacity {
             showToast("磁盘空间不足：需要 \(formatFileSize(totalBytes))，可用 \(formatFileSize(capacity))")
+            if let existingJobID {
+                failSourceJob(existingJobID, message: "磁盘空间不足")
+            }
             return
         }
 
@@ -97,15 +107,22 @@ extension LibraryStore {
                                         currentName: entries[0].url.lastPathComponent)
         isImporting = true
         importCancelled = false
-        let jobID = beginSourceJob(
-            SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
-                .standardizedFileURL.path),
-                      kind: .ingest,
-                      title: "导入媒体"),
-            cancel: { [weak self] in
-                Task { @MainActor in self?.cancelImport() }
-            }
-        )
+        let jobID: UUID
+        if let existingJobID {
+            // 同一批文件已经登记过任务（例如图集下载后直接入库）：
+            // 沿用那条任务，下载与入库的进度、结束提示都落在同一个条目上。
+            jobID = existingJobID
+        } else {
+            jobID = beginSourceJob(
+                SourceJob(sourceID: .library((LibraryPaths.containerLibraryURL ?? LibraryPaths.root)
+                    .standardizedFileURL.path),
+                          kind: .ingest,
+                          title: "导入媒体"),
+                cancel: { [weak self] in
+                    Task { @MainActor in self?.cancelImport() }
+                }
+            )
+        }
         let albumsBefore = albums.count
         let batchID = UUID()
         // 拷贝、EXIF 解析与缩略图互不依赖，按 CPU 核数并发执行，避免逐张串行等待。
@@ -279,6 +296,12 @@ extension LibraryStore {
             // 导入完成后主动补一次自动刮削，影院才能直接按片名把整张盘认成电影。
             if imported > 0, AppSettings.shared.cinemaAutoScrape {
                 self.startCinemaScrape(for: .local)
+            }
+
+            // 图集站里保存套图属于后台动作：结束后把用户送回原来的图集页面，
+            // 不要因为入库完成就把界面切到图库。
+            if let restoreSidebarItem, self.sidebarItem != restoreSidebarItem {
+                self.navigate(to: restoreSidebarItem)
             }
         })
     }

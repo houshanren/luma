@@ -301,7 +301,9 @@ private struct PlaceInsightSummaryView: View {
                       alignment: .leading,
                       spacing: spacing) {
                 if !insight.spots.isEmpty { spotsCard }
+                if !insight.activities.isEmpty { activitiesCard }
                 periodsCard
+                if !insight.trajectoryDays.isEmpty { trajectoryCard }
                 if !insight.companions.isEmpty { companionsCard }
                 miniMapCard
                 if !insight.palettePhotos.isEmpty { paletteCard }
@@ -468,6 +470,93 @@ private struct PlaceInsightSummaryView: View {
                 }
             }
         }
+    }
+
+    private var activitiesCard: some View {
+        InsightCard(title: "这里的活动", icon: "sparkles", subtitle: "视觉标签 × 同框人物") {
+            let peak = max(1, insight.activities.first?.count ?? 1)
+            VStack(spacing: 12) {
+                ForEach(insight.activities) { activity in
+                    HStack(spacing: 10) {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 6))
+                            .foregroundStyle(Color.accentColor.opacity(0.7))
+                            .frame(width: 14)
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 8) {
+                                Text(activity.title)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .lineLimit(1)
+                                Spacer(minLength: 6)
+                                Text("\(activity.count) 张")
+                                    .font(.system(size: 10))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.primary.opacity(0.07))
+                                    Capsule()
+                                        .fill(LinearGradient(colors: [Color.teal.opacity(0.9),
+                                                                      Color.accentColor.opacity(0.55)],
+                                                             startPoint: .leading,
+                                                             endPoint: .trailing))
+                                        .frame(width: max(4, geo.size.width * CGFloat(activity.count) / CGFloat(peak)))
+                                }
+                            }
+                            .frame(height: 4)
+                            if !activity.companions.isEmpty {
+                                Text("常与 " + activity.companions.map(\.name).joined(separator: "、") + " 同框")
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var trajectoryCard: some View {
+        InsightCard(title: "轨迹片段", icon: "calendar.day.timeline.left", subtitle: "同一天 · 同一活动") {
+            VStack(spacing: 12) {
+                ForEach(insight.trajectoryDays.prefix(5)) { day in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(DateText.monthDayFormatter.string(from: day.date))
+                            .font(.system(size: 10.5, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 44, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(day.activity)
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer(minLength: 6)
+                                Text("\(day.photoCount) 张")
+                                    .font(.system(size: 10))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            let detail = trajectoryDetail(day)
+                            if !detail.isEmpty {
+                                Text(detail)
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func trajectoryDetail(_ day: TrajectoryFusion.Day) -> String {
+        var parts: [String] = []
+        if !day.place.isEmpty { parts.append(day.place) }
+        if !day.companions.isEmpty { parts.append("与 " + day.companions.joined(separator: "、")) }
+        return parts.joined(separator: " · ")
     }
 
     private var periodsCard: some View {

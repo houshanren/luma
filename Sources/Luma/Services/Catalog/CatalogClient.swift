@@ -28,6 +28,12 @@ protocol CatalogProvider {
     func tags(source: CatalogSource) async throws -> [CatalogCategory]
     /// 当前一级分类下的二级标签：有些站点的标签是挂在主分类下的，不能全局混在一起。
     func tags(source: CatalogSource, category: CatalogCategory?) async throws -> [CatalogCategory]
+    /// 带分组的标签（分类 / 模特 / 发布商等）：界面按组展示，点一项即按该标签筛选。
+    func tagGroups(source: CatalogSource, category: CatalogCategory?) async throws -> [CatalogTagGroup]
+    /// 「全部分类」标签墙：标签非常多时由适配器内部翻页取全量，界面端再做搜索与分页。
+    func allTags(source: CatalogSource) async throws -> [CatalogTag]
+    /// 博文归档：一次取回按日期排好的全部条目，界面端做月份筛选与标题搜索。
+    func archiveEntries(source: CatalogSource) async throws -> [CatalogArchiveEntry]
     /// 一级分类下的二级频道：站点把二级挂在分类页里时按需拉取。
     func channels(source: CatalogSource, category: CatalogCategory) async throws -> [CatalogCategory]
     /// 站点真正支持的排序。默认只有「最新更新」，界面据此隐藏点不动的选项。
@@ -37,12 +43,31 @@ protocol CatalogProvider {
 extension CatalogProvider {
     func tags(source: CatalogSource) async throws -> [CatalogCategory] { [] }
 
+    /// 默认站点没有「全部分类」标签墙。
+    func allTags(source: CatalogSource) async throws -> [CatalogTag] { [] }
+
+    /// 默认站点没有博文归档。
+    func archiveEntries(source: CatalogSource) async throws -> [CatalogArchiveEntry] { [] }
+
     /// 默认站点只有自己的默认顺序，没有可切换的服务端排序。
     var supportedSorts: [CatalogSort] { [.latest] }
 
     /// 默认忽略分类：没有分层标签的站点仍用全局标签。
     func tags(source: CatalogSource, category: CatalogCategory?) async throws -> [CatalogCategory] {
         try await tags(source: source)
+    }
+
+    /// 默认把已有标签包成一组，老适配器无需改动就能用新的分组面板。
+    func tagGroups(source: CatalogSource,
+                   category: CatalogCategory?) async throws -> [CatalogTagGroup] {
+        let live = try await tags(source: source, category: category)
+        let flat = live.flatMap { tag in
+            if let children = tag.children, !children.isEmpty { return children }
+            return [tag]
+        }
+        guard !flat.isEmpty else { return [] }
+        return [CatalogTagGroup(id: "tags", title: "标签",
+                                items: flat.map { CatalogTag(id: $0.id, title: $0.title) })]
     }
 
     /// 默认二级已经随分类一起返回。
@@ -64,6 +89,15 @@ enum CatalogProviders {
         case .fofo: return FoFoCatalogProvider.defaultCategories
         case .ikanpp: return IKanPPCatalogProvider.defaultCategories
         case .iyf: return IYFCatalogProvider.defaultCategories
+        case .jliji: return JlijiCatalogProvider.defaultCategories
+        case .xxss: return XxssCatalogProvider.defaultCategories
+        case .aimeir: return AimeirCatalogProvider.defaultCategories
+        case .ninetyOneTutu: return NinetyOneTutuCatalogProvider.defaultCategories
+        case .wuso: return WusoCatalogProvider.defaultCategories
+        case .tuzac: return TuzacCatalogProvider.defaultCategories
+        case .kkc: return KkcCatalogProvider.defaultCategories
+        case .knit: return KnitCatalogProvider.defaultCategories
+        case .nshens: return NshensCatalogProvider.defaultCategories
         default: return nil
         }
     }
@@ -73,6 +107,36 @@ enum CatalogProviders {
     static func enrich(_ source: CatalogSource) -> CatalogSource {
         guard let canonical = canonicalCategories(for: source.kind) else { return source }
         var result = source
+        // 女神网从「平铺机构列表」改成「一级模块 + 二级目录」：旧源整体换成新的模块骨架，
+        // 否则频道页会同时出现 50 多个旧的一级机构和新模块。二级目录在打开时实时补齐。
+        if source.kind == .nshens {
+            result.categories = keepingChildren(canonical, from: result.categories)
+            return result
+        }
+        // 图宅的分类是固定导航（最新 / 女神 / … / 全部分类 / 精选）：按站点顺序整体重建，
+        // 避免旧源把「精选」排在新增的几个分类前面。
+        if source.kind == .tuzac {
+            result.categories = keepingChildren(canonical, from: result.categories)
+            return result
+        }
+        // 91图图从「R18 / R17 / R16」的分级导航改成「标签 / 尺度 / 归档」：
+        // 旧源里的三个分级已经没有对应页面，整体换成新的入口。
+        if source.kind == .ninetyOneTutu {
+            result.categories = keepingChildren(canonical, from: result.categories)
+            return result
+        }
+        // 爱美图集补上「首页」与「热门模特」两个新入口：整体重建，
+        // 避免旧源保留的 3 个分类顺序与新导航不一致。
+        if source.kind == .aimeir {
+            result.categories = keepingChildren(canonical, from: result.categories)
+            return result
+        }
+        // JLiji 从「平铺的 8 个分类」改成「分类 / 模特 / 发布商」三个一级：
+        // 旧源里的分类 id（`category/taotu`）已经没有对应的一级位置，整体替换。
+        if source.kind == .jliji {
+            result.categories = keepingChildren(canonical, from: result.categories)
+            return result
+        }
         for fresh in canonical {
             if let index = result.categories.firstIndex(where: { $0.id == fresh.id }) {
                 let saved = result.categories[index]
@@ -84,6 +148,20 @@ enum CatalogProviders {
             }
         }
         return result
+    }
+
+    /// 整体替换分类骨架时保留本地已缓存的二级：站点的二级（目录 / 模特 / 机构）
+    /// 是打开时实时补齐并写回源里的，重建骨架不能把它们丢掉。
+    private static func keepingChildren(_ canonical: [CatalogCategory],
+                                        from saved: [CatalogCategory]) -> [CatalogCategory] {
+        canonical.map { fresh in
+            guard fresh.children?.isEmpty ?? true,
+                  let old = saved.first(where: { $0.id == fresh.id }),
+                  let children = old.children, !children.isEmpty else { return fresh }
+            var updated = fresh
+            updated.children = children
+            return updated
+        }
     }
 
     static func provider(for kind: CatalogProviderKind) -> CatalogProvider? {
@@ -127,6 +205,26 @@ enum CatalogProviders {
             return IKanPPCatalogProvider()
         case .iyf:
             return IYFCatalogProvider()
+        case .jliji:
+            return JlijiCatalogProvider()
+        case .xxss:
+            return XxssCatalogProvider()
+        case .aimeir:
+            return AimeirCatalogProvider()
+        case .v2ph:
+            return V2PHCatalogProvider()
+        case .nshens:
+            return NshensCatalogProvider()
+        case .ninetyOneTutu:
+            return NinetyOneTutuCatalogProvider()
+        case .wuso:
+            return WusoCatalogProvider()
+        case .tuzac:
+            return TuzacCatalogProvider()
+        case .kkc:
+            return KkcCatalogProvider()
+        case .knit:
+            return KnitCatalogProvider()
         }
     }
 }
@@ -210,6 +308,19 @@ private struct CatalogMetadataProvider: CatalogProvider {
         try await base.tags(source: source, category: category)
     }
 
+    func tagGroups(source: CatalogSource,
+                   category: CatalogCategory?) async throws -> [CatalogTagGroup] {
+        try await base.tagGroups(source: source, category: category)
+    }
+
+    func allTags(source: CatalogSource) async throws -> [CatalogTag] {
+        try await base.allTags(source: source)
+    }
+
+    func archiveEntries(source: CatalogSource) async throws -> [CatalogArchiveEntry] {
+        try await base.archiveEntries(source: source)
+    }
+
     func channels(source: CatalogSource, category: CatalogCategory) async throws -> [CatalogCategory] {
         try await base.channels(source: source, category: category)
     }
@@ -287,33 +398,70 @@ enum CatalogHTTP {
         try await fetchPage(url: url, source: source, accepting: [200])
     }
 
+    /// 页面请求：命中 429 / 5xx 时退避重试。图集站会按 IP 限流，
+    /// 打开分类或连续翻页时偶发的 429 直接重试即可，不必让用户手动点「重试」。
+    static let pageRetryPolicy = HTTPRetryPolicy(maxRetries: 2, baseDelay: 0.8)
+
     /// 有些站点用非 200 状态码返回验证页（例如 492），此时也要把页面正文交给调用方处理。
     static func fetchPage(url: URL, source: CatalogSource,
                           accepting: Set<Int>) async throws -> String {
+        let route = CatalogAddressRouter.route(url, source: source)
+        do {
+            return try await fetchPageOnce(url: route.url, source: route.source,
+                                           accepting: accepting)
+        } catch {
+            // 站点主机连不上：去「永久地址 / 发布页」找当前镜像，再重试一次。
+            guard route.isSiteRequest,
+                  CatalogAddressRouter.isAddressFailure(error),
+                  let base = await CatalogAddressResolver.shared.refresh(source)
+            else { throw error }
+            let pointed = CatalogAddressRouter.pointed(source, base: base)
+            let retry = CatalogAddressRouter.route(url, source: source)
+            // refresh 已经把镜像写进缓存，这里按原始源重新路由一次；
+            // 若路由没改写（例如发布页本就是主站），再用 pointed 源补齐 Referer。
+            let final = retry.url == url
+                ? CatalogAddressRoute(url: url, source: pointed, isSiteRequest: true)
+                : retry
+            return try await fetchPageOnce(url: final.url, source: final.source,
+                                           accepting: accepting)
+        }
+    }
+
+    private static func fetchPageOnce(url: URL, source: CatalogSource,
+                                      accepting: Set<Int>) async throws -> String {
         let host = url.host ?? source.host
         let background = CatalogRequestScope.isBackground
         let pool = background ? backgroundGates : foregroundGates
         let gate = await pool.gate(for: host, limit: background ? 1 : 2)
         await gate.acquire()
         defer { Task { await gate.release() } }
-        let data = try await fetchData(url: url, headers: [
+        let data = try await fetchData(url: url, headers: pageHeaders(source),
+                                       accepting: accepting, retry: pageRetryPolicy)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// 页面请求头：UA / 语言 / Referer，命中登录态站点时再带上用户粘贴的 Cookie。
+    static func pageHeaders(_ source: CatalogSource) -> [String: String] {
+        var headers: [String: String] = [
             "User-Agent": source.userAgent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Referer": source.referer
-        ], accepting: accepting)
-        return String(decoding: data, as: UTF8.self)
+        ]
+        if let cookie = source.cookie, !cookie.isEmpty { headers["Cookie"] = cookie }
+        return headers
     }
 
     static func fetchData(url: URL, headers: [String: String],
                           timeout: TimeInterval = 20,
-                          accepting: Set<Int> = [200]) async throws -> Data {
+                          accepting: Set<Int> = [200],
+                          retry: HTTPRetryPolicy = .none) async throws -> Data {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
                                  timeoutInterval: timeout)
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        return try await perform(request, url: url, accepting: accepting)
+        return try await perform(request, url: url, accepting: accepting, retry: retry)
     }
 
     static func postJSON(url: URL, headers: [String: String], body: Data,
@@ -329,7 +477,8 @@ enum CatalogHTTP {
     }
 
     private static func perform(_ request: URLRequest, url: URL,
-                                accepting: Set<Int> = [200]) async throws -> Data {
+                                accepting: Set<Int> = [200],
+                                retry: HTTPRetryPolicy = .none) async throws -> Data {
         // 统一走 HTTPSourceTransport：UA / Referer / 自签证书 / 超时只在一处维护。
         let profile = RequestProfile(headers: RequestProfile.browser.headerFields,
                                     trustSelfSigned: CatalogTrust.isTrusted(url.host ?? ""))
@@ -342,7 +491,7 @@ enum CatalogHTTP {
                                      timeout: request.timeoutInterval > 0 ? request.timeoutInterval : 20,
                                      throwsOnHTTPError: false),
                 profile: profile,
-                retryPolicy: .none
+                retryPolicy: retry
             )
             guard accepting.contains(response.statusCode) else {
                 throw CatalogError.http(response.statusCode)
@@ -434,5 +583,47 @@ enum CatalogHTML {
         if value.hasPrefix("//") { value = "https:" + value }
         if value.hasPrefix("/") { value = base + value }
         return value
+    }
+
+    /// 从单个 `<img …>` 标签里挑「最大的一张」：
+    /// `srcset` 的最大宽度项 > `data-original` / `data-src` / `data-lazy-src` > `src`。
+    /// 图集站的正文常用 `src` 放缩略图，真正的原图只在懒加载属性或 `srcset` 里。
+    static func bestImageURL(in tag: String, base: String) -> String? {
+        if let srcset = first(#"srcset="([^"]+)""#, in: tag),
+           let best = largestFromSrcset(srcset) {
+            return fixURL(best, base: base)
+        }
+        for attribute in ["data-original", "data-src", "data-lazy-src", "data-echo", "data-url"] {
+            if let raw = first(#"\#(attribute)="([^"]+)""#, in: tag),
+               !raw.isEmpty, !raw.hasPrefix("data:") {
+                return fixURL(raw, base: base)
+            }
+        }
+        if let raw = first(#"<img[^>]+src="([^"]+)""#, in: tag),
+           !raw.isEmpty, !raw.hasPrefix("data:") {
+            return fixURL(raw, base: base)
+        }
+        return nil
+    }
+
+    /// `srcset` 里挑宽度最大的一项；`2x` 这类倍率按 2000w 量级折算，便于统一比较。
+    private static func largestFromSrcset(_ srcset: String) -> String? {
+        var best: (url: String, weight: Double)?
+        for part in srcset.split(separator: ",") {
+            let pieces = part.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                .map(String.init)
+            guard let url = pieces.first, !url.isEmpty else { continue }
+            var weight = 1.0
+            if pieces.count > 1 {
+                let descriptor = pieces[1].lowercased()
+                if descriptor.hasSuffix("w"), let value = Double(descriptor.dropLast()) {
+                    weight = value
+                } else if descriptor.hasSuffix("x"), let value = Double(descriptor.dropLast()) {
+                    weight = value * 1000
+                }
+            }
+            if best == nil || weight > best!.weight { best = (url, weight) }
+        }
+        return best?.url
     }
 }

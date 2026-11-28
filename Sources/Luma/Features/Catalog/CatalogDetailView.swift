@@ -2,6 +2,25 @@ import AppKit
 import SwiftUI
 import LumaContentCore
 
+/// 详情页正文的滚动偏移：图集页头用它做「向下滚动时收缩」。
+private struct CatalogDetailScrollKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// 图集网格在滚动坐标系里的位置与宽度：用来估算当前可见的格子，提前预取缩略图。
+private struct CatalogGalleryFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next != .zero { value = next }
+    }
+}
+
 /// 资源详情：剧集是第一信息，进入后直接能选某一集播放。
 ///
 /// 版式参考流媒体的「详情页」：封面模糊成背景，前景是海报 + 标题 + 主操作，
@@ -20,8 +39,19 @@ struct CatalogDetailView: View {
     /// 每段展示多少集。
     @State private var rangeIndex = 0
     @State private var didAlignRange = false
-    /// 图集大图预览的当前序号。
-    @State private var previewIndex: Int?
+    /// 图集展示形式与缩略图尺寸：与图库一致，可切换正方形 / 完整宽高比 / 瀑布流 / 列表，并可放大缩小。
+    @AppStorage("catalog.galleryAspect") private var galleryAspectRaw = ThumbnailAspect.actual.rawValue
+    @AppStorage("catalog.galleryThumbSize") private var galleryThumbSize = CatalogGalleryGridMetrics.defaultThumbSize
+    /// 捏合缩放时的起始尺寸。
+    @State private var galleryPinchBase: Double?
+    /// 详情页正文滚动偏移：图集页头据此在向下滚动时收缩变小。
+    @State private var scrollOffset: CGFloat = 0
+    /// 图集网格在滚动坐标系里的位置：据此估算可见首行，提前预取缩略图。
+    @State private var galleryFrame: CGRect = .zero
+    @State private var galleryPrefetchTask: Task<Void, Never>?
+    @State private var galleryPrefetchLead = -1
+    /// 最近在查看器里看的那张图：返回详情页后，网格里给它保留选中效果。
+    @State private var selectedGalleryIndex: Int?
     /// 新建片单：先让用户取名，再创建并加入当前作品。
     @State private var showsNewPlaylistPrompt = false
     @State private var newPlaylistName = ""
@@ -30,6 +60,13 @@ struct CatalogDetailView: View {
     /// 点详情里的女优 / 片商名字：打开跨源档案。
     /// 状态放在模型里：工具栏返回按钮要先退回详情页。
     private var personTarget: CatalogDetailPersonTarget? { catalog.detailPersonTarget }
+
+    /// 人物与机构识别结果：只在详情变化时算一次。
+    /// 以前直接在 body 里调 `personMatches`：滚动一帧就重扫一遍上万条词典，
+    /// 打开图集详情时整页会被解析卡住。
+    @State private var personMatches: [PersonMatch] = []
+    @State private var personCode: String?
+    @State private var personMatchKey = ""
 
     private func openPerson(_ name: String, role: String) {
         catalog.detailPersonTarget = CatalogDetailPersonTarget(name: name, role: role)
@@ -42,12 +79,28 @@ struct CatalogDetailView: View {
     }
 
     private static let rangeSize = 50
+    /// 滚动偏移采样的命名坐标系。
+    private static let scrollSpace = "catalog-detail-scroll"
     /// 滚动到正文的锚点。
     private static let articleAnchor = "catalog-article"
     private static let factsAnchor = "catalog-facts"
     private static let episodeAnchor = "catalog-episodes"
 
+    /// 图集格子的滚动锚点：从查看器返回时用它把详情页定位到对应图片。
+    static func galleryTileID(_ index: Int) -> String { "catalog-gallery-\(index)" }
+
     private var source: CatalogSource? { catalog.selectedSource }
+    /// 人物识别结果的归属：换了详情就丢弃上一部作品的结果，避免串台。
+    private var detailPersonKey: String {
+        guard let detail = catalog.detail else { return "" }
+        return "\(source?.id.uuidString ?? "-")|\(detail.item.id)"
+    }
+    private var currentPersonMatches: [PersonMatch] {
+        personMatchKey == detailPersonKey ? personMatches : []
+    }
+    private var currentPersonCode: String? {
+        personMatchKey == detailPersonKey ? personCode : nil
+    }
     private var progress: CatalogProgress? {
         guard let source else { return nil }
         return catalog.progress(sourceID: source.id, itemID: item.id)
@@ -62,40 +115,105 @@ struct CatalogDetailView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 22) {
-                                hero(detail) {
-                                    withAnimation(.easeInOut(duration: 0.32)) {
-                                        proxy.scrollTo(Self.articleAnchor, anchor: .top)
+                                if isGalleryDetail(detail) {
+                                    // 页头留在正文流里：滚轮与点击的命中范围和普通内容一致，
+                                    // 不会像浮层那样挡住下面的图片。向下滚时它按滚动距离缩小淡出，
+                                    // 顶部只留一条紧凑胶囊（galleryPinnedBar）。
+                                    galleryHero(detail)
+                                        .scaleEffect(1 - 0.16 * galleryHeroCollapse, anchor: .top)
+                                        .opacity(1 - 0.7 * galleryHeroCollapse)
+                                    // 图集是这一页的主体：全部图片紧跟页头，先看图再看资料。
+                                    gallerySection(detail)
+                                        .id(Self.articleAnchor)
+                                    if !infoFacts(detail).isEmpty {
+                                        factsSection(detail)
+                                            .id(Self.factsAnchor)
+                                    }
+                                    if !detail.tags.isEmpty { tagsSection(detail) }
+                                    let people = currentPersonMatches
+                                    if !people.isEmpty {
+                                        peopleSection(people, code: currentPersonCode)
+                                    }
+                                    if hasGalleryNotes(detail) {
+                                        galleryNotesSection(detail)
+                                    }
+                                } else {
+                                    hero(detail) {
+                                        withAnimation(.easeInOut(duration: 0.32)) {
+                                            proxy.scrollTo(Self.articleAnchor, anchor: .top)
+                                        }
+                                    }
+                                    chapterBar(proxy: proxy, detail: detail)
+                                        .padding(.top, -8)
+                                    // 女优 / 片商已经由下面的「人物与机构」统一展示，
+                                    // 详情里不再重复铺一遍同样的名字。
+                                    if !infoFacts(detail).isEmpty {
+                                        factsSection(detail)
+                                            .id(Self.factsAnchor)
+                                    }
+                                    if !detail.tags.isEmpty {
+                                        tagsSection(detail)
+                                    }
+                                    let people = currentPersonMatches
+                                    if !people.isEmpty {
+                                        peopleSection(people, code: currentPersonCode)
+                                    }
+                                    if detail.isCollection, !detail.episodes.isEmpty {
+                                        collectionSection(detail).id(Self.episodeAnchor)
+                                    } else if !detail.episodes.isEmpty {
+                                        episodeSection(detail).id(Self.episodeAnchor)
+                                    } else if detail.item.mediaKind == .video {
+                                        CatalogVideoLockedSection(detail: detail, source: source)
+                                    }
+                                    if hasArticleBody(detail) {
+                                        // 综合站的混合条目：上面是播放器，下面是整套图片。
+                                        if !detail.articleImages.isEmpty {
+                                            gallerySection(detail).id(Self.articleAnchor)
+                                        } else {
+                                            articleSection(detail).id(Self.articleAnchor)
+                                        }
                                     }
                                 }
-                                chapterBar(proxy: proxy, detail: detail)
-                                    .padding(.top, -8)
-                                // 女优 / 片商已经由下面的「人物与机构」统一展示，
-                                // 详情里不再重复铺一遍同样的名字。
-                                if !infoFacts(detail).isEmpty {
-                                    factsSection(detail)
-                                        .id(Self.factsAnchor)
-                                }
-                                let people = personMatches(detail)
-                                if !people.isEmpty {
-                                    peopleSection(people,
-                                                  code: CatalogNameParser.parse(title: detail.item.title).code)
-                                }
-                                if detail.isCollection, !detail.episodes.isEmpty {
-                                    collectionSection(detail)
-                                        .id(Self.episodeAnchor)
-                                } else if !detail.episodes.isEmpty {
-                                    episodeSection(detail)
-                                        .id(Self.episodeAnchor)
-                                }
-                                if hasArticleBody(detail) {
-                                    articleSection(detail)
-                                        .id(Self.articleAnchor)
-                                }
-                                if detail.episodes.isEmpty, !detail.hasArticle {
+                                if detail.episodes.isEmpty, !detail.hasArticle,
+                                   detail.item.mediaKind != .video {
                                     emptyContentNote
                                 }
                             }
                             .padding(.bottom, 44)
+                            .background(alignment: .top) {
+                                // 只用来读滚动偏移：不参与布局，也不影响正文高度。
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: CatalogDetailScrollKey.self,
+                                        value: geo.frame(in: .named(Self.scrollSpace)).minY
+                                    )
+                                }
+                            }
+                        }
+                        .coordinateSpace(name: Self.scrollSpace)
+                        .onPreferenceChange(CatalogDetailScrollKey.self) { value in
+                            scrollOffset = value
+                        }
+                        // 图集网格位置变化（首次布局 / 滚动 / 缩放）时重新估算可视范围。
+                        .onPreferenceChange(CatalogGalleryFrameKey.self) { frame in
+                            galleryFrame = frame
+                            prefetchGalleryImagesIfNeeded()
+                        }
+                        // 从图集查看器返回：选中刚才看的那张图，并滚到它的位置。
+                        .onChange(of: store.catalogGalleryReturnRequest) { _, request in
+                            guard let request else { return }
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                selectedGalleryIndex = request.index
+                            }
+                            // 目标位置附近的缩略图先预渲染，滚过去时不是一排空白。
+                            prefetchGalleryThumbnails(around: request.index)
+                            Task { @MainActor in
+                                // 等查看器退场与网格重新布局，再定位到目标格子。
+                                try? await Task.sleep(nanoseconds: 180_000_000)
+                                withAnimation(.easeInOut(duration: 0.28)) {
+                                    proxy.scrollTo(Self.galleryTileID(request.index), anchor: .center)
+                                }
+                            }
                         }
                         .scrollIndicators(.automatic)
                     }
@@ -106,14 +224,16 @@ struct CatalogDetailView: View {
                 }
             }
 
+            // 图集滚动后只剩顶部一条紧凑胶囊：浮层里没有大块卡片，
+            // 不会遮挡下面图片的点击与滚轮。
+            if let detail = catalog.detail, isGalleryDetail(detail) {
+                galleryPinnedBar(detail)
+                    .frame(maxWidth: .infinity, alignment: .top)
+            }
+
             if !isEmbedded {
                 closeButton
                     .padding(18)
-            }
-
-            if let detail = catalog.detail, let index = previewIndex,
-               detail.articleImages.indices.contains(index) {
-                galleryPreview(detail.articleImages, index: index)
             }
         }
         // 女优 / 片商档案不再弹窗：直接盖在详情上；返回统一走窗口工具栏最左侧。
@@ -138,10 +258,19 @@ struct CatalogDetailView: View {
         }
         .onChange(of: catalog.detail?.item.id) { _, _ in
             alignRangeToProgress()
+            // 换了一部作品：上一套图集的选中位置与预取进度都不再适用。
+            selectedGalleryIndex = nil
+            galleryPrefetchLead = -1
+            galleryFrame = .zero
+        }
+        // 人物与机构识别：详情出现后在后台算一次，滚动与图片回填都不会再触发词典扫描。
+        .task(id: detailPersonKey) {
+            await refreshPersonMatches()
         }
         // 离开详情时把叠加的档案一起收起，下次打开别的条目不会残留上一页。
         .onDisappear {
             catalog.detailPersonTarget = nil
+            galleryPrefetchTask?.cancel()
         }
         .alert("新建片单", isPresented: $showsNewPlaylistPrompt) {
             TextField("片单名称", text: $newPlaylistName)
@@ -179,6 +308,204 @@ struct CatalogDetailView: View {
     }
 
     // MARK: - 头部
+
+    /// 图集页头：扇形封面 + 标题 + 主操作。没有播放按钮，
+    /// 第一动作是「开始看图」，第二动作是「全部保存到图库」。
+    /// 向下滚动时整块页头收缩变小，把屏幕让给图片（0 = 原始，1 = 最小）。
+    private func galleryHero(_ detail: CatalogDetail) -> some View {
+        let images = detail.articleImages
+        let model = detail.facts.first(where: { $0.label == "模特" })?.value
+        let category = detail.facts.first(where: { $0.label == "分类" })?.value
+        let collapse = galleryHeroCollapse
+        return HStack(alignment: .center, spacing: 24 - 10 * collapse) {
+            VStack(alignment: .leading, spacing: 12 - 5 * collapse) {
+                HStack(spacing: 7) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("图集")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .foregroundStyle(Color.black.opacity(0.82))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(LumaBrand.gradient, in: Capsule(style: .continuous))
+
+                    metaChip("\(images.count) 张原图")
+                    if let model { metaChip(model) }
+                    if let category { metaChip(category) }
+                    ForEach(detail.tags.filter { $0 != model && $0 != category }.prefix(4),
+                            id: \.self) { tag in
+                        metaChip(tag)
+                    }
+                    if let source { metaChip(source.host, monospaced: true) }
+                }
+
+                Text(displayTitle(detail))
+                    .font(.system(size: 27 - 5 * collapse, weight: .semibold))
+                    .tracking(0.3)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .shadow(color: .black.opacity(0.35), radius: 12, y: 2)
+
+                if let lead = heroLead(detail) {
+                    Text(lead)
+                        .font(.system(size: 11.5))
+                        .lineSpacing(3)
+                        .foregroundStyle(.white.opacity(0.74 - 0.5 * collapse))
+                        .lineLimit(2)
+                        .frame(maxWidth: 560, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .opacity(1 - collapse)
+                }
+
+                Text("双击放大 · ← → 翻页 · 右键保存单张")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .opacity(max(0, 1 - collapse * 1.6))
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 10) {
+                    Button {
+                        openGalleryViewer(detail, startIndex: 0)
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "viewfinder")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("开始看图")
+                                .font(.system(size: 12.5, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.black.opacity(0.86))
+                        .padding(.horizontal, 18)
+                        .frame(height: 34)
+                        .background(.white, in: Capsule(style: .continuous))
+                        .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                    .help("从第一张开始浏览整套图集")
+
+                    gallerySaveAllButton(detail, dark: true)
+
+                    heroButton(isFavorite ? "已在稍后看" : "稍后看",
+                               icon: isFavorite ? "bookmark.fill" : "bookmark",
+                               active: isFavorite) {
+                        toggleFavorite(detail)
+                    }
+
+                    Menu {
+                        ForEach(catalog.playlists) { playlist in
+                            Button {
+                                guard let source else { return }
+                                catalog.addToPlaylist(playlist.id, source: source, item: detail.item)
+                            } label: {
+                                if let source,
+                                   catalog.isInPlaylist(playlist.id, sourceID: source.id,
+                                                        itemID: detail.item.id) {
+                                    Label(playlist.name, systemImage: "checkmark")
+                                } else {
+                                    Text(playlist.name)
+                                }
+                            }
+                        }
+                        if !catalog.playlists.isEmpty { Divider() }
+                        Button("新建片单并加入…") {
+                            guard source != nil else { return }
+                            newPlaylistName = "片单 \(catalog.playlists.count + 1)"
+                            showsNewPlaylistPrompt = true
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.stack.badge.plus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .frame(width: 34, height: 34)
+                            .background(.white.opacity(0.14),
+                                        in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 34)
+                    .help("加入片单")
+
+                    heroIconButton("arrow.up.right.square") {
+                        guard let source, let url = URL(string: source.baseURL) else { return }
+                        NSWorkspace.shared.open(url)
+                    }
+                    .help("打开源页面")
+
+                    heroIconButton("arrow.clockwise") {
+                        catalog.loadDetail(item: item, force: true)
+                    }
+                    .help("重新解析图集")
+
+                    if catalog.isLoadingDetail {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(.white)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let source {
+                CatalogGalleryFan(source: source, images: images)
+                    .frame(width: 330 - 110 * collapse, height: 238 - 105 * collapse)
+            }
+        }
+        .padding(26 - 9 * collapse)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background { backdrop(detail) }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(.white.opacity(0.14), lineWidth: 0.8)
+        }
+        .shadow(color: .black.opacity(0.26), radius: 22, y: 10)
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+    }
+
+    /// 「全部保存到图库」：显示下载进度；保存期间禁用，避免重复点。
+    /// `dark` 用于压在图片页头上，普通白色页面用默认的语义色。
+    private func gallerySaveAllButton(_ detail: CatalogDetail,
+                                      dark: Bool = false) -> some View {
+        let save = catalog.gallerySave
+        let isSaving = save?.itemID == detail.item.id
+        return Button {
+            guard let source else { return }
+            store.saveCatalogGalleryToLibrary(source: source, item: detail.item)
+        } label: {
+            HStack(spacing: 6) {
+                if isSaving {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(dark ? .white : Color.accentColor)
+                } else {
+                    Image(systemName: "square.and.arrow.down.on.square")
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                Text(isSaving
+                     ? "保存中 \(save?.completed ?? 0)/\(save?.total ?? 0)"
+                     : "全部保存")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(dark ? Color.white.opacity(0.94) : Color.primary.opacity(0.88))
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(dark ? AnyShapeStyle(Color.white.opacity(0.16))
+                             : AnyShapeStyle(Color.primary.opacity(0.06)),
+                        in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(dark ? Color.white.opacity(0.22) : Color.primary.opacity(0.12),
+                                  lineWidth: 0.7)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isSaving || catalog.gallerySave != nil)
+        .help("把这一整套原图保存到本地图库")
+    }
 
     private func hero(_ detail: CatalogDetail,
                       onReadArticle: @escaping () -> Void) -> some View {
@@ -228,9 +555,17 @@ struct CatalogDetailView: View {
                 }
             }
             if hasArticleBody(detail) {
-                chapterButton("正文", symbol: "text.alignleft", count: articleCount) {
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        proxy.scrollTo(Self.articleAnchor, anchor: .top)
+                if isGalleryDetail(detail) {
+                    chapterButton("图集", symbol: "photo.on.rectangle.angled", count: articleCount) {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(Self.articleAnchor, anchor: .top)
+                        }
+                    }
+                } else {
+                    chapterButton("正文", symbol: "text.alignleft", count: articleCount) {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(Self.articleAnchor, anchor: .top)
+                        }
                     }
                 }
             }
@@ -292,6 +627,9 @@ struct CatalogDetailView: View {
             }
         }
         .clipped()
+        // 纯装饰：模糊封面在 scaleEffect + blur 之后，命中区域会远大于卡片本身
+        // （SwiftUI 的裁剪只影响绘制，不影响命中），不关掉会挡住下面整片内容的点击与滚轮。
+        .allowsHitTesting(false)
         .task(id: coverURL(detail)) {
             guard let source else { return }
             heroTint = await CatalogPalette.color(source: source, urlString: coverURL(detail))
@@ -335,6 +673,8 @@ struct CatalogDetailView: View {
                     metaChip("合集 · \(detail.collectionTotal ?? detail.episodes.count) 部")
                 } else if detail.episodes.isEmpty, detail.hasArticle {
                     metaChip("图文 · \(detail.articleImages.count) 张图")
+                } else if source?.kind.isComprehensiveSite == true {
+                    metaChip(detail.episodes.isEmpty ? "视频 · VIP 专享" : "视频 · \(detail.episodes.count) 段")
                 } else {
                     metaChip("共 \(detail.episodes.count) 集")
                 }
@@ -368,9 +708,13 @@ struct CatalogDetailView: View {
                 if detail.episodes.isEmpty {
                     Button(action: onReadArticle) {
                         HStack(spacing: 7) {
-                            Image(systemName: "text.below.photo")
+                            Image(systemName: isGalleryDetail(detail)
+                                  ? "photo.on.rectangle.angled"
+                                  : (detail.item.mediaKind == .video ? "play.slash.fill" : "text.below.photo"))
                                 .font(.system(size: 11, weight: .bold))
-                            Text(hasArticleBody(detail) ? "阅读全文" : "暂无正文")
+                            Text(detail.hasArticle
+                                 ? (isGalleryDetail(detail) ? "查看图集" : "阅读全文")
+                                 : (detail.item.mediaKind == .video ? "会员专享" : "暂无正文"))
                                 .font(.system(size: 12.5, weight: .semibold))
                         }
                         .foregroundStyle(Color.black.opacity(0.86))
@@ -451,6 +795,16 @@ struct CatalogDetailView: View {
                 .menuIndicator(.hidden)
                 .frame(width: 34)
                 .help("加入片单")
+
+                // 同一部作品可能也被星图资料库收录：拿标题里的番号反查一次。
+                if AtlasCatalogLibrary.shared.isLoaded,
+                   let code = CatalogNameParser.titleMetadata(detail.item.title).code {
+                    heroIconButton("sparkles") {
+                        AtlasStore.shared.pendingCode = code
+                        store.navigate(to: .atlas)
+                    }
+                    .help("在拾光星图中查看 \(code)")
+                }
 
                 heroIconButton("arrow.up.right.square") {
                     guard let source, let url = URL(string: source.baseURL) else { return }
@@ -561,7 +915,7 @@ struct CatalogDetailView: View {
     // MARK: - 详情信息
 
     /// 哪些字段可以点进人物档案。
-    private func personRole(for label: String) -> String? {
+    private static func personRole(for label: String) -> String? {
         let lower = label.lowercased()
         if lower.contains("女优") || lower.contains("女優") || lower.contains("演员")
             || lower.contains("演員") || lower.contains("actress") || lower.contains("cast") {
@@ -580,7 +934,7 @@ struct CatalogDetailView: View {
     }
 
     /// 一个字段里可能有多个名字（「甲、乙」），拆开各自成按钮。
-    private func personNames(_ value: String) -> [String] {
+    private static func personNames(_ value: String) -> [String] {
         value.components(separatedBy: CharacterSet(charactersIn: "、,，/|"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0.count <= 30 }
@@ -589,7 +943,7 @@ struct CatalogDetailView: View {
     // MARK: - 人物与机构（资料库匹配）
 
     /// 一条匹配结果：资料库命中时带完整档案，没命中就只保留名字与入口。
-    private struct PersonMatch: Identifiable {
+    private struct PersonMatch: Identifiable, Sendable {
         var name: String
         var role: String
         /// 模糊命中的原始写法（与库里的标准名不同时才显示）。
@@ -602,13 +956,32 @@ struct CatalogDetailView: View {
         var hasRecord: Bool { info != nil }
     }
 
+    /// 人物识别的输入：全部拆成纯字符串，方便整体搬到后台线程。
+    private struct PersonScanInput: Sendable {
+        var title: String
+        var facts: [(label: String, value: String)]
+        var haystack: String
+    }
+
+    private struct PersonScanOutput: Sendable {
+        var matches: [PersonMatch]
+        var code: String?
+    }
+
+    /// 正文最多参与识别 6000 字：再往后基本是站点说明，扫下去只是白花时间。
+    private static let personHaystackLimit = 6_000
+    /// 一屏最多展示多少个人物 / 机构，避免超长字段刷出几十条。
+    private static let personMatchLimit = 16
+
     /// 把标题、详情字段和正文合并成一段文本，统一做资料库模糊匹配：
     /// 站点写「冲宫奈美」、库里叫「沖宮奈々美」也能落到同一条记录。
-    private func personMatches(_ detail: CatalogDetail) -> [PersonMatch] {
+    private static func matchPersons(input: PersonScanInput,
+                                     parsed: CatalogNameParser.Result) -> [PersonMatch] {
         var results: [PersonMatch] = []
         var seen = Set<String>()
 
         func add(_ raw: String, role: String) {
+            guard results.count < personMatchLimit else { return }
             let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard name.count >= 2 else { return }
             let isStudio = role == "片商"
@@ -641,24 +1014,69 @@ struct CatalogDetailView: View {
         }
 
         // 1. 详情字段里明确标了「女优 / 片商」的，最先采用。
-        for fact in detail.facts {
+        for fact in input.facts {
             guard let role = personRole(for: fact.label) else { continue }
             for name in personNames(fact.value) {
                 add(name, role: role)
             }
         }
 
-        // 2. 标题不给字段时，把详情字段值与正文一起再识别一遍。
-        var haystack = detail.item.title
-        for fact in detail.facts { haystack += "\n\(fact.value)" }
-        for block in detail.blocks where block.kind != .image { haystack += "\n\(block.text)" }
-        let parsed = CatalogNameParser.parse(title: haystack)
+        // 2. 标题不给字段时，把详情字段值与正文一起再识别一遍（解析结果由后台算好传进来）。
         for name in parsed.actresses { add(name, role: "女优") }
         for maker in parsed.makers { add(maker, role: "片商") }
         if let label = parsed.label, let maker = CatalogNameDictionary.codeMakers[label] {
             add(maker, role: "片商")
         }
         return results
+    }
+
+    /// 人物识别：字符串拼装在主线程做（只是拼接），词典扫描、资料库索引与档案构建
+    /// 全部放到后台。首次读库 / 建索引要一两秒，不能再占用主线程。
+    private func refreshPersonMatches() async {
+        guard let detail = catalog.detail else {
+            personMatches = []
+            personCode = nil
+            personMatchKey = ""
+            return
+        }
+        let key = detailPersonKey
+        let gallery = isGalleryDetail(detail)
+        let input = PersonScanInput(
+            title: detail.item.title,
+            facts: detail.facts.map { (label: $0.label, value: $0.value) },
+            // 图集正文是大段站点文案，识别价值低：只按明确字段（模特 / 片商）认人，
+            // 省掉整段正文的词典扫描。
+            haystack: gallery ? "" : Self.personHaystack(detail)
+        )
+        let started = Date()
+        let output = await Task.detached(priority: .userInitiated) { () -> PersonScanOutput in
+            let parsed = input.haystack.isEmpty
+                ? CatalogNameParser.Result()
+                : CatalogNameParser.parse(title: input.haystack)
+            let titleParsed = CatalogNameParser.parse(title: input.title)
+            return PersonScanOutput(matches: Self.matchPersons(input: input, parsed: parsed),
+                                    code: titleParsed.code)
+        }.value
+        guard !Task.isCancelled, key == detailPersonKey else { return }
+
+        personMatches = output.matches
+        personCode = output.code
+        personMatchKey = key
+        let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+        Diagnostics.record("详情人物识别 \(elapsed)ms · \(gallery ? "图集" : "视频") · 命中 \(output.matches.count)")
+    }
+
+    /// 标题 + 字段 + 正文的识别文本；正文截断到 `personHaystackLimit`。
+    private static func personHaystack(_ detail: CatalogDetail) -> String {
+        var haystack = detail.item.title
+        for fact in detail.facts { haystack += "\n\(fact.value)" }
+        for block in detail.blocks where block.kind != .image {
+            guard haystack.count < personHaystackLimit else { break }
+            haystack += "\n\(block.text)"
+        }
+        return haystack.count > personHaystackLimit
+            ? String(haystack.prefix(personHaystackLimit))
+            : haystack
     }
 
     /// 人物与机构合成一栏：命中资料库的展示完整字段，没命中的保留入口。
@@ -880,7 +1298,7 @@ struct CatalogDetailView: View {
     /// 详情里除人物 / 机构以外的结构化信息：上线日期、时长、番号等。
     /// 女优与片商统一放进「人物与机构」，避免同一批名字在两栏重复出现。
     private func infoFacts(_ detail: CatalogDetail) -> [CatalogDetailFact] {
-        var facts = detail.facts.filter { personRole(for: $0.label) == nil }
+        var facts = detail.facts.filter { Self.personRole(for: $0.label) == nil }
         // 站点没给时长、但这部片已经播放过：用本地进度里的真实片长回填。
         if !facts.contains(where: { $0.label == "时长" }),
            let source,
@@ -925,6 +1343,29 @@ struct CatalogDetailView: View {
                                 .lineLimit(2)
                         }
                         Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.035),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
+            }
+        }
+        .padding(.horizontal, 26)
+    }
+
+    /// 站点标签：模特 / 题材 / 分类等，点一下按关键词做跨源聚合搜索。
+    private func tagsSection(_ detail: CatalogDetail) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("标签", detail: "\(detail.tags.count) 个")
+            CatalogFlowLayout(spacing: 6, lineSpacing: 6) {
+                ForEach(detail.tags, id: \.self) { tag in
+                    CatalogDatabaseTagPill(text: tag, tint: Color.accentColor) {
+                        openTagSearch(tag)
                     }
                 }
             }
@@ -1133,6 +1574,312 @@ struct CatalogDetailView: View {
         !articleBlocks(detail).isEmpty
     }
 
+    // MARK: - 图集
+
+    /// 只有「有图片且没有视频」的条目才走纯图集排版；
+    /// 综合站里同时带视频和图集的条目按视频排版，图集网格接在播放区下面。
+    private func isGalleryDetail(_ detail: CatalogDetail) -> Bool {
+        detail.item.mediaKind != .video && !detail.articleImages.isEmpty && detail.episodes.isEmpty
+    }
+
+    /// 看图不再自绘浮层：交给图库查看器，缩放 / 胶片条 / 幻灯片 / 保存全部复用。
+    private func openGalleryViewer(_ detail: CatalogDetail, startIndex: Int = 0) {
+        guard let source else { return }
+        selectedGalleryIndex = startIndex
+        store.openCatalogGalleryViewer(source: source, item: detail.item,
+                                       detail: detail, startIndex: startIndex)
+    }
+
+    /// 图集网格：与图库一致的展示形式切换 + 缩略图缩放；点开进入图库查看器。
+    /// 显示形式与缩放控件已上移到窗口工具栏，正文只留图片本身。
+    private func gallerySection(_ detail: CatalogDetail) -> some View {
+        let images = detail.articleImages
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("全部图片", detail: "\(images.count) 张")
+            if let source {
+                galleryContent(source: source, detail: detail, images: images)
+                    .simultaneousGesture(galleryPinchGesture)
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: CatalogGalleryFrameKey.self,
+                                value: geo.frame(in: .named(Self.scrollSpace)))
+                        }
+                    }
+            }
+        }
+        .padding(.horizontal, 26)
+    }
+
+    /// 图集页头收缩进度：向下滚动 260pt 内从原始大小收到最小。
+    private var galleryHeroCollapse: CGFloat {
+        min(1, max(0, -scrollOffset / 260))
+    }
+
+    /// 紧凑胶囊的交接进度：页头基本滚出视野后完成淡入。
+    private var galleryPinnedProgress: CGFloat {
+        min(1, max(0, (-scrollOffset - 150) / 90))
+    }
+
+    /// 收缩后的吸顶标题栏：片名 + 张数 + 主操作，图片从它下面滑过。
+    private func galleryPinnedBar(_ detail: CatalogDetail) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.black.opacity(0.82))
+                .padding(6)
+                .background(LumaBrand.gradient, in: Circle())
+
+            Text(displayTitle(detail))
+                .font(.system(size: 12.5, weight: .semibold))
+                .lineLimit(1)
+
+            Text("\(detail.articleImages.count) 张")
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+
+            Spacer(minLength: 10)
+
+            Button {
+                openGalleryViewer(detail, startIndex: 0)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 9.5, weight: .bold))
+                    Text("开始看图")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(Color.black.opacity(0.86))
+                .padding(.horizontal, 11)
+                .frame(height: 24)
+                .background(.white, in: Capsule(style: .continuous))
+                .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            }
+            .buttonStyle(.plain)
+            .help("从第一张开始浏览整套图集")
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
+        .padding(.leading, 20)
+        .padding(.trailing, isEmbedded ? 20 : 56)
+        .padding(.top, 12)
+        .opacity(galleryPinnedProgress)
+        .allowsHitTesting(galleryPinnedProgress > 0.6)
+    }
+
+    private var galleryAspect: ThumbnailAspect {
+        ThumbnailAspect(rawValue: galleryAspectRaw) ?? .actual
+    }
+
+    /// 图集缩略图预渲染：按网格位置估算可视首行，把往下几屏的缩略图提前拉进缓存。
+    /// 拖动很快时格子直接命中内存缓存，不会再出现大片空白。
+    private func prefetchGalleryImagesIfNeeded(force: Bool = false) {
+        guard let detail = catalog.detail, isGalleryDetail(detail), let source else { return }
+        guard galleryFrame.width > 1 else { return }
+        let images = detail.articleImages
+        guard !images.isEmpty else { return }
+
+        let columns = CatalogGalleryGridMetrics.columnCount(for: galleryThumbSize)
+        let spacing: CGFloat = 10
+        let tileWidth = max(40, (galleryFrame.width - spacing * CGFloat(columns - 1))
+            / CGFloat(columns))
+        let tileAspect: CGFloat
+        switch galleryAspect {
+        case .square, .list: tileAspect = 1
+        case .actual, .masonry: tileAspect = 3.0 / 4.0
+        }
+        let rowHeight = max(1, tileWidth / tileAspect + spacing)
+        let scrolled = max(0, -galleryFrame.minY)
+        let lead = max(0, Int(scrolled / rowHeight) * columns)
+
+        // 只有可视范围明显移动（超过一列）才重新预取，避免每个滚动回调都起任务。
+        guard force
+                || galleryPrefetchLead < 0
+                || abs(lead - galleryPrefetchLead) >= columns else { return }
+        galleryPrefetchLead = lead
+
+        let start = max(0, lead - columns * 2)
+        let end = min(images.count, lead + columns * 6 + 24)
+        guard start < end else { return }
+        prefetchGalleryURLs((start..<end).map { galleryThumbnail(images[$0]) }, source: source)
+    }
+
+    /// 返回定位后，把目标位置附近几屏的缩略图提前取好，滚过去时不会先空白。
+    private func prefetchGalleryThumbnails(around index: Int, span: Int = 36) {
+        guard let detail = catalog.detail, isGalleryDetail(detail), let source else { return }
+        let images = detail.articleImages
+        guard !images.isEmpty else { return }
+        let start = max(0, index - 8)
+        let end = min(images.count, start + span)
+        guard start < end else { return }
+        prefetchGalleryURLs((start..<end).map { galleryThumbnail(images[$0]) }, source: source)
+    }
+
+    /// 批量把缩略图读进内存 / 磁盘缓存；每张之间让出下载槽位给可见格子。
+    private func prefetchGalleryURLs(_ urls: [String], source: CatalogSource) {
+        galleryPrefetchTask?.cancel()
+        galleryPrefetchTask = Task(priority: .utility) {
+            for url in urls {
+                if Task.isCancelled { return }
+                let key = CatalogArtworkCache.cacheKey(sourceID: source.id,
+                                                       urlString: url,
+                                                       quick: true)
+                if CatalogArtworkMemory.shared.image(for: key) != nil { continue }
+                guard let image = await CatalogArtworkCache.shared.image(source: source,
+                                                                         urlString: url,
+                                                                         quick: true) else { continue }
+                CatalogArtworkMemory.shared.store(image, for: key)
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+    }
+
+    /// 与图库一致的双指捏合缩放。
+    private var galleryPinchGesture: some Gesture {
+        MagnifyGesture(minimumScaleDelta: 0.01)
+            .onChanged { value in
+                if galleryPinchBase == nil { galleryPinchBase = galleryThumbSize }
+                guard let base = galleryPinchBase else { return }
+                galleryThumbSize = min(CatalogGalleryGridMetrics.sizeRange.upperBound,
+                                       max(CatalogGalleryGridMetrics.sizeRange.lowerBound,
+                                           base * value.magnification))
+            }
+            .onEnded { _ in galleryPinchBase = nil }
+    }
+
+    @ViewBuilder
+    private func galleryContent(source: CatalogSource, detail: CatalogDetail,
+                                images: [String]) -> some View {
+        switch galleryAspect {
+        case .square:
+            galleryGrid(source: source, detail: detail, images: images, aspect: 1)
+        case .actual:
+            // 完整宽高比：格子按每张图的真实比例排，整张显示、不裁切也不补黑边。
+            galleryMasonry(source: source, detail: detail, images: images, autoAspect: true)
+        case .masonry:
+            galleryMasonry(source: source, detail: detail, images: images)
+        case .list:
+            galleryList(source: source, detail: detail, images: images)
+        }
+    }
+
+    private func galleryGrid(source: CatalogSource, detail: CatalogDetail,
+                             images: [String], aspect: CGFloat) -> some View {
+        // 等宽列：默认一行 6 张，缩放时列数跟着变（与顶栏滑杆同一套换算）。
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 10),
+                            count: CatalogGalleryGridMetrics.columnCount(for: galleryThumbSize))
+        return LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(Array(images.enumerated()), id: \.offset) { index, url in
+                CatalogGalleryTile(source: source,
+                                   thumbnailURL: galleryThumbnail(url),
+                                   index: index,
+                                   total: images.count,
+                                   aspect: aspect,
+                                   isSelected: selectedGalleryIndex == index,
+                                   onOpen: { openGalleryViewer(detail, startIndex: index) },
+                                   onSave: { saveArticleImage(url) })
+                    .id(Self.galleryTileID(index))
+            }
+        }
+    }
+
+    /// 瀑布流：按列轮询分配到多列，每列高度随图片比例错落，缩放时列数跟着变。
+    private func galleryMasonry(source: CatalogSource, detail: CatalogDetail,
+                                images: [String], autoAspect: Bool = false) -> some View {
+        let columnCount = CatalogGalleryGridMetrics.columnCount(for: galleryThumbSize)
+        return HStack(alignment: .top, spacing: 10) {
+            ForEach(0..<columnCount, id: \.self) { column in
+                LazyVStack(spacing: 10) {
+                    ForEach(Array(images.enumerated())
+                        .filter { $0.offset % columnCount == column },
+                        id: \.offset) { index, url in
+                        CatalogGalleryTile(source: source,
+                                           thumbnailURL: galleryThumbnail(url),
+                                           index: index,
+                                           total: images.count,
+                                           aspect: masonryAspect(index),
+                                           autoAspect: autoAspect,
+                                           isSelected: selectedGalleryIndex == index,
+                                           onOpen: { openGalleryViewer(detail, startIndex: index) },
+                                           onSave: { saveArticleImage(url) })
+                            .id(Self.galleryTileID(index))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    /// 瀑布流里交错的图片比例：竖图、方图、横图轮换，避免整列看起来像等宽网格。
+    private func masonryAspect(_ index: Int) -> CGFloat {
+        let ratios: [CGFloat] = [3.0 / 4.0, 1.0, 4.0 / 5.0, 5.0 / 6.0]
+        return ratios[index % ratios.count]
+    }
+
+    private func galleryList(source: CatalogSource, detail: CatalogDetail,
+                             images: [String]) -> some View {
+        LazyVStack(spacing: 8) {
+            ForEach(Array(images.enumerated()), id: \.offset) { index, url in
+                CatalogGalleryListRow(source: source,
+                                      thumbnailURL: galleryThumbnail(url),
+                                      title: displayTitle(detail),
+                                      index: index,
+                                      total: images.count,
+                                      isSelected: selectedGalleryIndex == index,
+                                      onOpen: { openGalleryViewer(detail, startIndex: index) },
+                                      onSave: { saveArticleImage(url) })
+                    .id(Self.galleryTileID(index))
+            }
+        }
+    }
+
+    /// 图集说明：站点正文里的模特介绍 / 拍摄笔记，排在全部图片之后。
+    private func hasGalleryNotes(_ detail: CatalogDetail) -> Bool {
+        articleBlocks(detail).contains { $0.kind != .image }
+    }
+
+    private func galleryNotesSection(_ detail: CatalogDetail) -> some View {
+        let notes = articleBlocks(detail).filter { $0.kind != .image }
+        return VStack(alignment: .leading, spacing: 14) {
+            sectionHeader("图集说明", detail: "\(notes.count) 段")
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(Array(notes.enumerated()), id: \.offset) { _, block in
+                    if block.kind == .heading {
+                        articleHeading(block.text)
+                    } else {
+                        articleParagraph(block.text, isLead: false)
+                    }
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.primary.opacity(0.028))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.7)
+            }
+        }
+        .padding(.horizontal, 26)
+    }
+
+    /// 网格用缩略图：JLiji 的缩略图与原图共用目录，只差 `thumbs/` 与扩展名。
+    private func galleryThumbnail(_ url: String) -> String {
+        guard source?.kind == .jliji else { return url }
+        return JlijiCatalogProvider.thumbnailURL(url)
+    }
+
     // MARK: - 图文内容
 
     /// 正文：像杂志内页一样排长文——阅读卡片、引子段、章节标题、配图与收尾。
@@ -1233,7 +1980,7 @@ struct CatalogDetailView: View {
                                        total: total,
                                        onOpen: {
                                            if let i = detail.articleImages.firstIndex(of: url) {
-                                               previewIndex = i
+                                               openGalleryViewer(detail, startIndex: i)
                                            }
                                        },
                                        onSave: { saveArticleImage(url) })
@@ -1307,11 +2054,16 @@ struct CatalogDetailView: View {
     }
 
     private var emptyContentNote: some View {
-        VStack(spacing: 8) {
+        // 综合站按条目判断：视频条目解析失败时提示没有视频，而不是「没有图片」。
+        let isGallery = item.mediaKind.map { $0 == .gallery }
+            ?? (source?.kind.isGallerySite == true)
+        return VStack(spacing: 8) {
             Image(systemName: "text.below.photo")
                 .font(.system(size: 22))
                 .foregroundStyle(.tertiary)
-            Text("这个条目没有可直接播放的视频")
+            Text(isGallery
+                 ? "这个条目暂时没有解析到图片"
+                 : "这个条目没有可直接播放的视频")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
@@ -1319,92 +2071,89 @@ struct CatalogDetailView: View {
         .padding(.vertical, 44)
     }
 
-    /// 图集大图：黑底、左右翻页、右上角关闭。
-    private func galleryPreview(_ images: [String], index: Int) -> some View {
-        ZStack {
-            Color.black.opacity(0.9)
-                .ignoresSafeArea()
-                .onTapGesture { previewIndex = nil }
-
-            if let source {
-                CatalogArtworkImage(source: source, urlString: images[index],
-                                    cornerRadius: 12, fit: true, quality: .full)
-                    .frame(maxWidth: 820, maxHeight: 620)
-                    .background(Color.black.opacity(0.6))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .shadow(color: .black.opacity(0.5), radius: 30, y: 12)
-                    .padding(.horizontal, 70)
-                    .padding(.vertical, 60)
-                    .contextMenu {
-                        Button {
-                            saveArticleImage(images[index])
-                        } label: {
-                            Label("保存到图库", systemImage: "square.and.arrow.down")
-                        }
-                    }
-            }
-
-            VStack {
-                HStack {
-                    Text("\(index + 1) / \(images.count)")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(.white.opacity(0.12), in: Capsule(style: .continuous))
-                    Spacer()
-                    Button {
-                        previewIndex = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 28, height: 28)
-                            .background(.white.opacity(0.14), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("关闭预览")
-                }
-                Spacer()
-                HStack {
-                    previewArrow("chevron.left", enabled: index > 0) {
-                        previewIndex = index - 1
-                    }
-                    Spacer()
-                    previewArrow("chevron.right", enabled: index < images.count - 1) {
-                        previewIndex = index + 1
-                    }
-                }
-            }
-            .padding(20)
-        }
-        .transition(.opacity)
-    }
-
-    private func previewArrow(_ icon: String, enabled: Bool,
-                              action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(enabled ? .white : .white.opacity(0.3))
-                .frame(width: 34, height: 34)
-                .background(.white.opacity(enabled ? 0.14 : 0.06), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-    }
-
     // MARK: - 状态
 
+    /// 详情解析在后台任务里跑：页面先用列表已有的封面 / 标题 / 备注撑住版面，
+    /// 内容区放骨架，不再整页空白地等网络。
     private var loadingState: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.regular)
-            Text("正在解析分集…")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+        let isGallery = source?.kind.isGallerySite == true
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top, spacing: 18) {
+                    Group {
+                        if let source {
+                            CatalogArtworkImage(source: source,
+                                                urlString: item.coverURL,
+                                                cornerRadius: 14)
+                        } else {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        }
+                    }
+                    .frame(width: 132, height: 176)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.7)
+                    }
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text(item.title)
+                            .font(.system(size: 23, weight: .semibold))
+                            .lineLimit(2)
+                        if !item.remark.isEmpty {
+                            Text(item.remark)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(isGallery ? "正在解析图集…" : "正在解析分集…")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 2)
+                        Text("解析在后台进行，可以先返回列表；进度与取消在左下角任务条。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(22)
+                .background {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(Color.primary.opacity(0.028))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.7)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionHeader(isGallery ? "全部图片" : "分集", detail: nil)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
+                                             count: isGallery ? 6 : 4),
+                              spacing: 10) {
+                        ForEach(0..<12, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                                .aspectRatio(isGallery ? 3.0 / 4.0 : 16.0 / 9.0,
+                                             contentMode: .fit)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .strokeBorder(Color.primary.opacity(0.05), lineWidth: 0.6)
+                                }
+                        }
+                    }
+                }
+                .padding(.horizontal, 26)
+            }
+            .padding(.bottom, 44)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .scrollIndicators(.never)
     }
 
     private func errorState(_ message: String) -> some View {
@@ -1417,6 +2166,12 @@ struct CatalogDetailView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+            if let source, catalog.loginPromptNeeded(for: source) {
+                Button("粘贴 Cookie…") {
+                    catalog.presentCookiePrompt(for: source)
+                }
+                .buttonStyle(.borderedProminent)
+            }
             Button("重试") {
                 catalog.loadDetail(item: item, force: true)
             }
@@ -1876,7 +2631,8 @@ private struct CatalogEpisodeCard: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .allowsHitTesting(false)
             } else {
-                Image(systemName: "play.fill")
+                Image(systemName: source?.kind.isGallerySite == true
+                      ? "photo.on.rectangle.angled" : "play.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.black.opacity(0.8))
                     .frame(width: 30, height: 30)
@@ -1952,3 +2708,295 @@ private func catalogTimeText(_ seconds: Double) -> String {
     }
     return String(format: "%d:%02d", minutes, secs)
 }
+
+// MARK: - 图集缩略格
+
+/// 图集里的一格：竖版照片墙，悬停浮出「查看」与保存，右键也有菜单。
+private struct CatalogGalleryTile: View {
+    let source: CatalogSource
+    let thumbnailURL: String
+    let index: Int
+    let total: Int
+    /// 缩略格宽高比：正方形 1，竖图 3:4，瀑布流按列交错。
+    var aspect: CGFloat = 3.0 / 4.0
+    /// 完整宽高比模式：格子高度跟随图片真实比例，整张显示、不裁切也不补黑边。
+    var autoAspect: Bool = false
+    /// 正在查看的那张图：返回详情页后仍保持选中描边与角标。
+    var isSelected: Bool = false
+    let onOpen: () -> Void
+    let onSave: () -> Void
+
+    @State private var hovering = false
+    /// 图片解码后回报的真实宽高比；未加载完之前先用 3:4 占位。
+    @State private var naturalAspect: CGFloat?
+
+    private var tileAspect: CGFloat {
+        autoAspect ? (naturalAspect ?? 3.0 / 4.0) : aspect
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color.clear
+                .aspectRatio(tileAspect, contentMode: .fit)
+                .overlay {
+                    CatalogArtworkImage(source: source,
+                                        urlString: thumbnailURL,
+                                        cornerRadius: 14,
+                                        fit: autoAspect,
+                                        placeholderSymbol: "photo.on.rectangle.angled",
+                                        onImageSize: autoAspect ? { size in
+                                            guard size.width > 1, size.height > 1 else { return }
+                                            let ratio = size.width / size.height
+                                            guard abs(ratio - (naturalAspect ?? 0)) > 0.01 else { return }
+                                            withAnimation(.easeOut(duration: 0.18)) {
+                                                naturalAspect = ratio
+                                            }
+                                        } : nil)
+                        .opacity(hovering ? 0.92 : 1)
+                }
+                .overlay {
+                    // 底部压暗，序号在浅色照片上也读得清。
+                    LinearGradient(colors: [.clear, .clear, .black.opacity(0.4)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .allowsHitTesting(false)
+                }
+
+            Text(String(format: "%02d", index + 1))
+                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.92))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background(.black.opacity(0.42), in: Capsule(style: .continuous))
+                .padding(9)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            // 选中描边与网络资源里「正在播放」的分集卡片同一套语言。
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.9)
+                                         : .white.opacity(hovering ? 0.5 : 0.08),
+                              lineWidth: isSelected ? 2 : (hovering ? 1.6 : 0.7))
+        }
+        .overlay(alignment: .topLeading) {
+            if isSelected {
+                HStack(spacing: 3) {
+                    Image(systemName: "eye.fill")
+                        .font(.system(size: 7.5, weight: .bold))
+                    Text("正在看")
+                        .font(.system(size: 8.5, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.94), in: Capsule(style: .continuous))
+                .shadow(color: .black.opacity(0.28), radius: 6, y: 2)
+                .padding(9)
+                .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if hovering {
+                Button(action: onSave) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.82))
+                        .frame(width: 26, height: 26)
+                        .background(.white.opacity(0.94), in: Circle())
+                        .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+                }
+                .buttonStyle(.plain)
+                .padding(9)
+                .help("保存这一张到图库")
+                .transition(.opacity)
+            }
+        }
+        .overlay {
+            if hovering {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("查看")
+                        .font(.system(size: 9.5, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(.black.opacity(0.5), in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(.white.opacity(0.22), lineWidth: 0.6)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture(perform: onOpen)
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.14)) { hovering = inside }
+        }
+        .animation(.easeOut(duration: 0.16), value: hovering)
+        .animation(.easeOut(duration: 0.2), value: isSelected)
+        .shadow(color: .black.opacity(hovering ? 0.26 : 0.08),
+                radius: hovering ? 16 : 6, y: hovering ? 7 : 2)
+        .shadow(color: isSelected ? Color.accentColor.opacity(0.35) : .clear, radius: 12)
+        .scaleEffect(hovering ? 1.012 : 1)
+        .help("第 \(index + 1) / \(total) 张 · 点击进入沉浸看图")
+        .contextMenu {
+            Button("查看大图", action: onOpen)
+            Button("保存到图库", action: onSave)
+        }
+    }
+}
+
+// MARK: - 图集列表行
+
+/// 列表模式的图集行：缩略图 + 序号 + 保存入口，适合快速核对整套图片。
+private struct CatalogGalleryListRow: View {
+    let source: CatalogSource
+    let thumbnailURL: String
+    let title: String
+    let index: Int
+    let total: Int
+    /// 正在查看的那张图：返回详情页后仍保持选中底色与描边。
+    var isSelected: Bool = false
+    let onOpen: () -> Void
+    let onSave: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            CatalogArtworkImage(source: source,
+                                urlString: thumbnailURL,
+                                cornerRadius: 8,
+                                placeholderSymbol: "photo.on.rectangle.angled")
+                .frame(width: 92, height: 64)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(isSelected ? Color.accentColor.opacity(0.85)
+                                                 : Color.primary.opacity(0.08),
+                                      lineWidth: isSelected ? 1.4 : 0.6)
+                }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Text("第 \(index + 1) / \(total) 张")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 8)
+
+            if hovering {
+                Button(action: onSave) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(Color.primary.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("保存这一张到图库")
+                .transition(.opacity)
+            }
+
+            if isSelected {
+                Text("正在看")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule(style: .continuous))
+                    .fixedSize()
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.quaternary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.09)
+                                 : Color.primary.opacity(hovering ? 0.055 : 0.028))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.85)
+                                         : Color.primary.opacity(hovering ? 0.12 : 0.06),
+                              lineWidth: isSelected ? 1.4 : 0.6)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture(perform: onOpen)
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.14)) { hovering = inside }
+        }
+        .animation(.easeOut(duration: 0.2), value: isSelected)
+        .help("第 \(index + 1) / \(total) 张 · 点击进入图库查看器")
+        .contextMenu {
+            Button("查看大图", action: onOpen)
+            Button("保存到图库", action: onSave)
+        }
+    }
+}
+
+// MARK: - 图集页头扇形封面
+
+/// 详情页头的三张封面：叠成扇形，悬停时展开一点，像把一叠照片摊在桌上。
+private struct CatalogGalleryFan: View {
+    let source: CatalogSource
+    let images: [String]
+
+    @State private var hovering = false
+
+    private var covers: [String] { Array(images.prefix(3)) }
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(covers.enumerated()), id: \.offset) { index, url in
+                let center = Double(covers.count - 1) / 2
+                let spread = hovering ? 1.45 : 1.0
+                CatalogArtworkImage(source: source, urlString: url,
+                                    cornerRadius: 16, quality: .full)
+                    .frame(width: 150, height: 202)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(.white.opacity(0.4), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.5), radius: 22, y: 12)
+                    .rotationEffect(.degrees((Double(index) - center) * 8 * spread))
+                    .offset(x: (Double(index) - center) * 62 * spread,
+                            y: abs(Double(index) - center) * 12)
+                    .zIndex(Double(index))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onHover { inside in
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.8)) {
+                hovering = inside
+            }
+        }
+        .overlay(alignment: .bottom) {
+            HStack(spacing: 4) {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 8, weight: .bold))
+                Text("\(images.count) 张原图")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(.white.opacity(0.86))
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+            .background(.black.opacity(0.46), in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 0.6)
+            }
+        }
+    }
+}
+
+

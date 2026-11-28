@@ -792,6 +792,10 @@ struct TVGuideView: View {
             .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         }
         .buttonStyle(.plain)
+        // 单击选中看详情，双击直接开播：正在播 → 直播，已播且支持回看 → 回看。
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            openProgramDirectly(channel: channel, program: program)
+        })
         .onHover { inside in
             if inside {
                 hoveredGuideProgramID = program.id
@@ -799,9 +803,23 @@ struct TVGuideView: View {
                 hoveredGuideProgramID = nil
             }
         }
-        .help(slice.extraCount > 0
+        .help((slice.extraCount > 0
               ? "\(program.title) 等 \(slice.extraCount + 1) 档碎片节目 · \(timeRange(program))"
               : "\(program.title) · \(timeRange(program))")
+              + (live ? " · 双击播放" : (past && canCatchUp ? " · 双击回看" : "")))
+    }
+
+    /// 双击节目块的直达动作：正在播就开直播，已播且源支持回看就开回看。
+    /// 待播节目与不支持回看的已播节目保持单击选中，避免双击误触发提醒或空动作。
+    private func openProgramDirectly(channel: TVChannel, program: TVEPGProgram) {
+        let live = program.isLive && dayOffset == 0
+        if live {
+            store.openTVChannel(channel)
+        } else if program.end <= Date(), !(channel.catchUpSource ?? "").isEmpty {
+            store.openTVCatchup(channel, program: program)
+        } else if program.end <= Date() {
+            store.showToast("\(channel.name) 未提供回看")
+        }
     }
 
     /// 节目底色取自和时间环同一组配色，按开播时间稳定取色。

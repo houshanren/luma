@@ -33,6 +33,9 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
     /// 系统图库整理：相簿 / 文件夹的批量移动、增删。
     /// PhotoKit 没有细粒度进度，这类操作原来只是 fire-and-forget，任务中心看不到也回看不了。
     case organize
+    /// 网络资源详情解析：分集 / 图集图片的抓取与解析，放到后台任务里跑，
+    /// 页面可以先用列表已有的封面与标题撑住，不必整页空白等网络。
+    case parse
 
     public var title: String {
         switch self {
@@ -60,6 +63,7 @@ public enum SourceJobKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .assistant: return "助手"
         case .record: return "录制"
         case .organize: return "整理"
+        case .parse: return "解析"
         }
     }
 }

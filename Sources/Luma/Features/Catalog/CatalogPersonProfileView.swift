@@ -16,6 +16,7 @@ struct CatalogPersonProfileView: View {
     var loadsWorks: Bool = true
 
     @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     /// 内置资料库资料（简介 / 字段）：直接读 SQLite，不联网。
@@ -208,6 +209,11 @@ struct CatalogPersonProfileView: View {
                         }
                     }
                 }
+                // 资料库里没有各平台账号：这里按标准名 / 别名去公开搜索，
+                // 客户端在就走深链，不在就开网页。
+                CatalogPersonSocialStrip(name: wiki.info.name,
+                                         aliases: wikiAliases(wiki.info))
+                    .padding(.top, 10)
             } else {
                 Text("内置资料库没有收录这个人。")
                     .font(.system(size: 11))
@@ -223,6 +229,16 @@ struct CatalogPersonProfileView: View {
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 8)
+    }
+
+    /// 资料里的别名 / 英文名 / 日文名：社媒检索可以按这些名字再试一次。
+    private func wikiAliases(_ info: CatalogPersonInfo) -> [String] {
+        let labels: Set<String> = ["别名", "英文名", "日文名"]
+        return info.facts
+            .filter { labels.contains($0.label) }
+            .flatMap { $0.value.components(separatedBy: "、") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0.caseInsensitiveCompare(info.name) != .orderedSame }
     }
 
     /// 资料字段胶囊。「官网」这一项做成可点击，其余保持纯展示。
@@ -404,7 +420,14 @@ struct CatalogPersonProfileView: View {
             }
             .clipShape(Circle())
             .overlay {
-                Circle().strokeBorder(.white.opacity(0.32), lineWidth: 1)
+                // 一圈品牌渐变环，和悬停卡的头像保持同一种处理。
+                Circle()
+                    .strokeBorder(AngularGradient(colors: [LumaBrand.coral,
+                                                           LumaBrand.violet,
+                                                           LumaBrand.cyan,
+                                                           LumaBrand.coral],
+                                                  center: .center),
+                                  lineWidth: 1.6)
             }
             .shadow(color: .black.opacity(0.3), radius: 14, y: 6)
     }
@@ -732,7 +755,7 @@ struct CatalogPersonProfileView: View {
     private func personCell(_ entry: CatalogSpotlightItem, source: CatalogSource,
                             isNew: Bool = false) -> some View {
         Button {
-            catalog.playRemote(sourceID: entry.sourceID, item: entry.item)
+            store.openCatalogItem(sourceID: entry.sourceID, item: entry.item)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear
@@ -765,6 +788,17 @@ struct CatalogPersonProfileView: View {
                                 .padding(.vertical, 1.5)
                                 .background(Color.red.opacity(0.9), in: Capsule(style: .continuous))
                                 .shadow(color: Color.red.opacity(0.4), radius: 4, y: 1)
+                                .padding(6)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if source.kind.isGallerySite {
+                            Text("图集")
+                                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Color.black.opacity(0.55), in: Capsule(style: .continuous))
                                 .padding(6)
                         }
                     }

@@ -420,7 +420,6 @@ extension CinemaLibraryView {
                 Task { await store.scrapeCinemaPhotos([photo]) }
             }
         }
-        .help(photo.displayFilename)
     }
 
     func folderActionButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {

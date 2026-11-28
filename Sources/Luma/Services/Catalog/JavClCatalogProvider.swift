@@ -16,18 +16,55 @@ struct JavClCatalogProvider: CatalogProvider {
     static let defaultBaseURL = "https://javcl.com"
     static let defaultUserAgent = WebCatalogSupport.userAgent
 
+    /// 一级与站点导航一致：分类 / 女优 / 片商 / 热门榜（JAV STREAMING 由统一首页入口承担；
+    /// JAV HD 是另一个域名，不并进这个源）。二级在打开时再补。
+    static let defaultCategories: [CatalogCategory] = [
+        CatalogCategory(id: "group|category", title: "分类", isGroup: true),
+        CatalogCategory(id: "group|model", title: "女优", isGroup: true),
+        CatalogCategory(id: "group|studio", title: "片商", isGroup: true),
+        CatalogCategory(id: "group|top", title: "热门榜",
+                        children: topCategories, isGroup: true)
+    ]
+
+    private static let topCategories: [CatalogCategory] = [
+        CatalogCategory(id: "most-views", title: "最多观看"),
+        CatalogCategory(id: "top-100-jav-movies-this-week", title: "本周热榜"),
+        CatalogCategory(id: "top-jav-movies-this-month", title: "本月热榜")
+    ]
+
     // MARK: - CatalogProvider
 
     func categories(source: CatalogSource) async throws -> [CatalogCategory] {
         let root = try WebCatalogSupport.root(source)
-        if let live = try? await Self.liveCategories(source: source, root: root), live.count >= 4 {
-            return live
-        }
-        return source.categories
+        return await Self.loadTaxonomy(source: source, root: root)
     }
 
     func home(source: CatalogSource) async throws -> CatalogPage {
         try await home(source: source, page: 1)
+    }
+
+    /// 二级：分类走 WP 分类表；女优 / 片商抓站点目录第一页（每页 300 个）；
+    /// 热门榜固定三条榜单页。
+    func channels(source: CatalogSource, category: CatalogCategory) async throws -> [CatalogCategory] {
+        let root = try WebCatalogSupport.root(source)
+        let probe = Self.pageSource(source, root: root)
+        switch category.id {
+        case "group|category":
+            let live = (try? await Self.liveCategories(source: source, root: root)) ?? []
+            return live.map { CatalogCategory(id: $0.id, title: Self.translateCategory($0.title)) }
+        case "group|model":
+            guard let html = try? await WebCatalogSupport.fetchHTML(root + "/model/", source: probe)
+            else { return category.children ?? [] }
+            return Self.parseDirectory(html, path: "model")
+        case "group|studio":
+            guard let html = try? await WebCatalogSupport.fetchHTML(root + "/studio/", source: probe)
+            else { return category.children ?? [] }
+            return Self.parseDirectory(html, path: "studio")
+        case "group|top":
+            return Self.topCategories
+        default:
+            return category.children ?? []
+        }
     }
 
     func home(source: CatalogSource, page: Int) async throws -> CatalogPage {
@@ -45,6 +82,10 @@ struct JavClCatalogProvider: CatalogProvider {
         let target = category.isGroupCategory ? (category.children?.first ?? category) : category
         let slug = target.id.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !slug.isEmpty else { throw CatalogError.parse("分类地址无效") }
+        // 二级还没加载出来时（例如目录页请求失败）用首页兜底，避免落到无效地址。
+        if ["group|category", "group|model", "group|studio", "group|top"].contains(slug) {
+            return try await home(source: source, page: page)
+        }
         var address = "\(root)/\(slug)/"
         if page > 1 { address += "page/\(page)/" }
         let html = try await WebCatalogSupport.fetchHTML(address, source: Self.pageSource(source, root: root))
@@ -132,9 +173,7 @@ struct JavClCatalogProvider: CatalogProvider {
         guard html.contains("video-link") || html.contains("javcl") else {
             throw CatalogError.invalidConfig("站点结构无法识别：\(base)")
         }
-        if let cats = try? await liveCategories(source: probe, root: base), !cats.isEmpty {
-            probe.categories = cats
-        }
+        probe.categories = await loadTaxonomy(source: probe, root: base)
         return CatalogSource(name: "JavCl",
                              kind: .javcl,
                              baseURL: base,
@@ -152,6 +191,88 @@ struct JavClCatalogProvider: CatalogProvider {
         var copy = source
         copy.referer = root + "/"
         return copy
+    }
+
+    /// 一次抓齐导航里的四块：WP 分类表、女优目录、片商目录、热门榜。
+    /// 三个网络请求并发；某一块失败时只空着这一块，不影响其它一级。
+    private static func loadTaxonomy(source: CatalogSource, root: String) async -> [CatalogCategory] {
+        let probe = pageSource(source, root: root)
+        async let wpCategories = try? await liveCategories(source: source, root: root)
+        async let modelsHTML = try? await WebCatalogSupport.fetchHTML(root + "/model/", source: probe)
+        async let studiosHTML = try? await WebCatalogSupport.fetchHTML(root + "/studio/", source: probe)
+        let (wp, modelHTML, studioHTML) = await (wpCategories, modelsHTML, studiosHTML)
+
+        let categories = (wp ?? []).map {
+            CatalogCategory(id: $0.id, title: translateCategory($0.title))
+        }
+        let models = modelHTML.map { parseDirectory($0, path: "model") } ?? []
+        let studios = studioHTML.map { parseDirectory($0, path: "studio") } ?? []
+
+        return [
+            CatalogCategory(id: "group|category", title: "分类",
+                            children: categories, isGroup: true),
+            CatalogCategory(id: "group|model", title: "女优",
+                            children: models, isGroup: true),
+            CatalogCategory(id: "group|studio", title: "片商",
+                            children: studios, isGroup: true),
+            CatalogCategory(id: "group|top", title: "热门榜",
+                            children: topCategories, isGroup: true)
+        ]
+    }
+
+    /// 女优 / 片商目录里的一个方块：
+    /// `<div class="border … btn-dark"><h4><a class=text-white href=…/model/<slug>/ >名字</a> (9)</h4></div>`。
+    static func parseDirectory(_ html: String, path: String) -> [CatalogCategory] {
+        var result: [CatalogCategory] = []
+        var seen = Set<String>()
+        for block in CatalogHTML.fullMatches(
+            #"<div class="border py-1 px-2 m-1 text-center btn-dark">[\s\S]*?</div>"#,
+            in: html) {
+            guard let slug = CatalogHTML.first(
+                #"href=https://[^ ]*/\#(path)/([^/]+)/"#, in: block),
+                seen.insert(slug).inserted else { continue }
+            let raw = CatalogHTML.first(#"<a[^>]*>([\s\S]*?)</a>"#, in: block) ?? ""
+            var title = CatalogHTML.stripTags(raw)
+            // 站点在方块末尾附了作品数「(98)」，名册里只留名字。
+            if title.hasSuffix(")"), let open = title.lastIndex(of: "("),
+               title[title.index(after: open)..<title.index(before: title.endIndex)]
+                   .allSatisfy(\.isNumber) {
+                title = String(title[..<open])
+            }
+            while title.hasSuffix(",") || title.hasSuffix(" ") {
+                title.removeLast()
+            }
+            // 站点把「多人的合集标签」也铺成方块（Abe Mikako, Aika Mirei, …），
+            // 这不是一个人：塞进女优名册会被当成一个名字，星图也就永远匹配不上。
+            guard !title.contains(","), !title.contains("、") else { continue }
+            // 有的方块名字带 @ 前缀（用户自建标签），去掉前缀再进名册。
+            if title.hasPrefix("@") { title.removeFirst() }
+            guard !title.isEmpty else { continue }
+            result.append(CatalogCategory(id: "\(path)/\(slug)", title: title))
+        }
+        return result
+    }
+
+    /// 站点分类是英文，二级入口换成中文更顺手；没覆盖的保留原文。
+    private static func translateCategory(_ title: String) -> String {
+        let key = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let map: [String: String] = [
+            "a****": "其他",
+            "amateur": "素人", "anal": "肛交", "anchorwoman": "女主播",
+            "av actress": "女优", "bbw": "丰满", "big tits": "巨乳",
+            "blowjobs": "口交", "bondage": "束缚", "bukkake": "颜射",
+            "bus guide": "巴士导游", "censored": "有码", "college girl": "大学生",
+            "cowgirl": "骑乘", "creampie": "中出", "deep throating": "深喉",
+            "facials": "颜射", "gangbang": "轮奸", "gay": "男同",
+            "handjob": "手交", "hardcore": "硬核", "lesbians": "女同",
+            "maid": "女仆", "married woman": "人妻", "massage": "按摩",
+            "milf": "熟女", "older sister": "姐姐", "planning": "企划",
+            "pregnant": "孕妇", "sailor suit": "水手服", "school girl": "校服",
+            "shotacon": "正太", "slender": "苗条", "teacher": "教师",
+            "titty fuck": "乳交", "toys": "玩具", "underwear": "内衣",
+            "uniform": "制服", "virginity": "处女", "voyeur": "偷窥"
+        ]
+        return map[key] ?? title
     }
 
     /// WP REST 分类表：按内容量排序，空分类直接丢掉。

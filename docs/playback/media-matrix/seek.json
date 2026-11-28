@@ -21,7 +21,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/seek_04_h264_ac3_51/live.m3u8",
+        "entry": "/<测试素材目录>/hls/seek_04_h264_ac3_51/live.m3u8",
         "segments": 3,
         "duration": 6.0,
         "first_segment_seconds": 2.0,
@@ -61,7 +61,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/seek_05_h264_eac3_51/live.m3u8",
+        "entry": "/<测试素材目录>/hls/seek_05_h264_eac3_51/live.m3u8",
         "segments": 3,
         "duration": 6.0,
         "first_segment_seconds": 2.0,
@@ -101,7 +101,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/seek_06_h264_dts_51/live.m3u8",
+        "entry": "/<测试素材目录>/hls/seek_06_h264_dts_51/live.m3u8",
         "segments": 3,
         "duration": 6.0,
         "first_segment_seconds": 2.0,
@@ -152,7 +152,7 @@
           }
         ],
         "master_exists": true,
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/seek_16_h264_aac51_ac351/master.m3u8",
+        "entry": "/<测试素材目录>/hls/seek_16_h264_aac51_ac351/master.m3u8",
         "audio_renditions": 2,
         "segments": 3,
         "duration": 6.0,

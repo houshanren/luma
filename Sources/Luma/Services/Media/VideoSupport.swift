@@ -26,12 +26,32 @@ enum FFmpeg {
     /// 是否有能正确处理杜比视界的 ffmpeg。
     static var supportsLibplacebo: Bool { libplaceboExecutable != nil }
 
+    /// 内置二进制的目录按架构分开：Apple 芯片用 `bin`（带 libplacebo 的 ffmpeg-full），
+    /// Intel 用 `bin-x86_64`（静态包，含 zscale、不含 libplacebo）。
+    /// 不跨架构回退：Intel 上执行 arm64 的 ffmpeg 只会直接失败，交给系统 ffmpeg 更靠谱。
+    private static var bundledBinaryDirectory: String {
+        #if arch(x86_64)
+        return "bin-x86_64"
+        #else
+        return "bin"
+        #endif
+    }
+
+    /// 与二进制同架构的 dylib 目录（MoltenVK 的 ICD 清单在这里）。
+    private static var bundledLibraryDirectory: String {
+        #if arch(x86_64)
+        return "lib-x86_64"
+        #else
+        return "lib"
+        #endif
+    }
+
     /// Vulkan loader 靠 ICD 清单找到 libMoltenVK：优先用 App 内置的（随 ffmpeg 一起打包），
     /// 找不到再退回 Homebrew 的 molten-vk。
     static var vulkanICDPath: String? {
         let fm = FileManager.default
         if let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("lib/MoltenVK_icd.json").path,
+            .appendingPathComponent("\(bundledLibraryDirectory)/MoltenVK_icd.json").path,
            fm.fileExists(atPath: bundled) {
             return bundled
         }
@@ -63,9 +83,10 @@ enum FFmpeg {
                                purpose: String? = nil) -> URL? {
         let fm = FileManager.default
         var candidates: [String] = []
-        // 优先使用 App 内置的 ffmpeg（build.sh 把 ffmpeg-full + 依赖打进 Contents/Resources/bin、lib）。
+        // 优先使用 App 内置的 ffmpeg（build.sh 把 ffmpeg-full + 依赖打进 Contents/Resources/bin、lib；
+        // Intel 的静态包在 bin-x86_64）。
         if let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("bin/\(name)").path {
+            .appendingPathComponent("\(bundledBinaryDirectory)/\(name)").path {
             candidates.append(bundled)
         }
         candidates += [

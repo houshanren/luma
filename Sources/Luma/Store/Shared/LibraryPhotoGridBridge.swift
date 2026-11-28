@@ -4,11 +4,11 @@ import LumaUI
 
 /// 把 `LibraryStore` / `AppSettings` / `SelectionModel` 接到 LumaUI 的网格组件上。
 ///
-/// 组件只认 `PhotoGridHost` 这一份数据与闭包；这里负责在三个源变化后刷新一次值拷贝，
-/// 并广播 `objectWillChange`。缩略图档位、`GridLayout` 列数与 Lazy 容器都不变，
-/// 因此不改变原有的布局与取图路径。
+/// 组件只认 `PhotoGridHost` 这一份数据与闭包；这里负责在三个源变化后刷新一次值拷贝。
+/// 缩略图档位、`GridLayout` 列数与 Lazy 容器都不变，因此不改变原有的布局与取图路径。
 @MainActor
-final class LibraryPhotoGridBridge: ObservableObject {
+@Observable
+final class LibraryPhotoGridBridge {
     let host = PhotoGridHost()
 
     private let store: LibraryStore
@@ -22,15 +22,7 @@ final class LibraryPhotoGridBridge: ObservableObject {
         self.settings = settings
         self.selection = selection
 
-        host.stackBadges = { [weak store] in
-            guard let store else { return [:] }
-            return store.stackBadges().mapValues {
-                PhotoStackBadge(count: $0.count, isBurst: $0.isBurst)
-            }
-        }
-        host.isStackExpanded = { [weak store] in store?.isStackExpanded($0) ?? false }
-        host.stackCount = { [weak store] in store?.stackCount(for: $0) ?? 1 }
-        host.toggleStackExpansion = { [weak store] in store?.toggleStackExpansion($0) }
+        installStackCallbacks()
         host.handleTap = { [weak store] in store?.handleTap($0) }
         host.setSelectionAnchor = { [weak store] in store?.selectionAnchorID = $0 }
         host.setSelectedIDs = { [weak selection] in selection?.ids = $0 }
@@ -93,6 +85,21 @@ final class LibraryPhotoGridBridge: ObservableObject {
         }
     }
 
+    /// 堆叠相关闭包：整组张数 / 展开态依赖 `store.stackRevision`。
+    /// `@Observable` 下闭包本身是属性，重新赋值才会让读它的网格与单元格失效；
+    /// 因此只在堆叠数据真的变化时重装，其它刷新不带动全网格重算。
+    private func installStackCallbacks() {
+        host.stackBadges = { [weak store] in
+            guard let store else { return [:] }
+            return store.stackBadges().mapValues {
+                PhotoStackBadge(count: $0.count, isBurst: $0.isBurst)
+            }
+        }
+        host.isStackExpanded = { [weak store] in store?.isStackExpanded($0) ?? false }
+        host.stackCount = { [weak store] in store?.stackCount(for: $0) ?? 1 }
+        host.toggleStackExpansion = { [weak store] in store?.toggleStackExpansion($0) }
+    }
+
     private func refresh() {
         // 只有真正影响网格渲染的值变了才广播：Store 里还有几百个与网格无关的
         // @Published（toast / 面板开关 / 浏览记录…），无条件转发会让每个可见单元格
@@ -105,6 +112,7 @@ final class LibraryPhotoGridBridge: ObservableObject {
                                 selectedIDs: selection.ids,
                                 stackRevision: store.stackRevision,
                                 motion: settings.motion.rawValue)
+        let stackChanged = lastSnapshot.map { $0.stackRevision != snapshot.stackRevision } ?? true
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
 
@@ -116,7 +124,9 @@ final class LibraryPhotoGridBridge: ObservableObject {
         host.layoutAnimation = settings.motion.layout
         host.photoOpenMode = snapshot.photoOpenMode
         host.selectedIDs = snapshot.selectedIDs
-        host.objectWillChange.send()
+        // 堆叠闭包只在堆叠数据变化时重装：其它属性各自触发自己那部分视图，
+        // 不再用一次全局广播把所有网格消费者一起重算。
+        if stackChanged { installStackCallbacks() }
     }
 
     /// 参与「是否需要刷新」比较的快照。

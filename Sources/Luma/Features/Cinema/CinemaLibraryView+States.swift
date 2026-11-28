@@ -162,12 +162,20 @@ extension CinemaLibraryView {
 
     /// 文档约定 D4：未识别空态给命名示例 + 一个「去匹配」主行动，不写「暂无数据」。
     var unmatchedEmptyState: some View {
-        LumaEmptyState(symbol: "questionmark.circle",
-                       title: "\(unmatched.count) 条影片未识别",
-                       message: "命名不规范会导致匹配失败。试试「片名.年份.分辨率」，或手动搜索片名。",
-                       actions: unmatched.first.map { entry in
-                           [LumaEmptyAction(title: "去匹配") { panelTarget = .match(entry) }]
-                       } ?? [])
+        var actions: [LumaEmptyAction] = []
+        // 规则匹配失败时先给 AI 兜底：逐条搜索候选、由模型确认后再写回。
+        if !unmatched.isEmpty, store.aiAssistAvailability.isReady {
+            actions.append(LumaEmptyAction(title: "AI 兜底匹配", symbol: "sparkles", filled: true) {
+                Task { await store.aiResolveUnmatchedCinema(scope: store.cinemaActiveScope) }
+            })
+        }
+        if let entry = unmatched.first {
+            actions.append(LumaEmptyAction(title: "去匹配") { panelTarget = .match(entry) })
+        }
+        return LumaEmptyState(symbol: "questionmark.circle",
+                              title: "\(unmatched.count) 条影片未识别",
+                              message: "命名不规范会导致匹配失败。试试「片名.年份.分辨率」，或手动搜索片名。",
+                              actions: actions)
     }
 
     var showFirstRun: Bool {

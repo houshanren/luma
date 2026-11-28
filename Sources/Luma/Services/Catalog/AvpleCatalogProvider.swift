@@ -10,19 +10,33 @@ struct AvpleCatalogProvider: CatalogProvider {
     static let defaultBaseURL = "https://avple.app"
     static let defaultUserAgent = WebCatalogSupport.userAgent
 
+    /// 一级与站点侧栏标签云一致：每日热门 / 片商 / 衣着 / 身材 / 玩法；
+    /// 每组下面的 # 标签是二级，点进去就是该标签的列表。
     static let defaultCategories: [CatalogCategory] = [
         CatalogCategory(id: "trend|daily", title: "每日热门"),
-        CatalogCategory(id: "tag|121", title: "麻豆传媒"),
-        CatalogCategory(id: "tag|122", title: "SWAG"),
-        CatalogCategory(id: "tag|123", title: "果冻传媒"),
-        CatalogCategory(id: "tag|124", title: "皇家华人"),
-        CatalogCategory(id: "tag|125", title: "精东影业"),
-        CatalogCategory(id: "tag|126", title: "天美传媒"),
-        CatalogCategory(id: "tag|127", title: "星空无限"),
-        CatalogCategory(id: "tag|131", title: "国产自拍"),
-        CatalogCategory(id: "tag|135", title: "FC2PPV"),
-        CatalogCategory(id: "tag|1", title: "巨乳"),
-        CatalogCategory(id: "tag|33", title: "多P")
+        CatalogCategory(id: "group:tags:片商", title: "片商", children: [
+            CatalogCategory(id: "tag|121", title: "麻豆传媒"),
+            CatalogCategory(id: "tag|123", title: "果冻传媒"),
+            CatalogCategory(id: "tag|124", title: "皇家华人"),
+            CatalogCategory(id: "tag|125", title: "精东影业"),
+            CatalogCategory(id: "tag|126", title: "天美传媒"),
+            CatalogCategory(id: "tag|127", title: "星空无限"),
+            CatalogCategory(id: "tag|128", title: "乐播传媒"),
+            CatalogCategory(id: "tag|129", title: "蜜桃传媒"),
+            CatalogCategory(id: "tag|130", title: "乌鸦传媒"),
+            CatalogCategory(id: "tag|131", title: "国产自拍"),
+            CatalogCategory(id: "tag|135", title: "FC2PPV"),
+            CatalogCategory(id: "tag|122", title: "SWAG"),
+            CatalogCategory(id: "search|開心鬼傳媒", title: "开心鬼传媒"),
+            CatalogCategory(id: "search|素人自拍", title: "素人自拍"),
+            CatalogCategory(id: "search|粉絲福利", title: "粉丝福利")
+        ], isGroup: true),
+        CatalogCategory(id: "group:tags:身材", title: "身材", children: [
+            CatalogCategory(id: "tag|1", title: "巨乳")
+        ], isGroup: true),
+        CatalogCategory(id: "group:tags:玩法", title: "玩法", children: [
+            CatalogCategory(id: "tag|33", title: "多P")
+        ], isGroup: true)
     ]
 
     /// `.tv` 域名被 Cloudflare 拦住，导入时换到可直连的镜像。
@@ -32,13 +46,13 @@ struct AvpleCatalogProvider: CatalogProvider {
 
     // MARK: - CatalogProvider
 
-    /// 站点没有真正的分类层级：侧栏标签云（片商 / 衣着 / 身材 / 玩法）就是全部入口，
-    /// 统一拍平成一级分类，不再单独做标签面板。
+    /// 站点没有独立的分类页：侧栏标签云（片商 / 衣着 / 身材 / 玩法）就是层级本身，
+    /// 每组当一级，组里的 # 标签当二级。
     func categories(source: CatalogSource) async throws -> [CatalogCategory] {
         let root = try WebCatalogSupport.root(source)
         guard let html = try? await WebCatalogSupport.fetchHTML(root + "/", source: source)
         else { return Self.defaultCategories }
-        let live = Self.flattenCategories(html)
+        let live = Self.groupedCategories(html)
         return live.count > 2 ? live : Self.defaultCategories
     }
 
@@ -59,6 +73,10 @@ struct AvpleCatalogProvider: CatalogProvider {
             address = "\(root)/trend/\(parts[1])/\(page)"
         } else if parts.count == 2, parts[0] == "tag" {
             address = "\(root)/tags/\(parts[1])/\(page)/date"
+        } else if parts.count == 2, parts[0] == "search",
+                  let encoded = WebCatalogSupport.queryEncoded(parts[1]) {
+            // 站内没建标签的片商（開心鬼傳媒等）用站内搜索页兜底。
+            address = "\(root)/search?key=\(encoded)" + (page > 1 ? "&page=\(page)" : "")
         } else {
             address = "\(root)/tags/\(target.id)/\(page)/date"
         }
@@ -153,7 +171,7 @@ struct AvpleCatalogProvider: CatalogProvider {
                              userAgent: defaultUserAgent,
                              referer: base + "/",
                              categories: {
-                                 let live = flattenCategories(html)
+                                 let live = groupedCategories(html)
                                  return live.count > 2 ? live : defaultCategories
                              }(),
                              posterAspect: 16.0 / 9.0,
@@ -162,16 +180,10 @@ struct AvpleCatalogProvider: CatalogProvider {
 
     // MARK: - 解析：标签分组
 
-    /// 把侧栏标签云拍平成一级分类：`每日热门` 打头，其余按片商 / 衣着 / 身材 / 玩法顺序。
-    static func flattenCategories(_ html: String) -> [CatalogCategory] {
-        var result: [CatalogCategory] = [CatalogCategory(id: "trend|daily", title: "每日热门")]
-        var seen = Set(["trend|daily"])
-        for group in parseTagGroups(html) {
-            for child in group.children ?? [] where seen.insert(child.id).inserted {
-                result.append(child)
-            }
-        }
-        return result
+    /// 一级：`每日热门` 打头，其余按站点的 片商 / 衣着 / 身材 / 玩法 顺序，
+    /// 每组直接带着自己那批标签当二级。
+    static func groupedCategories(_ html: String) -> [CatalogCategory] {
+        [CatalogCategory(id: "trend|daily", title: "每日热门")] + parseTagGroups(html)
     }
 
     /// 侧栏标签云按「片商 / 衣着 / 身材 / 玩法」分组，
@@ -185,22 +197,35 @@ struct AvpleCatalogProvider: CatalogProvider {
         let ns = html as NSString
         var result: [CatalogCategory] = []
         var seen = Set<String>()
-        for match in regex.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
-            let title = CatalogHTML.stripTags(ns.substring(with: match.range(at: 1)))
+        for group in regex.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+            let title = CatalogHTML.stripTags(ns.substring(with: group.range(at: 1)))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty, title.count <= 6 else { continue }
-            let body = ns.substring(with: match.range(at: 2))
+            let body = ns.substring(with: group.range(at: 2))
             var children: [CatalogCategory] = []
             var childSeen = Set<String>()
-            for anchor in CatalogHTML.fullMatches(
-                #"<a[^>]+href="/tags/(\d+)/1/date"[^>]*>([\s\S]*?)</a>"#, in: body) {
-                guard let id = CatalogHTML.first(#"/tags/(\d+)/1/date"#, in: anchor) else { continue }
+            // 分组里的 # 标签分两种链接：有标签 id 的走 `/tags/{id}/…`，
+            // 站内没有建标签的（開心鬼傳媒 / 素人自拍 / 粉絲福利）挂的是搜索页。
+            for anchor in CatalogHTML.fullMatches(#"<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>"#,
+                                                  in: body) {
+                let href = CatalogHTML.first(#"href="([^"]+)""#, in: anchor) ?? ""
                 let name = CatalogHTML.stripTags(anchor)
                     .replacingOccurrences(of: "#", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty, !name.contains("更多"),
-                      childSeen.insert(id).inserted else { continue }
-                children.append(CatalogCategory(id: "tag|\(id)", title: name))
+                guard !name.isEmpty, !name.contains("更多") else { continue }
+                let id: String
+                if let tagID = CatalogHTML.first(#"/tags/(\d+)/1/date"#, in: href) {
+                    id = "tag|\(tagID)"
+                } else if href.hasPrefix("/search?key="),
+                          let keyword = href.dropFirst("/search?key=".count)
+                              .removingPercentEncoding,
+                          !keyword.isEmpty {
+                    id = "search|\(keyword)"
+                } else {
+                    continue
+                }
+                guard childSeen.insert(id).inserted else { continue }
+                children.append(CatalogCategory(id: id, title: name))
             }
             guard !children.isEmpty, seen.insert(title).inserted else { continue }
             result.append(CatalogCategory(id: "group:tags:\(title)", title: title,

@@ -64,7 +64,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/04_h264_ac3_51_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/04_h264_ac3_51_remux/live.m3u8",
         "segments": 4,
         "duration": 8.0,
         "first_segment_seconds": 2.0,
@@ -120,7 +120,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/05_h264_eac3_51_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/05_h264_eac3_51_remux/live.m3u8",
         "segments": 4,
         "duration": 8.0,
         "first_segment_seconds": 2.0,
@@ -176,7 +176,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/06_h264_dts_51_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/06_h264_dts_51_remux/live.m3u8",
         "segments": 4,
         "duration": 8.0,
         "first_segment_seconds": 2.0,
@@ -232,7 +232,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/07_hevc_mlp_51_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/07_hevc_mlp_51_remux/live.m3u8",
         "segments": 1,
         "duration": 8.0,
         "first_segment_seconds": 8.0,
@@ -288,7 +288,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/08_hevc10_hdr10_flac_51_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/08_hevc10_hdr10_flac_51_remux/live.m3u8",
         "segments": 1,
         "duration": 8.0,
         "first_segment_seconds": 8.0,
@@ -344,7 +344,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/09_hevc10_hdr10_ac3_51_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/09_hevc10_hdr10_ac3_51_remux/live.m3u8",
         "segments": 1,
         "duration": 8.0,
         "first_segment_seconds": 8.0,
@@ -400,7 +400,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/10_av1_opus_51_transcode/live.m3u8",
+        "entry": "/<测试素材目录>/hls/10_av1_opus_51_transcode/live.m3u8",
         "segments": 4,
         "duration": 8.0,
         "first_segment_seconds": 2.0,
@@ -456,7 +456,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/11_vp9_opus_51_transcode/live.m3u8",
+        "entry": "/<测试素材目录>/hls/11_vp9_opus_51_transcode/live.m3u8",
         "segments": 4,
         "duration": 8.0,
         "first_segment_seconds": 2.0,
@@ -512,7 +512,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/12_mpeg2_1080i_mp3_transcode/live.m3u8",
+        "entry": "/<测试素材目录>/hls/12_mpeg2_1080i_mp3_transcode/live.m3u8",
         "segments": 4,
         "duration": 8.0,
         "first_segment_seconds": 2.0,
@@ -568,7 +568,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/13_mpeg4_mp3_transcode/live.m3u8",
+        "entry": "/<测试素材目录>/hls/13_mpeg4_mp3_transcode/live.m3u8",
         "segments": 5,
         "duration": 8.04,
         "first_segment_seconds": 2.0,
@@ -657,7 +657,7 @@
           }
         ],
         "master_exists": true,
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/16_h264_aac51_ac351_remux/master.m3u8",
+        "entry": "/<测试素材目录>/hls/16_h264_aac51_ac351_remux/master.m3u8",
         "audio_renditions": 2,
         "segments": 4,
         "duration": 8.0,
@@ -743,7 +743,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/18_hevc_aac_stereo_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/18_hevc_aac_stereo_remux/live.m3u8",
         "segments": 1,
         "duration": 8.0,
         "first_segment_seconds": 8.0,
@@ -799,7 +799,7 @@
             "language": "und"
           }
         ],
-        "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/19_hevc10_hdr10_4k60_remux/live.m3u8",
+        "entry": "/<测试素材目录>/hls/19_hevc10_hdr10_4k60_remux/live.m3u8",
         "segments": 2,
         "duration": 6.02,
         "first_segment_seconds": 4.166667,
@@ -829,7 +829,7 @@
               "language": "und"
             }
           ],
-          "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/19_hevc10_hdr10_4k60_tonemap/live.m3u8",
+          "entry": "/<测试素材目录>/hls/19_hevc10_hdr10_4k60_tonemap/live.m3u8",
           "segments": 3,
           "duration": 6.0,
           "first_segment_seconds": 2.0,
@@ -917,7 +917,7 @@
               "language": "und"
             }
           ],
-          "entry": "/Users/lijialong/Movies/LumaTestMedia/hls/21_hevc10_hdr10_hvc1_tonemap/live.m3u8",
+          "entry": "/<测试素材目录>/hls/21_hevc10_hdr10_hvc1_tonemap/live.m3u8",
           "segments": 4,
           "duration": 8.0,
           "first_segment_seconds": 2.0,

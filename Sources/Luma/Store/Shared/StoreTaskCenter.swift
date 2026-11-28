@@ -29,16 +29,29 @@ final class StoreTaskCenter {
         case window
         case viewerStrip
         case overview
+        /// 年 / 月总览的预取（另一侧分组），完成后只进缓存、不打断当前页面。
+        case overviewPrefetch
+        /// 直连模式月总览里某个月的逐天分组（键 = 查询 + 月份），各月独立加载。
+        case monthDays(String)
+        /// 启动首屏窗口快照的异步编码与落盘。
+        case windowSnapshot
         case systemWindow
         case faceCluster
         case libraryIndex
         case favoritesDigest
         case videoHubLoad
+        /// 视频页筛选项变化后的重新派生：与整库加载分开，避免互相取消。
+        case videoHubRebuild
+        /// 地点聚类的后台重算：地名补齐期间内容版本连续变化，不能同步重聚类。
+        case placeClusters
         case semanticSearch
         case cinemaScrape
         case cinemaPrewarm
         /// 影院详情里每个条目各自的「已标记」提示任务。
         case cinemaToast(UUID)
+        /// 系统图库结构写（新建 / 重命名 / 删除相簿与文件夹）：每次一个独立槽位，
+        /// 并发发起时各自跑完，但都登记在这里，换库 / 退出能一起取消。
+        case systemStructureWrite(UUID)
 
         // 网盘
         case cloudScan
@@ -77,6 +90,8 @@ final class StoreTaskCenter {
         case viewerTVSleep
         case search
         case toast
+        /// 视图偏好的延迟落盘（缩放滑杆 / 捏合连续变化时只在停手后写一次）。
+        case viewPreference
     }
 
     private var tasks: [Slot: Task<Void, Never>] = [:]
@@ -84,6 +99,11 @@ final class StoreTaskCenter {
     /// 登记任务：同一槽位的旧任务先取消。传 nil 等价于 `finish`。
     func adopt(_ slot: Slot, _ task: Task<Void, Never>?) {
         tasks[slot]?.cancel()
+        tasks[slot] = task
+    }
+
+    /// 登记任务但不取消同槽位的旧任务：用于允许并发、必须各自完成的结构写。
+    func attach(_ slot: Slot, _ task: Task<Void, Never>) {
         tasks[slot] = task
     }
 

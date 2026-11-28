@@ -90,6 +90,8 @@ public final class VideoStreamSession {
     public private(set) var isMultiAudio = false
     /// 直播会话：源持续推送、没有完整时长，不落缓存，输入直接交给 ffmpeg。
     private let isLive: Bool
+    /// 远端 HLS 窗口源（电视回看）：同样不套 Range 代理，把地址连同请求头直接交给 ffmpeg。
+    private let directRemoteInput: Bool
     /// 音轨声道数：>2 时给 AAC 更高码率，避免把 5.1 压得太狠。
     private let audioChannels: Int
     /// 选中音轨的编码（ffprobe 的展示名）。AAC / ALAC 可以直接拷进 fMP4，
@@ -163,6 +165,7 @@ public final class VideoStreamSession {
                 cacheSignature: String = "",
                 allowsCachePersistence: Bool = true,
                 isLive: Bool = false,
+                directRemoteInput: Bool = false,
                 refreshSource: (() -> (URL, [String: String])?)? = nil) {
         self.environment = environment
         let profile = environment.bufferProfile
@@ -171,6 +174,7 @@ public final class VideoStreamSession {
         self.cacheSignature = cacheSignature
         self.allowsCachePersistence = allowsCachePersistence
         self.isLive = isLive
+        self.directRemoteInput = directRemoteInput
         let base = environment.cacheDirectory
         self.cacheDirectory = base.appendingPathComponent(
             Self.cacheDirectoryName(photoID: photoID,
@@ -746,8 +750,10 @@ public final class VideoStreamSession {
 
         let isRemote = !source.isFileURL
         var inputTarget: String
-        if isRemote, isLive {
+        if isRemote, isLive || directRemoteInput {
             // 直播流是持续推送、不可 Range 的：不套本地代理，直接把源地址交给 ffmpeg。
+            // 回看这类远端 HLS 窗口源同理：代理会把 m3u8 当字节文件转发，
+            // 其中的相对分片地址会落到代理端口上，ffmpeg 只能读到坏数据。
             inputTarget = source.absoluteString
         } else if isRemote {
             let proxy = RemoteRangeSource(upstream: source,
@@ -787,7 +793,11 @@ public final class VideoStreamSession {
         let seeking = startOffset > 0.5
 
         if seeking {
-            if copiesVideo {
+            if directRemoteInput {
+                // 回看 HLS 的时间戳挂在节目时间轴上（甚至带日期偏移），探到的 pts 不能当片源秒数；
+                // `-ss` 本身就是相对回看窗口开头，直接用请求点作为会话 0 点。
+                playbackStartOffset = startOffset
+            } else if copiesVideo {
                 playbackStartOffset = Self.actualSeekStart(requested: startOffset,
                                                            input: inputTarget,
                                                            ffmpeg: environment.ffmpeg)
@@ -834,6 +844,7 @@ public final class VideoStreamSession {
                                     burnSubtitleStream: burnSubtitleStream,
                                     outputDirectory: workDirectory,
                                     isLive: isLive,
+                                    directRemoteInput: directRemoteInput,
                                     headers: headers)
         let arguments = StreamPlanner.arguments(for: request)
 

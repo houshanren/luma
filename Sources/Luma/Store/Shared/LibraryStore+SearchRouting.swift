@@ -89,6 +89,15 @@ extension LibraryStore {
                                                              isTV: isTV)
             }
             navigate(to: .networkCinema)
+
+        case .atlasPerson(let id):
+            // 星图页面出现时消费「待看人物」：切到档案并选中这一位。
+            AtlasStore.shared.pendingPersonID = id
+            navigate(to: .atlas)
+
+        case .atlasWork(let id):
+            AtlasStore.shared.pendingWorkID = id
+            navigate(to: .atlas)
         }
     }
 

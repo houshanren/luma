@@ -26,7 +26,10 @@ enum WebCatalogSupport {
     }
 
     static func root(_ source: CatalogSource) throws -> String {
-        var text = source.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 发布页找到过可用镜像时优先用它：页面里的相对链接、封面都要落在同一台。
+        var text = CatalogAddressCache.base(kind: source.kind, host: source.host)
+            ?? source.baseURL
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") { text.removeLast() }
         guard !text.isEmpty, URL(string: text)?.host != nil else {
             throw CatalogError.invalidConfig("站点地址为空")
@@ -45,15 +48,25 @@ enum WebCatalogSupport {
         return try await fetchHTML(url, source: source)
     }
 
-    static func coverData(source: CatalogSource, urlString: String) async throws -> Data {
-        guard let url = URL(string: CatalogHTML.fixURL(urlString, base: source.baseURL)) else {
-            throw CatalogError.parse("封面地址无效")
-        }
-        let data = try await CatalogHTTP.fetchData(url: url, headers: [
+    /// 图片请求头：附件图常带防盗链与登录校验，Cookie 与页面请求保持一致。
+    static func imageHeaders(_ source: CatalogSource) -> [String: String] {
+        var headers: [String: String] = [
             "User-Agent": source.userAgent,
             "Referer": source.referer,
             "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"
-        ])
+        ]
+        if let cookie = source.cookie, !cookie.isEmpty { headers["Cookie"] = cookie }
+        return headers
+    }
+
+    static func coverData(source: CatalogSource, urlString: String) async throws -> Data {
+        guard let raw = URL(string: CatalogHTML.fixURL(urlString, base: try root(source))) else {
+            throw CatalogError.parse("封面地址无效")
+        }
+        let url = CatalogAddressRouter.rewriteSiteURL(raw, source: source)
+        let data = try await CatalogHTTP.fetchData(url: url,
+                                                   headers: imageHeaders(
+                                                    CatalogAddressRouter.currentSource(source)))
         guard !data.isEmpty else { throw CatalogError.parse("封面为空") }
         return data
     }

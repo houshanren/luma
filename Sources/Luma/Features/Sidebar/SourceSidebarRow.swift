@@ -154,6 +154,9 @@ struct SourceSidebarRow<Cover: View, Menu: View>: View {
         .background {
             LumaRowHighlight(active: model.isCurrent, hovered: isHovering)
         }
+        // 悬停高亮、拖动把手、选中描边统一走同一段短过渡：划过时不会有生硬的跳变。
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .animation(.easeOut(duration: 0.16), value: model.isCurrent)
         .overlay(alignment: .top) {
             if isDropTarget {
                 Capsule(style: .continuous)

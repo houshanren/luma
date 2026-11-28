@@ -62,6 +62,8 @@ public struct StreamRequest {
     public var outputDirectory: URL
     /// 直播源：去掉 readrate、用滑动窗口分片，并把请求头交给 ffmpeg 的 HTTP 客户端。
     public var isLive: Bool
+    /// 远端 HLS 窗口源（电视回看）：输入是远端地址而非本机代理，同样要把请求头交给 ffmpeg。
+    public var directRemoteInput: Bool
     /// 直播源要求的请求头（UA / Referer 等）。
     public var headers: [String: String]
 
@@ -93,6 +95,7 @@ public struct StreamRequest {
                 burnSubtitleStream: Int? = nil,
                 outputDirectory: URL,
                 isLive: Bool = false,
+                directRemoteInput: Bool = false,
                 headers: [String: String] = [:]) {
         self.input = input
         self.isRemote = isRemote
@@ -122,6 +125,7 @@ public struct StreamRequest {
         self.burnSubtitleStream = burnSubtitleStream
         self.outputDirectory = outputDirectory
         self.isLive = isLive
+        self.directRemoteInput = directRemoteInput
         self.headers = headers
     }
 }
@@ -212,8 +216,16 @@ public enum StreamPlanner {
         let multiAudio = usesMultipleAudioTracks(for: request)
 
         var arguments = ["-y", "-v", "error"]
-        // 只看开头 2 MB 就足够判断流信息，缩短首段等待（原来 4 MB 在网盘上要多读几秒）。
-        arguments += ["-probesize", "2M", "-analyzeduration", "2M"]
+        if request.isLive {
+            // 直播（多为 HTTP-FLV / TS）只用很短的开头判断编码：
+            // 源按实时推送，读满 2 秒的探测窗口就等于把首段起播推后两秒多
+            // （本机实测凤凰 FLV 首段 5.8～10 秒）。1 秒足够认出 H.264 / AAC，
+            // 再短可能碰上「SPS/PPS 要到下一个关键帧才有」的源而识别失败。
+            arguments += ["-probesize", "500000", "-analyzeduration", "1000000"]
+        } else {
+            // 只看开头 2 MB 就足够判断流信息，缩短首段等待（原来 4 MB 在网盘上要多读几秒）。
+            arguments += ["-probesize", "2M", "-analyzeduration", "2M"]
+        }
         // 本地文件读盘快，保持 12×；网盘按缓冲档位决定生成倍率，提前量由会话的 pacing 控制。
         // 直播由源按实时推送，限速反而会积压，直接不限。
         if !request.isLive {
@@ -242,8 +254,8 @@ public enum StreamPlanner {
         if effectiveMode == .transcode {
             arguments += ["-hwaccel", "videotoolbox"]
         }
-        // 直播直接把源地址交给 ffmpeg：带上源要求的 UA / Referer，断流时自动重连。
-        if request.isLive {
+        // 直播 / 回看直接读远端地址：带上源要求的 UA / Referer。
+        if request.isLive || request.directRemoteInput {
             if let userAgent = request.headers.first(where: {
                 $0.key.caseInsensitiveCompare("User-Agent") == .orderedSame
             })?.value, !userAgent.isEmpty {
@@ -257,6 +269,9 @@ public enum StreamPlanner {
             if !extraHeaders.isEmpty {
                 arguments += ["-headers", extraHeaders]
             }
+        }
+        // 只有直播才自动重连：回看是有限的窗口源，重连反而会把窗口外的地址拉回来。
+        if request.isLive {
             arguments += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
         }
         arguments += ["-i", request.input]
@@ -342,12 +357,19 @@ public enum StreamPlanner {
                 effectiveProfile.codec = .hevc
             }
             let usesHEVC = effectiveProfile.codec == .hevc
+            // 像素率超限被降档（4K60 → 1440p）：瓶颈在 10bit 软件缩放 + 编码，本机实测
+            // 原参数只有 1.35× 实时，系统里再跑个编译 / 聊天软件就掉到 1× 以下，播放端周期性卡顿。
+            // 缩放降为 bilinear + 编码器实时提示后同机同素材实测 2.25×，1.5 倍降采样下画质差异极小。
+            let downscaled = effectiveProfile.outputSize != nil
             arguments += ["-c:v", usesHEVC ? "hevc_videotoolbox" : "h264_videotoolbox",
                           "-b:v", "\(effectiveProfile.bitrate)",
                           "-maxrate", "\(effectiveProfile.maxrate)",
                           "-bufsize", "\(effectiveProfile.bufsize)",
                           "-allow_sw", "1",
                           "-pix_fmt", effectiveProfile.pixelFormat]
+            if downscaled {
+                arguments += ["-realtime", "1", "-prio_speed", "1"]
+            }
             if usesHEVC {
                 // AVFoundation 只认 hvc1；Main10 与 10-bit 输出是本机实测可播放的组合。
                 arguments += ["-tag:v", "hvc1", "-profile:v", "main10"]
@@ -366,10 +388,12 @@ public enum StreamPlanner {
                 filters.append(PlaybackFilters.subtitleBurnFilter(burnSubtitle))
             }
             var toneMapped = false
+            // 降档缩放走 bilinear：4K60 的 10bit bicubic 缩放单是它就要吃近 3 个核。
+            let scaleFlags = downscaled ? "bilinear" : "bicubic"
             if keepsHDR {
                 // 保留 HDR 时只做缩放，色彩原样（不转 bt709）。
                 if let outputHeight = effectiveProfile.outputSize.map({ Int($0.height) }) {
-                    filters.append("scale=-2:\(outputHeight):flags=bicubic")
+                    filters.append("scale=-2:\(outputHeight):flags=\(scaleFlags)")
                 }
                 filters.append("format=p010le")
             } else if request.isHDR || request.color.isDolbyVision,
@@ -384,7 +408,7 @@ public enum StreamPlanner {
                 toneMapped = true
             } else if let outputHeight = effectiveProfile.outputSize.map({ Int($0.height) }) {
                 // 非 HDR 的重编码也要按同一套像素率上限降档。
-                filters.append("scale=-2:\(outputHeight)")
+                filters.append("scale=-2:\(outputHeight):flags=\(scaleFlags)")
             }
             if let subtitleStream = request.burnSubtitleStream {
                 // 图形字幕无法转文本：ffmpeg 把 PGS 解成位图后按字幕自带坐标叠回画面，

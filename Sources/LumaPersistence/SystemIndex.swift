@@ -101,6 +101,19 @@ package final class SystemIndex {
     package var onDirectCountsReady: (() -> Void)?
     package var directPageCursors: [String: (offset: Int, value: Double, pk: Int64)] = [:]
     package let directCursorLock = NSLock()
+    /// 外部 ID 集合（PhotoKit 智能相簿）换算出的主键集合缓存。
+    /// `directWhere` 每次分页都会拼一次条件，UUID → 主键的换算不能每页都重做。
+    package var directIncludePKCache: (key: String, pks: [Int64])?
+    package let directIncludeLock = NSLock()
+    /// 全文搜索索引（FTS5 trigram）。建好之前为 nil 或 `isReady == false`，
+    /// 此时搜索退回 `LIKE '%词%'` 全表扫描（很慢但能出结果）。
+    package var searchIndex: SearchIndex?
+    /// 索引未就绪时是否直接返回空结果。
+    ///
+    /// 主界面搜索必须为 `true`：137 万行全表 LIKE 要两分钟，正是要避免的卡顿，
+    /// 改为显示「正在建立搜索索引」并等后台建完自动刷新。
+    /// 跨图库搜索这类离线入口可设为 `false`，宁可慢也要给出结果。
+    package var searchIndexStrict = true
     /// 直连模式的时间轴密度（官方 `ZMOMENT` 的每个时刻与项目数），滚动条定位用。
     package var directTimelineBuckets: [SystemTimelineBucket]?
     package let directTimelineLock = NSLock()
@@ -116,6 +129,8 @@ package final class SystemIndex {
     package var directFolderChildrenMap: [Int64: [Int64]]?
     package var directFolderKindsMap: [Int64: Int]?
     package var directFolderPreviewCache: [String: [UUID]] = [:]
+    /// 相簿成员顺序是否就是拍摄时间顺序（键 = 相簿主键，值 = 成员数 + 结论）。
+    package var directAlbumDateOrderCache: [Int64: (count: Int, isDateOrder: Bool)] = [:]
     package let directAlbumCacheLock = NSLock()
 
     package init(database: SQLiteDatabase,

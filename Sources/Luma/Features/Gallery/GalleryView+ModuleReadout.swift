@@ -95,6 +95,18 @@ extension GalleryView {
                                   value: "\(catalog.resourceFavorites.count) 部", caption: "收藏",
                                   tint: LumaBrand.amber)
             ]
+        case .galleries:
+            return [
+                ModuleReadoutItem("gallerySources", symbol: "photo.stack.fill",
+                                  value: "\(catalog.gallerySources.count) 个", caption: "图集站",
+                                  tint: LumaBrand.violet),
+                ModuleReadoutItem("gallerySets", symbol: "square.grid.2x2.fill",
+                                  value: "\(catalog.galleryFeed.count) 套", caption: "精选套图",
+                                  tint: LumaBrand.cyan),
+                ModuleReadoutItem("galleryToday", symbol: "sun.max.fill",
+                                  value: "\(catalog.todayGallerySpotlight.count) 套", caption: "今日上新",
+                                  tint: LumaBrand.amber)
+            ]
         case .following:
             return [
                 ModuleReadoutItem("people", symbol: "person.2.fill",

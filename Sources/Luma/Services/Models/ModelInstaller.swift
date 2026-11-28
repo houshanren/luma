@@ -74,7 +74,19 @@ final class ModelInstaller: ObservableObject {
     @Published private(set) var manifest: ModelManifest?
     @Published private(set) var manifestError: String?
 
-    private var downloads: [ModelComponentID: Download] = [:]
+    private enum Transfer {
+        case single(Download)
+        case segmented(SegmentedDownload)
+
+        func cancel() {
+            switch self {
+            case .single(let download): download.cancel()
+            case .segmented(let download): download.cancel()
+            }
+        }
+    }
+
+    private var downloads: [ModelComponentID: Transfer] = [:]
     private var cancelling: Set<ModelComponentID> = []
     private let session: URLSession
 
@@ -232,6 +244,24 @@ final class ModelInstaller: ObservableObject {
             return archive
         }
         var lastError: Error?
+        let sources = entry.sources.compactMap { URL(string: $0) }
+        if !sources.isEmpty {
+            do {
+                try await segmentedDownload(sources: sources,
+                                            part: part,
+                                            id: id,
+                                            expectedSize: entry.size,
+                                            progressBase: 0,
+                                            progressTotal: entry.size)
+                try? FileManager.default.removeItem(at: archive)
+                try FileManager.default.moveItem(at: part, to: archive)
+                return archive
+            } catch SegmentedDownload.Failure.rangeUnsupported {
+                // 源不支持分段：退回单连接，下面照常逐一尝试。
+            } catch {
+                lastError = error
+            }
+        }
         for source in entry.sources {
             guard let url = URL(string: source) else { continue }
             do {
@@ -272,8 +302,49 @@ final class ModelInstaller: ObservableObject {
                                             continuation.resume(with: result)
                                         }
                                     })
-            self.downloads[id] = download
+            self.downloads[id] = .single(download)
             download.start(in: session)
+        }
+    }
+
+    /// 分片并发下载：单连接在跨境链路上只有几十 KB/s，
+    /// 切成十几段同时拉（多源时按段轮换）能把带宽叠起来。
+    /// 源不支持 Range 时抛 `rangeUnsupported`，由调用方退回单连接。
+    private func segmentedDownload(sources: [URL],
+                                   part: URL,
+                                   id: ModelComponentID,
+                                   expectedSize: Int64,
+                                   progressBase: Int64,
+                                   progressTotal: Int64) async throws {
+        let workDir = ModelRegistry.downloadsRoot
+            .appendingPathComponent("\(id.rawValue)-\(part.lastPathComponent).segs",
+                                    isDirectory: true)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            guard let download = SegmentedDownload(sources: sources,
+                                                   destination: part,
+                                                   expectedSize: expectedSize,
+                                                   configuration: session.configuration,
+                                                   workDir: workDir,
+                                                   progress: { [weak self] received, total in
+                Task { @MainActor in
+                    guard let self else { return }
+                    var state = self.state(for: id)
+                    state.received = progressBase + received
+                    state.total = progressTotal > 0 ? progressTotal : total
+                    self.states[id] = state
+                }
+            },
+                                                   completion: { [weak self] result in
+                Task { @MainActor in
+                    self?.downloads[id] = nil
+                    continuation.resume(with: result)
+                }
+            }) else {
+                continuation.resume(throwing: InstallError.invalidSource)
+                return
+            }
+            self.downloads[id] = .segmented(download)
+            download.start()
         }
     }
 
@@ -352,6 +423,24 @@ final class ModelInstaller: ObservableObject {
             try? FileManager.default.removeItem(at: part)
         }
         var lastError: Error?
+        let sources = file.urls.compactMap { URL(string: $0) }
+        if !sources.isEmpty {
+            do {
+                try await segmentedDownload(sources: sources,
+                                            part: part,
+                                            id: id,
+                                            expectedSize: file.size,
+                                            progressBase: base,
+                                            progressTotal: total)
+                try? FileManager.default.removeItem(at: archive)
+                try FileManager.default.moveItem(at: part, to: archive)
+                return archive
+            } catch SegmentedDownload.Failure.rangeUnsupported {
+                // 源不支持分段：退回单连接。
+            } catch {
+                lastError = error
+            }
+        }
         for string in file.urls {
             guard let url = URL(string: string) else { continue }
             do {

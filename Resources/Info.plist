@@ -38,9 +38,9 @@
         </dict>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>2.1.1</string>
+    <string>2.2.0</string>
     <key>CFBundleVersion</key>
-    <string>9</string>
+    <string>10</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.photography</string>
     <key>LSMinimumSystemVersion</key>
@@ -58,6 +58,10 @@
     <string>用于把美化结果与清理操作写回系统「照片」图库；全部处理都在本机完成。</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>用于把美化后的照片保存到系统「照片」图库。</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>用于把你说的话转成文字，填入智能助手输入框；只在你点击麦克风时录音。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>用于语音输入智能助手的指令；优先在本机识别。</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_smb._tcp</string>

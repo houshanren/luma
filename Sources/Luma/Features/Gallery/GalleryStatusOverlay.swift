@@ -8,6 +8,11 @@ import SwiftUI
 struct GalleryStatusOverlay: View {
     @Environment(LibraryStore.self) private var store
 
+    /// 地图页把「正在读取系统图库」放在内容区的空态里，顶部不再重复一条胶囊。
+    private var showsReadingInline: Bool {
+        store.sidebarItem == .systemMap
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             if store.isImporting, let progress = store.importProgress {
@@ -54,7 +59,7 @@ struct GalleryStatusOverlay: View {
                 .help("停止扫描")
             }
 
-            if store.isLoadingSystemLibrary, store.isSystemScope {
+            if store.isLoadingSystemLibrary, store.isSystemScope, !showsReadingInline {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.mini)

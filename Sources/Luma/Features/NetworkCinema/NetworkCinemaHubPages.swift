@@ -249,6 +249,7 @@ struct NetworkCinemaManageView: View {
         let tint: Color
         switch value {
         case .online: tint = LumaBrand.mint
+        case .needsLogin: tint = LumaBrand.violet
         case .limited: tint = LumaBrand.amber
         case .offline: tint = LumaBrand.coral
         case .checking, .unknown: tint = Color.secondary

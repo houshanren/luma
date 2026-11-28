@@ -122,10 +122,38 @@ package enum LibraryPaths {
     package static var systemThumbs: URL {
         applicationRoot.appendingPathComponent("resources/system-thumbs", isDirectory: true)
     }
-    /// 官方「照片」图库自己生成好的 derivative 目录（缩略图与视频封面帧）。
+    /// 系统「照片」自己生成好的 derivative 目录（缩略图与视频封面帧）。
     /// 直接复用这些 JPEG，可以避免为每个格子解码 HEIC / RAW / 视频原文件。
     package static func systemDerivatives(libraryURL: URL) -> URL {
         libraryURL.appendingPathComponent("resources/derivatives", isDirectory: true)
+    }
+
+    /// 官方 32px 微缩略图：与 derivative 同目录的 `<UUID>.THM`（JPEG，约 1KB）。
+    /// 马赛克墙先用它铺满，整墙几乎瞬间可见，不必等 100～300KB 的 derivative 解码。
+    /// 共享相簿的项目没有 THM（在 scopes/cloudsharing 下），返回 nil 走常规档位。
+    package static func systemTinyThumbnailPath(for photo: PhotoItem) -> String? {
+        guard photo.isSystem,
+              let derivative = photo.systemThumbnailPath, !derivative.isEmpty,
+              derivative.contains("/resources/derivatives/"),
+              !derivative.contains("/scopes/") else { return nil }
+        let dir = (derivative as NSString).deletingLastPathComponent
+        return (dir as NSString).appendingPathComponent("\(photo.id.uuidString).THM")
+    }
+
+    /// 官方 5005 档缩略图：`resources/derivatives/masters/<UUID 首字符>/<UUID>_4_5005_c.jpeg`。
+    ///
+    /// 主 derivative（`_1_105_c`，长边约 1024px）只覆盖约四成项目；
+    /// 这一档是官方给全库生成的（图片与视频都有，实测 800 个随机项 100% 命中），
+    /// 长边约 520px、每个约 36KB，网格与缩略墙用完全够。
+    /// 缺主 derivative 时先用它出图，不必为每个格子解码一两兆的原图。
+    package static func systemMasterThumbnailPath(for photo: PhotoItem) -> String? {
+        guard let derivative = photo.systemThumbnailPath, !derivative.isEmpty else { return nil }
+        // 共享相簿的 systemThumbnailPath 本身已经是 masters 下的 5005 文件。
+        if derivative.contains("/masters/") { return derivative }
+        let shardDir = (derivative as NSString).deletingLastPathComponent
+        let derivativesRoot = (shardDir as NSString).deletingLastPathComponent
+        let key = photo.id.uuidString
+        return "\(derivativesRoot)/masters/\(key.prefix(1))/\(key)_4_5005_c.jpeg"
     }
 
     /// 官方 derivative 的路径规则：`resources/derivatives/<UUID 首字符>/<UUID>_1_105_c.jpeg`。
@@ -183,6 +211,25 @@ package enum LibraryPaths {
         return systemIndexCacheDir
             .appendingPathComponent("SystemIndex-\(String(hash, radix: 16)).sqlite")
     }
+    /// 系统图库的全文搜索索引（FTS5 trigram）目录。
+    /// 与系统索引一样放本机：建索引要读 26GB 的 Photos.sqlite，
+    /// 再把 600 多 MB 索引写回同一块外置盘会退化成随机读写。
+    package static var systemSearchCacheDir: URL {
+        applicationRoot.appendingPathComponent("resources/system-search", isDirectory: true)
+    }
+
+    /// 某个系统图库的全文搜索索引文件（按图库路径哈希命名）。
+    package static func systemSearchFile(for libraryURL: URL) -> URL? {
+        guard root != applicationRoot || containerLibraryURL != nil else { return nil }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in libraryURL.standardizedFileURL.path.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return systemSearchCacheDir
+            .appendingPathComponent("Search-\(String(hash, radix: 16)).sqlite")
+    }
+
     /// 应用自己的元数据库文件名：放在图库内 `Luma/database/` 下，与 Apple 的结构分开。
     package static let metadataFileName = "Luma.sqlite"
     package static var metadataFile: URL { databaseDir.appendingPathComponent(metadataFileName) }
@@ -607,9 +654,26 @@ package enum LibraryPaths {
             .appendingPathComponent(photo.id.uuidString + "_q.jpg", isDirectory: false)
     }
 
+    /// 马赛克墙的 64px 微缩略图（约 3KB，存本地盘）：整墙可瞬间铺满，再按需升级到快速层 / 目标档位。
+    package static func tinyThumbnailURL(for photo: PhotoItem) -> URL {
+        if photo.isSystem {
+            return systemThumbs.appendingPathComponent(photo.id.uuidString + "_t.jpg", isDirectory: false)
+        }
+        return derivatives
+            .appendingPathComponent(shard(for: photo.id), isDirectory: true)
+            .appendingPathComponent(photo.id.uuidString + "_t.jpg", isDirectory: false)
+    }
+
     package static func sourceURL(for photo: PhotoItem) -> URL {
         if let externalPath = photo.externalPath, !externalPath.isEmpty {
             return URL(fileURLWithPath: externalPath)
+        }
+        // 系统图库里编辑过的项目：官方已经把调整后的成品写在 resources/renders 下，
+        // 直接读它既显示的是用户在「照片」里看到的画面，也省掉一次导出 / 重新套用编辑。
+        if photo.isSystem, photo.editedAt != nil,
+           let root = systemLibraryRoot(for: photo),
+           let rendered = systemRenderedPath(libraryURL: root, photo: photo) {
+            return URL(fileURLWithPath: rendered)
         }
         if photo.isSystem, let path = photo.systemOriginalPath {
             return URL(fileURLWithPath: path)
@@ -618,6 +682,42 @@ package enum LibraryPaths {
             return edited.appendingPathComponent(editedFilename, isDirectory: false)
         }
         return originalURL(for: photo)
+    }
+
+    /// 官方「照片」编辑后的渲染版本：`resources/renders/<首字符>/<UUID>_1_201_a.{heic,jpeg}`，
+    /// 视频的调整版本是 `_2_100_a.mov`。只有编辑过的项目才有这些文件。
+    package static func systemRenderedPath(libraryURL: URL, photo: PhotoItem) -> String? {
+        let key = photo.id.uuidString
+        let directory = libraryURL
+            .appendingPathComponent("resources/renders", isDirectory: true)
+            .appendingPathComponent(String(key.prefix(1)), isDirectory: true)
+        let names = photo.isVideo
+            ? ["\(key)_2_100_a.mov", "\(key)_2_100_a.mp4"]
+            : ["\(key)_1_201_a.heic", "\(key)_1_201_a.jpeg", "\(key)_1_201_a.jpg"]
+        for name in names {
+            let url = directory.appendingPathComponent(name, isDirectory: false)
+            if FileManager.default.fileExists(atPath: url.path) { return url.path }
+        }
+        return nil
+    }
+
+    /// 从 derivative / 原图路径反推图库根目录，用于拼 `resources/renders`。
+    private static func systemLibraryRoot(for photo: PhotoItem) -> URL? {
+        if let thumb = photo.systemThumbnailPath,
+           thumb.contains("/resources/derivatives/"),
+           !thumb.contains("/scopes/") {
+            // <root>/resources/derivatives/<shard>/<file>
+            var url = URL(fileURLWithPath: thumb)
+            for _ in 0..<4 { url.deleteLastPathComponent() }
+            return url
+        }
+        if let original = photo.systemOriginalPath {
+            // <root>/originals/<shard>/<file>
+            var url = URL(fileURLWithPath: original)
+            for _ in 0..<3 { url.deleteLastPathComponent() }
+            return url
+        }
+        return nil
     }
 
     /// 注意：单参数的 `appendingPathComponent` 会为了判断目录去 lstat，

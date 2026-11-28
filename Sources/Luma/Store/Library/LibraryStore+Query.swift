@@ -11,6 +11,7 @@ extension LibraryStore {
         if let similarScope { return "与「\(similarScope.title)」相似" }
         switch sidebarItem {
         case .library: return "图库"
+        case .assistant: return "助手"
         case .cinema: return "影院"
         case .collections: return "精选集"
         case .favorites: return "个人收藏"
@@ -57,6 +58,7 @@ extension LibraryStore {
         case .systemLibraries: return "图库"
         case .cloudStorages: return "网络存储"
         case .catalogSources: return "网络资源"
+        case .atlas: return "拾光星图"
         case .networkCinema: return "网络影院"
         case .systemAlbum(let id): return systemAlbums.first(where: { $0.id == id })?.name ?? "系统相簿"
         case .systemFolder(let id): return systemFolders.first(where: { $0.id == id })?.name ?? "系统文件夹"
@@ -277,9 +279,12 @@ extension LibraryStore {
     }
 
     /// 原生系统图库的缩略图优先交给系统「照片」（已有缩略图 + 可预取 + 支持 iCloud 资源）。
-    /// 其它图库（外接 .photoslibrary、拾光本地库）继续走本地 derivative 解码。
+    /// 只要当前打开的是原生 `.photoslibrary` 就走这条：相簿 / 文件夹 / 人物里的项目同样是
+    /// 系统图库资产，不能因为侧边栏入口不是「全部照片」就退回逐格读盘解码
+    /// （那会让打开相簿时的出图速度掉一个数量级）。
+    /// 其它图库（拾光本地库、外接的非原生目录）继续走本地 derivative 解码。
     var usesPhotoKitThumbnails: Bool {
-        isSystemScope && isNativeContainer && PhotoKitThumbnailProvider.shared.isAvailable
+        isNativeContainer && PhotoKitThumbnailProvider.shared.isAvailable
     }
 
     var isCloudScope: Bool {
@@ -301,7 +306,7 @@ extension LibraryStore {
              .allAlbums, .folder, .systemFolder, .people, .cloudMount, .duplicates,
              .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .catalogSources,
+             .catalogSources, .atlas, .assistant,
              .systemDuplicates, .systemImports, .systemHealth, .health,
              .videos, .systemVideos:
             return false
@@ -366,35 +371,131 @@ extension LibraryStore {
 
     /// 媒体类型总览：数量与封面一次遍历算完（本地 / 系统图库共用）。
     var mediaTypeSummary: MediaTypeSummary {
-        // 系统图库索引模式：直接读索引聚合，不遍历整库。
+        let key = mediaTypeSummaryToken
+        if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
+        let summary = makeMediaTypeSummary()
+        cacheMediaTypeSummary(summary, key: key)
+        return summary
+    }
+
+    /// 汇总指纹：索引 / 内容变化或 PhotoKit 智能相簿就绪后重算。
+    var mediaTypeSummaryToken: String {
+        if isSystemScope, systemIndex != nil {
+            return "sys-\(systemIndexSignature)-\(photoKitLongExposureIDs?.count ?? -1)-\(photoKitCinematicIDs?.count ?? -1)"
+        }
+        return "\(contentRevision)-\(isSystemScope)"
+    }
+
+    /// 已经算好的汇总；冷启动时为 nil，界面据此先显示加载态。
+    var cachedMediaTypeSummary: MediaTypeSummary? {
+        mediaTypeSummaryCacheKey == mediaTypeSummaryToken ? mediaTypeSummaryCacheValue : nil
+    }
+
+    /// 异步汇总：点开「媒体类型」时索引聚合 SQL 与整库遍历都放到后台，
+    /// 主线程只负责准备查询描述。
+    func loadMediaTypeSummary() async -> MediaTypeSummary {
+        let key = mediaTypeSummaryToken
+        if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
+        let system = isSystemScope
+        let index = system ? systemIndex : nil
+        let overrides = index == nil ? nil : buildSystemQuery(scope: .all)
+        let extras = index == nil ? [] : mediaTypeExtraQueries()
+        let overlays = systemOverlays
+        let nativeKeywords = systemNativeKeywordIDMap
+        let native = isNativeContainer
+        let photosSnapshot = system ? systemPhotos : photos
+        let longExposureIDs = photoKitLongExposureIDs
+        let cinematicIDs = photoKitCinematicIDs
+        let summary = await Task.detached(priority: .userInitiated) {
+            Self.computeMediaTypeSummary(system: system,
+                                         index: index,
+                                         overrides: overrides,
+                                         extraQueries: extras,
+                                         overlays: overlays,
+                                         nativeKeywords: nativeKeywords,
+                                         isNative: native,
+                                         photos: photosSnapshot,
+                                         longExposureIDs: longExposureIDs,
+                                         cinematicIDs: cinematicIDs)
+        }.value
+        guard !Task.isCancelled else { return summary }
+        cacheMediaTypeSummary(summary, key: key)
+        return summary
+    }
+
+    private func cacheMediaTypeSummary(_ summary: MediaTypeSummary, key: String) {
+        mediaTypeSummaryCacheKey = key
+        mediaTypeSummaryCacheValue = summary
+    }
+
+    private func makeMediaTypeSummary() -> MediaTypeSummary {
         if isSystemScope, let index = systemIndex {
-            let key = "sys-\(systemIndexSignature)-\(photoKitLongExposureIDs?.count ?? -1)-\(photoKitCinematicIDs?.count ?? -1)"
-            if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
-            var summary = index.mediaTypeSummary(overrides: buildSystemQuery(scope: .all))
-            // 长曝光 / 电影效果由 PhotoKit 智能相簿提供 ID，这里按索引汇总数量与封面。
-            for (type, scope) in [(MediaTypeKey.longExposure, SystemQueryScope.longExposures),
-                                  (MediaTypeKey.cinematic, SystemQueryScope.cinematics)] {
-                let ids = type == .longExposure ? photoKitLongExposureIDs : photoKitCinematicIDs
-                guard let ids, !ids.isEmpty else { continue }
-                var query = buildSystemQuery(scope: scope)
-                query.filter = .all
-                query.tokens = []
-                query.overlayKeywordIDs = nil
+            return Self.computeMediaTypeSummary(system: true,
+                                                index: index,
+                                                overrides: buildSystemQuery(scope: .all),
+                                                extraQueries: mediaTypeExtraQueries(),
+                                                overlays: systemOverlays,
+                                                nativeKeywords: systemNativeKeywordIDMap,
+                                                isNative: isNativeContainer,
+                                                photos: [],
+                                                longExposureIDs: photoKitLongExposureIDs,
+                                                cinematicIDs: photoKitCinematicIDs)
+        }
+        return Self.computeMediaTypeSummary(system: isSystemScope,
+                                            index: nil,
+                                            overrides: nil,
+                                            extraQueries: [],
+                                            overlays: systemOverlays,
+                                            nativeKeywords: systemNativeKeywordIDMap,
+                                            isNative: isNativeContainer,
+                                            photos: isSystemScope ? systemPhotos : photos,
+                                            longExposureIDs: photoKitLongExposureIDs,
+                                            cinematicIDs: photoKitCinematicIDs)
+    }
+
+    /// 长曝光 / 电影效果由 PhotoKit 智能相簿提供 ID，需要单独换算数量与封面。
+    private func mediaTypeExtraQueries() -> [(MediaTypeKey, SystemQuery)] {
+        var extras: [(MediaTypeKey, SystemQuery)] = []
+        for (type, scope) in [(MediaTypeKey.longExposure, SystemQueryScope.longExposures),
+                              (MediaTypeKey.cinematic, SystemQueryScope.cinematics)] {
+            let ids = type == .longExposure ? photoKitLongExposureIDs : photoKitCinematicIDs
+            guard let ids, !ids.isEmpty else { continue }
+            var query = buildSystemQuery(scope: scope)
+            query.filter = .all
+            query.tokens = []
+            query.overlayKeywordIDs = nil
+            extras.append((type, query))
+        }
+        return extras
+    }
+
+    /// 纯计算版本：可在后台线程跑（不读 Store 的可变状态，参数全部由调用方快照传入）。
+    nonisolated static func computeMediaTypeSummary(system: Bool,
+                                                    index: SystemIndex?,
+                                                    overrides: SystemQuery?,
+                                                    extraQueries: [(MediaTypeKey, SystemQuery)],
+                                                    overlays: [UUID: AssetOverlay],
+                                                    nativeKeywords: [UUID: [String]],
+                                                    isNative: Bool,
+                                                    photos: [PhotoItem],
+                                                    longExposureIDs: Set<UUID>?,
+                                                    cinematicIDs: Set<UUID>?) -> MediaTypeSummary {
+        // 系统图库索引模式：直接读索引聚合，不遍历整库。
+        if system, let index, let overrides {
+            var summary = index.mediaTypeSummary(overrides: overrides)
+            for (type, query) in extraQueries {
                 let count = index.summary(query).total
                 guard count > 0 else { continue }
                 summary.counts[type] = count
                 summary.covers[type] = index.page(query, offset: 0, limit: 1).first
             }
-            summary.covers = summary.covers.mapValues { applySystemOverlay($0) }
-            mediaTypeSummaryCacheKey = key
-            mediaTypeSummaryCacheValue = summary
+            summary.covers = summary.covers.mapValues {
+                applyingOverlays($0, overlays: overlays, nativeKeywords: nativeKeywords, isNative: isNative)
+            }
             return summary
         }
-        let key = "\(contentRevision)-\(isSystemScope)"
-        if mediaTypeSummaryCacheKey == key { return mediaTypeSummaryCacheValue }
         var summary = MediaTypeSummary()
-        let source = isSystemScope ? systemPhotos : photos
-        for photo in source {
+        for photo in photos {
             guard photo.deletedAt == nil, !photo.isHidden else { continue }
             for type in MediaTypeKey.allCases where type.matches(photo) {
                 summary.counts[type, default: 0] += 1
@@ -404,18 +505,16 @@ extension LibraryStore {
             }
         }
         // 小图库走内存快照时，长曝光 / 电影效果仍需按 PhotoKit 智能相簿的 ID 汇总。
-        if isSystemScope {
-            for (type, ids) in [(MediaTypeKey.longExposure, photoKitLongExposureIDs),
-                                (MediaTypeKey.cinematic, photoKitCinematicIDs)] {
+        if system {
+            for (type, ids) in [(MediaTypeKey.longExposure, longExposureIDs),
+                                (MediaTypeKey.cinematic, cinematicIDs)] {
                 guard let ids, !ids.isEmpty else { continue }
-                let matched = source.filter { $0.deletedAt == nil && !$0.isHidden && ids.contains($0.id) }
+                let matched = photos.filter { $0.deletedAt == nil && !$0.isHidden && ids.contains($0.id) }
                 guard let cover = matched.first else { continue }
                 summary.counts[type] = matched.count
                 summary.covers[type] = cover
             }
         }
-        mediaTypeSummaryCacheKey = key
-        mediaTypeSummaryCacheValue = summary
         return summary
     }
 
@@ -502,8 +601,8 @@ extension LibraryStore {
             return systemPhotos.filter { $0.deletedAt == nil && !$0.isHidden }
         case .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .systemCollections, .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .catalogSources, .networkCinema,
-             .systemHealth, .cinema, .cloudCinema, .catalogSource, .iptv:
+             .catalogSources, .networkCinema, .atlas,
+             .systemHealth, .cinema, .cloudCinema, .catalogSource, .iptv, .assistant:
             // 总览页只展示分类卡片，不返回照片。
             return []
         case .systemFavorites:
@@ -684,12 +783,7 @@ extension LibraryStore {
     /// 「更多项目」卡片封面：每个入口取该范围的第一张照片。
     /// 系统图库索引库直接查 SQL，本地库按入口语义先命中先返回；结果按内容版本缓存。
     func moreItemsCover(for item: SidebarItem) -> PhotoItem? {
-        let token = "\(contentRevision)|\(systemIndexSignature)|\(isSystemScope)"
-        if moreItemsCoverToken != token {
-            moreItemsCoverToken = token
-            moreItemsCoverCache.removeAll()
-            moreItemsCoverMissing.removeAll()
-        }
+        expireMoreItemsCoverCacheIfNeeded()
         if let cover = moreItemsCoverCache[item] { return cover }
         if moreItemsCoverMissing.contains(item) { return nil }
         let cover = resolveMoreItemsCover(item)
@@ -699,6 +793,39 @@ extension LibraryStore {
             moreItemsCoverMissing.insert(item)
         }
         return cover
+    }
+
+    /// 异步版卡片封面：整个卡片墙十多个入口逐个同步查库会明显拖慢首帧，
+    /// 这里把系统图库的 SQL 查询放到后台，结果仍写回同一份缓存。
+    func moreItemsCoverAsync(for item: SidebarItem) async -> PhotoItem? {
+        expireMoreItemsCoverCacheIfNeeded()
+        if let cover = moreItemsCoverCache[item] { return cover }
+        if moreItemsCoverMissing.contains(item) { return nil }
+        guard isSystemScope, item != .systemPeople, item != .systemHealth,
+              item != .systemImports, item != .systemKeywords,
+              let scope = item.systemQueryScope, let index = systemIndex else {
+            // 非索引路径只是内存过滤，数量很小，直接同步取即可。
+            return moreItemsCover(for: item)
+        }
+        let query = cachedSystemQuery(scope)
+        let raw = await Task.detached(priority: .utility) {
+            index.page(query, offset: 0, limit: 1).first
+        }.value
+        guard let raw else {
+            moreItemsCoverMissing.insert(item)
+            return nil
+        }
+        let cover = applySystemOverlay(raw)
+        moreItemsCoverCache[item] = cover
+        return cover
+    }
+
+    private func expireMoreItemsCoverCacheIfNeeded() {
+        let token = "\(contentRevision)|\(systemIndexSignature)|\(isSystemScope)"
+        guard moreItemsCoverToken != token else { return }
+        moreItemsCoverToken = token
+        moreItemsCoverCache.removeAll()
+        moreItemsCoverMissing.removeAll()
     }
 
     private func resolveMoreItemsCover(_ item: SidebarItem) -> PhotoItem? {
@@ -1338,6 +1465,10 @@ extension LibraryStore {
         // 网络资源的虚拟分集同样不在图库里，按播放上下文直接取。
         if let catalogPhoto = catalogPlaybackPhoto(for: viewerID) {
             return catalogPhoto
+        }
+        // 图集看图的虚拟照片：整套图片不在图库里，按看图上下文直接取。
+        if let galleryPhoto = catalogGalleryPhoto(for: viewerID) {
+            return galleryPhoto
         }
         // 网络电视的虚拟频道同样按播放上下文直接取。
         if let tvPhoto = tvPlaybackPhoto(for: viewerID) {

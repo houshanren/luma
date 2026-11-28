@@ -10,9 +10,14 @@ struct RouVideoCatalogProvider: CatalogProvider {
     static let defaultBaseURL = "https://rou.video"
     static let defaultUserAgent = WebCatalogSupport.userAgent
 
-    /// 视频库首行的筛选 chip（站点 `/v` 页）。
-    static let defaultCategories: [CatalogCategory] = [
-        CatalogCategory(id: "v", title: "全部"),
+    /// 一级：站点「主分類」的 6 个集合 + 劇集庫。
+    /// 每个集合的片商 / 子標籤是二级，打开时从 `/t/{主分类}` 页补齐。
+    static let defaultCategories: [CatalogCategory] = {
+        defaultMains + [CatalogCategory(id: "series", title: "劇集庫",
+                                        children: defaultSeriesTags)]
+    }()
+
+    private static let defaultMains: [CatalogCategory] = [
         CatalogCategory(id: "t/%E8%87%AA%E6%8B%8D%E6%B5%81%E5%87%BA", title: "自拍流出"),
         CatalogCategory(id: "t/%E5%9C%8B%E7%94%A2AV", title: "國產AV"),
         CatalogCategory(id: "t/%E6%8E%A2%E8%8A%B1", title: "探花"),
@@ -21,15 +26,35 @@ struct RouVideoCatalogProvider: CatalogProvider {
         CatalogCategory(id: "t/OnlyFans", title: "OnlyFans")
     ]
 
+    /// 劇集庫的题材筛选（站点 `/series` 的筛选行）。
+    private static let defaultSeriesTags: [CatalogCategory] = [
+        CatalogCategory(id: "series?tag=AI%E7%9F%AD%E5%8A%87", title: "AI短劇"),
+        CatalogCategory(id: "series?tag=%E7%8F%BE%E4%BB%A3", title: "現代"),
+        CatalogCategory(id: "series?tag=%E9%83%BD%E5%B8%82", title: "都市"),
+        CatalogCategory(id: "series?tag=%E7%86%9F%E5%A5%B3", title: "熟女"),
+        CatalogCategory(id: "series?tag=%E5%A4%A7%E7%94%B7%E4%B8%BB", title: "大男主"),
+        CatalogCategory(id: "series?tag=%E5%BE%8C%E5%AE%AE", title: "後宮"),
+        CatalogCategory(id: "series?tag=%E4%BA%82%E5%80%AB", title: "亂倫"),
+        CatalogCategory(id: "series?tag=%E7%B6%A0%E5%B8%BD", title: "綠帽")
+    ]
+
     // MARK: - CatalogProvider
 
     func categories(source: CatalogSource) async throws -> [CatalogCategory] {
         let root = try WebCatalogSupport.root(source)
-        if let html = try? await WebCatalogSupport.fetchHTML(root + "/v", source: source) {
-            let live = Self.parseFilters(html)
-            if live.count >= 2 { return live }
-        }
-        return source.categories.isEmpty ? Self.defaultCategories : source.categories
+        async let videoHTML = try? await WebCatalogSupport.fetchHTML(root + "/v", source: source)
+        async let seriesHTML = try? await WebCatalogSupport.fetchHTML(root + "/series",
+                                                                     source: source)
+        let (video, series) = await (videoHTML, seriesHTML)
+
+        // 主分類就是 `/v` 顶部筛选里的 6 个标签；「全部」交给统一的首页入口。
+        var mains = video.map(Self.parseFilters) ?? []
+        mains.removeAll { $0.id == "v" || $0.title == "全部" }
+        if mains.isEmpty { mains = Self.defaultMains }
+
+        let tags = series.map(Self.parseSeriesFilters) ?? []
+        return mains + [CatalogCategory(id: "series", title: "劇集庫",
+                                        children: tags.isEmpty ? Self.defaultSeriesTags : tags)]
     }
 
     func home(source: CatalogSource) async throws -> CatalogPage {
@@ -44,6 +69,9 @@ struct RouVideoCatalogProvider: CatalogProvider {
                   sort: CatalogSort, page: Int) async throws -> CatalogPage {
         let target = category.isGroupCategory ? (category.children?.first ?? category) : category
         guard !target.id.isEmpty else { throw CatalogError.parse("分类地址无效") }
+        if target.id == "series" || target.id.hasPrefix("series?") {
+            return try await seriesPage(source: source, id: target.id, page: page)
+        }
         return try await listPage(source: source, path: target.id, page: page)
     }
 
@@ -72,10 +100,17 @@ struct RouVideoCatalogProvider: CatalogProvider {
         return try await tags(source: source)
     }
 
-    /// 二级频道：`/t/{主分类}` 页把这一类的片商单独列成一排。
+    /// 二级频道：`/t/{主分类}` 页把这一类的片商单独列成一排；
+    /// 劇集庫的二级是 `/series` 的题材筛选行。
     func channels(source: CatalogSource, category: CatalogCategory) async throws -> [CatalogCategory] {
-        guard category.id.hasPrefix("t/") else { return [] }
         let root = try WebCatalogSupport.root(source)
+        if category.id == "series" {
+            guard let html = try? await WebCatalogSupport.fetchHTML(root + "/series",
+                                                                   source: source) else { return [] }
+            let live = Self.parseSeriesFilters(html)
+            return live.isEmpty ? (category.children ?? Self.defaultSeriesTags) : live
+        }
+        guard category.id.hasPrefix("t/") else { return category.children ?? [] }
         guard let html = try? await WebCatalogSupport.fetchHTML("\(root)/\(category.id)",
                                                                source: source) else { return [] }
         var seen = Set<String>()
@@ -86,6 +121,9 @@ struct RouVideoCatalogProvider: CatalogProvider {
 
     func detail(source: CatalogSource, itemID: String) async throws -> CatalogDetail {
         let root = try WebCatalogSupport.root(source)
+        if itemID.hasPrefix("s/") {
+            return try await seriesDetail(source: source, itemID: itemID, root: root)
+        }
         let address = "\(root)/v/\(itemID)"
         let html = try await WebCatalogSupport.fetchHTML(address, source: source)
         let title = CatalogHTML.first(#"<h1[^>]*>([\s\S]*?)</h1>"#, in: html)
@@ -107,6 +145,36 @@ struct RouVideoCatalogProvider: CatalogProvider {
                              episodes: [CatalogEpisode(index: 1, pageURL: address)],
                              blocks: blocks,
                              facts: info.facts)
+    }
+
+    /// 劇集详情：`/s/{id}` 给出剧集信息与「選集」里的各集 `/v/{id}` 播放页。
+    private func seriesDetail(source: CatalogSource, itemID: String,
+                              root: String) async throws -> CatalogDetail {
+        let address = "\(root)/\(itemID)"
+        let html = try await WebCatalogSupport.fetchHTML(address, source: source)
+        let title = CatalogHTML.first(#"<h1[^>]*>([\s\S]*?)</h1>"#, in: html)
+            .map(CatalogHTML.stripTags) ?? "劇集 \(itemID)"
+        let cover = CatalogHTML.fixURL(WebCatalogSupport.meta(html, "og:image"), base: root)
+        let description = CatalogHTML.stripTags(
+            CatalogHTML.first(#"<meta property="og:description" content="([^"]*)""#, in: html) ?? "")
+        let episodes = Self.parseSeriesEpisodes(html, base: root)
+        var facts: [CatalogDetailFact] = []
+        if !episodes.isEmpty {
+            facts.append(CatalogDetailFact(label: "集数", value: "\(episodes.count) 集"))
+        }
+        if html.contains("已完結") || html.contains("已完结") {
+            facts.append(CatalogDetailFact(label: "状态", value: "已完結"))
+        }
+        let item = CatalogItem(id: itemID,
+                               title: title,
+                               coverURL: cover,
+                               remark: episodes.isEmpty ? "劇集" : "全 \(episodes.count) 集",
+                               categoryID: nil)
+        var blocks: [CatalogContentBlock] = []
+        if !description.isEmpty {
+            blocks.append(CatalogContentBlock(kind: .paragraph, text: description))
+        }
+        return CatalogDetail(item: item, episodes: episodes, blocks: blocks, facts: facts)
     }
 
     func stream(source: CatalogSource, episode: CatalogEpisode) async throws -> CatalogStream {
@@ -141,14 +209,23 @@ struct RouVideoCatalogProvider: CatalogProvider {
               html.contains("rou.video") || html.contains("/v/") else {
             throw CatalogError.invalidConfig("站点结构无法识别：\(base)")
         }
-        let live = parseFilters(html)
+        var mains = parseFilters(html).filter { $0.id != "v" && $0.title != "全部" }
+        if mains.isEmpty { mains = defaultMains }
+        var tags: [CatalogCategory] = defaultSeriesTags
+        if let seriesURL = URL(string: base + "/series"),
+           let seriesHTML = try? await WebCatalogSupport.fetchHTML(seriesURL, source: probe) {
+            let live = parseSeriesFilters(seriesHTML)
+            if !live.isEmpty { tags = live }
+        }
+        var categories = mains
+        categories.append(CatalogCategory(id: "series", title: "劇集庫", children: tags))
         return CatalogSource(name: "肉视频",
                              kind: .rouVideo,
                              baseURL: base,
                              configURL: address,
                              userAgent: defaultUserAgent,
                              referer: base + "/",
-                             categories: live.count >= 2 ? live : defaultCategories,
+                             categories: categories,
                              posterAspect: 1.6,
                              isEnabled: false)
     }
@@ -164,6 +241,19 @@ struct RouVideoCatalogProvider: CatalogProvider {
         let html = try await WebCatalogSupport.fetchHTML(address, source: source)
         let items = Self.parseCards(html, base: root)
         return CatalogPage(items: items, page: page, hasMore: items.count >= 24)
+    }
+
+    /// 劇集庫列表：`/series` 与 `/series?tag=…`，卡片是 `/s/{id}`。
+    private func seriesPage(source: CatalogSource, id: String, page: Int) async throws -> CatalogPage {
+        let root = try WebCatalogSupport.root(source)
+        var address = root + "/" + id
+        if page > 1 {
+            address += id.contains("?") ? "&page=\(page)" : "?page=\(page)"
+        }
+        let html = try await WebCatalogSupport.fetchHTML(address, source: source)
+        let items = Self.parseSeriesCards(html, base: root)
+        return CatalogPage(items: items, page: page,
+                           hasMore: WebCatalogSupport.hasNextPage(html, page: page))
     }
 
     static func parseFilters(_ html: String) -> [CatalogCategory] {
@@ -201,6 +291,92 @@ struct RouVideoCatalogProvider: CatalogProvider {
                                       remark: duration, categoryID: nil))
         }
         return result
+    }
+
+    // MARK: - 劇集
+
+    /// 劇集庫筛选行：`/series` 顶部「全部 / AI短劇 1,600 / 現代 642 …」。
+    static func parseSeriesFilters(_ html: String) -> [CatalogCategory] {
+        guard let bar = CatalogHTML.first(
+            #"<div aria-label="篩選"[^>]*>([\s\S]*?)</div>"#, in: html) else { return [] }
+        var result: [CatalogCategory] = []
+        var seen = Set<String>()
+        for anchor in CatalogHTML.fullMatches(#"<a href="([^"]+)"[^>]*>([\s\S]*?)</a>"#, in: bar) {
+            guard let href = CatalogHTML.first(#"href="([^"]+)""#, in: anchor),
+                  let inner = CatalogHTML.first(#"<a[^>]*>([\s\S]*?)</a>"#, in: anchor)
+            else { continue }
+            let id = href.hasPrefix("/") ? String(href.dropFirst()) : href
+            guard id.hasPrefix("series") else { continue }
+            // 标题后面的计数是独立 span，过滤掉再取纯文本。
+            let withoutCount = inner.replacingOccurrences(
+                of: #"<span class="text-sm text-dim">[\s\S]*?</span>"#, with: "",
+                options: .regularExpression)
+            let title = CatalogHTML.stripTags(withoutCount)
+            guard !title.isEmpty, title != "全部", seen.insert(id).inserted else { continue }
+            result.append(CatalogCategory(id: id, title: title))
+        }
+        return result
+    }
+
+    /// 劇集卡片：`<a href="/s/{id}" class="group block …">封面 + 标题 + 全 N 集</a>`。
+    static func parseSeriesCards(_ html: String, base: String) -> [CatalogItem] {
+        var result: [CatalogItem] = []
+        var seen = Set<String>()
+        for block in CatalogHTML.fullMatches(
+            #"<a href="/s/[A-Za-z0-9]+" class="group block[^"]*"[\s\S]*?</a>"#, in: html) {
+            guard let rawID = CatalogHTML.first(#"href="/s/([A-Za-z0-9]+)""#, in: block),
+                  seen.insert(rawID).inserted else { continue }
+            guard let title = CatalogHTML.first(#"<h3[^>]*>([\s\S]*?)</h3>"#, in: block)
+                .map(CatalogHTML.stripTags), !title.isEmpty else { continue }
+            let cover = CatalogHTML.first(
+                #"<img src="([^"]+)" alt="[^"]*"[^>]*class="relative[^"]*""#, in: block) ?? ""
+            let remark = CatalogHTML.first(
+                #"<span class="absolute z-2 right-2.5 bottom-\[9px\][^"]*">([^<]+)</span>"#,
+                in: block) ?? ""
+            result.append(CatalogItem(id: "s/" + rawID,
+                                      title: title,
+                                      coverURL: CatalogHTML.fixURL(cover, base: base),
+                                      remark: CatalogHTML.stripTags(remark),
+                                      categoryID: nil))
+        }
+        return result
+    }
+
+    /// 劇集详情「選集」里的各集播放页：`<a href="/v/{id}">第 N 集<small>5 分鐘</small></a>`。
+    static func parseSeriesEpisodes(_ html: String, base: String) -> [CatalogEpisode] {
+        var scope = html
+        if let start = html.range(of: ">選集<")?.lowerBound,
+           let end = html.range(of: "你可能也喜歡", range: start..<html.endIndex)?.lowerBound {
+            scope = String(html[start..<end])
+        }
+        var result: [CatalogEpisode] = []
+        var seen = Set<String>()
+        for anchor in CatalogHTML.fullMatches(
+            #"<a href="/v/[A-Za-z0-9]+"[^>]*>[\s\S]*?</a>"#, in: scope) {
+            guard let rawID = CatalogHTML.first(#"href="/v/([A-Za-z0-9]+)""#, in: anchor),
+                  seen.insert(rawID).inserted else { continue }
+            let text = CatalogHTML.stripTags(anchor)
+            guard let index = firstInteger(in: text) else { continue }
+            let duration = CatalogHTML.first(#"<small[^>]*>([^<]+)</small>"#, in: anchor)
+                .map(CatalogHTML.stripTags)
+            result.append(CatalogEpisode(index: index,
+                                         pageURL: base + "/v/" + rawID,
+                                         name: "第 \(index) 集",
+                                         duration: duration))
+        }
+        return result.sorted { $0.index < $1.index }
+    }
+
+    private static func firstInteger(in text: String) -> Int? {
+        var digits = ""
+        for character in text {
+            if character.isNumber {
+                digits.append(character)
+            } else if !digits.isEmpty {
+                break
+            }
+        }
+        return Int(digits)
     }
 
     // MARK: - 标签分组

@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import Combine
+import Observation
 
 /// 一次边下边播起流的完整输入：由 App 的播放页提供，内核不解析图库 / 网盘 / 剧集。
 public struct PlaybackStreamContext {
@@ -48,6 +49,9 @@ public struct PlaybackStreamContext {
     public var preferredMode: StreamMode
     /// 直播：没有续播、不落缓存，非 HLS 源直接交给 ffmpeg 转封装。
     public var isLive: Bool
+    /// 远端 HLS 窗口源（电视回看）：不套本机 Range 代理，直接把地址连同请求头交给 ffmpeg。
+    /// 代理会把 m3u8 当字节文件顺序转发，里面的相对分片地址会落到代理端口上，ffmpeg 只能读到坏数据。
+    public var directRemoteInput: Bool
     /// 换片令牌：起流完成后用来判断这次请求是否已经过期。
     public var generation: Int
     public var isCurrent: () -> Bool
@@ -81,6 +85,7 @@ public struct PlaybackStreamContext {
                 resumeAt: Double?,
                 preferredMode: StreamMode,
                 isLive: Bool = false,
+                directRemoteInput: Bool = false,
                 generation: Int,
                 isCurrent: @escaping () -> Bool) {
         self.photoID = photoID
@@ -112,6 +117,7 @@ public struct PlaybackStreamContext {
         self.resumeAt = resumeAt
         self.preferredMode = preferredMode
         self.isLive = isLive
+        self.directRemoteInput = directRemoteInput
         self.generation = generation
         self.isCurrent = isCurrent
     }
@@ -133,14 +139,15 @@ public enum PlaybackStreamOutcome: Equatable {
 /// 播放页只负责解析片源与 UI；这里不依赖 SwiftUI / 图库，所有外部能力通过
 /// `PlaybackEnvironment` 与 `PlaybackStreamContext` 注入。
 @MainActor
-public final class PlaybackSession: ObservableObject {
+@Observable
+public final class PlaybackSession {
     public let engine: VideoPlayerModel
     private let environment: PlaybackEnvironment
 
-    @Published public private(set) var streamSession: VideoStreamSession?
-    @Published public private(set) var streamMode: StreamMode = .remux
-    @Published public private(set) var streamAudioIndex = 0
-    @Published public private(set) var isRestartingStream = false
+    public private(set) var streamSession: VideoStreamSession?
+    public private(set) var streamMode: StreamMode = .remux
+    public private(set) var streamAudioIndex = 0
+    public private(set) var isRestartingStream = false
 
     /// 当前条目的播放钩子（影院 / 目录），由播放页在载入前注入。
     public private(set) weak var hooks: PlaybackHooks?
@@ -170,7 +177,6 @@ public final class PlaybackSession: ObservableObject {
     private var outroApplied = false
     private var nearEndSent = false
     private var lastProgressSavedAt = Date.distantPast
-    private var progressCancellable: AnyCancellable?
     private var pendingRestartTarget: Double?
     private var trimTask: Task<Void, Never>?
     /// 缓冲诊断：记录卡住时长与「已生成分片领先播放位置多少秒」。
@@ -269,15 +275,24 @@ public final class PlaybackSession: ObservableObject {
     }
 
     private func bindProgress() {
-        progressCancellable = engine.$duration
-            .combineLatest(engine.$currentTime)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] duration, current in
+        // `VideoPlayerModel` 已改 @Observable，没有 `$currentTime` 这类投影：
+        // 用 Observation 追踪时间轴，每次变化后重新挂载，语义与原 Combine 订阅一致。
+        observeProgressTick()
+    }
+
+    private func observeProgressTick() {
+        withObservationTracking {
+            _ = engine.currentTime
+            _ = engine.duration
+        } onChange: { [weak self] in
+            Task { @MainActor in
                 guard let self else { return }
                 self.refreshBufferedEnd()
                 self.upgradeStartupBufferIfNeeded()
-                self.handleTick(current: current, duration: duration)
+                self.handleTick(current: self.engine.currentTime, duration: self.engine.duration)
+                self.observeProgressTick()
             }
+        }
     }
 
     /// 起播先用短缓冲把画面放出来，播放真正开始后再拉到档位设定。
@@ -480,6 +495,7 @@ public final class PlaybackSession: ObservableObject {
                 burnSubtitleStream: context.burnSubtitleStream,
                 cacheSignature: context.cacheSignature,
                 isLive: context.isLive,
+                directRemoteInput: context.directRemoteInput,
                 refreshSource: context.refreshSource)
             do {
                 // 起流要做目录清理、拉起 ffmpeg、等服务写首段：全部是阻塞操作，
@@ -534,7 +550,9 @@ public final class PlaybackSession: ObservableObject {
                             timelineOffset: base,
                             startAt: appliedStartAt,
                             // 起播只用短缓冲，播放开始后再由 upgradeStartupBufferIfNeeded 拉到档位设定。
-                            forwardBufferDuration: min(4, environment.bufferProfile.forwardBufferDuration))
+                            forwardBufferDuration: min(4, environment.bufferProfile.forwardBufferDuration),
+                            // 直播（含 ffmpeg 转封装的滑动窗口）不等「攒够缓冲」：首段一到就出画面。
+                            startsImmediately: context.isLive)
                 didUpgradeStartupBuffer = false
                 // 直通 / AC-3 会话可能「有画面没声音」：多音轨看 audible 组，
                 // 单音轨 HLS 没有 audible 组，改看 AVPlayerItem.tracks 实际装了几条音轨。

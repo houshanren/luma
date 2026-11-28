@@ -33,55 +33,17 @@ enum NetworkCinemaSort: String, CaseIterable, Identifiable {
 /// 与「网络资源」「网络存储」的工具栏分页同一套样式；页面内容区不再重复一条大胶囊。
 struct NetworkCinemaHubTabs: View {
     @Environment(LibraryStore.self) private var store
-    @Namespace private var tabNamespace
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(NetworkCinemaTab.allCases) { tab in
-                tabButton(tab)
-            }
-        }
-        .padding(2)
-        .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        // 工具栏变窄时宁可整体溢出，也不要把标签压成「…」。
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private func tabButton(_ tab: NetworkCinemaTab) -> some View {
-        let active = store.networkCinemaTab == tab
-        return Button {
+        HubTabBar(items: NetworkCinemaTab.allCases,
+                  active: store.networkCinemaTab,
+                  title: \.title,
+                  symbol: \.symbol,
+                  help: { "网络影院 · \($0.title)" }) { tab in
             withAnimation(.easeOut(duration: 0.18)) {
                 store.networkCinemaTab = tab
             }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .fixedSize()
-                Text(tab.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(active ? Color.white : Color.secondary)
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background {
-                if active {
-                    Capsule(style: .continuous)
-                        .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "net-cinema-tab", in: tabNamespace)
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
         }
-        .buttonStyle(.plain)
-        .help("网络影院 · \(tab.title)")
     }
 }
 
@@ -135,6 +97,8 @@ struct NetworkCinemaHubView: View {
         get { store.networkCinemaSort }
         nonmutating set { store.networkCinemaSort = newValue }
     }
+    /// 键盘游标：方向键在海报墙里换片，回车 / 空格直接进详情。
+    @State private var cursorItemID: String?
     /// 站点页每行海报张数：默认 8，顶栏滑杆可调。
     @AppStorage(SettingsKeys.cinemaGridColumns) private var cinemaColumns = 8
     /// 点开具体源后按站点原始分类浏览：一级选中项（nil = 首页）与二级频道。
@@ -320,6 +284,8 @@ struct NetworkCinemaHubView: View {
         }
         .onAppear {
             consumePendingItem()
+            // 列表可能直接来自快照（不会触发 isLoading）：进入时先预热首屏封面。
+            prefetchCovers(Array(visibleItems.prefix(12)))
             if let seed = store.networkCinemaSearchSeed {
                 store.networkCinemaSearchSeed = nil
                 store.searchText = seed
@@ -342,6 +308,17 @@ struct NetworkCinemaHubView: View {
             if let id = store.networkCinemaSourceID, !ids.contains(id) {
                 store.networkCinemaSourceID = nil
             }
+        }
+        // 首屏加载完成后预热封面：滚到卡片时直接命中缓存，不再逐格闪白。
+        .onChange(of: model.isLoading) { oldValue, newValue in
+            guard oldValue, !newValue, model.loadedPage <= 1,
+                  !visibleItems.isEmpty else { return }
+            prefetchCovers(Array(visibleItems.prefix(12)))
+        }
+        // 补页完成：预热新一批封面。
+        .onChange(of: model.isLoadingMore) { oldValue, newValue in
+            guard oldValue, !newValue else { return }
+            prefetchCovers(Array(visibleItems.suffix(24)))
         }
     }
 
@@ -396,6 +373,7 @@ struct NetworkCinemaHubView: View {
     // MARK: - 浏览
 
     private var browser: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if sources.isEmpty {
@@ -412,9 +390,7 @@ struct NetworkCinemaHubView: View {
                     } else {
                         freshSummary
                         posterGrid
-                        if model.canLoadMore || model.isLoadingMore {
-                            loadMoreFooter
-                        }
+                        pagingFooter
                     }
                 }
             }
@@ -422,11 +398,29 @@ struct NetworkCinemaHubView: View {
             .padding(.top, 18)
             .padding(.bottom, 56)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .reportScrollPagingMetrics(space: "network-cinema-browse")
+        }
+        .infiniteScrollPaging(space: "network-cinema-browse",
+                              resetKey: "browse|\(store.networkCinemaTab.rawValue)|\(sources.map(\.id).count)",
+                              isEnabled: model.canLoadMore && !sources.isEmpty,
+                              isLoading: model.isLoading,
+                              isLoadingMore: model.isLoadingMore,
+                              onLoadMore: { loadMoreIfNeeded() })
+        .gridArrowCursor($cursorItemID,
+                         ids: visibleItems.map(\.id),
+                         columns: cinemaColumnCount) { _ in
+            openCursorItem()
+        }
+        .onChange(of: cursorItemID) { _, id in
+            guard let id else { return }
+            withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+        }
         }
     }
 
     /// 具体源：版式与「网络资源」频道页保持一致：一级目录 + 二级目录 + 海报墙。
     private var focusedBrowser: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 focusedCategoryTray
@@ -467,15 +461,30 @@ struct NetworkCinemaHubView: View {
                 } else {
                     freshSummary
                     cinemaGrid(visibleItems)
-                    if model.canLoadMore {
-                        focusedLoadMoreIndicator
-                    }
+                    pagingFooter
                 }
             }
             .padding(.horizontal, 24)
             .padding(.top, 6)
             .padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .reportScrollPagingMetrics(space: "network-cinema-focused")
+        }
+        .infiniteScrollPaging(space: "network-cinema-focused",
+                              resetKey: "focused|\(focusedSource?.id.uuidString ?? "")|\(store.networkCinemaTab.rawValue)",
+                              isEnabled: model.canLoadMore && !model.isSourceSearchActive,
+                              isLoading: model.isLoading || model.isSourceSearching,
+                              isLoadingMore: model.isLoadingMore,
+                              onLoadMore: { loadMoreIfNeeded() })
+        .gridArrowCursor($cursorItemID,
+                         ids: visibleItems.map(\.id),
+                         columns: cinemaColumnCount) { _ in
+            openCursorItem()
+        }
+        .onChange(of: cursorItemID) { _, id in
+            guard let id else { return }
+            withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+        }
         }
     }
 
@@ -571,19 +580,6 @@ struct NetworkCinemaHubView: View {
             }
             .padding(.bottom, 2)
         }
-    }
-
-    /// 底部续页指示：与网络资源一致，只在滚动时露出转圈，不额外占一行文字。
-    private var focusedLoadMoreIndicator: some View {
-        HStack {
-            Spacer()
-            ProgressView()
-                .controlSize(.mini)
-                .opacity(model.isLoadingMore ? 1 : 0)
-            Spacer()
-        }
-        .frame(height: 24)
-        .padding(.top, 2)
     }
 
     private var focusedSkeleton: some View {
@@ -853,6 +849,7 @@ struct NetworkCinemaHubView: View {
             isFresh: model.isFresh(entry),
             isFavorite: catalog.isFavorite(sourceID: entry.source.id, itemID: entry.item.id),
             isMarkedWatched: catalog.isMarkedWatched(sourceID: entry.source.id, itemID: entry.item.id),
+            isCursor: cursorItemID == entry.id,
             onOpen: {
                 withAnimation(.easeOut(duration: 0.16)) {
                     store.networkCinemaDetail = entry
@@ -869,10 +866,15 @@ struct NetworkCinemaHubView: View {
                 await catalog.previewTarget(sourceID: entry.source.id, item: entry.item)
             }
         )
-        .onAppear {
-            // 最后一张露头就补下一页：LazyVGrid 只在真正滚到时创建它。
-            guard entry.id == visibleItems.last?.id else { return }
-            loadMoreIfNeeded()
+        .id(entry.id)
+    }
+
+    /// 方向键移动游标时跟着滚，长列表里光标不会跑出屏幕。
+    private func openCursorItem() {
+        guard let id = cursorItemID,
+              let entry = visibleItems.first(where: { $0.id == id }) else { return }
+        withAnimation(.easeOut(duration: 0.16)) {
+            store.networkCinemaDetail = entry
         }
     }
 
@@ -891,22 +893,22 @@ struct NetworkCinemaHubView: View {
         return item
     }
 
-    /// 网格底部：加载中显示转圈，否则提示继续下滑。
-    private var loadMoreFooter: some View {
-        HStack(spacing: 7) {
-            if model.isLoadingMore {
-                ProgressView().controlSize(.mini)
-                Text("正在加载更多…")
-            } else {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                Text("继续下滑加载更多")
-            }
+    /// 底部翻页区：加载中 / 可继续 / 已到底三种状态，高度固定不顶动网格。
+    private var pagingFooter: some View {
+        ScrollPagingFooter(isLoadingMore: model.isLoadingMore,
+                           hasMore: model.canLoadMore,
+                           loadedCount: visibleItems.count,
+                           unit: "条内容")
+    }
+
+    /// 按来源分组预热封面：与网络资源频道页共用同一份磁盘缓存。
+    /// 一部片可能来自不同站点，分组后各按自己的站点请求。
+    private func prefetchCovers(_ entries: [NetworkCinemaItem]) {
+        let grouped = Dictionary(grouping: entries, by: { $0.source.id })
+        for group in grouped.values {
+            guard let source = group.first?.source else { continue }
+            catalog.prefetchCovers(for: group.map(\.item), source: source)
         }
-        .font(.system(size: 10.5))
-        .foregroundStyle(.tertiary)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
     }
 
     private func loadMoreIfNeeded() {

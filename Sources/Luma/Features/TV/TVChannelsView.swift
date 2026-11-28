@@ -32,6 +32,8 @@ struct TVDisabledView: View {
 struct TVChannelsView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(IPTVBrowserModel.self) private var tv
+    /// 频道清洗是一次性 AI 任务：单独观察，进度只刷新这一行。
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
 
     /// 海报墙负责浏览，列表负责扫台与数字键跳转；两种密度共用同一份筛选结果。
     private enum Density: String, CaseIterable, Identifiable {
@@ -50,6 +52,9 @@ struct TVChannelsView: View {
     @State private var showMultiview = false
     @State private var showSubscriptions = false
     @State private var collapsedGroups: Set<String> = []
+    /// 方向键游标：海报墙与列表共用，回车 / 空格直接播放这一台。
+    @State private var cursorChannelID: String?
+    @State private var wallWidth: CGFloat = 0
 
     private let columns = [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14, alignment: .top)]
 
@@ -206,6 +211,13 @@ struct TVChannelsView: View {
         .padding(.bottom, 12)
     }
 
+    /// 清洗范围：优先当前聚焦源，其次页内源筛选，最后所有启用的源。
+    private var cleanupPlaylistIDs: [UUID] {
+        if let id = tv.focusedPlaylistID { return [id] }
+        if let id = tv.channelSourceFilterID { return [id] }
+        return tv.playlists.filter(\.isEnabled).map(\.id)
+    }
+
     /// 追剧 / 多画面 / 刷新：从前一行的标题区挪下来，和筛选放在同一行。
     private var headerActions: some View {
         HStack(spacing: 6) {
@@ -220,6 +232,16 @@ struct TVChannelsView: View {
                 showMultiview = true
             }
             .help("2×2 同时看四个频道，声音只跟一个")
+
+            // 只改台名与分组，不动流地址；失败或想还原时重新拉取源即可恢复原名。
+            compactAction(aiAssist.channelCleanupLoading ? "清洗中…" : "AI 清洗",
+                          systemImage: "sparkles") {
+                Task { await store.aiCleanupTVChannels(tv, playlistIDs: cleanupPlaylistIDs) }
+            }
+            .disabled(aiAssist.channelCleanupLoading || tv.isLoading
+                      || !store.aiAssistAvailability.isReady)
+            .help(aiAssist.channelCleanupStatus
+                  ?? (store.aiAssistAvailability.hint ?? "规范化台名并归入央视 / 卫视 / 体育等分组"))
 
             compactAction("刷新", systemImage: "arrow.clockwise") {
                 tv.refresh()
@@ -444,8 +466,10 @@ struct TVChannelsView: View {
                                                       tv: tv,
                                                       channel: channel,
                                                       number: tv.channelNumber(for: channel),
-                                                      isPlaying: playingChannelID == channel.id)
+                                                      isPlaying: playingChannelID == channel.id,
+                                                      isCursor: cursorChannelID == channel.id)
                                             .equatable()
+                                            .id(channel.id)
                                     }
                                 } }
                             }
@@ -459,6 +483,20 @@ struct TVChannelsView: View {
                 }
                 // 换源时重建滚动视图：上一个源很可能滚到很深处，只剩偏移量会显示空白。
                 .id(tv.focusedPlaylistID?.uuidString ?? "tv-all")
+                // 方向键游标：鼠标进来就接管焦点，不用先点一下才响应。
+                .reportGridWidth()
+                .onPreferenceChange(GridWidthKey.self) { wallWidth = $0 }
+                .gridArrowCursor($cursorChannelID,
+                                 ids: cursorIDs(groups),
+                                 columns: adaptiveColumnCount(width: wallWidth - 44,
+                                                              minimum: 240, maximum: 360,
+                                                              spacing: 14)) { id in
+                    playChannel(id, in: groups)
+                }
+                .onChange(of: cursorChannelID) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+                }
                 // 换分组 / 换省份 / 换国家 / 换分组方式 / 搜索时回到顶部，避免沿用之前的位置。
                 .onChange(of: tv.groupFilter) { _, _ in scrollToTop(proxy) }
                 .onChange(of: tv.provinceFilter) { _, _ in scrollToTop(proxy) }
@@ -481,9 +519,11 @@ struct TVChannelsView: View {
                                 ForEach(section.channels) { channel in
                                     TVChannelRow(channel: channel,
                                                  number: tv.channelNumber(for: channel),
-                                                 isPlaying: playingChannelID == channel.id) {
+                                                 isPlaying: playingChannelID == channel.id,
+                                                 isCursor: cursorChannelID == channel.id) {
                                         store.openTVChannel(channel)
                                     }
+                                    .id(channel.id)
                                 }
                             } }
                         }
@@ -495,6 +535,15 @@ struct TVChannelsView: View {
                 .id("tv-top")
             }
             .id(tv.focusedPlaylistID?.uuidString ?? "tv-all")
+            .gridArrowCursor($cursorChannelID,
+                             ids: cursorIDs(groups),
+                             columns: 1) { id in
+                playChannel(id, in: groups)
+            }
+            .onChange(of: cursorChannelID) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+            }
             .onChange(of: tv.groupFilter) { _, _ in scrollToTop(proxy) }
             .onChange(of: tv.provinceFilter) { _, _ in scrollToTop(proxy) }
             .onChange(of: tv.countryFilter) { _, _ in scrollToTop(proxy) }
@@ -526,6 +575,19 @@ struct TVChannelsView: View {
         proxy.scrollTo("tv-top", anchor: .top)
     }
 
+    /// 当前可见的频道顺序（折叠的分组跳过）：方向键按这个顺序走。
+    private func cursorIDs(_ groups: [(group: String, channels: [TVChannel])]) -> [String] {
+        groups.flatMap { collapsedGroups.contains($0.group) ? [] : $0.channels.map(\.id) }
+    }
+
+    /// 回车 / 空格触发：在当前列表里找到这一台并播放。
+    private func playChannel(_ id: String,
+                             in groups: [(group: String, channels: [TVChannel])]) {
+        guard let channel = groups.flatMap(\.channels).first(where: { $0.id == id })
+        else { return }
+        store.openTVChannel(channel)
+    }
+
     private var currentSourceName: String {
         guard let id = tv.focusedPlaylistID else { return "全频直播" }
         return tv.playlistName(for: id)
@@ -555,6 +617,8 @@ struct TVChannelRow: View {
     let channel: TVChannel
     let number: Int
     let isPlaying: Bool
+    /// 键盘游标停在这一行：底色与左侧竖条高亮，回车 / 空格播放。
+    let isCursor: Bool
     let onPlay: () -> Void
 
     @State private var hovered = false
@@ -589,7 +653,7 @@ struct TVChannelRow: View {
     private var rowContent: some View {
         HStack(spacing: 10) {
             Capsule(style: .continuous)
-                .fill(isPlaying ? TVBrand.wave : Color.clear)
+                .fill(isPlaying ? TVBrand.wave : (isCursor ? TVBrand.gold : Color.clear))
                 .frame(width: 2, height: 22)
 
             Text(String(format: "%02d", number))
@@ -712,7 +776,14 @@ struct TVChannelRow: View {
     private var rowBackground: some View {
         RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(isPlaying ? TVBrand.wave.opacity(0.07)
-                            : (hovered ? TVBrand.surfaceHover : Color.clear))
+                            : (isCursor ? TVBrand.gold.opacity(0.10)
+                                        : (hovered ? TVBrand.surfaceHover : Color.clear)))
+            .overlay {
+                if isCursor {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(TVBrand.gold.opacity(0.65), lineWidth: 1)
+                }
+            }
     }
 
     private var probeHelp: String {

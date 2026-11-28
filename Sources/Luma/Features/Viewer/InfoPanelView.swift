@@ -55,6 +55,8 @@ struct InfoPanelView: View {
 struct PhotoInfoContent: View {
     let photo: PhotoItem
 
+    @Environment(LibraryStore.self) private var store
+
     private var typeDescription: String {
         let ext = (photo.displayFilename as NSString).pathExtension
         var description = LibraryStore.kindTitle(photo.kind)
@@ -94,6 +96,10 @@ struct PhotoInfoContent: View {
             PhotoInfoOtherSection(photo: photo)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: photo.id) {
+            // 图集看图里的虚拟照片：打开信息面板时按需补一次尺寸 / 体积 / EXIF。
+            store.refreshCatalogGalleryMetrics(for: photo.id)
+        }
     }
 
     // MARK: 基本
@@ -108,8 +114,11 @@ struct PhotoInfoContent: View {
             if photo.kind != .photo {
                 infoRow("分类", LibraryStore.kindTitle(photo.kind))
             }
-            infoRow("尺寸", "\(photo.displayPixelWidth) × \(photo.displayPixelHeight)")
-            infoRow("文件大小", formatFileSize(photo.fileSize))
+            let hasPixels = photo.displayPixelWidth > 0 && photo.displayPixelHeight > 0
+            infoRow("尺寸", hasPixels
+                ? "\(photo.displayPixelWidth) × \(photo.displayPixelHeight)"
+                : "—")
+            infoRow("文件大小", photo.fileSize > 0 ? formatFileSize(photo.fileSize) : "—")
             if photo.isVideo, let duration = photo.duration {
                 infoRow("时长", formatDuration(duration))
             }
@@ -299,7 +308,8 @@ private struct PhotoInfoSmartTagsSection: View {
         let smartTags = store.photoTagTitles(for: photo)
         let smartText = store.ocrText(for: photo.id)
         if !smartScenes.isEmpty || !smartTags.isEmpty || smartText != nil
-            || (store.analysisIndex[photo.id] == nil && store.canAnalyzeIntelligence && !photo.isVideo) {
+            || (store.analysisIndex[photo.id] == nil && store.canAnalyzeIntelligence
+                && !photo.isVideo && !photo.isReadOnly) {
             infoSection("智能标签") {
                 if !smartTags.isEmpty {
                     infoRow("画面", smartTags.prefix(10).joined(separator: " · "))
@@ -313,7 +323,21 @@ private struct PhotoInfoSmartTagsSection: View {
                 if let smartText {
                     infoRow("文字", String(smartText.prefix(220)))
                 }
-                if store.analysisIndex[photo.id] == nil, !photo.isVideo {
+                // 标注当前标签是哪个模型给的：关掉 SigLIP2 后标签会明显变粗，避免误以为是模型变差。
+                if !photo.isReadOnly {
+                    if !ModelRegistry.isEnabled(.siglip2) {
+                        Text("本地图像理解未开启：以上标签来自系统 Vision 分类（少量粗粒度概念），没有 249 个中文标签与语义扩展，相似检索会退回 Vision 特征；在「设置 › 本地模型」开启后会自动补扫。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if store.analysisIndex[photo.id] != nil, store.needsReanalysis(photo.id) {
+                        Text("这张还是旧版识别结果：开启本地图像理解后会自动补扫，标签会以 249 个中文标签重算。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if store.analysisIndex[photo.id] == nil, !photo.isVideo, !photo.isReadOnly {
                     Button("分析此照片") {
                         store.analyzeSinglePhoto(photo.id)
                     }
@@ -406,6 +430,10 @@ private struct PhotoInfoOtherSection: View {
     let photo: PhotoItem
 
     private var sourceDescription: String {
+        // 图集看图的虚拟照片：它不属于网盘挂载，直接标注为在线图集。
+        if let context = store.catalogGalleryContext(for: photo.id) {
+            return "网络图集 · \(context.source.name)"
+        }
         if photo.isSystem { return "系统照片图库（只读）" }
         if photo.isCloud {
             let kind = store.cloudMount(for: photo.cloudMountID)?.kind.title ?? "网络存储"
@@ -418,7 +446,7 @@ private struct PhotoInfoOtherSection: View {
         infoSection("其他") {
             infoRow("添加日期", DateText.dayFormatter.string(from: photo.addedAt))
             infoRow("来源", sourceDescription)
-            if photo.isCloud {
+            if photo.isCloud, store.catalogGalleryContext(for: photo.id) == nil {
                 if let mountName = store.cloudMount(for: photo.cloudMountID)?.name {
                     infoRow("网络位置", mountName + " / " + (photo.cloudPath ?? photo.originalName))
                 }

@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>拾光 Luma · AI Inspector 界面设计（2026-11）</title>
+<style>
+  :root{
+    --paper:#F7F5F1; --panel:#FFFDFA; --panel-2:#F0ECE5;
+    --ink:#17161C; --ink-2:#4E4B57; --ink-3:#8B8593;
+    --line:rgba(23,22,28,.10); --line-2:rgba(23,22,28,.18);
+    --amber:#F5A623; --coral:#F26D6D; --pink:#E86FA8; --violet:#8E6CF0; --teal:#3FB6C9;
+    --green:#2B7A55; --green-soft:#E3F1E9;
+    --gold:#9A6B12; --gold-soft:#F7ECD7;
+    --rose:#A5262F; --rose-soft:#FBE7E8;
+    --blue:#1F5F8B; --blue-soft:#E3EFF7;
+    --serif:"Songti SC","Noto Serif SC","Source Han Serif SC",Georgia,serif;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,monospace;
+    --shadow:0 30px 70px -42px rgba(30,22,50,.50);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;color:var(--ink);font:15px/1.75 var(--sans);
+    background:
+      radial-gradient(1100px 520px at 4% -10%, #fff 0%, transparent 56%),
+      radial-gradient(900px 480px at 100% 0%, #F1EDF8 0%, transparent 54%),
+      var(--paper);
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+  ::selection{background:#F6E3C6}
+  .wrap{max-width:1240px;margin:0 auto;padding:0 26px 96px}
+
+  /* ---------- Hero ---------- */
+  header.hero{
+    position:relative;overflow:hidden;margin-top:30px;border-radius:26px;
+    padding:44px 46px 34px;color:#fff;
+    background:linear-gradient(140deg,#12101A 0%,#1B1730 50%,#2A1E45 100%);
+    box-shadow:0 34px 80px -46px rgba(24,16,46,.75);
+  }
+  header.hero::before{content:"";position:absolute;right:-160px;top:-190px;width:600px;height:600px;border-radius:50%;
+    background:radial-gradient(circle,rgba(142,108,240,.34),transparent 62%)}
+  header.hero::after{content:"";position:absolute;left:-140px;bottom:-220px;width:540px;height:540px;border-radius:50%;
+    background:radial-gradient(circle,rgba(242,109,109,.22),transparent 64%)}
+  .spectrum{position:relative;height:4px;width:210px;border-radius:999px;margin-bottom:20px;
+    background:linear-gradient(90deg,var(--amber),var(--coral),var(--pink),var(--violet),var(--teal))}
+  .eyebrow{position:relative;font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:#CDBBFF;font-weight:700;margin-bottom:14px}
+  h1{position:relative;font-family:var(--serif);font-size:clamp(32px,4.2vw,50px);line-height:1.2;margin:0 0 14px}
+  h1 em{font-style:normal;background:linear-gradient(90deg,#FFD889,#FF9E9E 42%,#E7A4FF 72%,#8FE3EE);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{position:relative;margin:0;max-width:860px;color:#D9D4E6;font-size:15px}
+  .meta{position:relative;display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+  .meta span{font-size:11.5px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.16);color:#EDE9F7}
+
+  /* ---------- 版式 ---------- */
+  section{padding:54px 0 6px}
+  .kicker{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+  h2{font-family:var(--serif);font-size:clamp(24px,2.8vw,34px);line-height:1.28;margin:6px 0 8px}
+  h2 .num{color:var(--coral);font-family:var(--sans);font-size:13px;letter-spacing:.1em;vertical-align:4px;margin-right:10px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:0 0 12px;color:var(--ink-2)}
+  .sub{font-size:13px;color:var(--ink-3)}
+  .sec-head{display:flex;align-items:flex-end;justify-content:space-between;gap:22px}
+  .sec-note{font-size:12.5px;color:var(--ink-3);max-width:360px;text-align:right;padding-bottom:10px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .g5{grid-template-columns:repeat(5,minmax(0,1fr))}
+  @media(max-width:1180px){.g5{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:980px){.g3,.g4,.g5{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:680px){.g2,.g3,.g4,.g5{grid-template-columns:1fr}.sec-note{display:none}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 22px}
+  .callout{background:linear-gradient(180deg,#F3F7FB,#EDF3F9);border:1px solid #D9E6F1;border-radius:14px;padding:14px 16px;font-size:13px;color:#23395C}
+  .callout b{color:#12233F}
+
+  /* ---------- Tabs ---------- */
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px}
+  .tabs button{font:inherit;font-size:12.5px;padding:7px 13px;border-radius:999px;border:1px solid var(--line);
+    background:rgba(255,255,255,.78);color:var(--ink-2);cursor:pointer;transition:.18s}
+  .tabs button:hover{border-color:var(--line-2);color:var(--ink);transform:translateY(-1px)}
+  .tabs button.active{background:var(--ink);border-color:var(--ink);color:#fff}
+
+  /* ---------- App Mock ---------- */
+  .app{position:relative;border-radius:22px;overflow:hidden;border:1px solid rgba(23,22,28,.12);
+    background:linear-gradient(160deg,#EFEAF4,#F8F5EF 55%,#F2EFE7);box-shadow:var(--shadow)}
+  .chrome{display:flex;align-items:center;gap:7px;padding:11px 14px;background:rgba(255,255,255,.62);
+    border-bottom:1px solid var(--line);backdrop-filter:blur(14px)}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .dot.r{background:#F26D6D}.dot.y{background:#F5C451}.dot.g{background:#63C58B}
+  .chrome .title{margin-left:8px;font-size:11.5px;color:var(--ink-3)}
+  .chrome .spacer{flex:1}
+  .chrome .chip{font-size:10px;color:var(--ink-3);border:1px solid var(--line);padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.6)}
+
+  .app-body{display:flex;height:660px;position:relative}
+  @media(max-width:880px){.app-body{height:auto;flex-direction:column}.mock-nav{display:none}}
+
+  /* 左侧导航 */
+  .mock-nav{width:186px;flex:0 0 186px;padding:14px 10px;border-right:1px solid var(--line);
+    background:rgba(255,255,255,.42);backdrop-filter:blur(18px)}
+  .brand{display:flex;align-items:center;gap:8px;padding:4px 8px 14px}
+  .brand i{width:24px;height:24px;border-radius:8px;background:linear-gradient(135deg,var(--amber),var(--coral),var(--violet));display:block}
+  .brand b{font-size:12.5px}
+  .nav-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);padding:7px 9px;border-radius:9px;margin:2px 0}
+  .nav-item i{width:14px;height:14px;border-radius:5px;background:var(--panel-2);display:block;flex:0 0 auto}
+  .nav-item.active{background:rgba(23,22,28,.07);color:var(--ink);font-weight:600}
+  .nav-sep{height:1px;background:var(--line);margin:10px 8px}
+  .nav-label{font-size:9.5px;letter-spacing:.12em;color:var(--ink-3);padding:4px 10px}
+
+  /* 中间画廊 */
+  .mock-gallery{flex:1;min-width:0;padding:14px 16px;display:flex;flex-direction:column;gap:10px;position:relative}
+  .gal-top{display:flex;align-items:center;gap:8px}
+  .gal-top b{font-size:13px}
+  .gal-top span{font-size:11px;color:var(--ink-3)}
+  .gal-top .grow{flex:1}
+  .mini-btn{font-size:10.5px;color:var(--ink-2);border:1px solid var(--line);background:rgba(255,255,255,.7);padding:4px 9px;border-radius:999px}
+  .photo-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;align-content:start}
+  @media(max-width:1100px){.photo-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  .tile{aspect-ratio:1/1;border-radius:9px;position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.5)}
+  .tile::after{content:attr(data-l);position:absolute;left:6px;bottom:5px;font-size:8.5px;color:rgba(255,255,255,.86);text-shadow:0 1px 2px rgba(0,0,0,.3)}
+  .t1{background:linear-gradient(135deg,#E9B872,#D97B66 60%,#7A5AA8)}
+  .t2{background:linear-gradient(135deg,#8FC9D8,#5B8FB5 55%,#3E4E76)}
+  .t3{background:linear-gradient(135deg,#F0C7D8,#D47FA4 55%,#8A5B8E)}
+  .t4{background:linear-gradient(135deg,#B8D8B0,#6FA47C 55%,#3D6B58)}
+  .t5{background:linear-gradient(135deg,#F3D9A4,#D9A35B 55%,#8C6337)}
+  .t6{background:linear-gradient(135deg,#B9C4EE,#7C8BCB 55%,#4A4D7A)}
+  .tile.selected{outline:3px solid rgba(255,255,255,.9);outline-offset:-3px;box-shadow:0 0 0 3px rgba(142,108,240,.55)}
+  .selection-note{position:absolute;left:16px;bottom:12px;font-size:10.5px;color:var(--ink-2);
+    background:rgba(255,255,255,.78);border:1px solid var(--line);padding:5px 10px;border-radius:999px;backdrop-filter:blur(10px)}
+
+  /* FAB */
+  .fab{position:absolute;right:22px;bottom:20px;display:flex;align-items:center;gap:6px;
+    padding:9px 13px;border-radius:999px;background:rgba(255,253,250,.78);border:1px solid rgba(23,22,28,.14);
+    box-shadow:0 14px 30px -18px rgba(30,22,50,.55);backdrop-filter:blur(16px);font-size:11.5px;font-weight:600;
+    transition:.2s;opacity:0;pointer-events:none;transform:translateY(6px)}
+  .fab i{width:7px;height:7px;border-radius:50%;background:linear-gradient(135deg,var(--amber),var(--violet));display:block}
+  .fab span{font-size:9.5px;color:var(--ink-3);font-weight:500;font-family:var(--mono)}
+  .app[data-state="collapsed"] .fab{opacity:1;pointer-events:auto;transform:none}
+  .app[data-state="collapsed"] .inspector{display:none}
+  .app[data-state="collapsed"] .mock-gallery{flex:1}
+
+  /* 右侧 Inspector */
+  .inspector{width:380px;flex:0 0 380px;border-left:1px solid var(--line);display:flex;flex-direction:column;
+    background:rgba(255,253,250,.72);backdrop-filter:blur(20px) saturate(1.1);min-height:0}
+  @media(max-width:880px){.inspector{width:100%;flex:1 0 auto;border-left:none;border-top:1px solid var(--line);max-height:620px}}
+  .ins-head{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .ins-logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,var(--amber),var(--coral),var(--violet));display:grid;place-items:center;color:#fff;font-size:13px;box-shadow:0 8px 18px -12px rgba(142,108,240,.9)}
+  .ins-head b{font-size:12.5px;display:block;line-height:1.2}
+  .ins-head small{font-size:9.5px;color:var(--ink-3);display:block;margin-top:2px}
+  .ins-head .grow{flex:1}
+  .ibtn{width:24px;height:24px;border-radius:50%;border:1px solid var(--line);background:rgba(255,255,255,.7);display:grid;place-items:center;font-size:10px;color:var(--ink-3)}
+  .ins-body{flex:1;overflow:auto;padding:12px 12px 8px;display:flex;flex-direction:column;gap:10px}
+  .ins-foot{border-top:1px solid var(--line);padding:9px 12px 10px;display:flex;flex-direction:column;gap:7px}
+
+  .ctx-row{display:flex;gap:5px;overflow:auto;padding-bottom:2px}
+  .ctx{flex:0 0 auto;display:flex;align-items:center;gap:4px;font-size:9.5px;color:var(--ink-2);
+    border:1px solid var(--line);background:rgba(255,255,255,.66);padding:3px 7px;border-radius:999px}
+  .ctx i{width:5px;height:5px;border-radius:50%;background:linear-gradient(135deg,var(--amber),var(--violet));display:block}
+  .ctx b{font-weight:600;color:var(--ink)}
+  .ctx em{font-style:normal;color:var(--ink-3)}
+
+  .msg{padding:10px 12px;border-radius:13px;font-size:11.5px;line-height:1.65;border:1px solid var(--line);background:rgba(255,255,255,.82)}
+  .msg.user{background:linear-gradient(135deg,#17161C,#2A2440);color:#F2EFF8;border-color:transparent}
+  .msg.user .tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+  .msg.user .tags span{font-size:9px;color:#D9D3E9;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.16);padding:2px 6px;border-radius:999px}
+  .msg.assistant{background:rgba(255,255,255,.7)}
+  .msg .who{font-size:9.5px;color:var(--ink-3);margin-bottom:3px}
+  .msg .reasoning{display:flex;align-items:center;gap:6px;margin-top:6px;padding:5px 8px;border-radius:8px;background:rgba(23,22,28,.045);color:var(--ink-3);font-size:9.5px}
+  .msg .reasoning span{margin-left:auto;color:#6C5AA8}
+  .msg .meta{margin-top:5px;font-size:9px;color:var(--ink-3);letter-spacing:.02em}
+  .question{border:1px solid #D8D2F0;background:linear-gradient(180deg,#FAF8FF,#F3F0FC);border-radius:13px;padding:11px 12px}
+  .question .qt{font-size:11.5px;font-weight:650;color:#3B2F66;margin-bottom:7px}
+  .question .opt{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--ink-2);padding:6px 8px;border:1px solid rgba(108,90,168,.18);border-radius:9px;background:rgba(255,255,255,.7);margin-top:5px}
+  .question .opt b{width:14px;height:14px;border-radius:50%;border:1px solid rgba(108,90,168,.4);display:inline-flex;align-items:center;justify-content:center;font-size:8px;color:#6C5AA8}
+  .question .opt.primary{background:linear-gradient(135deg,#F5EFE9,#EFE8FB);border-color:#CBBFE8;color:#2E2450;font-weight:600}
+
+  .plan{border:1px solid #EFDDC0;background:linear-gradient(180deg,#FFFDFA,#FFF8EC);border-radius:13px;padding:11px 12px}
+  .plan .pt{display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;margin-bottom:7px}
+  .plan .pt .grow{flex:1}
+  .pill{font-size:8.5px;font-weight:700;padding:2px 7px;border-radius:999px}
+  .pill.read{background:var(--green-soft);color:#1D6848}
+  .pill.rev{background:var(--blue-soft);color:#14657C}
+  .pill.high{background:var(--rose-soft);color:#A5262F}
+  .pill.wait{background:var(--gold-soft);color:#8A5D10}
+  .step{display:flex;align-items:flex-start;gap:7px;padding:4px 0;font-size:10.5px;color:var(--ink-2)}
+  .step b{width:15px;height:15px;border-radius:50%;background:rgba(23,22,28,.06);display:grid;place-items:center;font-size:8px;color:var(--ink-3);flex:0 0 auto;margin-top:1px}
+  .step .grow{flex:1;min-width:0}
+  .step strong{font-weight:600;color:var(--ink);display:block;font-size:10.5px}
+  .step small{font-size:9.5px;color:var(--ink-3)}
+  .plan .btns{display:flex;gap:6px;margin-top:8px}
+  .btn{font-size:10px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-2)}
+  .btn.primary{background:linear-gradient(135deg,var(--coral),var(--violet));border-color:transparent;color:#fff;box-shadow:0 8px 18px -12px rgba(142,108,240,.9)}
+
+  .timeline{border:1px solid var(--line);background:rgba(255,255,255,.72);border-radius:12px;padding:9px 11px}
+  .tl{display:flex;align-items:flex-start;gap:7px;font-size:10px;color:var(--ink-2);padding:3px 0}
+  .tl i{width:12px;height:12px;border-radius:50%;display:grid;place-items:center;font-size:7px;flex:0 0 auto;margin-top:1px}
+  .tl.done i{background:var(--green-soft);color:var(--green)}
+  .tl.now i{background:var(--gold-soft);color:var(--gold);animation:pulse 1.5s infinite}
+  .tl .grow{flex:1}
+  .tl small{color:var(--ink-3);font-size:9px}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  .result{border:1px solid #CFE8DB;background:linear-gradient(180deg,#F2FBF6,#EAF7F0);border-radius:12px;padding:10px 12px;font-size:10.5px;color:#1D553D}
+  .result b{color:#143F2E}
+  .result .btns{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .result .btn{color:#1D553D;border-color:#BFDCCB;background:rgba(255,255,255,.72)}
+  .artifact{border:1px solid var(--line);background:rgba(255,255,255,.78);border-radius:11px;padding:8px 10px;display:flex;align-items:center;gap:8px}
+  .artifact .ico{width:26px;height:26px;border-radius:8px;background:rgba(142,108,240,.12);display:grid;place-items:center;color:var(--violet);font-size:11px;flex:0 0 auto}
+  .artifact .grow{flex:1;min-width:0}
+  .artifact b{display:block;font-size:10.5px}
+  .artifact small{display:block;font-size:9px;color:var(--ink-3)}
+  .artifact .n{font-size:9px;color:var(--ink-3);font-family:var(--mono)}
+
+  .approval{border:1px solid #F3CDD0;background:rgba(255,251,251,.92);border-radius:13px;padding:11px 12px}
+  .approval .at{display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;margin-bottom:6px}
+  .approval .at .grow{flex:1}
+  .approval .row{display:flex;align-items:flex-start;gap:6px;font-size:10px;color:var(--ink-2);padding:5px 0;border-top:1px dashed rgba(23,22,28,.08)}
+  .approval .row:first-of-type{border-top:none}
+  .approval .row .grow{flex:1}
+  .approval .btns{display:flex;gap:6px;justify-content:flex-end;margin-top:8px}
+
+  .composer{margin-top:auto;border:1px solid var(--line);background:rgba(255,255,255,.72);border-radius:14px;padding:8px 9px}
+  .composer .fake-input{font-size:10.5px;color:var(--ink-3);padding:4px 3px 8px}
+  .composer .bar{display:flex;align-items:center;gap:5px}
+  .composer .bar .grow{flex:1}
+  .tag{font-size:9px;padding:3px 7px;border-radius:999px;background:rgba(23,22,28,.05);color:var(--ink-2);border:1px solid var(--line)}
+  .send{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,var(--coral),var(--violet));display:grid;place-items:center;color:#fff;font-size:10px}
+  .statusline{display:flex;align-items:center;gap:5px;font-size:8.5px;color:var(--ink-3);padding:0 2px}
+  .statusline i{width:4px;height:4px;border-radius:50%;background:var(--green);display:block}
+
+  .ins-state{display:none}
+  .ins-state.active{display:flex;flex-direction:column;gap:9px;animation:fade .24s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+  /* ---------- 融合 / 解剖 ---------- */
+  .fusion{padding:18px 18px;border-radius:15px;background:var(--panel);border:1px solid var(--line);position:relative;overflow:hidden}
+  .fusion::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--amber),var(--coral),var(--violet),var(--teal))}
+  .fusion h4{margin:0 0 3px;font-size:13px}
+  .fusion .path{font-size:10px;color:var(--ink-3);font-family:var(--mono);margin-bottom:7px}
+  .fusion p{margin:0;font-size:12px}
+  .tokens{width:100%;border-collapse:collapse;font-size:12px;background:var(--panel);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+  .tokens th,.tokens td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  .tokens th{background:#F0EEF6;font-size:11px;color:#3C4054}
+  .tokens tr:last-child td{border-bottom:none}
+  .tokens td:first-child{font-family:var(--mono);font-size:11px;color:#3B3855;white-space:nowrap}
+  .tagline{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--green-soft);color:#1D6848}
+  footer{margin-top:44px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-3)}
+  .reveal{opacity:0;transform:translateY(9px);transition:.5s ease}
+  .reveal.in{opacity:1;transform:none}
+  @media(prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}.tl.now i{animation:none}}
+
+  /* ---------- 呈现形态与矩阵 ---------- */
+  .statecard{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 16px 14px;overflow:hidden}
+  .statecard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--violet),var(--teal))}
+  .statecard h4{margin:0 0 4px;font-size:13.5px}
+  .statecard .en{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);letter-spacing:.06em}
+  .statecard p{font-size:12px;margin:7px 0 0}
+  .statecard .shape{height:56px;border-radius:10px;background:var(--panel-2);border:1px dashed var(--line-2);display:flex;align-items:center;justify-content:center;margin:9px 0 2px}
+  .statecard .shape i{display:block;border-radius:4px;background:linear-gradient(135deg,var(--violet),var(--teal));opacity:.75}
+  .shape.dock i{width:34px;height:38px;margin-left:auto;margin-right:7px}
+  .shape.peek i{width:7px;height:34px;margin-left:auto;margin-right:5px;border-radius:999px}
+  .shape.float i{width:44px;height:30px;box-shadow:0 6px 14px rgba(30,22,50,.18)}
+  .shape.window i{width:52px;height:32px;border-radius:5px;box-shadow:6px 6px 0 -2px var(--panel-2), 6px 6px 0 -1px var(--line-2)}
+  .shape.fab i{width:34px;height:14px;border-radius:999px;margin-left:auto;margin-right:6px;margin-top:26px}
+  .kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--line-2);border-bottom-width:2px;border-radius:5px;padding:1px 5px;background:#fff;color:var(--ink-2);white-space:nowrap}
+  .tw table{width:100%;border-collapse:collapse;font-size:12px;background:var(--panel);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+  .tw th,.tw td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  .tw th{background:#F0EEF6;font-size:11px;color:#3C4054}
+  .tw tr:last-child td{border-bottom:none}
+  .tw td:first-child{font-weight:600;white-space:nowrap}
+  .yes{color:var(--green);font-weight:700}
+  .half{color:var(--gold);font-weight:700}
+  .no{color:var(--ink-3)}
+  .flowline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink-2)}
+  .flowline .n{font-family:var(--mono);font-size:10px;background:var(--ink);color:#fff;padding:2px 7px;border-radius:999px}
+  .flowline .arrow{color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="spectrum"></div>
+    <div class="eyebrow">Luma Design · AI Inspector · 2026.11</div>
+    <h1>不只一个按钮，<br><em>而是一块随手的副屏</em></h1>
+    <p class="lede">AI 助手的 2.2 界面设计：左侧导航、中间内容、右侧 Inspector。它不抢占主界面，却能在选中、搜索、影院、查看器与成果物之间来回接力；计划、审批、字段级 diff、执行时间线、接手、追问、撤销、思考摘要、@ 指认、技能、定时任务与角色分工都在同一条流里。</p>
+    <div class="meta">
+      <span>四形工作台</span><span>点一次开 / 再点关</span><span>左右可拖拽</span><span>⌘J 呼出</span><span>控制台 · 创意工坊</span><span>成果物库 · 任务中心</span><span>磨砂玻璃</span>
+    </div>
+  </header>
+
+  <!-- 00 · Surface -->
+  <section id="surface">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">00 · Surface</div>
+        <h2><span class="num">00</span>一套助手，四种形态</h2>
+      </div>
+      <div class="sec-note">先决定「在哪」，再决定「聊什么」。形态是窗口状态，内容状态见 01；同一段会话不复制、不重开。</div>
+    </div>
+
+    <div class="grid g5 reveal" style="margin-top:14px">
+      <div class="statecard">
+        <div class="en">HIDDEN</div>
+        <h4>收起</h4>
+        <div class="shape fab"><i></i></div>
+        <p>右下「问 AI · <span class="kbd">⌘J</span>」胶囊或右侧竖标签。不占工具栏，不遮网格。</p>
+      </div>
+      <div class="statecard">
+        <div class="en">DOCKED</div>
+        <h4>侧栏</h4>
+        <div class="shape dock"><i></i></div>
+        <p>右侧常驻，左边缘可左右拖宽（320–560pt）。浏览态默认，边看边问。</p>
+      </div>
+      <div class="statecard">
+        <div class="en">FLOATING</div>
+        <h4>浮窗</h4>
+        <div class="shape float"><i></i></div>
+        <p>顶部把手拖位置、右下角拖尺寸（最小 520×480）。看图、播放、深任务用。</p>
+      </div>
+      <div class="statecard">
+        <div class="en">WINDOW</div>
+        <h4>独立窗口</h4>
+        <div class="shape window"><i></i></div>
+        <p><span class="kbd">⌥⌘J</span> 真窗口：可拖到另一块屏，与主窗并排；不抢主窗焦点。</p>
+      </div>
+      <div class="statecard">
+        <div class="en">PEEK · 附属</div>
+        <h4>半隐藏</h4>
+        <div class="shape peek"><i></i></div>
+        <p>查看器 / 全屏时只留 26×92 竖标签贴右边缘；点一下开浮窗，不打断画面。</p>
+      </div>
+    </div>
+
+    <div class="callout reveal" style="margin-top:14px">
+      <b>一个按钮，两种动作：</b>工具栏、影院工具栏、查看器的助手按钮统一调 <code>toggleAIWorkspace()</code>
+      —— <b>点一次弹开，再点一次收起</b>，不再「只能开不能关」；开关不重开会话，形态沿用上次。
+    </div>
+
+    <div class="callout reveal" style="margin-top:10px">
+      <b>三种拖拽，全部跟手：</b>① 侧栏左边缘 <b>1pt 竖线 + 9pt 热区</b>，左右拖改宽（clamp 320–560）；
+      ② 浮窗顶部 <b>14pt 把手</b>拖位置，右下角拖尺寸（min 520×480）；③ 独立窗口交给系统窗口管理器，可跨屏、可最小化。
+      尺寸与位置写入偏好，下次打开原样恢复。
+    </div>
+
+    <div class="tw reveal" style="margin-top:16px">
+      <table>
+        <thead><tr><th>场景</th><th>侧栏</th><th>半隐藏</th><th>浮窗</th><th>独立窗口</th><th>默认与规则</th></tr></thead>
+        <tbody>
+          <tr><td>浏览：网格 / 相簿 / 人物 / 地点 / 搜索</td><td class="yes">● 默认</td><td class="no">○</td><td class="yes">● 可切</td><td class="yes">● 可切</td><td>⌘J 开关；⇧⌘J 浮窗；⌥⌘J 独立窗口；侧栏宽可拖并记住</td></tr>
+          <tr><td>照片查看器</td><td class="half">◐ 可关自动让位</td><td class="yes">● 默认</td><td class="yes">● ⌘J</td><td class="yes">●</td><td>默认收起侧栏、显示右侧竖标签；点标签开浮窗问「这张」</td></tr>
+          <tr><td>视频窗口播放</td><td class="half">◐ 可关自动让位</td><td class="yes">● 默认</td><td class="yes">● ⌘J</td><td class="yes">●</td><td>不自动暂停；浮窗半透明，不挡字幕与进度条</td></tr>
+          <tr><td>视频全屏 / 影院 / 网络影院 / 电视播放</td><td class="no">○</td><td class="no">○</td><td class="yes">● ⌘J</td><td class="half">◐ 退出全屏后可开</td><td>全屏不出现常驻入口；快捷键或边缘热区唤起浮窗，Esc 收起</td></tr>
+          <tr><td>编辑器</td><td class="no">○</td><td class="no">○</td><td class="half">◐ 仅快速提问</td><td class="half">◐</td><td>画布优先；浮窗默认缩小并避开画布中心，不自动弹出</td></tr>
+          <tr><td>设置 / 导入 / 建库 / 选取图库</td><td class="no">○</td><td class="no">○</td><td class="no">○</td><td class="no">○</td><td>这些页面自身有 AI 设置或引导，不再叠助手，避免双重遮挡</td></tr>
+          <tr><td>窄窗口（&lt; 1100pt）</td><td class="half">◐ 自动收成半隐藏</td><td class="yes">●</td><td class="yes">● 宽度取 92%</td><td class="yes">● 推荐</td><td>侧栏不挤占内容；浮窗限制最大宽高并留 36pt 边距</td></tr>
+          <tr><td>多显示器</td><td class="yes">●</td><td class="yes">●</td><td class="yes">●</td><td class="yes">● 主场景</td><td>浮窗跟随当前窗口所在屏幕；独立窗口可固定到副屏，不跳回主屏</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid g3 reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">打开与切换</h4>
+        <div class="flowline"><span class="n">⌘J</span>关 → 上次形态 · 开 → 同一段对话</div>
+        <div class="flowline" style="margin-top:6px"><span class="n">⇧⌘J</span>直接切成浮窗</div>
+        <div class="flowline" style="margin-top:6px"><span class="n">⌥⌘J</span>弹成独立窗口</div>
+        <div class="flowline" style="margin-top:6px"><span class="n">Esc</span>收起浮窗 / 半隐藏</div>
+        <p class="sub" style="margin:8px 0 0">侧栏顶部「展开为浮窗」、浮窗顶部「收进侧栏」是同一动作的两个方向；菜单项随当前形态变成「收起智能助手」。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">尺寸与位置</h4>
+        <p style="font-size:12.5px;margin:0">侧栏 320–560pt，默认 380，<b>左边缘左右拖拽实时改宽</b>；浮窗默认 880×740，最小 520×480，顶部把手拖动、右下角缩放；独立窗口默认 880×760，交给系统管理。全部写入偏好，按设备记住。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">关闭与后台</h4>
+        <p style="font-size:12.5px;margin:0">关闭只收界面，不杀任务；运行中关闭后长任务继续，Dock 图标与菜单栏保留「助手运行中」。等计划 / 审批时关闭会先收尾，避免悬挂。</p>
+      </div>
+    </div>
+
+    <h3 class="reveal">控制台：把「⋯ 下拉」换成一块面板</h3>
+    <div class="grid g2 reveal">
+      <div class="panel">
+        <h4 style="margin-top:0">为什么要换</h4>
+        <p style="font-size:12.5px;margin:0 0 8px">原来右上角「⋯」是一个系统 Menu：模型、角色、审批、记忆、技能、定时、新对话挤在一条竖列里，既看不出当前状态，也放不下说明与入口。2.2 改为一个 <b>740×680 的控制台</b>，由头部 <code>slider.horizontal.3</code> 打开，信息分层：先看状态，再动配置。</p>
+        <div class="flowline"><span class="n">顶部</span>模型 · Key · 消息数 · 图片理解 · 当前形态</div>
+        <div class="flowline" style="margin-top:6px"><span class="n">六卡</span>模型与连接 / 角色与审批 / 长期记忆 / 技能与连接器 / 定时任务 / 会话</div>
+        <div class="flowline" style="margin-top:6px"><span class="n">底部</span>四形态切换 + 自动让位 + 半隐藏 + 成果物库 / 任务中心 + 审批承诺</div>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">六个卡片各做什么</h4>
+        <div class="tw" style="margin-top:2px">
+          <table>
+            <thead><tr><th>卡片</th><th>可读状态</th><th>可执行</th></tr></thead>
+            <tbody>
+              <tr><td>模型与连接</td><td>提供商 / 模型 / 图片策略</td><td>更换模型 → 设置</td></tr>
+              <tr><td>角色与审批</td><td>当前角色 / 审批档 / 委派 / 已记住 N 个「始终允许」</td><td>就地切换 · 清除记忆 · 工具路由开关（对比用）</td></tr>
+              <tr><td>长期记忆</td><td>启用数 / 总数</td><td>管理记忆</td></tr>
+              <tr><td>技能与连接器</td><td>技能数 / 预设数 / MCP</td><td>打开创意工坊</td></tr>
+              <tr><td>定时任务</td><td>启用数 / 下次运行</td><td>管理定时任务</td></tr>
+              <tr><td>会话</td><td>消息 / 成果物 / 本轮工具 / 本轮 tokens</td><td>清空 · 新问题 · 成果物库 · 任务中心</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="reveal">创意工坊：技能是「怎么说」，连接器是「能接什么」</h3>
+    <div class="grid g3 reveal">
+      <div class="panel">
+        <h4 style="margin-top:0">技能</h4>
+        <p style="font-size:12.5px;margin:0">780×660 双列卡片：搜索框 + 领域胶囊（全部 / 图库 / 影院 / 电视 / 跨模块）。每张卡显示图标、标题、领域、<b>「会修改」标记</b>与一句摘要，底部「填入」「执行」。任务描述可复用，执行仍走计划 / 审批 / 撤销。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">连接器（MCP）</h4>
+        <p style="font-size:12.5px;margin:0">同一面板内分段切换。每个预设是一张卡：命令、摘要、需要目录时给「选择…」；已添加显示绿标，不重复安装。默认不启用，写入 <code>mcp.json</code> 后重载，工具调用每次确认。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">一致性</h4>
+        <p style="font-size:12.5px;margin:0">控制台、创意工坊、设置页三处指向同一份数据：<code>AISkillLibrary</code>、<code>AIConnectorMarket</code>、<code>MCPService</code>。不出现「这里能加、那里看不到」的第二套列表。</p>
+      </div>
+    </div>
+
+    <h3 class="reveal">对话内的六个新动作：改一句、问一句、看一眼、记一次</h3>
+    <div class="grid g3 reveal">
+      <div class="panel">
+        <h4 style="margin-top:0">编辑重发</h4>
+        <p style="font-size:12.5px;margin:0">最后一条 user 气泡 hover 出「编辑」。点开后截断这条消息及其后回复，原文回填输入框并聚焦；不适合改历史轮次，避免误删上下文。气泡旁写明「会清空其后的 N 条回复」。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">主动追问卡</h4>
+        <p style="font-size:12.5px;margin:0">模型信息不足时调 <code>ask_user</code>，在输入框上方浮出一张问卡：一个问题 + 2–4 个选项 + 「其他」自由输入。回答后继续原任务；后台任务禁用，避免无人值守挂起。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">思考过程折叠</h4>
+        <p style="font-size:12.5px;margin:0">推理模型返回的 <code>reasoning</code> 收在回答上方一行「思考过程 · Ns」，默认折叠；流式中显示「正在思考…」。展开是灰底小字，不与正文抢层级。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">始终允许</h4>
+        <p style="font-size:12.5px;margin:0">审批卡四档：本次都允许 / <b>始终允许</b> / 允许 / 取消。只对可逆写开放；高风险与 <code>mcp__</code> 外部工具不出现「始终允许」。记住的清单在控制台「角色与审批」卡里可一键清除。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">token 尾注</h4>
+        <p style="font-size:12.5px;margin:0">每条回答底部小字 <code>1,240 tok</code>（prompt + completion）；控制台「会话」卡显示 <code>in / out</code>。端点不返回 usage 时显示「端点未返回」，不猜。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">成果物库与任务中心</h4>
+        <p style="font-size:12.5px;margin:0">成果物条末尾「全部 N 个成果物 →」打开 780×640 库：分类计数、搜索、类型胶囊、双列卡、打开 / 移除（只删记录不删相簿）。任务中心 560×560：顶部一行「验收」（成功率 / 首字中位 / 审批均值 / 平均 token + schema 节省），下面是运行中实时走秒与最近 20 条。</p>
+      </div>
+    </div>
+
+    <h3 class="reveal">设置地图：在哪里设置，在哪里运行</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>要改什么</th><th>设置位置</th><th>运行入口</th></tr></thead>
+        <tbody>
+          <tr><td>呈现形态 / 自动让位 / 半隐藏</td><td>头部「控制台 › 呈现方式」；设置 › 助手 › AI 工作台</td><td>⌘J / ⇧⌘J / ⌥⌘J / 右下胶囊 / 右侧竖标签</td></tr>
+          <tr><td>模型、接口地址、API Key、图片理解</td><td>控制台 › 模型与连接 →「完整设置」</td><td>助手顶栏模型徽标、输入框模式菜单</td></tr>
+          <tr><td>写操作审批、默认模式</td><td>控制台 › 角色与审批；设置 › 助手 › 对话</td><td>助手「控制台」卡片就地切换</td></tr>
+          <tr><td>角色 / 多 Agent 委派</td><td>控制台 › 角色与审批；设置 › 多 Agent 与自动化</td><td>控制台 › 角色 Picker</td></tr>
+          <tr><td>长期记忆</td><td>控制台 › 长期记忆 →「管理记忆」</td><td>顶部记忆徽标 / 面板</td></tr>
+          <tr><td>技能与连接器预设</td><td>控制台 › 技能与连接器 →「打开市场」（创意工坊）</td><td>填入 / 执行 / 添加连接器</td></tr>
+          <tr><td>定时任务</td><td>控制台 › 定时任务 →「管理定时任务」</td><td>到点自动跑；列表可立即运行 / 暂停</td></tr>
+          <tr><td>MCP 服务器配置 / 重载</td><td>创意工坊 › 连接器；设置 › 连接器（MCP）</td><td>「已添加」状态 + mcp.json</td></tr>
+          <tr><td>「始终允许」记忆</td><td>控制台 › 角色与审批 →「清除」</td><td>审批卡上的「始终允许」写入，控制台可撤销</td></tr>
+          <tr><td>成果物回看</td><td>控制台 › 会话 →「成果物库」；成果物条末尾</td><td>搜索 / 类型筛选 / 打开 / 移除记录</td></tr>
+          <tr><td>任务回看</td><td>菜单「任务中心…」；控制台底部</td><td>运行中实时走秒；最近 20 条状态、步数、耗时</td></tr>
+          <tr><td>会话清空 / 新问题</td><td>控制台 › 会话</td><td>清空（二次确认）/ 关闭面板回到输入框</td></tr>
+          <tr><td>语音输入授权</td><td>首次点击麦克风时确认</td><td>输入框麦克风按钮</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="reveal">创意动作：把 AI 接在已经发生的事上</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>场景</th><th>动作</th><th>结果</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td>照片网格</td><td>右键「问 AI…」</td><td>带入「选中 N 项」上下文，打开工作台</td><td>● 已实现</td></tr>
+          <tr><td>照片 / 视频查看器</td><td>右侧竖标签 / ⌘J</td><td>浮窗提问，胶囊自动带「正在看」</td><td>● 已实现</td></tr>
+          <tr><td>视频播放</td><td>指认当前 12:34</td><td>问「这里在讲什么」，以时间点为准</td><td>● 已实现</td></tr>
+          <tr><td>影院工具栏</td><td>「一键智能整理」</td><td>打开工作台并直接发出整理指令</td><td>● 已实现</td></tr>
+          <tr><td>影院详情</td><td>「问 AI 这部片」</td><td>带入片名 / 年份 / 匹配状态，问续集或同类</td><td>◐ 设计完成，待接</td></tr>
+          <tr><td>电视节目单</td><td>「问 AI 今晚」</td><td>带入频道与节目单，生成今晚清单</td><td>◐ 技能已备，待接入口</td></tr>
+          <tr><td>网格拖拽</td><td>把照片拖进助手</td><td>自动成为 @ 指认，不重复描述</td><td>◐ 设计完成，待接拖放</td></tr>
+          <tr><td>结果卡</td><td>打开 / 撤销 / 保存为成果物</td><td>回到对应模块或成果物库</td><td>● 已实现</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="reveal">缺口与深度审计</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>维度</th><th>现在做到哪</th><th>还不够深的地方</th><th>优先级</th></tr></thead>
+        <tbody>
+          <tr><td>窗口形态</td><td>收起 / 侧栏 / 浮窗 / 独立窗口四形 + 半隐藏；点一次开关、三向拖拽、控制台切换</td><td>缺边缘吸附、多显示器位置记忆与全屏边缘热区</td><td>P1</td></tr>
+          <tr><td>可见性</td><td>场景矩阵与自动让位已定义并落地</td><td>缺「播放中打开助手是否自动暂停」的细粒度偏好</td><td>P2</td></tr>
+          <tr><td>入口</td><td>所有入口走 toggleAIWorkspace，点一次开再点关</td><td>右键 / 拖拽 / 影院详情 / 电视节目单尚未全部接上</td><td>P1</td></tr>
+          <tr><td>设置归位</td><td>控制台六卡 + 创意工坊 + 设置分组，三处同一份数据</td><td>缺设置搜索与「一键跳转」索引</td><td>P2</td></tr>
+          <tr><td>运行态</td><td>时间线、接管、后台只读、任务中心（运行中走秒 / 最近 20 条状态、步数、耗时）</td><td>缺跨重启的任务队列与「后台完成」通知</td><td>P1</td></tr>
+          <tr><td>对话操作</td><td>编辑重发、主动追问卡、思考过程折叠、token 尾注</td><td>缺多分支对话树；编辑重发不保留旧分支</td><td>P1</td></tr>
+          <tr><td>成果物</td><td>会话内成果物条 + 独立成果物库（搜索 / 类型筛选 / 打开 / 移除）</td><td>缺在画布上继续编辑成果物</td><td>P1</td></tr>
+          <tr><td>创意动作</td><td>右键、时间点、影院一键整理</td><td>播放器「问这段」、影院「问这部」、拖拽入对话</td><td>P1</td></tr>
+          <tr><td>安全</td><td>审批、检查点、后台跳过写操作、审计落盘、注入提醒、连接器环境隔离</td><td>缺完整注入过滤、OS 级沙箱与子 Agent 预算上限</td><td>P0</td></tr>
+          <tr><td>验证</td><td>构建 + 浏览器校验 + <code>LumaAIChecks</code>（路由 60 例 / 对抗 30 例 / schema 成本）</td><td>缺指认 / 定时 / 委派的 UI 自动化回归；真实任务指标仍需样本</td><td>P0</td></tr>
+          <tr><td>可观测性</td><td>token 用量（气泡 + 控制台 in / out）、审计 JSONL</td><td>缺任务成功率、审批取消率、撤销率与金额级成本</td><td>P1</td></tr>
+          <tr><td>文档深度</td><td>状态机、矩阵、设置地图已补</td><td>缺失败恢复路径、无障碍与窄屏细则</td><td>P2</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 01 -->
+  <section id="anatomy">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">01 · Layout</div>
+        <h2><span class="num">01</span>七种内容状态，一眼看懂</h2>
+      </div>
+      <div class="sec-note">窗口形态见 00；这里是同一段对话里的内容状态：收起 / 对话 / 计划 / 审批 / 追问 / 接管 / 成果物。</div>
+    </div>
+
+    <div class="tabs reveal" id="stateTabs">
+      <button data-state="collapsed">收起</button>
+      <button class="active" data-state="chat">对话</button>
+      <button data-state="plan">计划</button>
+      <button data-state="approval">审批</button>
+      <button data-state="question">追问</button>
+      <button data-state="takeover">接管</button>
+      <button data-state="artifact">成果物</button>
+    </div>
+
+    <div class="app reveal" id="app" data-state="chat">
+      <div class="chrome">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">拾光 · 图库</span>
+        <span class="spacer"></span>
+        <span class="chip">⌘J 助手</span>
+      </div>
+
+      <div class="app-body">
+        <!-- 左导航 -->
+        <aside class="mock-nav">
+          <div class="brand"><i></i><b>拾光 Luma</b></div>
+          <div class="nav-item active"><i></i>所有照片</div>
+          <div class="nav-item"><i></i>人物</div>
+          <div class="nav-item"><i></i>场景</div>
+          <div class="nav-item"><i></i>地点</div>
+          <div class="nav-item"><i></i>相簿</div>
+          <div class="nav-sep"></div>
+          <div class="nav-label">模块</div>
+          <div class="nav-item"><i></i>网络存储</div>
+          <div class="nav-item"><i></i>本地影院</div>
+          <div class="nav-item"><i></i>网络资源</div>
+          <div class="nav-item"><i></i>网络影院</div>
+          <div class="nav-item"><i></i>网络电视</div>
+        </aside>
+
+        <!-- 中间内容 -->
+        <main class="mock-gallery">
+          <div class="gal-top">
+            <b>2025 · 上海</b><span>486 项</span><span class="grow"></span>
+            <span class="mini-btn">筛选</span><span class="mini-btn">排序</span>
+          </div>
+          <div class="photo-grid">
+            <div class="tile t1 selected" data-l="外滩 · 1月"></div>
+            <div class="tile t2" data-l="武康路 · 2月"></div>
+            <div class="tile t3 selected" data-l="愚园路 · 2月"></div>
+            <div class="tile t4" data-l="苏州河 · 3月"></div>
+            <div class="tile t5 selected" data-l="陆家嘴 · 3月"></div>
+            <div class="tile t6" data-l="静安寺 · 4月"></div>
+            <div class="tile t2" data-l="徐汇滨江 · 5月"></div>
+            <div class="tile t1" data-l="田子坊 · 5月"></div>
+            <div class="tile t4" data-l="共青森林 · 6月"></div>
+            <div class="tile t3" data-l="新天地 · 7月"></div>
+            <div class="tile t5" data-l="北外滩 · 8月"></div>
+            <div class="tile t6" data-l="朱家角 · 9月"></div>
+          </div>
+          <div class="selection-note">已选中 3 项 · 右键可用「问 AI」</div>
+          <div class="fab"><i></i>问 AI <span>⌘J</span></div>
+        </main>
+
+        <!-- 右侧 Inspector -->
+        <aside class="inspector">
+          <div class="ins-head">
+            <div class="ins-logo">✦</div>
+            <div><b>助手</b><small>DeepSeek · 标准 · 本轮 9 个工具</small></div>
+            <span class="grow"></span>
+            <span class="ibtn">⤢</span><span class="ibtn">⚙</span><span class="ibtn">×</span>
+          </div>
+
+          <div class="ins-body">
+            <!-- 对话 -->
+            <div class="ins-state active" data-panel="chat">
+              <div class="msg user">
+                把选中的照片按地点整理成相簿，标题用「2025 上海 · 月份」
+                <div class="tags"><span>图库</span><span>2025</span><span>上海</span><span>选中 3 项</span></div>
+              </div>
+              <div class="msg assistant">
+                <div class="who">助手 · 正在回答</div>
+                我会先按拍摄地点与月份分组，再创建相簿。计划已经生成，等你确认后执行。
+                <div class="reasoning">思考过程 · 1.4s <span>展开</span></div>
+                <div class="meta">1,842 tok</div>
+              </div>
+              <div class="timeline">
+                <div class="tl done"><i>✓</i><div class="grow">读取选中与当前范围 <small>0.2s</small></div></div>
+                <div class="tl done"><i>✓</i><div class="grow">按地点 / 月份分组 <small>0.6s</small></div></div>
+                <div class="tl now"><i>●</i><div class="grow">准备创建 7 个相簿 <small>等待批准</small></div></div>
+              </div>
+            </div>
+
+            <!-- 计划 -->
+            <div class="ins-state" data-panel="plan">
+              <div class="plan">
+                <div class="pt">执行计划 <span class="pill wait">待批准</span><span class="grow"></span></div>
+                <div class="step"><b>1</b><div class="grow"><strong>检索 2025 年上海照片</strong><small>只读 · 预计 486 项</small></div><span class="pill read">只读</span></div>
+                <div class="step"><b>2</b><div class="grow"><strong>按月份分为 7 组</strong><small>只读 · 不修改原图</small></div><span class="pill read">只读</span></div>
+                <div class="step"><b>3</b><div class="grow"><strong>创建相簿并放入</strong><small>可逆 · 可撤销</small></div><span class="pill rev">可逆</span></div>
+                <div class="btns"><span class="btn">调整计划</span><span class="btn primary">批准执行</span><span class="btn">取消</span></div>
+              </div>
+              <div class="msg assistant">计划只包含 1 个写步骤；创建后可一键撤销，不移动、不改名、不删除原文件。</div>
+            </div>
+
+            <!-- 审批 -->
+            <div class="ins-state" data-panel="approval">
+              <div class="approval">
+                <div class="at">智能助手准备执行高风险操作 <span class="grow"></span><span class="pill high">高风险</span></div>
+                <div class="row"><div class="grow"><strong>把 32 项移入最近删除</strong><small>trash_photos · 可恢复</small></div><span class="pill high">高风险</span></div>
+                <div class="row"><div class="grow"><strong>压缩 12 张原图</strong><small>compress_photos · 仅当更小才替换</small></div><span class="pill high">高风险</span></div>
+                <div class="btns"><span class="btn">取消</span><span class="btn">本次都允许</span><span class="btn">始终允许</span><span class="btn primary">允许</span></div>
+              </div>
+              <div class="callout">L2 / L3 才强确认；L0 只读自动执行，L1 可逆写执行后给撤销入口。「始终允许」只对可逆写出现，MCP 外部工具与高风险操作永不记忆。</div>
+            </div>
+
+            <!-- 追问 -->
+            <div class="ins-state" data-panel="question">
+              <div class="question">
+                <div class="qt">这 7 个相簿要放在「2025 上海」文件夹下，还是直接放在所有相簿里？</div>
+                <div class="opt primary"><b>1</b>放进「2025 上海」文件夹</div>
+                <div class="opt"><b>2</b>直接放所有相簿</div>
+                <div class="opt"><b>3</b>建一个「2025 旅行」新文件夹</div>
+                <div class="opt" style="color:var(--ink-3)"><b>＋</b>其他（自己输入）</div>
+              </div>
+              <div class="callout">信息不足时先问清楚，不猜。回答后继续原任务；后台定时任务不会弹这张卡，改为按默认策略执行并标注。</div>
+            </div>
+
+            <!-- 接管 -->
+            <div class="ins-state" data-panel="takeover">
+              <div class="callout">你已接管，AI 暂停中。可以先去图库、影院或电视里处理；完成后选择继续或结束。</div>
+              <div class="timeline">
+                <div class="tl done"><i>✓</i><div class="grow">读取选中与当前范围 <small>0.2s</small></div></div>
+                <div class="tl done"><i>✓</i><div class="grow">已创建 3 / 7 个相簿 <small>暂停于工具之间</small></div></div>
+                <div class="tl now"><i>●</i><div class="grow">等待你处理剩余 4 个 <small>已接管</small></div></div>
+              </div>
+              <div class="btns"><span class="btn">结束任务</span><span class="btn primary">继续执行</span></div>
+              <div class="assistant msg">接管不是取消：已完成的写操作仍保留检查点，随时可以撤销。</div>
+            </div>
+
+            <!-- 成果物 -->
+            <div class="ins-state" data-panel="artifact">
+              <div class="result">
+                <b>已创建 7 个相簿，共 486 张照片。</b> 本次修改可撤销，撤销后恢复原状。
+                <div class="btns"><span class="btn">打开相簿</span><span class="btn">撤销本次修改</span><span class="btn">保存为成果物</span></div>
+              </div>
+              <div class="artifact"><div class="ico">▤</div><div class="grow"><b>2025 上海 · 相簿组</b><small>7 个相簿 · 486 项</small></div><span class="n">7</span></div>
+              <div class="artifact"><div class="ico">▦</div><div class="grow"><b>图库体检报告</b><small>模糊 12 · 相似 31 · 可释放 2.4GB</small></div><span class="n">43</span></div>
+              <div class="assistant msg">成果物不是聊天截图：相簿、清单、报告都能回到对应模块继续编辑。</div>
+              <div class="flowline" style="font-size:10.5px"><span class="n">更多</span>全部 12 个成果物 → 成果物库（搜索 / 类型筛选 / 打开 / 移除记录）</div>
+            </div>
+          </div>
+
+          <div class="ins-foot">
+            <div class="ctx-row">
+              <span class="ctx"><i></i><b>图库</b><em>486 项</em></span>
+              <span class="ctx"><i></i><b>选中</b><em>3 项</em></span>
+              <span class="ctx"><i></i><b>2025 · 上海</b></span>
+              <span class="ctx">＋</span>
+            </div>
+            <div class="composer">
+              <div class="fake-input">问点什么，例如：把这组照片按月份建相簿</div>
+              <div class="bar">
+                <span class="tag">图片</span><span class="tag">标准</span><span class="grow"></span><span class="send">↑</span>
+              </div>
+            </div>
+            <div class="statusline"><i></i>DeepSeek · 标准 · 本轮 9 个工具</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section id="fusion">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">02 · Integration</div>
+        <h2><span class="num">02</span>跟现有界面的十一个接力点</h2>
+      </div>
+      <div class="sec-note">不是把 AI 塞进一个孤立面板，而是让它接住用户已经在做的事。</div>
+    </div>
+    <div class="grid g3 reveal">
+      <div class="fusion"><h4>选中即问</h4><div class="path">Gallery → Selection → Inspector</div><p>选中 3 项后，胶囊显示「选中 3 项」，候选照片优先取选中；一句话就能说「这组」。</p></div>
+      <div class="fusion"><h4>搜索结果续问</h4><div class="path">Search → Overview → Inspector</div><p>搜索词、总数与各来源计数进入上下文；可以接着问「这批结果里哪些是视频」。</p></div>
+      <div class="fusion"><h4>影院一键整理</h4><div class="path">Cinema Toolbar → Inspector</div><p>原来弹大窗的「一键智能整理」，现在直接打开侧栏并发出整理指令，电影画面不离开。</p></div>
+      <div class="fusion"><h4>查看器指认</h4><div class="path">Viewer → Context Capsule</div><p>胶囊显示「正在看照片 / 视频 + 文件名」，回答可以引用当前对象，不用再描述是哪一张。</p></div>
+      <div class="fusion"><h4>成果物回流</h4><div class="path">Artifact → Album / Trash / Cinema</div><p>相簿、清理清单、影院报告都有「打开」动作，直接回到对应模块，而不是留在聊天里。</p></div>
+      <div class="fusion"><h4>随时接管</h4><div class="path">Running → Takeover → Resume / End</div><p>工具之间暂停，用户先去别的模块处理；完成后继续或结束，已完成的步骤仍有检查点。</p></div>
+      <div class="fusion"><h4>任务级撤销</h4><div class="path">Result Card → Undo Journal</div><p>结果卡底部「撤销本次修改」，按任务回滚相簿、字段、最近删除与影院整组状态。</p></div>
+      <div class="fusion"><h4>内容卡回流</h4><div class="path">Tool Result → Poster / Photo Card</div><p>影院海报、资源与频道横卡、带评分的照片卡都在回答里直接出现，点击回到对应模块。</p></div>
+      <div class="fusion"><h4>指认 @ 对象</h4><div class="path">Composer → Mention Picker → Capsule</div><p>输入 @ 选照片，视频可一键指认当前 mm:ss；指认变成胶囊与提示词，发送后清空。</p></div>
+      <div class="fusion"><h4>技能与定时</h4><div class="path">Menu → Skill / Schedule Sheet</div><p>10 个技能一键填入或执行；每天 / 每周定时跑只读任务，写操作停下等人。</p></div>
+      <div class="fusion"><h4>角色分工</h4><div class="path">Header Menu → Role Boundary → Sub-agent</div><p>馆员 / 策展 / 影院管理员只看到本领域工具；自动角色可把只读查询委派给子 Agent。</p></div>
+    </div>
+  </section>
+
+  <!-- 03 -->
+  <section id="tokens">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">03 · Tokens</div>
+        <h2><span class="num">03</span>尺寸、材质与动效</h2>
+      </div>
+      <div class="sec-note">沿用 LumaDesign 的强调色与动效预设，不引入第二套视觉语言。</div>
+    </div>
+    <div class="reveal" style="overflow:auto">
+      <table class="tokens">
+        <thead><tr><th>项目</th><th>取值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>Inspector 宽度</td><td>380pt（默认）</td><td>窄于 360 会挤压消息卡；宽于 420 会挤压画廊</td></tr>
+          <tr><td>大窗</td><td>960 × 820pt</td><td>深任务、长计划、批量整理</td></tr>
+          <tr><td>圆角</td><td>14 / 16 / 18pt</td><td>消息 14、输入框 16、面板 18；胶囊用 Capsule</td></tr>
+          <tr><td>材质</td><td>ultraThinMaterial / regularMaterial</td><td>侧栏与输入框磨砂；审批卡用 regularMaterial 提高可读性</td></tr>
+          <tr><td>消息宽度</td><td>Sidebar 自适应 / 大窗 860pt</td><td>大窗保留单列阅读宽度</td></tr>
+          <tr><td>动效</td><td>settings.motion.overlay / hover</td><td>侧栏滑入 + 淡入；卡片 hover 轻微抬升；遵循减少动态效果</td></tr>
+          <tr><td>颜色</td><td>品牌光谱 + 强调色</td><td>风险色：只读灰、可逆绿、高风险红、外部橙</td></tr>
+          <tr><td>键盘</td><td>⌘J / ⇧⌘J / ↩ / Esc</td><td>呼出、开大窗、发送、停止</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout reveal" style="margin-top:14px">
+      <b>设计原则：</b>Inspector 是副屏，不是主角。它默认收起、随时让位给查看器与全屏；所有写操作都在卡里说清「改什么、影响多少、能不能退」。
+    </div>
+  </section>
+
+  <footer>
+    <div>拾光 Luma · AI Inspector 界面设计 · 2026-11-28</div>
+    <div><a href="../ai/luma-ai-assistant-competitive-analysis-2026-11.md" style="color:#2C4C7A">完整竞品与 P0 档案</a> · <span class="tagline">已落地 v1</span></div>
+  </footer>
+</div>
+
+<script>
+  (function(){
+    var app = document.getElementById('app');
+    var tabs = document.querySelectorAll('#stateTabs button');
+    var panels = document.querySelectorAll('.ins-state');
+    tabs.forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var state = btn.dataset.state;
+        tabs.forEach(function(b){ b.classList.remove('active'); });
+        btn.classList.add('active');
+        app.dataset.state = state;
+        var target = state === 'chat' ? 'chat' : state;
+        panels.forEach(function(p){ p.classList.toggle('active', p.dataset.panel === target); });
+      });
+    });
+  })();
+
+  (function(){
+    var items = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) { items.forEach(function(el){ el.classList.add('in'); }); return; }
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){ if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: .06, rootMargin: '0px 0px -30px 0px' });
+    items.forEach(function(el){ io.observe(el); });
+  })();
+</script>
+</body>
+</html>

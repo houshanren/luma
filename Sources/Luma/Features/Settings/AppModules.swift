@@ -110,6 +110,9 @@ enum AppModules {
             return isEnabled(AppModule.catalog)
         case .networkCinema:
             return isEnabled(AppModule.cinema)
+        case .atlas:
+            // 星图不是模块开关：资料库加载了才出现，卸载后连来源一起消失。
+            return AtlasCatalogPaths.isLoaded
         default:
             return isEnabled(module(for: source))
         }
@@ -896,7 +899,6 @@ private struct FilmReelGlyph: View {
 }
 
 // MARK: - 拟物图标用到的形状
-
 private struct MountainShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()

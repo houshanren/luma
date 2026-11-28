@@ -16,7 +16,7 @@ enum LibraryOverviewService {
                            photoLimit: Int,
                            favoriteLimit: Int) -> NativeLoad? {
         let url = URL(fileURLWithPath: path)
-        guard let index = SystemIndex.openDirect(libraryURL: url) else { return nil }
+        guard let index = SystemIndex.openDirect(libraryURL: url, withSearchIndex: false) else { return nil }
         let totals = index.summary(SystemQuery())
         let meta = SystemIndex.albumMetadata(libraryURL: url)
         let photos = index.page(SystemQuery(), offset: 0, limit: photoLimit)

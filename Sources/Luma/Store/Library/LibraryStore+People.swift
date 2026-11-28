@@ -45,6 +45,9 @@ extension LibraryStore {
 
     /// 按当前聚合层级（省 / 市 / 区县 / 街道）聚合的地点统计。按内容版本缓存：地图页会多次读取它，
     /// 每次 body 求值都重扫整库会让大图库打开地图时明显卡顿。
+    ///
+    /// 已有结果时先返回旧快照、后台重算：补齐地名期间内容版本会连续变化，
+    /// 每次都同步重聚类的话，地图缩放会一顿一顿的。
     var placeClusters: [PlaceCluster] {
         if isCloudScope {
             let key = "\(cloudModel.revision)-\(cloudModel.metadataRevision)"
@@ -55,14 +58,115 @@ extension LibraryStore {
             cloudModel.placeClusterCacheValue = clusters
             return clusters
         }
-        if placeClustersCacheKey == "\(contentRevision)" {
+        let key = "\(contentRevision)|\(placeGranularity.rawValue)"
+        if placeClustersCacheKey == key {
+            return placeClustersCacheValue
+        }
+        if !placeClustersCacheValue.isEmpty {
+            schedulePlaceClustersRebuild(for: key)
             return placeClustersCacheValue
         }
         let clusters = PlaceClusterBuilder.clusters(from: geoPhotos,
                                                     granularity: placeGranularity)
-        placeClustersCacheKey = "\(contentRevision)"
+        placeClustersCacheKey = key
         placeClustersCacheValue = clusters
         return clusters
+    }
+
+    /// 地点聚类的缓存指纹：内容版本 / 聚合层级变化，或网盘刷新后重算。
+    var placeClusterToken: String {
+        if isCloudScope {
+            return "cloud-\(cloudModel.revision)-\(cloudModel.metadataRevision)-\(placeGranularity.rawValue)"
+        }
+        return "\(contentRevision)|\(placeGranularity.rawValue)"
+    }
+
+    /// 已经算好的聚类；冷启动时为 nil，页面先显示整理进度再出卡片。
+    var cachedPlaceClusters: [PlaceCluster]? {
+        if isCloudScope {
+            let key = "\(cloudModel.revision)-\(cloudModel.metadataRevision)"
+            return cloudModel.placeClusterCacheKey == key ? cloudModel.placeClusterCacheValue : nil
+        }
+        return placeClustersCacheKey == placeClusterToken ? placeClustersCacheValue : nil
+    }
+
+    /// 异步聚类：非直连索引模式下 `photosWithLocation()` 要把整库带定位照片回表，
+    /// 这一步必须在后台完成，不能落在点开「位置」后的第一帧。
+    func loadPlaceClusters() async -> [PlaceCluster] {
+        if isCloudScope {
+            let key = "\(cloudModel.revision)-\(cloudModel.metadataRevision)"
+            if cloudModel.placeClusterCacheKey == key { return cloudModel.placeClusterCacheValue }
+            let source = cloudGeoPhotos
+            let granularity = placeGranularity
+            let clusters = await Task.detached(priority: .userInitiated) {
+                PlaceClusterBuilder.clusters(from: source, granularity: granularity)
+            }.value
+            guard !Task.isCancelled else { return clusters }
+            cloudModel.placeClusterCacheKey = key
+            cloudModel.placeClusterCacheValue = clusters
+            return clusters
+        }
+        let key = placeClusterToken
+        if placeClustersCacheKey == key { return placeClustersCacheValue }
+        let granularity = placeGranularity
+        let source = await loadGeoPhotosAsync()
+        let clusters = await Task.detached(priority: .userInitiated) {
+            PlaceClusterBuilder.clusters(from: source, granularity: granularity)
+        }.value
+        guard !Task.isCancelled else { return clusters }
+        placeClustersCacheKey = key
+        placeClustersCacheValue = clusters
+        pendingPlaceClustersKey = ""
+        placeClustersRevision &+= 1
+        return clusters
+    }
+
+    /// 带位置照片的后台版本：系统索引模式把整表回表放到后台并复用缓存，
+    /// 本地 / 网盘仍走内存数组过滤（数量与耗时都很小）。
+    private func loadGeoPhotosAsync() async -> [PhotoItem] {
+        guard isSystemScope, let index = systemIndex else { return geoPhotos }
+        let key = "sys-\(systemIndexSignature)"
+        if systemGeoCacheKey == key { return systemGeoCache }
+        let overlays = systemOverlays
+        let nativeKeywords = systemNativeKeywordIDMap
+        let native = isNativeContainer
+        let raw = await Task.detached(priority: .userInitiated) {
+            index.photosWithLocation()
+        }.value
+        let photos = raw.map {
+            Self.applyingOverlays($0, overlays: overlays, nativeKeywords: nativeKeywords, isNative: native)
+        }.filter { $0.hasLocation }
+        guard !Task.isCancelled else { return photos }
+        systemGeoCacheKey = key
+        systemGeoCache = photos
+        return photos
+    }
+
+    /// 按国家 / 地区分组（外部传入聚类时使用，避免页面 body 再读整库）。
+    func placeGroups(of clusters: [PlaceCluster]) -> [(title: String, clusters: [PlaceCluster])] {
+        makePlaceGroups(from: clusters)
+    }
+
+    /// 后台重聚类：同一版本只排一次，新版本会取消旧任务。
+    private func schedulePlaceClustersRebuild(for key: String) {
+        guard pendingPlaceClustersKey != key else { return }
+        pendingPlaceClustersKey = key
+        let source = geoPhotos
+        let granularity = placeGranularity
+        placeClustersBuildToken &+= 1
+        let token = placeClustersBuildToken
+        tasks.cancel(.placeClusters)
+        tasks.adopt(.placeClusters, Task { [weak self] in
+            let clusters = await Task.detached(priority: .userInitiated) {
+                PlaceClusterBuilder.clusters(from: source, granularity: granularity)
+            }.value
+            guard let self, !Task.isCancelled, self.placeClustersBuildToken == token else { return }
+            self.placeClustersCacheKey = key
+            self.placeClustersCacheValue = clusters
+            self.pendingPlaceClustersKey = ""
+            // 只通知「聚类更新了」，不推进整库内容版本：否则地图又会整体重算一遍。
+            self.placeClustersRevision &+= 1
+        })
     }
 
     /// 地图标注版本：聚类结果只随这些状态变化，供地图按版本重建标注。
@@ -73,23 +177,33 @@ extension LibraryStore {
         return "\(contentRevision)-\(systemIndexSignature)-\(placeGranularity.rawValue)"
     }
 
+    /// 地图数据是否还在后台分批补齐：直连 geo 预热、系统图库扫描、聚类重算或地点补名任一进行中。
+    /// 地图页据此持续刷新图钉与「视野内」统计，不必等用户拖动地图才更新。
+    var isMapDataWarmingUp: Bool {
+        if isLoadingSystemLibrary || isResolvingPlaces { return true }
+        if !pendingPlaceClustersKey.isEmpty { return true }
+        guard let index = systemIndex, index.direct != nil else { return false }
+        return index.directGeoWarmupTask != nil
+    }
+
     /// 按国家/地区分组，中国大陆优先。
+    /// 键跟随聚类缓存的实际版本：聚类在后台更新后，分组也会跟着重算。
     var placeGroups: [(title: String, clusters: [PlaceCluster])] {
         if isCloudScope {
-            let key = "\(cloudModel.revision)-\(cloudModel.metadataRevision)"
+            let key = "\(cloudModel.revision)-\(cloudModel.metadataRevision)-\(placeGranularity.rawValue)"
             if cloudModel.placeGroupCacheKey == key { return cloudModel.placeGroupCacheValue }
-            let groups = makePlaceGroups(from: cloudModel.placeClusterCacheKey == key
+            let clusterKey = "\(cloudModel.revision)-\(cloudModel.metadataRevision)"
+            let groups = makePlaceGroups(from: cloudModel.placeClusterCacheKey == clusterKey
                                          ? cloudModel.placeClusterCacheValue
                                          : placeClusters)
             cloudModel.placeGroupCacheKey = key
             cloudModel.placeGroupCacheValue = groups
             return groups
         }
-        if placeGroupsCacheKey == "\(contentRevision)" {
-            return placeGroupsCacheValue
-        }
+        let key = "\(placeClustersCacheKey)|\(placeGranularity.rawValue)"
+        if placeGroupsCacheKey == key { return placeGroupsCacheValue }
         let groups = makePlaceGroups(from: placeClusters)
-        placeGroupsCacheKey = "\(contentRevision)"
+        placeGroupsCacheKey = key
         placeGroupsCacheValue = groups
         return groups
     }
@@ -119,16 +233,17 @@ extension LibraryStore {
         resetPlaceClusterCaches()
     }
 
-    /// 只清聚类与分组缓存：切换聚合层级时带定位照片的列表不需要重算。
+    /// 只让聚类与分组缓存失效：切换聚合层级、补齐地名后需要重算。
+    /// 保留旧结果不清空——清空会让下一次 body 求值同步重扫整库，
+    /// 补地名期间版本连续变化，那样地图缩放会持续卡顿；旧结果由后台重算替换。
     func resetPlaceClusterCaches() {
         placeClustersCacheKey = ""
-        placeClustersCacheValue = []
         placeGroupsCacheKey = ""
-        placeGroupsCacheValue = []
         cloudModel.placeClusterCacheKey = ""
-        cloudModel.placeClusterCacheValue = []
         cloudModel.placeGroupCacheKey = ""
-        cloudModel.placeGroupCacheValue = []
+        pendingPlaceClustersKey = ""
+        placeClustersBuildToken &+= 1
+        tasks.cancel(.placeClusters)
     }
 
     func openPlace(_ cluster: PlaceCluster) {
@@ -143,29 +258,89 @@ extension LibraryStore {
     }
 
     /// 地点摘要：到访轨迹、四季、时段、地标与同行人物。
-    func placeInsight(for place: PlaceCluster) -> PlaceInsight {
-        let photos = place.photos.filter { $0.deletedAt == nil && !$0.isHidden }
-        return PlaceInsight.make(place: place, photos: photos, companions: placeCompanions(for: photos))
-    }
-
-    /// 地点详情在后台生成摘要：热门地点的照片可能上千张，逐张排序与四季 / 时段统计
-    /// 放在主线程会让打开卡片明显掉帧，这里只把纯计算挪到后台。
+    /// 照片排序、统计与同框人物（含直连索引查询）全部放到后台：
+    /// 热门地点上千张照片时，打开卡片也不会卡住主线程；重进同一个地点直接命中缓存。
     func placeInsightAsync(for place: PlaceCluster) async -> PlaceInsight {
         let photos = place.photos.filter { $0.deletedAt == nil && !$0.isHidden }
-        let companions = placeCompanions(for: photos)
-        return await Task.detached(priority: .userInitiated) {
-            PlaceInsight.make(place: place, photos: photos, companions: companions)
+        // 轨迹融合依赖端侧标签，分析完成后要重新生成摘要：把三种来源的分析数量纳入缓存键。
+        let analysisSignature = "\(analysisIndex.count)|\(systemAnalysisIndex.count)|\(cloudModel.analysis.count)"
+        let key = "\(place.id)|\(photos.count)|\(contentRevision)|\(systemIndexSignature)|\(analysisSignature)"
+        if placeInsightCacheKey == key, let cached = placeInsightCacheValue { return cached }
+
+        let isSystem = isSystemScope
+        let systemPeople = isSystem ? self.systemPeople : []
+        let directIndex = (isSystem && systemIndex?.direct != nil) ? systemIndex : nil
+        if !isSystem { loadFaceDataIfNeeded() }
+        let localPeople = isSystem ? [] : self.localPeople
+        // 轨迹融合需要「照片 → 视觉标签」与「照片 → 已命名人物」两张轻量表；
+        // 只取当前地点的照片，避免把整库字典带进后台任务。
+        let photoIDs = Set(photos.map(\.id))
+        let labelsByPhoto = analysisLabelsByPhoto(for: photoIDs)
+        let peopleByPhoto = peopleNamesByPhoto(for: photoIDs)
+        let insight = await Task.detached(priority: .userInitiated) {
+            let companions = Self.makePlaceCompanions(photos: photos,
+                                                      isSystem: isSystem,
+                                                      systemPeople: systemPeople,
+                                                      localPeople: localPeople,
+                                                      directIndex: directIndex)
+            return PlaceInsight.make(place: place,
+                                     photos: photos,
+                                     companions: companions,
+                                     labelsByPhoto: labelsByPhoto,
+                                     peopleByPhoto: peopleByPhoto)
         }.value
+        placeInsightCacheKey = key
+        placeInsightCacheValue = insight
+        return insight
+    }
+
+    /// 当前地点照片的端侧标签快照（本地 / 系统 / 网盘三种来源统一读取）。
+    private func analysisLabelsByPhoto(for ids: Set<UUID>) -> [UUID: Set<String>] {
+        var result: [UUID: Set<String>] = [:]
+        result.reserveCapacity(ids.count)
+        for id in ids {
+            if let analysis = analysisIndex[id]
+                ?? systemAnalysisIndex[id]
+                ?? cloudModel.analysis[id] {
+                result[id] = analysis.labels
+            }
+        }
+        return result
+    }
+
+    /// 当前地点照片的已命名人物快照；同一张照片里同一个人只记一次。
+    private func peopleNamesByPhoto(for ids: Set<UUID>) -> [UUID: [String]] {
+        var result: [UUID: [String]] = [:]
+        func add(_ name: String, assetIDs: [UUID]) {
+            guard !name.isEmpty else { return }
+            for id in assetIDs where ids.contains(id) {
+                var names = result[id] ?? []
+                if !names.contains(name) { names.append(name) }
+                result[id] = names
+            }
+        }
+        if isSystemScope {
+            for person in systemPeople { add(person.name, assetIDs: person.assetIDs) }
+        } else if isCloudScope {
+            for person in cloudPeople { add(person.name, assetIDs: person.assetIDs) }
+        } else {
+            for person in localPeople { add(person.name, assetIDs: person.assetIDs) }
+        }
+        return result
     }
 
     /// 地点里经常同框的人物：直连模式按照片取样统计，索引模式用现成的人物↔照片映射求交集。
-    private func placeCompanions(for photos: [PhotoItem]) -> [PhotoCompanion] {
+    nonisolated private static func makePlaceCompanions(photos: [PhotoItem],
+                                                        isSystem: Bool,
+                                                        systemPeople: [SystemPersonInfo],
+                                                        localPeople: [LocalPerson],
+                                                        directIndex: SystemIndex?) -> [PhotoCompanion] {
         let ids = Set(photos.map(\.id))
         guard !ids.isEmpty else { return [] }
-        if isSystemScope {
-            if let index = systemIndex, index.direct != nil {
+        if isSystem {
+            if let directIndex {
                 // 直连模式没有常驻的人物↔照片映射，按地点里的照片取样统计。
-                return index.directCompanions(for: photos.map(\.id), limit: 3)
+                return directIndex.directCompanions(for: photos.map(\.id), limit: 3)
             }
             return systemPeople
                 .compactMap { person -> PhotoCompanion? in
@@ -181,7 +356,6 @@ extension LibraryStore {
                 .prefix(3)
                 .map { $0 }
         }
-        loadFaceDataIfNeeded()
         return localPeople
             .compactMap { person -> PhotoCompanion? in
                 let shared = ids.intersection(person.assetIDs).count
@@ -443,13 +617,34 @@ extension LibraryStore {
     }
 
     /// 当前有可见照片的人物：照片全部移入最近删除或被隐藏后不再展示，恢复后自动回来。
+    /// 过滤要扫一遍全库，按内容版本缓存：人物页每次重绘都重算会让整页明显掉帧。
     var visibleLocalPeople: [LocalPerson] {
         guard faceDataLoaded, !localPeople.isEmpty else { return localPeople }
+        let key = visibleLocalPeopleCacheKeyValue
+        if key == visibleLocalPeopleCacheKey { return visibleLocalPeopleCacheValue }
         let alive = Set(photos.lazy.filter { $0.deletedAt == nil && !$0.isHidden }.map(\.id))
-        guard !alive.isEmpty else { return [] }
-        return localPeople.filter { person in
-            person.assetIDs.contains { alive.contains($0) }
+        let result: [LocalPerson]
+        if alive.isEmpty {
+            result = []
+        } else {
+            result = localPeople.filter { person in
+                person.assetIDs.contains { alive.contains($0) }
+            }
         }
+        visibleLocalPeopleCacheKey = key
+        visibleLocalPeopleCacheValue = result
+        return result
+    }
+
+    private var visibleLocalPeopleCacheKeyValue: String {
+        // 照片内容版本 + 人物集合本身（含名字）：任一变化都重新过滤。
+        var hasher = Hasher()
+        for person in localPeople {
+            hasher.combine(person.id)
+            hasher.combine(person.assetIDs.count)
+            hasher.combine(person.name)
+        }
+        return "\(contentRevision)|\(localPeople.count)|\(hasher.finalize())"
     }
 
     /// 永久删除照片后清理人物聚类里的引用；人物一张照片都不剩时一并移除。
@@ -491,11 +686,26 @@ extension LibraryStore {
     }
 
     /// 本地人物的「摘要」：年度轨迹、时段偏好、地点、同框人物与高光照片。
-    func localPersonInsight(for person: LocalPerson) -> PersonInsight {
-        var insight = PersonInsight.make(photos: photos(for: person))
+    /// 过滤 + 排序放到后台：大图库里逐张扫描会让点开人物时明显掉帧。
+    func localPersonInsightAsync(for person: LocalPerson) async -> PersonInsight {
+        let key = "local|\(person.id.uuidString)|\(person.assetIDs.count)|\(contentRevision)"
+        if personInsightCacheKey == key, let cached = personInsightCacheValue { return cached }
+        let photos = photos(for: person)
+        let others = visibleLocalPeople.filter { $0.id != person.id }
         let mine = Set(person.assetIDs)
-        insight.companions = visibleLocalPeople
-            .filter { $0.id != person.id }
+        let insight = await Task.detached(priority: .userInitiated) {
+            Self.makeLocalPersonInsight(photos: photos, mine: mine, others: others)
+        }.value
+        personInsightCacheKey = key
+        personInsightCacheValue = insight
+        return insight
+    }
+
+    nonisolated private static func makeLocalPersonInsight(photos: [PhotoItem],
+                                                           mine: Set<UUID>,
+                                                           others: [LocalPerson]) -> PersonInsight {
+        var insight = PersonInsight.make(photos: photos)
+        insight.companions = others
             .compactMap { other -> PersonInsight.Companion? in
                 let shared = mine.intersection(other.assetIDs).count
                 guard shared >= 2 else { return nil }
@@ -504,33 +714,6 @@ extension LibraryStore {
                                                count: shared,
                                                coverPhotoID: other.assetIDs.first,
                                                coverData: other.coverImageData)
-            }
-            .sorted { $0.count > $1.count }
-            .prefix(3)
-            .map { $0 }
-        return insight
-    }
-
-    /// 系统图库人物的「摘要」：索引可用时由 SQLite 聚合，否则在内存快照上派生。
-    func systemPersonInsight(for person: SystemPersonInfo) -> PersonInsight {
-        if let index = systemIndex {
-            return index.personInsight(personInsightQuery(for: person))
-        }
-
-        let ids = Set(person.assetIDs)
-        var insight = PersonInsight.make(photos: systemPhotos
-            .filter { ids.contains($0.id) && $0.deletedAt == nil && !$0.isHidden }
-            .sorted { $0.capturedAt > $1.capturedAt })
-        insight.companions = systemPeople
-            .filter { $0.id != person.id }
-            .compactMap { other -> PersonInsight.Companion? in
-                let shared = ids.intersection(other.assetIDs).count
-                guard shared >= 2 else { return nil }
-                return PersonInsight.Companion(id: "system-\(other.id)",
-                                               name: other.name,
-                                               count: shared,
-                                               coverPhotoID: other.keyAssetID ?? other.assetIDs.first,
-                                               coverData: other.cropData)
             }
             .sorted { $0.count > $1.count }
             .prefix(3)
@@ -558,15 +741,51 @@ extension LibraryStore {
         return query
     }
 
-    /// 直连模式下人物摘要是若干次大库聚合，放到后台执行，避免切人物时卡住主线程。
+    /// 人物摘要：直连模式走 SQLite 聚合，扫描快照模式在内存里派生。
+    /// 两条路径都放到后台执行，同一个人再次进入时直接命中缓存。
     func systemPersonInsightAsync(for person: SystemPersonInfo) async -> PersonInsight {
-        guard let index = systemIndex, index.direct != nil else {
-            return systemPersonInsight(for: person)
+        let key = "system|\(person.id)|\(person.assetIDs.count)|\(systemIndexSignature)|\(contentRevision)"
+        if personInsightCacheKey == key, let cached = personInsightCacheValue { return cached }
+        let insight: PersonInsight
+        if let index = systemIndex, index.direct != nil {
+            let query = personInsightQuery(for: person)
+            insight = await Task.detached(priority: .userInitiated) {
+                index.personInsight(query)
+            }.value
+        } else {
+            // 扫描快照模式：逐张过滤 + 同框统计同样不能放在主线程。
+            let photos = systemPhotos
+            let mine = Set(person.assetIDs)
+            let others = systemPeople.filter { $0.id != person.id }
+            insight = await Task.detached(priority: .userInitiated) {
+                Self.makeSystemPersonInsight(photos: photos, mine: mine, others: others)
+            }.value
         }
-        let query = personInsightQuery(for: person)
-        return await Task.detached(priority: .userInitiated) {
-            index.personInsight(query)
-        }.value
+        personInsightCacheKey = key
+        personInsightCacheValue = insight
+        return insight
+    }
+
+    nonisolated private static func makeSystemPersonInsight(photos: [PhotoItem],
+                                                            mine: Set<UUID>,
+                                                            others: [SystemPersonInfo]) -> PersonInsight {
+        var insight = PersonInsight.make(photos: photos
+            .filter { mine.contains($0.id) && $0.deletedAt == nil && !$0.isHidden }
+            .sorted { $0.capturedAt > $1.capturedAt })
+        insight.companions = others
+            .compactMap { other -> PersonInsight.Companion? in
+                let shared = mine.intersection(other.assetIDs).count
+                guard shared >= 2 else { return nil }
+                return PersonInsight.Companion(id: "system-\(other.id)",
+                                               name: other.name,
+                                               count: shared,
+                                               coverPhotoID: other.keyAssetID ?? other.assetIDs.first,
+                                               coverData: other.cropData)
+            }
+            .sorted { $0.count > $1.count }
+            .prefix(3)
+            .map { $0 }
+        return insight
     }
 
     // MARK: - 人物地图
@@ -595,9 +814,18 @@ extension LibraryStore {
     }
 
     /// 统计经常同框的人物对（同一张照片里同时出现）。
-    func peoplePairs(limit: Int = 8) -> [PeoplePair] {
+    /// 统计量随人物数与照片数增长，放到后台算，人物页打开时不再卡主线程。
+    func peoplePairsAsync(limit: Int = 8) async -> [PeoplePair] {
+        let people = visibleLocalPeople
+        return await Task.detached(priority: .userInitiated) {
+            Self.makePeoplePairs(people: people, limit: limit)
+        }.value
+    }
+
+    nonisolated private static func makePeoplePairs(people: [LocalPerson],
+                                                    limit: Int) -> [PeoplePair] {
         var assetPeople: [UUID: [UUID]] = [:]
-        for person in visibleLocalPeople {
+        for person in people {
             for asset in person.assetIDs {
                 assetPeople[asset, default: []].append(person.id)
             }
@@ -667,7 +895,10 @@ extension LibraryStore {
     /// 本地图库中按「文件大小 + 像素尺寸」聚合的重复组（含建议保留项与理由）。
     /// 结果按内容版本缓存，避免侧边栏与重复页反复遍历、排序整库。
     var duplicateGroups: [DuplicateGroup] {
-        let key = "\(contentRevision)"
+        // 体检结果参与「整组决策」：模糊副本不参与保留竞争，所以缓存键要带上体检时间。
+        let blurryIDs = Set((healthReport?.blurry ?? []).map(\.id))
+        let healthStamp = healthReport.map { String(Int($0.scannedAt.timeIntervalSince1970)) } ?? "0"
+        let key = "\(contentRevision)-\(healthStamp)-\(blurryIDs.count)"
         if duplicateGroupsCacheKey == key { return duplicateGroupsCache }
         var membership: [UUID: Int] = [:]
         for album in albums {
@@ -675,7 +906,9 @@ extension LibraryStore {
                 membership[id, default: 0] += 1
             }
         }
-        let groups = DuplicateDetector.groups(from: photos, albumMembership: membership)
+        let groups = DuplicateDetector.groups(from: photos,
+                                              albumMembership: membership,
+                                              blurryIDs: blurryIDs)
         duplicateGroupsCacheKey = key
         duplicateGroupsCache = groups
         return groups
@@ -858,10 +1091,16 @@ extension LibraryStore {
             // 直连模式的地图数据在 directGeoPhotos 里，不是 systemGeoCache：
             // 之前往 systemGeoCache 写，地名永远落不进去，missing 不减就等于无限循环。
             var directGeoWorking: [PhotoItem] = []
+            /// 已发布的 geo 快照索引：直连模式下把新地名同步写进去，
+            /// 这样 geoPhotos 不必整体失效后重新叠加一遍元数据。
+            var systemGeoIndices: [UUID: Int] = [:]
             if scopedToSystemLibrary {
                 if usesDirectGeo, let directGeo = self.systemIndex?.directGeoPhotos {
                     directGeoWorking = directGeo
                     for (index, photo) in directGeo.enumerated() { geoIndices[photo.id] = index }
+                    for (index, photo) in self.systemGeoCache.enumerated() {
+                        systemGeoIndices[photo.id] = index
+                    }
                 } else if self.systemIndex != nil {
                     for (index, photo) in self.systemGeoCache.enumerated() { geoIndices[photo.id] = index }
                 } else {
@@ -873,6 +1112,9 @@ extension LibraryStore {
 
             var pending = entries
             var attempt = 0
+            var lastPublish = Date()
+            /// 界面刷新节流：重聚类与地图统计都是全库级计算，每批都跑会持续打断缩放。
+            let publishInterval: TimeInterval = 1.2
             while !pending.isEmpty, attempt < 3 {
                 if attempt > 0 {
                     // 系统逆地理编码会限流：失败的坐标隔几秒再补一轮，仍失败就记下来不再空转。
@@ -901,6 +1143,12 @@ extension LibraryStore {
                                         guard let index = geoIndices[id], index < directGeoWorking.count,
                                               directGeoWorking[index].id == id else { continue }
                                         self.applyPlace(info, to: &directGeoWorking[index])
+                                        // 已发布的快照同步更新，下一次读 geoPhotos 不必整体重算。
+                                        if let geoIndex = systemGeoIndices[id],
+                                           geoIndex < self.systemGeoCache.count,
+                                           self.systemGeoCache[geoIndex].id == id {
+                                            self.applyPlace(info, to: &self.systemGeoCache[geoIndex])
+                                        }
                                     }
                                 } else if self.systemIndex != nil {
                                     for id in entry.ids {
@@ -935,15 +1183,17 @@ extension LibraryStore {
                             try? await Task.sleep(nanoseconds: 250_000_000)
                         }
                     }
-                    // 每批结束就把结果递给界面：几百个坐标解析下来不必等全部结束才更新。
+                    // 每批结束把新地名写回数据源，但界面刷新按 1.2 秒节流：
+                    // 每次刷新都要重聚类 + 重算地图统计，跟着每批跑会持续打断缩放。
                     if usesDirectGeo, !directGeoWorking.isEmpty {
                         self.systemIndex?.directGeoPhotos = directGeoWorking
-                        // geoPhotos 按 systemIndexSignature 缓存，地名是内存里补的，必须让它重新取样。
-                        self.systemGeoCacheKey = nil
                     }
-                    self.resetPlaceClusterCaches()
-                    self.contentRevision &+= 1
-                    self.savePlaceCache()
+                    if Date().timeIntervalSince(lastPublish) >= publishInterval {
+                        lastPublish = Date()
+                        self.resetPlaceClusterCaches()
+                        self.contentRevision &+= 1
+                        self.savePlaceCache()
+                    }
                 }
                 pending = failed
             }
@@ -979,11 +1229,16 @@ extension LibraryStore {
         if let placemarks = try? await geocoder.reverseGeocodeLocation(
             location, preferredLocale: Locale(identifier: "zh_CN")
         ), let placemark = placemarks.first {
+            // 具体景点优先：areasOfInterest 会给出「外滩 / 故宫 / 西湖」这类地标名，
+            // thoroughfare 只是街道。没有地标时才退回街道，最后用 name 兜底。
+            let landmark = placemark.areasOfInterest?
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
             var info = PlaceInfo(country: placemark.country,
                                  province: placemark.administrativeArea,
                                  city: placemark.locality ?? placemark.subAdministrativeArea,
                                  district: placemark.subLocality,
-                                 poi: placemark.thoroughfare)
+                                 poi: landmark ?? placemark.thoroughfare)
             // 海上 / 景区坐标常常只有 name，没有行政区字段；用它兜底，至少别退回坐标卡片。
             if info.isEmpty { info.poi = placemark.name }
             if !info.isEmpty {

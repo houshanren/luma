@@ -22,11 +22,55 @@ extension PhotoViewerView {
 
     /// 顶栏中部的照片信息：地点 / 实况 / 拍摄时间 / 地理位置 / 序号。
     /// 单行紧凑排版，高度严格控制在工具栏内，既不裁切也不会把旁边的控件顶大。
+    @ViewBuilder
     func viewerToolbarInfo(_ photo: PhotoItem) -> some View {
+        // 图集看图：显示图集标题与标签，拍摄时间对网络图集没有意义。
+        if let gallery = store.catalogGalleryContext(for: photo.id) {
+            galleryToolbarInfo(gallery)
+        } else {
+            photoToolbarInfo(photo)
+        }
+    }
+
+    /// 图集顶栏：图集标题 + 标签 + 序号，外框与图库照片信息保持同一套胶囊。
+    private func galleryToolbarInfo(_ gallery: CatalogGalleryContext) -> some View {
+        infoCapsule {
+            Text(gallery.albumTitle)
+                .font(.system(size: 13.5, weight: .semibold))
+                .tracking(-0.01)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+
+            if !gallery.tags.isEmpty {
+                infoSeparator
+                ForEach(Array(gallery.tags.prefix(2).enumerated()), id: \.offset) { _, tag in
+                    Text(tag)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.62))
+                        .lineLimit(1)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.primary.opacity(0.06),
+                                    in: Capsule(style: .continuous))
+                        .fixedSize()
+                }
+            }
+
+            if let currentIndex {
+                infoSeparator
+                progressRing
+                indexCounter
+            }
+        }
+    }
+
+    private func photoToolbarInfo(_ photo: PhotoItem) -> some View {
         let tvName = tvChannelName(for: photo)
         let title = burstTitle ?? tvName ?? infoTitle(for: photo)
         let showsLead = title != nil || photo.isLivePhoto
-        return HStack(spacing: 7) {
+        return infoCapsule {
             if let title {
                 Text(title)
                     .font(.system(size: 13.5, weight: .semibold))
@@ -73,32 +117,41 @@ extension PhotoViewerView {
             if let currentIndex {
                 infoSeparator
                 progressRing
-                HStack(spacing: 2) {
-                    Text("\((currentIndex + 1).formatted())")
-                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .contentTransition(.numericText())
-                    Text("/ \(totalCount.formatted())")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.primary.opacity(0.62))
-                }
-                .lineLimit(1)
-                .fixedSize()
+                indexCounter
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-        .background {
-            // 工具栏底下可能是深色照片，必须用不透明度更高的材质托底才看得清。
-            Capsule().fill(.regularMaterial)
+    }
+
+    /// 顶栏胶囊外框：材质托底 + 细描边 + 投影，照片与图集共用。
+    private func infoCapsule<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 7, content: content)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background {
+                // 工具栏底下可能是深色照片，必须用不透明度更高的材质托底才看得清。
+                Capsule().fill(.regularMaterial)
+            }
+            .overlay {
+                Capsule()
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.7)
+            }
+            .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+            .accessibilityElement(children: .combine)
+    }
+
+    /// 序号：等宽数字 + 进度环，翻页时只做数字滚动。
+    private var indexCounter: some View {
+        HStack(spacing: 2) {
+            Text("\((currentIndex ?? 0) + 1)")
+                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.primary)
+                .contentTransition(.numericText())
+            Text("/ \(totalCount.formatted())")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.primary.opacity(0.62))
         }
-        .overlay {
-            Capsule()
-                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.7)
-        }
-        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
-        .help(photo.displayTitle)
-        .accessibilityElement(children: .combine)
+        .lineLimit(1)
+        .fixedSize()
     }
 
     /// 拍摄时间：年月日 + 时分秒。突出「月日」，时间整体弱化成次级信息；
@@ -287,40 +340,69 @@ extension PhotoViewerView {
                 }
             }
 
-            ToolbarItem(placement: .navigation) {
-                // 工具栏里不再放整条缩放滑杆（在玻璃工具栏里会撑成一条空白长条）；
-                // 只在放大后显示一个紧凑的缩放胶囊，点一下回到适应窗口。
-                if zoom > 1.01 {
-                    Button {
-                        resetZoom()
-                    } label: {
-                        // 背景与内容放在同一个固定尺寸的容器里：
-                        // 之前胶囊按内容自适应，工具栏会在缩放时把它压窄，百分比就溢出到胶囊外。
-                        ZStack {
-                            Capsule().fill(Color.accentColor.opacity(0.14))
-                            Capsule().strokeBorder(
-                                LinearGradient(colors: [Color.accentColor.opacity(0.55),
-                                                        Color.accentColor.opacity(0.15)],
-                                               startPoint: .topLeading,
-                                               endPoint: .bottomTrailing),
-                                lineWidth: LumaControlMetrics.hairline)
-                            HStack(spacing: 4) {
-                                zoomRing
-                                Text("\(Int((zoom * 100).rounded()))%")
-                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                    .monospacedDigit()
-                                    .contentTransition(.numericText())
-                                    .fixedSize()
-                            }
-                            .foregroundStyle(Color.accentColor)
+            // 缩放只在照片上出现：视频的「适应窗口」本身就是 100%，缩不下去也放不大，
+            // 这条控件只会占位置、把播放控件挤走，所以所有视频播放场景一律不显示。
+            if !photo.isVideo {
+                ToolbarItem(placement: .navigation) {
+                    // 工具栏里不放整条滑杆；用「− 100% +」三连胶囊：
+                    // 百分比点一下回到适应窗口，缩小可以一直缩到 25%（不再卡在 100%）。
+                    HStack(spacing: 3) {
+                        Button {
+                            adjustZoom(by: 1 / 1.35)
+                        } label: {
+                            Image(systemName: "minus")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .frame(width: 18, height: 20)
+                                .contentShape(Rectangle())
                         }
-                        .frame(width: 64, height: 20)
-                        .contentShape(Capsule())
-                        .fixedSize()
+                        .buttonStyle(.plain)
+                        .disabled(zoom <= minZoomForCurrentPhoto + 0.001)
+                        .help("缩小（-）")
+
+                        Button {
+                            resetZoom()
+                        } label: {
+                            // 背景与内容放在同一个固定尺寸的容器里：工具栏重排时百分比不会溢出。
+                            ZStack {
+                                Capsule().fill(Color.accentColor.opacity(zoom == 1 ? 0.08 : 0.14))
+                                Capsule().strokeBorder(
+                                    LinearGradient(colors: [Color.accentColor.opacity(0.55),
+                                                            Color.accentColor.opacity(0.15)],
+                                                   startPoint: .topLeading,
+                                                   endPoint: .bottomTrailing),
+                                    lineWidth: LumaControlMetrics.hairline)
+                                HStack(spacing: 4) {
+                                    zoomRing
+                                    Text("\(Int((zoom * 100).rounded()))%")
+                                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                        .monospacedDigit()
+                                        .contentTransition(.numericText())
+                                        .fixedSize()
+                                }
+                                .foregroundStyle(zoom == 1 ? Color.secondary : Color.accentColor)
+                            }
+                            .frame(width: 62, height: 20)
+                            .contentShape(Capsule())
+                            .fixedSize()
+                        }
+                        .buttonStyle(.plain)
+                        .help("恢复到适应窗口 (0)")
+                        .animation(settings.motion.overlay, value: zoom)
+
+                        Button {
+                            adjustZoom(by: 1.35)
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .frame(width: 18, height: 20)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(zoom >= Self.maxZoom - 0.001)
+                        .help("放大（+）")
                     }
-                    .buttonStyle(.plain)
-                    .help("恢复到适应窗口 (0)")
-                    .animation(settings.motion.overlay, value: zoom)
+                    .foregroundStyle(Color.accentColor)
+                    .fixedSize()
                 }
             }
 
@@ -376,6 +458,10 @@ extension PhotoViewerView {
                     // 电视频道：信息 / 胶片条 / 共享 / 收藏照片 / 幻灯片 / 编辑这些照片向操作没有意义，
                     // 全部交给播放页的频道工具，工具栏只保留播放器通用能力。
                     if store.tvPlaybackChannel(for: photo.id) == nil {
+                        // 网络图集的虚拟照片没有共享 URL / 收藏记录，但尺寸、体积与 EXIF
+                        // 会按需从原图补齐，信息面板仍然有用。
+                        let isGalleryPhoto = store.catalogGalleryContext(for: photo.id) != nil
+
                         Button {
                             viewer.showInfoPanel.toggle()
                         } label: {
@@ -394,29 +480,31 @@ extension PhotoViewerView {
                             .help(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图")
                         }
 
-                        ShareLink(items: store.shareURLs) {
-                            Image(systemName: "square.and.arrow.up")
-                        }
-                        .disabled(store.shareURLs.isEmpty)
-                        .help("共享")
-
-                        if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
-                            Button {
-                                store.toggleFavorite(photo.id)
-                            } label: {
-                                Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
+                        if !isGalleryPhoto {
+                            ShareLink(items: store.shareURLs) {
+                                Image(systemName: "square.and.arrow.up")
                             }
-                            .foregroundStyle(photo.isFavorite ? Color.pink : Color.primary)
-                            .help(photo.isFavorite ? "取消收藏" : "收藏")
-                        }
+                            .disabled(store.shareURLs.isEmpty)
+                            .help("共享")
 
-                        if !photo.isVideo, (!photo.isReadOnly || photo.isSystem), store.canScanBeauty {
-                            Button {
-                                store.showBeautyPanel = true
-                            } label: {
-                                Image(systemName: "wand.and.stars")
+                            if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                                Button {
+                                    store.toggleFavorite(photo.id)
+                                } label: {
+                                    Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
+                                }
+                                .foregroundStyle(photo.isFavorite ? Color.pink : Color.primary)
+                                .help(photo.isFavorite ? "取消收藏" : "收藏")
                             }
-                            .help("智能美化…")
+
+                            if !photo.isVideo, (!photo.isReadOnly || photo.isSystem), store.canScanBeauty {
+                                Button {
+                                    store.showBeautyPanel = true
+                                } label: {
+                                    Image(systemName: "wand.and.stars")
+                                }
+                                .help("智能美化…")
+                            }
                         }
 
                         Button {
@@ -424,7 +512,7 @@ extension PhotoViewerView {
                         } label: {
                             Image(systemName: "play.rectangle")
                         }
-                        .disabled(store.visibleCount == 0)
+                        .disabled(!isGalleryPhoto && store.visibleCount == 0)
                         .help("幻灯片播放")
 
                         if burstMembers.count > 1 {
@@ -438,7 +526,7 @@ extension PhotoViewerView {
 
                         moreMenu(photo)
 
-                        if !photo.isVideo,
+                        if !isGalleryPhoto, !photo.isVideo,
                            !photo.isReadOnly || (photo.isSystem && store.canWriteSystemLibrary) {
                             Button {
                                 store.openEditor(photo.id)
@@ -588,9 +676,30 @@ extension PhotoViewerView {
                             radius: embedded ? 20 : 0,
                             y: embedded ? 8 : 0)
                 } else {
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(embedded ? Color.secondary : Color.white)
+                    // 还没有任何可用图像：给一块可见的占位卡，而不是一片空白。
+                    // 浅色舞台上白色转圈几乎看不见，这里把边界、图标与进度都画清楚。
+                    let cardWidth = min(320, proxy.size.width * 0.72)
+                    let cardHeight = min(430, proxy.size.height * 0.78)
+                    VStack(spacing: 10) {
+                        Image(systemName: photo.isVideo ? "video" : "photo")
+                            .font(.system(size: 34, weight: .light))
+                            .foregroundStyle(Color.primary.opacity(0.22))
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在加载图片…")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: cardWidth, height: cardHeight)
+                    .background {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color.primary.opacity(0.045))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.8)
+                    }
+                    .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

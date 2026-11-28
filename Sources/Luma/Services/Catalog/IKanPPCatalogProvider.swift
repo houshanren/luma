@@ -93,13 +93,14 @@ struct IKanPPCatalogProvider: CatalogProvider {
         let items = rawList.compactMap { raw -> CatalogItem? in
             guard let id = text(raw["id"]), !id.isEmpty,
                   let title = text(raw["title"]), !title.isEmpty else { return nil }
-            let types = raw["types"] as? [String] ?? []
             return CatalogItem(id: id,
                                title: title,
                                coverURL: CatalogHTML.fixURL(text(raw["cover"]) ?? "",
                                                             base: source.baseURL),
                                remark: text(raw["remarks"]) ?? "",
-                               categoryID: types.first,
+                               // 列表里的 `types` 是题材（剧情 / 喜剧），不是影视类型；
+                               // 专区 id（movie / tv / anime…）才是判断电影还是剧集的正规依据。
+                               categoryID: type.isEmpty ? nil : type,
                                publishedAt: publishDate(raw))
         }
         let pageCount = int(object["pagecount"]) ?? 1
@@ -434,7 +435,12 @@ struct IKanPPCatalogProvider: CatalogProvider {
         switch value {
         case let string as String:
             let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
+            // Next.js RSC 用 "$undefined" / "$null" 表示缺省值，不能当成真实资料展示。
+            guard !trimmed.isEmpty,
+                  trimmed != "$undefined",
+                  trimmed != "$null",
+                  trimmed != "$NaN" else { return nil }
+            return trimmed
         case let number as NSNumber:
             return number.stringValue
         default:

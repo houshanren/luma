@@ -15,6 +15,40 @@ extension VideoPlayerStage {
         model.requestSeek(to: target)
     }
 
+    /// 电视回看：首播通常把 playseek 地址直接交给 AVPlayer，它只能在很窄的
+    /// seekable 窗口里跳；拖到窗口外会被夹回直播边缘（看起来就是「拖不过去」）。
+    /// 这里改用 ffmpeg 从目标时间重建流，之后所有跳转都由会话的 -ss 接管。
+    func seekCatchupByRestarting(at target: Double) {
+        guard let sourceURL, FFmpeg.isAvailable else {
+            // 不能走 requestSeek：会再次命中 seekRouter 形成递归。
+            model.seek(to: target)
+            return
+        }
+        guard target.isFinite else { return }
+        isPreparing = true
+        waitingStage = .starting
+        let wasPlaying = model.isPlaying
+        let generation = loadGeneration
+        let audioIndex = playbackSession.streamAudioIndex
+        let clamped = max(0, target)
+        Diagnostics.record("回看重建流 \(photo.originalName) → \(Int(clamped))s（ffmpeg 直连）")
+        Task { @MainActor in
+            let started = await startStreaming(generation: generation,
+                                               autoplay: wasPlaying,
+                                               offset: max(0, clamped - 1),
+                                               resumeAt: clamped,
+                                               mode: .remux,
+                                               audioIndex: audioIndex)
+            guard generation == loadGeneration else { return }
+            if !started, failureMessage == nil {
+                // 起流失败也别把用户卡在等待层：退回播放器内的就近跳转。
+                model.seek(to: clamped)
+                if wasPlaying { model.play() }
+                isPreparing = false
+            }
+        }
+    }
+
     /// 拖动进度条时的预览落帧：越界范围由 model.scrubGuard 统一拦截。
     func scrubPlayback(to target: Double) {
         model.scrub(to: target)
@@ -349,6 +383,9 @@ extension VideoPlayerStage {
             resumeAt: resumeAt,
             preferredMode: mode,
             isLive: isLive,
+            // 回看是 playseek 拼出来的远端 HLS 窗口：交给 ffmpeg 时直连（带请求头），
+            // 不能套本机 Range 代理，否则代理只转发到 m3u8 文本，ffmpeg 直接报「Invalid data」。
+            directRemoteInput: tvPlaybackChannel?.isCatchUp == true,
             generation: token,
             isCurrent: { token == loadGeneration })
     }
@@ -477,11 +514,12 @@ extension VideoPlayerStage {
                     .buttonStyle(.plain)
                     .disabled(isTranscoding)
                 }
-                if sourceURL != nil, !photo.isCloud {
+                // 只在原文件确实在本机时才给这个入口：
+                // 系统图库的 iCloud 项目在 Photos.sqlite 里有路径，但文件并不存在。
+                if let sourceURL, !photo.isCloud,
+                   FileManager.default.fileExists(atPath: sourceURL.path) {
                     Button("用其他播放器打开") {
-                        if let sourceURL {
-                            NSWorkspace.shared.open(sourceURL)
-                        }
+                        NSWorkspace.shared.open(sourceURL)
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))

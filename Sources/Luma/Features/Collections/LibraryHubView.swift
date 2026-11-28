@@ -36,69 +36,19 @@ enum LibraryHubTab: String, CaseIterable, Identifiable {
 struct LibraryHubTabs: View {
     @Environment(LibraryStore.self) private var store
     @AppStorage(LibraryHubTab.storageKey) private var tabRaw = LibraryHubTab.resources.rawValue
-    @Namespace private var tabNamespace
 
     private var tab: LibraryHubTab { LibraryHubTab(rawValue: tabRaw) ?? .resources }
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(LibraryHubTab.allCases) { item in
-                tabButton(item)
-            }
-        }
-        .padding(2)
-        .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private func tabButton(_ item: LibraryHubTab) -> some View {
-        let active = tab == item
-        return Button {
+        HubTabBar(items: LibraryHubTab.allCases,
+                  active: tab,
+                  title: \.title,
+                  symbol: \.symbol,
+                  badge: badge(for:)) { item in
             withAnimation(.easeOut(duration: 0.18)) {
                 tabRaw = item.rawValue
             }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: item.symbol)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .fixedSize()
-                Text(item.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                if let badge = badge(for: item), badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
-                        .padding(.horizontal, 4.5)
-                        .padding(.vertical, 1)
-                        .background(active ? Color.white.opacity(0.92)
-                                           : Color.primary.opacity(0.08),
-                                    in: Capsule(style: .continuous))
-                }
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(active ? Color.white : Color.secondary)
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background {
-                if active {
-                    Capsule(style: .continuous)
-                        .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "library-hub-tab", in: tabNamespace)
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
         }
-        .buttonStyle(.plain)
-        .help(item.title)
     }
 
     private func badge(for item: LibraryHubTab) -> Int? {
@@ -778,6 +728,5 @@ private struct LibraryAggregatePhotoCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("\(item.photo.originalName) · \(item.libraryName)")
     }
 }

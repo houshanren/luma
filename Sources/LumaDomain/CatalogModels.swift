@@ -5,6 +5,27 @@ import Foundation
 // 与 `CloudMount` 并列的一类「网络资源」：它没有文件树、没有 OAuth、没有全盘扫描，
 // 只有分类、条目、分集与播放页。所有字段都以站点原始字符串为准，便于回溯与改版排查。
 
+/// 网络资源在侧边栏 / 资源页里的三种站点类型。
+package enum CatalogSiteCategory: String, Codable, Hashable, CaseIterable {
+    case video
+    case gallery
+    case comprehensive
+
+    package var title: String {
+        switch self {
+        case .video: return "视频站"
+        case .gallery: return "图集站"
+        case .comprehensive: return "综合站"
+        }
+    }
+
+    /// 侧边栏分组的展示顺序：综合站 → 视频站 → 图集站。
+    /// 与声明顺序解耦，调整展示顺序不会影响 `rawValue` 持久化。
+    package static var displayOrder: [CatalogSiteCategory] {
+        [.comprehensive, .video, .gallery]
+    }
+}
+
 package enum CatalogProviderKind: String, Codable, Hashable {
     case huangguo
     case ninetyOne
@@ -27,6 +48,26 @@ package enum CatalogProviderKind: String, Codable, Hashable {
     case ikanpp
     /// 爱壹帆：Angular 站点，页面内联数据 + 带签名的 JSON 接口。
     case iyf
+    /// JLiji 图集站：列表是套图，详情页是一组原图，没有视频。
+    case jliji
+    /// 行形涉摄：WordPress 图文站，正文由章节、段落与配图组成。
+    case xxss
+    /// 爱美图集：套图站，列表卡片 + 详情图集。
+    case aimeir
+    /// V2PH：高清写真图集站，详情页首屏给出原图。
+    case v2ph
+    /// 女神网：Nuxt 图集站，详情按页返回照片。
+    case nshens
+    /// 91图图：Astro 静态图集站。
+    case ninetyOneTutu
+    /// Wuso 论坛图文专区：Discuz 板块，帖子内是附件图。
+    case wuso
+    /// Tuzac 图集站：/file 详情分页给大图，/all-tags 是标签墙。
+    case tuzac
+    /// 咔咔西三：与 Tuzac 同一套模板的图集站。
+    case kkc
+    /// 爱妹子（xx.knit.bid）：栏目化的图集站，带专题、人物与作品、排行榜与标签库。
+    case knit
 
     package var title: String {
         switch self {
@@ -47,6 +88,50 @@ package enum CatalogProviderKind: String, Codable, Hashable {
         case .fofo: return "FoFo 影院"
         case .ikanpp: return "爱看片片"
         case .iyf: return "爱壹帆"
+        case .jliji: return "JLiji 图集（网页源）"
+        case .xxss: return "行形涉摄（图文源）"
+        case .aimeir: return "爱美图集"
+        case .v2ph: return "V2PH 图集"
+        case .nshens: return "女神网"
+        case .ninetyOneTutu: return "91图图"
+        case .wuso: return "Wuso 论坛"
+        case .tuzac: return "Tuzac 图集"
+        case .kkc: return "咔咔西三 图集"
+        case .knit: return "爱妹子 图集"
+        }
+    }
+
+    /// 图集 / 图文站：列表是套图或文章，详情页的主体是图片而不是视频。
+    /// 界面据此切换成图库式网格与浏览方式，导入校验也允许「没有分集」。
+    package var isGallerySite: Bool {
+        switch self {
+        case .jliji, .xxss, .aimeir, .v2ph, .nshens, .ninetyOneTutu, .wuso, .tuzac, .kkc, .knit:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 综合站：同一份列表里既有视频也有图集，展示方式按条目判断，
+    /// 不能再用站点类型一刀切。
+    package var isComprehensiveSite: Bool {
+        switch self {
+        case .nshens, .knit, .wuso: return true
+        default: return false
+        }
+    }
+
+    /// 侧边栏 / 资源页用的站点分类：视频站、图集站、综合站。
+    package var siteCategory: CatalogSiteCategory {
+        if isComprehensiveSite { return .comprehensive }
+        return isGallerySite ? .gallery : .video
+    }
+
+    /// 详情页需要登录态才能看到内容：这类站点允许先入库，再在编辑里补 Cookie。
+    package var mayRequireLogin: Bool {
+        switch self {
+        case .v2ph, .wuso: return true
+        default: return false
         }
     }
 
@@ -54,6 +139,29 @@ package enum CatalogProviderKind: String, Codable, Hashable {
     package var supportsNetworkCinema: Bool {
         switch self {
         case .maccms, .fofo, .ikanpp, .iyf: return true
+        default: return false
+        }
+    }
+
+    /// 站点「永久地址 / 最新地址发布页」的内置默认值。
+    /// 主站被墙或换域名时，适配器用这一页找到当前可用的镜像。
+    package var defaultAddressPageURL: String? {
+        switch self {
+        case .huangguo: return "https://huangguoai.pages.dev/"
+        case .quanji: return "https://mgbbr.com/"
+        case .ninetyOne: return "https://91cg8.com/"
+        case .ninetyOnePorna: return "https://91porna.com/"
+        default: return nil
+        }
+    }
+
+    /// 这一类站点是否支持「发布页找最新地址」。
+    package var supportsAddressPage: Bool { defaultAddressPageURL != nil }
+
+    /// 是否走通用地址解析器：黄果有自己的一套轮换子域解析，仍由它自己处理。
+    package var usesGenericAddressResolver: Bool {
+        switch self {
+        case .quanji, .ninetyOne, .ninetyOnePorna: return true
         default: return false
         }
     }
@@ -149,23 +257,104 @@ package struct CatalogCategory: Identifiable, Codable, Hashable {
     /// 只有分组节点才为 true：这种节点自身没有页面，点它等于打开第一个子分类。
     /// 用可选值是为了让已保存的源（没有这个键）仍能正常解码。
     package var isGroup: Bool? = nil
+    /// 标签墙节点：自身不是列表页，选中后在频道页展开「全部分类」标签墙
+    /// （标签太多时用搜索 + 分页展示，而不是铺成一行行胶囊）。
+    package var isTagWall: Bool? = nil
+    /// 归档节点：自身不是列表页，选中后展示按日期分组的博文归档（可搜索、按月筛选）。
+    package var isArchive: Bool? = nil
 
     /// 用来拼接站点地址的分段，例如 `original/manju`。
     package var path: String { id }
 
     package var isGroupCategory: Bool { isGroup == true }
+    package var showsTagWall: Bool { isTagWall == true }
+    package var showsArchive: Bool { isArchive == true }
     package init(
         id: String,
         title: String,
         isRank: Bool = false,
         children: [CatalogCategory]? = nil,
-        isGroup: Bool? = nil
+        isGroup: Bool? = nil,
+        isTagWall: Bool? = nil,
+        isArchive: Bool? = nil
     ) {
         self.id = id
         self.title = title
         self.isRank = isRank
         self.children = children
         self.isGroup = isGroup
+        self.isTagWall = isTagWall
+        self.isArchive = isArchive
+    }
+}
+
+/// 标签筛选里的一项：`id` 是适配器可识别的路由标识，点选后直接当分类页加载。
+package struct CatalogTag: Identifiable, Hashable, Codable {
+    package var id: String
+    package var title: String
+    /// 站点给出数量时展示（Wuso 的类型筛选会带帖子数）。
+    package var count: Int? = nil
+
+    package init(id: String, title: String, count: Int? = nil) {
+        self.id = id
+        self.title = title
+        self.count = count
+    }
+}
+
+/// 一组标签（分类 / 模特 / 发布商等）：界面上每组一行，行首是组名。
+package struct CatalogTagGroup: Identifiable, Hashable, Codable {
+    package var id: String
+    package var title: String
+    package var items: [CatalogTag]
+
+    package init(id: String, title: String, items: [CatalogTag]) {
+        self.id = id
+        self.title = title
+        self.items = items
+    }
+}
+
+/// 归档里的一条博文：日期 + 标题 + 详情入口 id（不带封面，归档按日期排成紧凑行）。
+package struct CatalogArchiveEntry: Identifiable, Hashable, Codable {
+    package var id: String
+    package var title: String
+    /// 发布日期，形如 `2026-11-26`。
+    package var day: String
+
+    package init(id: String, title: String, day: String) {
+        self.id = id
+        self.title = title
+        self.day = day
+    }
+
+    /// 月份分组键（`2026-11`）；日期不可解析时退回「未知」。
+    package var month: String {
+        day.count >= 7 ? String(day.prefix(7)) : "未知"
+    }
+}
+
+/// 登录态 Cookie 的可用性：只能由 `CatalogSource.cookieState` 推导，不单独存储。
+package enum CatalogCookieState: Hashable {
+    /// 站点不需要登录。
+    case notRequired
+    /// 需要登录，但还没填 Cookie。
+    case missing
+    /// 快过期了（默认 3 天内），界面提前提醒。
+    case expiringSoon
+    /// 已过期，需要重新登录。
+    case expired
+    /// 有 Cookie 且未过期。
+    case valid
+
+    /// 距离过期多久开始提醒。
+    package static let expiringWindow: TimeInterval = 3 * 24 * 60 * 60
+
+    package var needsAttention: Bool {
+        switch self {
+        case .missing, .expired: return true
+        case .notRequired, .expiringSoon, .valid: return false
+        }
     }
 }
 
@@ -177,11 +366,20 @@ package struct CatalogSource: Identifiable, Codable, Hashable {
     package var baseURL: String
     /// 导入时使用的配置地址，仅作记录，便于重新拉取。
     package var configURL: String?
+    /// 站点永久地址 / 最新地址发布页：主站连不上时用它找当前可用镜像。
+    /// 显式留空字符串表示关闭自动找地址；为 nil 时按站点类型的内置默认。
+    /// 属于源配置的一部分，随导入 / 导出一起走。
+    package var addressPageURL: String? = nil
     /// 苹果CMS 的 JSON 接口地址（例如 `https://example.com/api.php/provide/vod/`）。
     /// 其它源为 nil；站点根地址仍放在 `baseURL`，封面与 Referer 用它。
     package var apiBase: String? = nil
     package var userAgent: String
     package var referer: String
+    /// 站点的登录态 Cookie（`name=value; name2=value2`）。
+    /// 仅对需要登录才能看详情的站点使用，随源配置保存，可在编辑里粘贴覆盖。
+    package var cookie: String? = nil
+    /// 登录态最早失效时间：由自动续期从站点 Cookie 的 expires 推导，用于过期前提醒。
+    package var cookieExpiresAt: Date? = nil
     /// 封面解密参数，随源配置保存；导入时从脚本读取，可在编辑中覆盖。
     package var artworkKey: String?
     package var artworkIV: String?
@@ -199,6 +397,29 @@ package struct CatalogSource: Identifiable, Codable, Hashable {
         (URLComponents(string: baseURL)?.host ?? baseURL).lowercased()
     }
 
+    /// 实际使用的发布页：显式配置优先（空字符串 = 关闭），否则用站点类型的内置默认。
+    package var effectiveAddressPageURL: String? {
+        if let addressPageURL {
+            let trimmed = addressPageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return kind.defaultAddressPageURL
+    }
+
+    /// 登录态 Cookie 的当前状态：界面据此决定提示条与徽章文案。
+    package var cookieState: CatalogCookieState {
+        guard kind.mayRequireLogin else { return .notRequired }
+        guard let cookie, !cookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .missing
+        }
+        guard let cookieExpiresAt else { return .valid }
+        if cookieExpiresAt <= Date() { return .expired }
+        if cookieExpiresAt.timeIntervalSinceNow < CatalogCookieState.expiringWindow {
+            return .expiringSoon
+        }
+        return .valid
+    }
+
     /// 这条源属于「网络资源」还是「网络影院」：所有跨源聚合先按它分流。
     package var domain: CatalogDomain { kind.domain }
 
@@ -210,6 +431,14 @@ package struct CatalogSource: Identifiable, Codable, Hashable {
         case .ninetyOne: return 1.95
         case .ninetyOnePorna: return 16.0 / 9.0
         case .xszAV, .missav, .avple, .shise, .avgle, .rouVideo, .quanji: return 16.0 / 9.0
+        case .jliji: return 3.0 / 4.0
+        case .xxss: return 4.0 / 3.0
+        case .aimeir: return 3.0 / 4.0
+        case .v2ph, .nshens, .wuso: return 2.0 / 3.0
+        case .tuzac: return 2.0 / 3.0
+        case .kkc: return 2.0 / 3.0
+        case .knit: return 3.0 / 2.0
+        case .ninetyOneTutu: return 16.0 / 9.0
         default: return 2.0 / 3.0
         }
     }
@@ -222,8 +451,11 @@ package struct CatalogSource: Identifiable, Codable, Hashable {
         baseURL: String,
         configURL: String? = nil,
         apiBase: String? = nil,
+        addressPageURL: String? = nil,
         userAgent: String,
         referer: String,
+        cookie: String? = nil,
+        cookieExpiresAt: Date? = nil,
         artworkKey: String? = nil,
         artworkIV: String? = nil,
         allowsInsecureTLS: Bool? = nil,
@@ -238,8 +470,11 @@ package struct CatalogSource: Identifiable, Codable, Hashable {
         self.baseURL = baseURL
         self.configURL = configURL
         self.apiBase = apiBase
+        self.addressPageURL = addressPageURL
         self.userAgent = userAgent
         self.referer = referer
+        self.cookie = cookie
+        self.cookieExpiresAt = cookieExpiresAt
         self.artworkKey = artworkKey
         self.artworkIV = artworkIV
         self.allowsInsecureTLS = allowsInsecureTLS
@@ -247,6 +482,13 @@ package struct CatalogSource: Identifiable, Codable, Hashable {
         self.posterAspect = posterAspect
         self.isEnabled = isEnabled
         self.createdAt = createdAt
+    }
+}
+
+/// 合集页（专题 / 人物与作品实体）：自身不是图集列表，而是它名下的套图集合。
+package extension CatalogCategory {
+    var isCollectionPage: Bool {
+        id.hasPrefix("topic/") || id.hasPrefix("entity/")
     }
 }
 
@@ -287,6 +529,12 @@ package struct CatalogFavorite: Codable, Identifiable, Hashable {
     }
 }
 
+/// 单个条目是视频还是图集：综合站必须按条目判断，纯视频 / 纯图集站可留空并由站点类型兜底。
+package enum CatalogItemKind: String, Codable, Hashable {
+    case video
+    case gallery
+}
+
 package struct CatalogItem: Identifiable, Hashable, Codable {
     package var id: String
     package var title: String
@@ -296,18 +544,40 @@ package struct CatalogItem: Identifiable, Hashable, Codable {
     package var categoryID: String?
     /// 站点给的上架 / 更新日期：日历按它落位；站点没给时留空。
     package var publishedAt: Date? = nil
+    /// 条目级媒体类型：综合站用它区分「点开播放」还是「点开看图」。
+    package var mediaKind: CatalogItemKind? = nil
 
     package var episodeBadge: String? {
         let trimmed = remark.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+    /// 合集卡片（专题 / 人物与作品实体）：本身不是一个图集，点开是它名下的套图列表。
+    package var isCollectionCard: Bool {
+        id.hasPrefix("topic/") || id.hasPrefix("entity/")
+    }
+
+    /// 条目是不是图集：优先看条目自己的媒体类型，纯站点类型兜底。
+    package func isGallery(in source: CatalogSource) -> Bool {
+        switch mediaKind {
+        case .gallery: return true
+        case .video: return false
+        case nil: return source.kind.isGallerySite
+        }
+    }
+
+    /// 条目是不是视频：综合站里只有显式标记的视频才按视频展示。
+    package func isVideo(in source: CatalogSource) -> Bool {
+        !isGallery(in: source)
+    }
+
     package init(
         id: String,
         title: String,
         coverURL: String,
         remark: String,
         categoryID: String? = nil,
-        publishedAt: Date? = nil
+        publishedAt: Date? = nil,
+        mediaKind: CatalogItemKind? = nil
     ) {
         self.id = id
         self.title = title
@@ -315,6 +585,7 @@ package struct CatalogItem: Identifiable, Hashable, Codable {
         self.remark = remark
         self.categoryID = categoryID
         self.publishedAt = publishedAt
+        self.mediaKind = mediaKind
     }
 }
 
@@ -403,6 +674,8 @@ package struct CatalogDetail {
     package var blocks: [CatalogContentBlock] = []
     /// 结构化信息，详情页用网格展示；没有的源留空。
     package var facts: [CatalogDetailFact] = []
+    /// 站点标记的标签（模特 / 题材 / 分类等），详情页用胶囊展示并可点开聚合搜索。
+    package var tags: [String] = []
     /// 合集（一组互不相关的视频）而不是连续剧集：详情页按视频卡片展示，不写「第 N 集」。
     package var isCollection: Bool = false
     /// 合集在站点上的总数量；只加载了部分页时用来提示。
@@ -419,6 +692,7 @@ package struct CatalogDetail {
         episodes: [CatalogEpisode],
         blocks: [CatalogContentBlock] = [],
         facts: [CatalogDetailFact] = [],
+        tags: [String] = [],
         isCollection: Bool = false,
         collectionTotal: Int? = nil
     ) {
@@ -426,6 +700,7 @@ package struct CatalogDetail {
         self.episodes = episodes
         self.blocks = blocks
         self.facts = facts
+        self.tags = tags
         self.isCollection = isCollection
         self.collectionTotal = collectionTotal
     }
@@ -537,6 +812,8 @@ package struct CatalogPlaybackContext {
 package enum CatalogError: LocalizedError {
     case unsupportedProvider
     case invalidConfig(String)
+    /// 站点要求登录：页面能打开，但详情 / 列表需要登录态 Cookie。
+    case authRequired(String)
     case http(Int)
     case parse(String)
     case decryption
@@ -549,6 +826,8 @@ package enum CatalogError: LocalizedError {
             return "该源类型还没有对应的解析器"
         case .invalidConfig(let message):
             return "源配置无法识别：\(message)"
+        case .authRequired(let hint):
+            return hint.isEmpty ? "站点需要登录后才能访问。" : hint
         case .http(let status):
             return "站点返回 HTTP \(status)"
         case .parse(let message):

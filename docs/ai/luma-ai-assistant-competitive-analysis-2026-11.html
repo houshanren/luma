@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>拾光 Luma · AI 助手横向对比与 2.2 能力基线</title>
+<style>
+  :root{
+    --paper:#F7F5F1; --panel:#FFFDFA; --panel-2:#F1EDE6;
+    --ink:#17161C; --ink-2:#4E4B57; --ink-3:#8B8593;
+    --line:rgba(23,22,28,.10); --line-2:rgba(23,22,28,.18);
+    --amber:#F5A623; --coral:#F26D6D; --pink:#E86FA8; --violet:#8E6CF0; --teal:#3FB6C9;
+    --green:#2B7A55; --green-soft:#E3F1E9;
+    --gold:#9A6B12; --gold-soft:#F7ECD7;
+    --rose:#A5262F; --rose-soft:#FBE7E8;
+    --blue:#1F5F8B; --blue-soft:#E3EFF7;
+    --serif:"Songti SC","Noto Serif SC","Source Han Serif SC",Georgia,serif;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,monospace;
+    --radius:18px;
+    --shadow:0 24px 60px -38px rgba(30,22,50,.45);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;color:var(--ink);font:15px/1.78 var(--sans);
+    background:
+      radial-gradient(1100px 520px at 6% -10%, #fff 0%, transparent 58%),
+      radial-gradient(900px 460px at 100% 0%, #F0EDF8 0%, transparent 52%),
+      var(--paper);
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+  ::selection{background:#F6E3C6}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 26px 96px}
+  .mono{font-family:var(--mono)}
+
+  /* ---------- Hero ---------- */
+  header.hero{
+    position:relative;overflow:hidden;margin-top:30px;border-radius:26px;
+    padding:46px 46px 36px;color:#fff;
+    background:linear-gradient(140deg,#12101A 0%,#1B1730 48%,#2A1E45 100%);
+    box-shadow:0 34px 80px -46px rgba(24,16,46,.75);
+  }
+  header.hero::before{
+    content:"";position:absolute;right:-160px;top:-190px;width:600px;height:600px;border-radius:50%;
+    background:radial-gradient(circle,rgba(142,108,240,.34),transparent 62%);
+  }
+  header.hero::after{
+    content:"";position:absolute;left:-140px;bottom:-220px;width:540px;height:540px;border-radius:50%;
+    background:radial-gradient(circle,rgba(242,109,109,.24),transparent 64%);
+  }
+  .spectrum{position:relative;height:4px;width:220px;border-radius:999px;margin-bottom:22px;
+    background:linear-gradient(90deg,var(--amber),var(--coral),var(--pink),var(--violet),var(--teal));}
+  .eyebrow{position:relative;font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:#CDBBFF;font-weight:700;margin-bottom:16px}
+  h1{position:relative;font-family:var(--serif);font-size:clamp(32px,4.4vw,52px);line-height:1.18;margin:0 0 16px;letter-spacing:.01em}
+  h1 em{font-style:normal;background:linear-gradient(90deg,#FFD889,#FF9E9E 42%,#E7A4FF 72%,#8FE3EE);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{position:relative;margin:0;max-width:880px;color:#D9D4E6;font-size:15.5px}
+  .meta{position:relative;display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
+  .meta span{font-size:11.5px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.16);color:#EDE9F7}
+  .hero-note{position:relative;margin-top:26px;display:flex;gap:14px;align-items:flex-start;padding:15px 18px;border-radius:16px;
+    background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(10px)}
+  .hero-note b{color:#FFD889}
+  .hero-note p{margin:0;color:#CFC8E0;font-size:13.5px}
+
+  /* ---------- TOC ---------- */
+  nav.toc{position:sticky;top:0;z-index:40;margin:20px 0 0;
+    background:rgba(247,245,241,.86);backdrop-filter:blur(16px) saturate(1.2);
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  nav.toc .inner{max-width:1200px;margin:0 auto;padding:9px 26px;display:flex;gap:6px;overflow-x:auto}
+  nav.toc a{flex:0 0 auto;font-size:12px;color:var(--ink-2);text-decoration:none;padding:6px 11px;border-radius:999px;white-space:nowrap;transition:.18s}
+  nav.toc a:hover{background:rgba(23,22,28,.06);color:var(--ink)}
+  nav.toc a.active{background:var(--ink);color:#fff}
+
+  /* ---------- 版式 ---------- */
+  section{padding:58px 0 8px;scroll-margin-top:64px}
+  .kicker{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+  h2{font-family:var(--serif);font-size:clamp(25px,2.9vw,35px);line-height:1.26;margin:6px 0 10px;font-weight:700}
+  h2 .num{color:var(--coral);font-family:var(--sans);font-size:13px;letter-spacing:.1em;vertical-align:4px;margin-right:10px}
+  h3{font-size:18px;margin:34px 0 10px;font-weight:650}
+  h4{font-size:14.5px;margin:20px 0 7px;font-weight:650}
+  p{margin:0 0 12px;color:var(--ink-2)}
+  ul,ol{margin:0 0 14px;padding-left:21px;color:var(--ink-2)}
+  li{margin:4px 0}
+  strong{color:var(--ink);font-weight:650}
+  code{font-family:var(--mono);font-size:12.2px;background:#ECE9F2;border-radius:5px;padding:1px 5px;color:#3B3855}
+  .sub{font-size:13px;color:var(--ink-3)}
+  .sec-head{display:flex;align-items:flex-end;justify-content:space-between;gap:22px}
+  .sec-note{font-size:12.5px;color:var(--ink-3);max-width:360px;text-align:right;padding-bottom:12px}
+  .divider{height:1px;background:var(--line);margin:26px 0}
+
+  /* ---------- 卡片 ---------- */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;box-shadow:0 1px 0 #fff inset}
+  .glass{background:rgba(255,255,255,.66);border:1px solid rgba(255,255,255,.72);border-radius:var(--radius);
+    box-shadow:var(--shadow);backdrop-filter:blur(16px) saturate(1.15)}
+  .grid{display:grid;gap:14px}
+  .grid > *{min-width:0}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  @media(max-width:960px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:680px){.g2,.g3,.g4{grid-template-columns:1fr}.sec-note{display:none}}
+  .lift{transition:transform .22s ease, box-shadow .22s ease}
+  .lift:hover{transform:translateY(-3px);box-shadow:0 28px 54px -34px rgba(30,22,50,.45)}
+
+  .callout{background:linear-gradient(180deg,#F3F7FB,#EDF3F9);border:1px solid #D9E6F1;border-radius:14px;padding:15px 17px;font-size:13.5px;color:#23395C}
+  .callout b{color:#12233F}
+  .warnbox{background:var(--rose-soft);border:1px solid #F3CDD0;border-radius:14px;padding:15px 17px;font-size:13.5px;color:#7A2730}
+  .okbox{background:var(--green-soft);border:1px solid #CAE5D6;border-radius:14px;padding:15px 17px;font-size:13.5px;color:#1D553D}
+  .quote{border-left:3px solid transparent;border-image:linear-gradient(180deg,var(--amber),var(--violet),var(--teal)) 1;
+    padding:6px 0 6px 20px;font-family:var(--serif);font-size:clamp(20px,2.4vw,28px);line-height:1.55;color:var(--ink);margin:18px 0}
+
+  /* ---------- 标签 ---------- */
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;vertical-align:1px}
+  .p0{background:var(--rose-soft);color:#A5262F}
+  .p1{background:var(--gold-soft);color:#8A5D10}
+  .p2{background:var(--blue-soft);color:#14657C}
+  .pill.done{background:var(--green-soft);color:#1D6848}
+  .pill.part{background:var(--gold-soft);color:#8A5D10}
+  .tag{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:6px;background:var(--panel-2);color:var(--ink-3);border:1px solid var(--line)}
+  .tag.a{background:var(--green-soft);color:#1D6848;border-color:#CDE6D9}
+  .tag.b{background:var(--gold-soft);color:#8A5D10;border-color:#EDDFC2}
+  .tag.c{background:#EEEDF4;color:#565A76;border-color:#DCDCE7}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:6px 11px;border-radius:999px;
+    background:rgba(255,255,255,.72);border:1px solid var(--line);color:var(--ink-2)}
+  .chip i{width:7px;height:7px;border-radius:50%;background:linear-gradient(135deg,var(--amber),var(--violet));display:inline-block}
+
+  /* ---------- KPI ---------- */
+  .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+  @media(max-width:960px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:560px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .kpi{padding:16px 14px;border-radius:16px;background:var(--panel);border:1px solid var(--line)}
+  .kpi b{display:block;font-family:var(--serif);font-size:26px;line-height:1.2;letter-spacing:.01em}
+  .kpi span{display:block;font-size:11px;color:var(--ink-3);margin-top:3px}
+  .kpi.hot b{background:linear-gradient(90deg,var(--coral),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}
+
+  /* ---------- 条形 ---------- */
+  .bars{display:grid;gap:10px}
+  .bar-row{display:grid;grid-template-columns:96px 1fr 38px;gap:12px;align-items:center;font-size:12.5px;color:var(--ink-2)}
+  .bar-track{height:10px;border-radius:999px;background:#EEEAE2;overflow:hidden}
+  .bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--amber),var(--coral),var(--violet))}
+  .bar-row b{text-align:right;color:var(--ink);font-family:var(--mono);font-size:12px;font-weight:600}
+
+  /* ---------- 流程 ---------- */
+  .flow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;align-items:stretch}
+  @media(max-width:980px){.flow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:560px){.flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .step{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 13px;min-height:104px}
+  .step b{display:block;font-size:12.5px;margin-bottom:5px}
+  .step span{display:block;font-size:11px;color:var(--ink-3);line-height:1.55}
+  .step em{position:absolute;left:12px;bottom:10px;font-style:normal;font-family:var(--mono);font-size:10px;color:var(--ink-3)}
+  .step.warm{background:#FFF7EA;border-color:#F0DDBE}
+  .step.rose{background:#FFF1ED;border-color:#F2D6CE}
+  .step.violet{background:#F7F2FF;border-color:#E0D3F7}
+  .step.teal{background:#EFF8F6;border-color:#CFE8E4}
+
+  /* ---------- 表格 ---------- */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#F0EEF6;font-size:11.5px;font-weight:650;color:#3C4054;white-space:nowrap;position:sticky;top:0;z-index:2}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:#FBFAF7}
+  c{display:inline-block;min-width:20px;text-align:center;border-radius:5px;padding:1px 5px;font-size:11px;font-weight:700;font-style:normal}
+  .y{background:var(--green-soft);color:#1D6848}
+  .m{background:var(--gold-soft);color:#8A5D10}
+  .n{background:#F2EEF1;color:#8D7C86}
+  .matrix td:first-child,.matrix th:first-child{position:sticky;left:0;background:var(--panel);z-index:1;min-width:168px}
+  .matrix th:first-child{background:#F0EEF6;z-index:3}
+  .matrix tbody tr:hover td:first-child{background:#FBFAF7}
+  .matrix td,.matrix th{padding:8px 10px;font-size:12.4px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-3);margin:8px 0 14px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+
+  /* ---------- Tabs ---------- */
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 12px}
+  .tabs button{font:inherit;font-size:12.5px;padding:7px 13px;border-radius:999px;border:1px solid var(--line);
+    background:rgba(255,255,255,.75);color:var(--ink-2);cursor:pointer;transition:.18s}
+  .tabs button:hover{border-color:var(--line-2);color:var(--ink);transform:translateY(-1px)}
+  .tabs button.active{background:var(--ink);border-color:var(--ink);color:#fff}
+  .panel-body{display:none}
+  .panel-body.active{display:block;animation:fade .26s ease;opacity:1;transform:none}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+  /* ---------- 产品卡 ---------- */
+  .product{padding:20px 22px;border-radius:18px;background:var(--panel);border:1px solid var(--line);position:relative;overflow:hidden}
+  .product::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    background:linear-gradient(180deg,var(--amber),var(--coral),var(--violet),var(--teal))}
+  .product h4{margin:0 0 4px;font-size:15px}
+  .product .role{font-size:11.5px;color:var(--ink-3);margin-bottom:10px}
+  .product p{font-size:12.8px;margin:0 0 8px}
+  .product .learn{font-size:12.4px;color:#1D553D;background:var(--green-soft);border-radius:10px;padding:9px 11px;margin-top:10px}
+  .product .avoid{font-size:12.4px;color:#7A2730;background:var(--rose-soft);border-radius:10px;padding:9px 11px;margin-top:7px}
+  .product .learn b,.product .avoid b{font-weight:700}
+
+  /* ---------- 优先级卡 ---------- */
+  .prio{display:grid;grid-template-columns:44px 1fr;gap:14px;padding:18px 18px 16px;border-radius:16px;background:var(--panel);border:1px solid var(--line)}
+  .prio .n{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;font-family:var(--serif);font-size:19px;color:#fff;
+    background:linear-gradient(135deg,var(--coral),var(--violet))}
+  .prio h4{margin:0 0 4px;font-size:14.5px}
+  .prio .row{font-size:12.3px;color:var(--ink-2);margin:4px 0}
+  .prio .row b{color:var(--ink)}
+  .prio .acc{font-size:11.5px;color:var(--green);background:var(--green-soft);border-radius:8px;padding:5px 8px;display:inline-block;margin-top:6px}
+
+  /* ---------- 交互 mock ---------- */
+  .mock{border-radius:20px;overflow:hidden;border:1px solid rgba(23,22,28,.12);background:#F4F1EC;box-shadow:var(--shadow)}
+  .mock-bar{display:flex;align-items:center;gap:6px;padding:10px 14px;background:rgba(255,255,255,.72);border-bottom:1px solid var(--line)}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .dot.r{background:#F26D6D}.dot.y{background:#F5C451}.dot.g{background:#63C58B}
+  .mock-title{margin-left:8px;font-size:11.5px;color:var(--ink-3)}
+  .mock-body{padding:18px;display:grid;gap:12px}
+  .msg{background:rgba(255,255,255,.9);border:1px solid var(--line);border-radius:14px;padding:13px 15px;font-size:12.8px}
+  .msg.user{background:linear-gradient(135deg,#17161C,#2A2440);color:#F1EEF8;border-color:transparent}
+  .msg .ctx{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .msg .ctx span{font-size:10.5px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.18);color:#D9D3E9}
+  .plan{background:linear-gradient(180deg,#FFFDFA,#FFF8EC);border:1px solid #EFDDC0;border-radius:14px;padding:14px 15px}
+  .plan .t{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:650;margin-bottom:8px}
+  .plan .t span{font-size:10.5px;color:var(--gold);background:var(--gold-soft);padding:2px 7px;border-radius:999px;font-weight:600}
+  .plan ol{margin:0;padding-left:18px;font-size:12.2px;color:var(--ink-2)}
+  .plan li{margin:3px 0}
+  .plan .ok{color:var(--green)}
+  .plan .wait{color:var(--gold)}
+  .plan .btns{display:flex;gap:7px;margin-top:11px}
+  .btn{font-size:11.5px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink-2)}
+  .btn.primary{background:linear-gradient(135deg,var(--coral),var(--violet));border-color:transparent;color:#fff;box-shadow:0 6px 14px -8px rgba(142,108,240,.8)}
+  .timeline-mock{background:rgba(255,255,255,.9);border:1px solid var(--line);border-radius:14px;padding:12px 15px;font-size:12.2px}
+  .timeline-mock .line{display:flex;gap:9px;align-items:flex-start;padding:4px 0;color:var(--ink-2)}
+  .timeline-mock .line i{width:14px;height:14px;border-radius:50%;background:var(--green-soft);color:var(--green);display:grid;place-items:center;font-style:normal;font-size:9px;flex:0 0 auto;margin-top:2px}
+  .timeline-mock .line.now i{background:var(--gold-soft);color:var(--gold);animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .result{background:linear-gradient(180deg,#F2FBF6,#EAF7F0);border:1px solid #CFE8DB;border-radius:14px;padding:13px 15px;font-size:12.5px;color:#1D553D}
+  .result b{color:#143F2E}
+  .result .btns{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}
+  .result .btn{color:#1D553D;border-color:#BFDCCB;background:rgba(255,255,255,.7)}
+
+  /* ---------- 路线 ---------- */
+  .road{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  @media(max-width:820px){.road{grid-template-columns:1fr}}
+  .road .col{position:relative;padding:22px 20px;border-radius:18px;background:var(--panel);border:1px solid var(--line)}
+  .road .col .ver{font-family:var(--serif);font-size:30px;line-height:1}
+  .road .col .name{font-size:12px;color:var(--ink-3);margin:6px 0 12px}
+  .road .col ul{padding-left:18px;font-size:12.6px}
+  .road .col.now{border-color:#E7C9CE;background:linear-gradient(180deg,#FFFDFA,#FFF6F5)}
+  .road .col.next{border-color:#E3D6F5;background:linear-gradient(180deg,#FFFDFA,#FAF6FF)}
+  .road .col.later{border-color:#CFE5EA;background:linear-gradient(180deg,#FFFDFA,#F3FBFB)}
+
+  /* ---------- 其他 ---------- */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.split{grid-template-columns:1fr}}
+  .list-tight li{margin:2px 0}
+  .src{font-size:12.3px;color:var(--ink-2)}
+  .src a{color:#2C4C7A;text-decoration:none;border-bottom:1px solid rgba(44,76,122,.22)}
+  .src a:hover{border-bottom-color:#2C4C7A}
+  .reveal{opacity:0;transform:translateY(10px);transition:opacity .5s ease,transform .5s ease}
+  .reveal.in{opacity:1;transform:none}
+  @media(prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}.lift:hover{transform:none}}
+  footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-3)}
+  @media print{
+    body{background:#fff}
+    nav.toc{display:none}
+    header.hero{box-shadow:none}
+    .panel-body{display:block !important}
+    .reveal{opacity:1;transform:none}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="spectrum"></div>
+    <div class="eyebrow">Luma Internal · AI Product Research · 2026.11</div>
+    <h1>把对话变成<br><em>做完一件事</em></h1>
+    <p class="lede">拾光 AI 助手横向对比与 Luma 2.2 能力基线。覆盖 ChatGPT、Claude、Gemini、Copilot、Perplexity、Manus、Kimi、豆包、Apple Intelligence 与影像垂直产品，从交互逻辑、对话设计、Agent 能力、界面、安全边界、人在回路与内部融合七个角度，决定 2.2 怎么升级。</p>
+    <div class="meta">
+      <span>版本 v1.1</span><span>2026-11-28</span><span>基线 Luma 2.2</span>
+      <span>86 个本地工具</span><span>5 个模块</span><span>公开资料，非逐项实测</span>
+    </div>
+    <div class="hero-note">
+      <p><b>一句话结论：</b>拾光在「本地媒体库可执行」这一维度已是第一梯队。2.1 时助手体验落后顶尖产品约一代；2.2 已补齐 <b>流式、计划、可逆、成果物、记忆</b> 五件事，并补上追问、编辑重发、并行委派、审批记忆与审计。剩下的是「跨重启队列 / 多分支对话树 / OS 级沙箱 / 金额级成本」这类 2.3 议题。</p>
+    </div>
+  </header>
+
+  <nav class="toc" id="toc">
+    <div class="inner">
+      <a href="#verdict" class="active">结论</a>
+      <a href="#state">现状</a>
+      <a href="#matrix">八维矩阵</a>
+      <a href="#products">产品深读</a>
+      <a href="#blueprint">2.2 蓝图</a>
+      <a href="#interaction">交互规范</a>
+      <a href="#security">安全与 HITL</a>
+      <a href="#roadmap">路线图</a>
+      <a href="#sources">来源</a>
+    </div>
+  </nav>
+
+  <!-- ================= 01 结论 ================= -->
+  <section id="verdict">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">01 · Executive Summary</div>
+        <h2><span class="num">01</span>先回答「我们用的是最好的吗」</h2>
+      </div>
+      <div class="sec-note">结论来自当前代码与 2026-11 公开资料，不做逐项实测。</div>
+    </div>
+
+    <div class="quote reveal">不是最好的通用助手，<br>但是最有特色的「本地媒体库 Agent」。</div>
+
+    <div class="grid g3 reveal">
+      <div class="panel lift">
+        <div class="tag a">领先</div>
+        <h4 style="margin-top:10px">本地可执行 + 隐私边界</h4>
+        <p style="font-size:13px;margin:0">86 个工具覆盖图库、影院、资源、网络影院与电视；默认只发元数据与端侧标签，原图要手动开启；Key 只进钥匙串。</p>
+      </div>
+      <div class="panel lift">
+        <div class="tag b">持平</div>
+        <h4 style="margin-top:10px">空态引导 + 品牌一致性</h4>
+        <p style="font-size:13px;margin:0">欢迎页、能力全景、案例卡、深度场景与隐私脚注，完成度高于多数通用助手的空态；主题与强调色可随图库切换。</p>
+      </div>
+      <div class="panel lift">
+        <div class="tag">已补齐</div>
+        <h4 style="margin-top:10px">助手体验的五个结构性能力</h4>
+        <p style="font-size:13px;margin:0">2.1 时还是非流式、无计划卡、无 diff、无撤销、无成果物、无长期记忆、无连接器。顶尖产品已把这些变成默认；2.2 已按第八节路线补齐，落地记录见文档第 13–15 节。</p>
+      </div>
+    </div>
+
+    <div class="kpis reveal" style="margin-top:16px">
+      <div class="kpi"><b>86</b><span>注册工具</span></div>
+      <div class="kpi"><b>5</b><span>能力领域</span></div>
+      <div class="kpi"><b>37</b><span>写工具</span></div>
+      <div class="kpi"><b>18</b><span>模型提供商</span></div>
+      <div class="kpi"><b>4</b><span>呈现形态</span></div>
+      <div class="kpi"><b>6</b><span>默认记忆轮数</span></div>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">工具构成（当前代码）</h4>
+        <div class="bars" style="margin-top:12px">
+          <div class="bar-row"><span>图库基础</span><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div><b>44</b></div>
+          <div class="bar-row"><span>本地影院</span><div class="bar-track"><div class="bar-fill" style="width:51%"></div></div><b>21</b></div>
+          <div class="bar-row"><span>网络资源</span><div class="bar-track"><div class="bar-fill" style="width:22%"></div></div><b>9</b></div>
+          <div class="bar-row"><span>网络影院</span><div class="bar-track"><div class="bar-fill" style="width:12%"></div></div><b>5</b></div>
+          <div class="bar-row"><span>网络电视</span><div class="bar-track"><div class="bar-fill" style="width:17%"></div></div><b>7</b></div>
+        </div>
+        <p class="sub" style="margin:12px 0 0">README 旧文写 73；按当前代码重新计数为 83（基础 44 + 影院 21 + 资源 9 + 网络影院 5 + 电视 7），已在本轮同步修正。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">如果 2.2 只做五件事</h4>
+        <div class="tw" style="margin-top:10px">
+          <table style="min-width:0">
+            <thead><tr><th>优先级</th><th>补什么</th><th>验收</th><th>2.2</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill p0">P0</span></td><td>流式 + 工具时间线</td><td>首字 &lt; 1.5s</td><td><span class="pill done">已落地</span></td></tr>
+              <tr><td><span class="pill p0">P0</span></td><td>计划卡 + 批量审批</td><td>多步任务 100% 先计划</td><td><span class="pill done">已落地</span></td></tr>
+              <tr><td><span class="pill p0">P0</span></td><td>检查点 + 撤销</td><td>可逆写 100% 可撤销</td><td><span class="pill done">已落地</span></td></tr>
+              <tr><td><span class="pill p0">P0</span></td><td>成果物卡</td><td>每类任务都有落点</td><td><span class="pill done">已落地</span></td></tr>
+              <tr><td><span class="pill p0">P0</span></td><td>工具分层与意图路由</td><td>选择准确率 &gt; 90%</td><td><span class="pill done">已落地</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid g2 reveal" style="margin-top:16px">
+      <div class="callout"><b>判断一：模型不是瓶颈，编排是瓶颈。</b>同一个模型，给 86 个工具裸奔，和给 12 个相关工具 + 计划 + 上下文胶囊，任务成功率会差一个档位。</div>
+      <div class="callout"><b>判断二：86 个工具是资产，也是负债。</b>工具越多，单轮选择越容易错；需要「领域 → 意图 → 工具组」的渐进披露。</div>
+      <div class="callout"><b>判断三：安全边界已经领先，但还不可证明。</b>默认不发原图、Key 进钥匙串是优势；2.2 已补审计日志与注入提醒，连接器做了环境隔离。OS 级沙箱与完整注入过滤仍缺。</div>
+      <div class="callout"><b>判断四：人在回路要从「弹窗」升级为「协作」。</b>计划审批 + diff + 检查点 + 接管，才让用户敢于放权。</div>
+    </div>
+  </section>
+
+  <!-- ================= 02 现状 ================= -->
+  <section id="state">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">02 · Current State</div>
+        <h2><span class="num">02</span>拾光现在的真实链路</h2>
+      </div>
+      <div class="sec-note">以 <code>Sources/LumaAI</code>、<code>Sources/Luma/Store/AI</code>、<code>Features/AI</code> 当前代码为准。</div>
+    </div>
+
+    <div class="flow reveal">
+      <div class="step warm"><b>提问 + 范围</b><span>范围 / 筛选 / 选中 / 搜索现场 / 影院快照</span><em>INPUT</em></div>
+      <div class="step rose"><b>上下文组装</b><span>元数据 / 标签 / OCR；默认不含原图</span><em>CONTEXT</em></div>
+      <div class="step violet"><b>模型调用</b><span>OpenAI 兼容，整段返回，不流式</span><em>LLM</em></div>
+      <div class="step teal"><b>工具循环</b><span>function calling；失败回传模型</span><em>TOOLS</em></div>
+      <div class="step warm"><b>写操作审批</b><span>每次 / 仅高风险 / 自动；一轮合并</span><em>APPROVE</em></div>
+      <div class="step rose"><b>执行与落盘</b><span>复用 LibraryStore；会话按图库保存</span><em>STORE</em></div>
+    </div>
+
+    <div class="split reveal" style="margin-top:18px">
+      <div class="panel">
+        <h4 style="margin-top:0">六项真实优势</h4>
+        <ul class="list-tight" style="font-size:13px">
+          <li><strong>跨模块可执行</strong>：从检索到整理到播放，竞品很少有同样的本地动作面。</li>
+          <li><strong>默认数据最小化</strong>：只发元数据、本地标签与 OCR。</li>
+          <li><strong>写前确认 + 合并弹窗</strong>：一轮一次，比逐工具弹窗克制。</li>
+          <li><strong>防假完成</strong>：未调用工具会被要求重试，仍不执行则明确报错。</li>
+          <li><strong>上下文是对象</strong>：范围、选中、搜索现场、影院快照分别组装。</li>
+          <li><strong>本地模型可换</strong>：Ollama / LM Studio + 18 家云端。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">2.1 时的十个关键缺口 · 2.2 现状</h4>
+        <ul class="list-tight" style="font-size:13px">
+          <li><span class="pill done">已补</span> 非流式 → 逐字流式 + 思考摘要 + token 用量。</li>
+          <li><span class="pill done">已补</span> 无计划卡 → 模型生成计划卡，可改可批可取消。</li>
+          <li><span class="pill done">已补</span> 无检查点 → 任务级检查点，一键撤销本轮写入（含影院）。</li>
+          <li><span class="pill done">已补</span> 无成果物 → 成果物库：搜索 / 类型筛选 / 打开 / 移除。</li>
+          <li><span class="pill done">已补</span> 83 工具全量暴露 → 领域 → 意图 → 工具组渐进披露。</li>
+          <li><span class="pill done">已补</span> 审批无 diff → 字段级 diff + 逐条取舍。</li>
+          <li><span class="pill done">已补</span> 无长期记忆 / 语音 / 指认 / 连接器 → 全部落地（语音仅输入）。</li>
+          <li><span class="pill part">部分</span> 无审计与注入防护 → 审计日志已落盘；注入是「规则 + 可疑检测」，不是完整过滤。</li>
+          <li><span class="pill part">部分</span> 无沙箱 / 成本 → 连接器做了环境变量白名单 + 固定工作目录；成本只到 token 级。</li>
+          <li><span class="pill part">部分</span> 无并行 / 追问 / 编辑重发 → 已补；仍缺「多分支对话树」。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="warnbox reveal" style="margin-top:16px">
+      <b>一个真实任务的时间线：</b>用户说「整理当前影院里未识别的影片」→ 界面只显示「正在理解当前范围」→ 模型连续调用目录树、候选搜索、批量写回 → 写操作合并成一个确认框，只列前 8 条 → 用户点允许 → 等待 → 一次性返回总结卡。结果不差，但过程不可见、不可改、不可退。
+    </div>
+  </section>
+
+  <!-- ================= 03 矩阵 ================= -->
+  <section id="matrix">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">03 · Matrix</div>
+        <h2><span class="num">03</span>八维横向对比</h2>
+      </div>
+      <div class="sec-note">竞品评级来自 2026-11 公开资料与产品界面观察，未做逐项实测；拾光列以当前代码为准。</div>
+    </div>
+
+    <div class="legend reveal">
+      <span><c class="y">●</c> 完整支持</span>
+      <span><c class="m">◐</c> 部分 / 受限 / 需前置</span>
+      <span><c class="n">○</c> 当前没有</span>
+      <span>评级只表示能力覆盖，不表示质量。</span>
+    </div>
+
+    <div class="tabs reveal" id="matrixTabs">
+      <button class="active" data-panel="mx-interact">交互入口</button>
+      <button data-panel="mx-dialog">对话设计</button>
+      <button data-panel="mx-design">界面设计</button>
+      <button data-panel="mx-agent">Agent 能力</button>
+      <button data-panel="mx-security">安全边界</button>
+      <button data-panel="mx-hitl">人在回路</button>
+      <button data-panel="mx-fusion">内部融合</button>
+      <button data-panel="mx-model">模型与成本</button>
+    </div>
+
+    <div class="panel-body active reveal" id="mx-interact">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>能力</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th><th>Kimi</th><th>豆包</th></tr></thead>
+          <tbody>
+            <tr><td>面板 / 侧栏常驻</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>全局快捷键呼出</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>当前页面上下文</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>选中对象直接引用</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>搜索现场续问</td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>语音输入 / 对话</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>屏幕 / 视觉指认</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>移动端接力</td><td><c class="n">○</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>快捷指令 / 宏</td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>面板内多任务 / 分屏</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>拾光在「当前页面上下文」「选中对象」「搜索现场续问」上有真优势，2.2 又补上了常驻侧栏、浮窗与独立窗口；语音只做到输入，移动端与系统级全局快捷键仍缺。</p>
+    </div>
+
+    <div class="panel-body" id="mx-dialog">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>能力</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th><th>Kimi</th><th>豆包</th></tr></thead>
+          <tbody>
+            <tr><td>流式输出</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>思考过程可见</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>计划卡</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>工具轨迹</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>引用 / 出处</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>富内容 / 成果物</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>主动追问澄清</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>停止 / 重试</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>编辑重发 / 分支</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>结构化建议卡</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>错误可恢复</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>2.2 已把流式、计划卡、成果物、错误恢复、主动追问与思考摘要补齐，编辑重发也做了；真正还缺的只有「多分支对话树」——当前编辑重发是截断后续回复，不保留旧分支。</p>
+    </div>
+
+    <div class="panel-body" id="mx-design">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>设计模式</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th></tr></thead>
+          <tbody>
+            <tr><td>单列对话 + 固定阅读宽度</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>空态即能力地图</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>案例卡 / 示例即入口</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>成果物侧栏 / 画布</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>执行过程可视化</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>动效克制、不抢内容</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>主题 / 强调色可定制</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>键盘优先</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>移动端适配</td><td><c class="n">○</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>品牌一致性</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>拾光的空态、执行时间线、品牌一致性与主题定制已对齐第一梯队。2.2 新增了成果物库面板（列表 / 搜索 / 类型筛选 / 打开 / 移除），但仍不是「在画布上继续编辑成果物」；移动端适配不适用于 macOS 客户端。</p>
+    </div>
+
+    <div class="panel-body" id="mx-agent">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>能力</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th><th>Kimi</th><th>豆包</th></tr></thead>
+          <tbody>
+            <tr><td>多步工具调用</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>显式计划</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>并行子任务</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>长时后台任务</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>定时 / 周期任务</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>人工接管</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>成果物交付</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>跨会话记忆</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>连接器 / MCP</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>技能 / 插件</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>多 Agent 编排</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>沙箱隔离</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>额度 / 成本可见</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>计划、定时任务、人工接管、成果物、长期记忆、连接器、技能与并行子任务都已补齐；多 Agent 是「角色 + 只读并行委派」，没有通用编排器。仍缺的是跨重启的长时任务队列、OS 级沙箱与金额级成本可见性（当前能看 token）。</p>
+    </div>
+
+    <div class="panel-body" id="mx-security">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>能力</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th><th>Kimi</th><th>豆包</th></tr></thead>
+          <tbody>
+            <tr><td>默认数据最小化</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>原图 / 文件上传可控</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>Key 本地保管</td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>数据本地存储</td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>训练用途可控</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>工具权限分级</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>注入防护</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>审计日志</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>沙箱隔离</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>可导出 / 删除</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>数据不出本机、Key 不进图库、默认不发原图与工具权限分级仍是明显优势；2.2 补上了审计日志（每次工具调用落盘到 ai/audit.jsonl）与注入提醒（外部数据不可信规则 + 可疑片段检测），连接器也做了轻量环境隔离。还不是 OS 级沙箱，也不是完整的注入过滤。</p>
+    </div>
+
+    <div class="panel-body" id="mx-hitl">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>能力</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th><th>Cursor / Claude Code</th></tr></thead>
+          <tbody>
+            <tr><td>计划审批</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>单步审批</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>批量合并审批</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>风险分级</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>Diff / 预览</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>撤销 / 检查点</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>人工接管</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>审批记忆（本次 / 始终）</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>防假完成</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>超时 / 取消</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>计划审批、字段级 diff、撤销 / 检查点、人工接管与审批记忆都已补齐，批量合并与防假完成仍是亮点。审批卡现在有「本次都允许 / 始终允许 / 允许 / 取消」四档；高风险与外部连接器不会被「始终允许」记住。</p>
+    </div>
+
+    <div class="panel-body" id="mx-fusion">
+      <div class="tw">
+        <table>
+          <thead><tr><th>内部能力</th><th>拾光</th><th>实现 / 入口</th><th>最佳参照</th><th>差距</th></tr></thead>
+          <tbody>
+            <tr><td>图库检索</td><td><c class="y">●</c></td><td><code>search_photos</code>，多条件 + 翻页</td><td>Google Photos Ask Photos</td><td>缺「为什么是这几张」的解释</td></tr>
+            <tr><td>统一跨源搜索</td><td><c class="y">●</c></td><td><code>unified_search</code> 复用 SearchProviders</td><td>Perplexity 多源引用</td><td>缺来源引用卡与按来源继续追问</td></tr>
+            <tr><td>相簿 / 文件夹</td><td><c class="y">●</c></td><td>创建 / 添加 / 移出 / 重命名 / 删除 / 移动 / 封面</td><td>Apple Photos</td><td>计划卡可先预览结构再执行</td></tr>
+            <tr><td>评分 / 旗标 / 色标 / 关键词</td><td><c class="y">●</c></td><td>批量写回本地库与系统库</td><td>Lightroom</td><td>已支持字段级 diff 与整组撤销</td></tr>
+            <tr><td>压缩 / 美化</td><td><c class="y">●</c></td><td>有损 / 无损压缩、美化副本</td><td>Lightroom</td><td>缺「预计节省空间」前置估算</td></tr>
+            <tr><td>影院刮削</td><td><c class="y">●</c></td><td>目录树、候选、季集映射、批量写回</td><td>芝杜 / Infuse</td><td>已支持逐条字段 diff 与整组回滚</td></tr>
+            <tr><td>网络资源</td><td><c class="y">●</c></td><td>源清单、跨源搜索、稍后看、关注</td><td>JavDB</td><td>缺「同片归并」的对话化表达</td></tr>
+            <tr><td>网络影院</td><td><c class="y">●</c></td><td>聚合列表、跨源搜索、续看、播放</td><td>Infuse</td><td>缺「多源切换」的解释</td></tr>
+            <tr><td>网络电视 / EPG</td><td><c class="y">●</c></td><td>频道、节目单、今晚、直播 / 回看</td><td>TiviMate</td><td>缺「按偏好自动排今晚」</td></tr>
+            <tr><td>播放控制</td><td><c class="y">●</c></td><td>播放 / 续看 / 下一集 / 跳过片头</td><td>Infuse</td><td>已支持 @mm:ss 时间点指认，可边看边问</td></tr>
+            <tr><td>旅行 / 回忆</td><td><c class="y">●</c></td><td>行程识别、回忆影片播放</td><td>Apple Memories</td><td>缺「生成后可编辑的故事板」</td></tr>
+            <tr><td>图库体检</td><td><c class="y">●</c></td><td>模糊 / 相似 / 大视频 / 可释放空间</td><td>—</td><td>缺「体检报告」成果物</td></tr>
+            <tr><td>跨模块复合任务</td><td><c class="y">●</c></td><td>通用计划器：模型生成计划卡，多步工具执行</td><td>Manus</td><td>计划由模型生成，跨模块组合不再硬编码</td></tr>
+            <tr><td>成果物回写</td><td><c class="y">●</c></td><td>相簿 / 片单 / 清单 / 报告 / 回忆影片，独立成果物库</td><td>ChatGPT / Claude Artifacts</td><td>缺「在画布上继续编辑成果物」</td></tr>
+            <tr><td>对话内对象引用</td><td><c class="y">●</c></td><td>照片条、<code>#N</code>、<code>ref</code>、@ 指认、时间点</td><td>Claude Artifacts</td><td>已支持照片与时间点；地点 / 人物 chip 待补</td></tr>
+            <tr><td>任务计划 / 审批</td><td><c class="y">●</c></td><td>计划卡：可编辑、可批准、可取消</td><td>Manus / Cursor</td><td>已落地 L0–L3 审批</td></tr>
+            <tr><td>撤销 / 审计</td><td><c class="y">●</c></td><td>按任务整组撤销；每次工具调用写 <code>ai/audit.jsonl</code></td><td>Cursor / Claude Code</td><td>审计有落盘，但还没有可视化浏览面板</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>结论：</b>拾光的「融合广度」是全场最好的，2.2 又把「可计划、可预览、可回滚、可沉淀」补到同一水平。剩下的是成果物二次编辑、审计证据链与少量解释性内容。</p>
+    </div>
+
+    <div class="panel-body" id="mx-model">
+      <div class="tw matrix">
+        <table>
+          <thead><tr><th>能力</th><th>拾光</th><th>ChatGPT</th><th>Claude</th><th>Gemini</th><th>Copilot</th><th>Perplexity</th><th>Manus</th></tr></thead>
+          <tbody>
+            <tr><td>多模型可选</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>本地模型</td><td><c class="y">●</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td><td><c class="n">○</c></td></tr>
+            <tr><td>按任务自动路由</td><td><c class="n">○</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>流式</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>视觉输入</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>工具调用</td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>上下文窗口</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>成本 / 额度可见</td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td></tr>
+            <tr><td>失败回退</td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td></tr>
+            <tr><td>模型透明度</td><td><c class="y">●</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="m">◐</c></td><td><c class="y">●</c></td><td><c class="m">◐</c></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:12px 0 0"><b>观察：</b>拾光的模型自由度与本地模型是优势，流式也已补齐，2.2 还能在控制台看到本轮 token（in / out）。仍没有「任务 → 模型」的自动路由，也没有金额级成本与预算上限。</p>
+    </div>
+  </section>
+
+  <!-- ================= 04 产品深读 ================= -->
+  <section id="products">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">04 · Product Notes</div>
+        <h2><span class="num">04</span>十个产品，十种可借鉴的做法</h2>
+      </div>
+      <div class="sec-note">只提炼对拾光 2.2 有用的部分，不做产品评测。</div>
+    </div>
+
+    <div class="grid g2 reveal">
+      <div class="product lift">
+        <h4>ChatGPT</h4>
+        <div class="role">通用助手的事实标准</div>
+        <p>单列对话 + Canvas + Projects + Memory + Agent + Tasks。对话与成果物分成两个面，用户可以在成果物上继续编辑。</p>
+        <div class="learn"><b>学什么：</b>成果物画布；流式 + 思考摘要；可编辑重发。</div>
+        <div class="avoid"><b>别照搬：</b>通用浏览器 Agent 会稀释「私人图库」定位。</div>
+      </div>
+      <div class="product lift">
+        <h4>Claude</h4>
+        <div class="role">可连接、可审阅的工作台</div>
+        <p>Artifacts 侧栏、MCP、Skills、Computer Use、Claude Code 权限模式。工具调用以可展开卡片呈现，计划模式先读后写。</p>
+        <div class="learn"><b>学什么：</b>权限模式是一等公民：手动 / 接受编辑 / 计划 / 自动。</div>
+        <div class="avoid"><b>别照搬：</b>MCP 配置门槛高；拾光应做成可选、可解释、默认关闭。</div>
+      </div>
+      <div class="product lift">
+        <h4>Gemini</h4>
+        <div class="role">系统级多模态助手</div>
+        <p>Live、Deep Research、Canvas、Gems、Workspace 与个人上下文。语音与相机是第一入口，文本是补充。</p>
+        <div class="learn"><b>学什么：</b>上下文获取是产品能力，不是提示词技巧。</div>
+        <div class="avoid"><b>别照搬：</b>拾光没有 Google 生态，不追求全生活助理。</div>
+      </div>
+      <div class="product lift">
+        <h4>Microsoft 365 Copilot</h4>
+        <div class="role">企业工作流助手</div>
+        <p>Graph grounding、Office 内嵌、Researcher / Analyst、Copilot Studio。引用密集、可追溯到文件与邮件，权限、审计、DLP 完整。</p>
+        <div class="learn"><b>学什么：</b>企业 Agent 的核心不是能力，是权限、审计与可追溯。</div>
+        <div class="avoid"><b>别照搬：</b>企业权限模型太重；拾光用「轻量审计 + 本地可见」替代。</div>
+      </div>
+      <div class="product lift">
+        <h4>Perplexity</h4>
+        <div class="role">答案引擎</div>
+        <p>搜索即产品；每个回答默认带编号来源；Spaces 沉淀主题；Deep Research 做长报告；Comet 做浏览器 Agent。</p>
+        <div class="learn"><b>学什么：</b>引用不是装饰，是信任机制。</div>
+        <div class="avoid"><b>别照搬：</b>「答案优先」不适合本地操作任务；拾光要「动作优先」。</div>
+      </div>
+      <div class="product lift">
+        <h4>Manus</h4>
+        <div class="role">通用任务 Agent</div>
+        <p>任务视图 + 计划 / 待办 + 「Manus 的电脑」实时画面 + 交付卡 + 接管。过程可见，交付物是文件而不是一段话。</p>
+        <div class="learn"><b>学什么：</b>长任务的心智是「任务」，不是「消息」。</div>
+        <div class="avoid"><b>别照搬：</b>云端 VM 不适合拾光；拾光的 VM 是本地图库与播放器。</div>
+      </div>
+      <div class="product lift">
+        <h4>Kimi / 豆包 / 通义 / 智谱</h4>
+        <div class="role">国内助手的四种路径</div>
+        <p>Kimi 长上下文与任务成果物；豆包多模态与语音；通义模型 + 云 + 钉钉 / 夸克；智谱 AutoGLM 操作 Agent。共同点是中文强、OpenAI 兼容度高。</p>
+        <div class="learn"><b>学什么：</b>中文任务型对话的文案与节奏；成果物卡片比纯文本更像「交付」。</div>
+        <div class="avoid"><b>别照搬：</b>内容消费与娱乐化会稀释「私人图库」定位。</div>
+      </div>
+      <div class="product lift">
+        <h4>Apple Intelligence / Siri</h4>
+        <div class="role">系统级隐私标杆</div>
+        <p>端侧 + Private Cloud Compute + App Intents + 屏幕感知；复杂任务转交外部模型需要用户授权。</p>
+        <div class="learn"><b>学什么：</b>隐私不是口号，是架构。</div>
+        <div class="avoid"><b>别照搬：</b>没有系统权限与 App Intents 生态，拾光应做「应用内系统」。</div>
+      </div>
+      <div class="product lift">
+        <h4>Google Photos / Lightroom / Immich</h4>
+        <div class="role">影像垂直的 AI 形态</div>
+        <p>Ask Photos 做自然语言检索与解释；Lightroom 做「建议 → 预览 → 应用」；Immich 做本地索引 + 自托管。</p>
+        <div class="learn"><b>学什么：</b>照片 AI 的竞争点是「安全地找到并处理一批照片」，不是闲聊。</div>
+        <div class="avoid"><b>别照搬：</b>云端语义检索不可复制；拾光应把端侧标签与索引做到极致。</div>
+      </div>
+      <div class="product lift">
+        <h4>Cursor / Claude Code / Codex</h4>
+        <div class="role">Agent 工作台的最佳作业</div>
+        <p>计划模式 + 逐文件 diff + Keep / Undo + checkpoint + 权限提示 + 终端输出。先计划，后动手，是可回滚的默认。</p>
+        <div class="learn"><b>学什么：</b>把「照片 / 相簿 / 影院条目」当文件，把「写操作」当编辑，就需要 diff、checkpoint、undo。</div>
+        <div class="avoid"><b>别照搬：</b>终端与仓库概念不适用；拾光的仓库是图库。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 05 2.2 蓝图 ================= -->
+  <section id="blueprint">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">05 · Blueprint</div>
+        <h2><span class="num">05</span>Luma 2.2：从「会聊」到「会做完」</h2>
+      </div>
+      <div class="sec-note">P0 与 P1 体验层已落地；不做多 Agent 与后台自治。</div>
+    </div>
+
+    <div class="quote reveal">一句话，把图库和影院里的事做完；<br>而且看得见、改得动、退得回、留得下。</div>
+
+    <div class="callout reveal" style="margin:0 0 14px">
+      <b>2026-11-28 落地：</b>流式、计划卡、字段级 diff、任务级检查点（含影院）、接管、成果物库、上下文胶囊、工具路由、长期记忆、语音、MCP 客户端、指认、技能库、连接器预设、定时任务、角色与只读子 Agent 委派均已进入代码。界面原型见
+      <a href="../design/luma-ai-inspector-2026-11.html" style="color:#2C4C7A">AI Inspector 界面设计</a>。
+    </div>
+
+    <div class="reveal" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <span class="chip"><i></i>本地优先</span><span class="chip"><i></i>过程可见</span><span class="chip"><i></i>计划先行</span>
+      <span class="chip"><i></i>可逆优先</span><span class="chip"><i></i>风险分级</span><span class="chip"><i></i>成果物化</span>
+      <span class="chip"><i></i>渐进披露</span><span class="chip"><i></i>可解释可审计</span>
+    </div>
+
+    <div class="grid g2 reveal">
+      <div class="prio">
+        <div class="n">1</div>
+        <div><h4>流式输出与工具时间线</h4>
+          <div class="row"><b>问题：</b>整段返回，长任务只有一句活动文案。</div>
+          <div class="row"><b>方案：</b>SSE 流 + 工具事件实时追加；保留非流式回退。</div>
+          <div class="acc">首字 &lt; 1.5s · 每步 300ms 内可见</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">2</div>
+        <div><h4>计划卡</h4>
+          <div class="row"><b>问题：</b>多步任务直接执行，用户不知道要做几步。</div>
+          <div class="row"><b>方案：</b>结构化计划（步骤 / 工具 / 影响 / 风险），可改可删可批。</div>
+          <div class="acc">≥ 2 步任务 100% 先出计划</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">3</div>
+        <div><h4>检查点与撤销</h4>
+          <div class="row"><b>问题：</b>只能事前确认，不能事后回滚。</div>
+          <div class="row"><b>方案：</b>操作日志 + 逆操作 + 任务级检查点。</div>
+          <div class="acc">可逆写 100% 可撤销 · 成功率 &gt; 99%</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">4</div>
+        <div><h4>审批 2.0</h4>
+          <div class="row"><b>问题：</b>三档审批，没有 diff，不知道改哪 12 项。</div>
+          <div class="row"><b>方案：</b>L0–L3 风险分级 + 明细 + diff + 本次都允许。</div>
+          <div class="acc">破坏性操作 100% 有明细 · 确认 ≤ 1.2 次</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">5</div>
+        <div><h4>成果物</h4>
+          <div class="row"><b>问题：</b>对话结束只剩聊天记录。</div>
+          <div class="row"><b>方案：</b>相簿 / 片单 / 清单 / 报告 / 回忆影片作为成果物卡。</div>
+          <div class="acc">每类任务至少一种成果物</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">6</div>
+        <div><h4>上下文胶囊</h4>
+          <div class="row"><b>问题：</b>上下文隐式，用户不知道模型看到了什么。</div>
+          <div class="row"><b>方案：</b>范围 / 选中 / 搜索 / 影院 / 时间点做成可见胶囊。</div>
+          <div class="acc">可固定 · 可移除 · 可 @ 引用</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">7</div>
+        <div><h4>工具分层与意图路由</h4>
+          <div class="row"><b>问题：</b>86 个工具全量暴露，选择错误率高。</div>
+          <div class="row"><b>方案：</b>领域 → 意图 → 工具组；单轮最多 24 个。</div>
+          <div class="acc">选择准确率 &gt; 90% · 平均暴露 ≤ 18</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">8</div>
+        <div><h4>错误与假完成防护 2.0</h4>
+          <div class="row"><b>问题：</b>错误只有一段红字，不知道该重试还是换方案。</div>
+          <div class="row"><b>方案：</b>结构化错误码 + 可操作错误卡；保留防假完成。</div>
+          <div class="acc">30 条对抗提示零假完成</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">P1 · 2.3</h4>
+        <ul class="list-tight" style="font-size:13px">
+          <li><b>记忆分层</b>：会话摘要 / 图库偏好 / 长期习惯，全本地、可编辑。</li>
+          <li><b>语音与指认</b>：按住说话；<code>@这张照片</code>、<code>@12:34</code>。</li>
+          <li><b>连接器 / MCP / Skills</b>：可选、默认关闭、权限清单、沙箱、审计。</li>
+          <li><b>后台与定时</b>：体检、刮削队列、今日日报、追更提醒。</li>
+          <li><b>可观测性</b>：成功率、错误率、延迟、审批率、token / 成本。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">P2 · 3.0</h4>
+        <ul class="list-tight" style="font-size:13px">
+          <li><b>模型路由</b>：按任务选模型与预算；本地回退。</li>
+          <li><b>多 Agent</b>：馆员 / 策展 / 影院管理员，串行编排、预算与人工闸门。</li>
+          <li><b>不做</b>：通用聊天、写作、编程；社交与内容平台；云账户；无人值守高风险操作。</li>
+        </ul>
+        <div class="callout" style="margin-top:12px">多 Agent 的前提是 P0 的计划、检查点、审计先落地；否则只会放大不可控。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 06 交互 ================= -->
+  <section id="interaction">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">06 · Interaction Spec</div>
+        <h2><span class="num">06</span>一张计划卡，一条时间线</h2>
+      </div>
+      <div class="sec-note">用「任务」而不是「消息」组织对话；每张卡都有明确的下一步。</div>
+    </div>
+
+    <div class="mock reveal">
+      <div class="mock-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="mock-title">拾光 · 智能助手</span></div>
+      <div class="mock-body">
+        <div class="msg user">
+          把去年在上海拍的照片按月份整理成相簿
+          <div class="ctx"><span>图库</span><span>2025</span><span>上海</span><span>选中 0 张</span></div>
+        </div>
+        <div class="plan">
+          <div class="t">计划 · 3 步 <span>待批准</span></div>
+          <ol>
+            <li>检索 2025 年上海照片 <span class="ok">只读</span></li>
+            <li>按拍摄月份分组 <span class="ok">只读</span></li>
+            <li>创建 7 个相簿并放入 <span class="wait">可逆</span></li>
+          </ol>
+          <div class="btns"><span class="btn">调整计划</span><span class="btn primary">批准执行</span><span class="btn">取消</span></div>
+        </div>
+        <div class="timeline-mock">
+          <div class="line"><i>✓</i>检索到 486 张</div>
+          <div class="line"><i>✓</i>分为 7 组：1 月 42 · 2 月 51 · 3 月 66 …</div>
+          <div class="line now"><i>●</i>正在创建相簿 3/7</div>
+        </div>
+        <div class="result">
+          <b>已创建 7 个相簿，共 486 张照片。</b> 本次修改可撤销，撤销后恢复原状。
+          <div class="btns"><span class="btn">打开相簿</span><span class="btn">撤销本次修改</span><span class="btn">保存为成果物</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tw reveal" style="margin-top:16px">
+      <table>
+        <thead><tr><th>卡片</th><th>何时出现</th><th>必须包含</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr><td>计划卡</td><td>多步任务开始前</td><td>目标、步骤、影响范围、风险</td><td>调整 / 批准 / 取消</td></tr>
+          <tr><td>执行时间线</td><td>工具执行中</td><td>每步状态、耗时、结果摘要</td><td>展开 / 停止 / 接管</td></tr>
+          <tr><td>审批卡</td><td>写操作前</td><td>风险等级、影响数量、明细、diff</td><td>允许 / 拒绝 / 本次都允许</td></tr>
+          <tr><td>结果卡</td><td>任务结束</td><td>完成了什么、影响多少、可撤销</td><td>打开 / 撤销 / 保存</td></tr>
+          <tr><td>指认面板</td><td>输入 @</td><td>选中优先的候选、视频当前时间点</td><td>插入照片 / 时间点</td></tr>
+          <tr><td>技能与定时</td><td>菜单打开</td><td>技能模板、连接器预设、下次触发时间</td><td>填入 / 执行 / 添加 / 暂停</td></tr>
+          <tr><td>角色</td><td>头部菜单</td><td>角色边界、可委派子任务</td><td>切换角色 / 开关委派</td></tr>
+          <tr><td>错误卡</td><td>失败</td><td>错误码、原因、已保留内容</td><td>重试 / 换模型 / 缩小范围</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid g3 reveal" style="margin-top:16px">
+      <div class="panel"><h4 style="margin-top:0">文案规范</h4><p style="font-size:12.8px;margin:0">动词开头、量化影响、说清可撤销、没做就说没做、不承诺不存在的能力、少用感叹号。</p></div>
+      <div class="panel"><h4 style="margin-top:0">上下文胶囊</h4><p style="font-size:12.8px;margin:0">范围、选中、搜索词、相簿、人物、影院、视频时间点、频道与 @ 指认；可固定、可移除，移除后不进提示词。</p></div>
+      <div class="panel"><h4 style="margin-top:0">键盘与无障碍</h4><p style="font-size:12.8px;margin:0">↩ 发送 / ⇧↩ 换行 / Esc 停止 / ⌘K 聚焦；全部卡片可键盘操作，遵循动态字体与减少动效。</p></div>
+    </div>
+  </section>
+
+  <!-- ================= 07 安全 ================= -->
+  <section id="security">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">07 · Safety & HITL</div>
+        <h2><span class="num">07</span>从「有边界」到「可证明」</h2>
+      </div>
+      <div class="sec-note">隐私是拾光的卖点；2.2 要把它变成可验证的证据链。</div>
+    </div>
+
+    <div class="split reveal">
+      <div class="tw">
+        <table style="min-width:520px">
+          <thead><tr><th>级别</th><th>定义</th><th>示例</th><th>默认策略</th></tr></thead>
+          <tbody>
+            <tr><td><span class="pill p2">L0</span></td><td>只读</td><td>搜索、读详情、看节目单</td><td>自动，不打断</td></tr>
+            <tr><td><span class="pill p1">L1</span></td><td>可逆写</td><td>评分、旗标、色标、关键词、标题、相簿加入 / 移出、收藏</td><td>自动 + 撤销入口</td></tr>
+            <tr><td><span class="pill p0">L2</span></td><td>破坏性 / 批量</td><td>删相簿 / 文件夹、移入最近删除、压缩原文件、批量刮削</td><td>强确认 + diff + 检查点</td></tr>
+            <tr><td><span class="pill p0">L3</span></td><td>外部副作用</td><td>请求站点、下载、打开外链、播放</td><td>显式同意 + 来源提示</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">威胁模型</h4>
+        <ul class="list-tight" style="font-size:12.8px">
+          <li><b>提示词注入：</b>OCR、文件名、NFO、网页源、MCP 返回；需要输入隔离标记与可疑指令过滤。</li>
+          <li><b>数据外泄：</b>原图、路径、Key；需要网络请求审计与字段级脱敏。</li>
+          <li><b>破坏性操作：</b>删除、压缩、批量刮削；需要 diff、检查点、撤销。</li>
+          <li><b>供应链：</b>MCP / Skills / 第三方源；需要清单、权限声明、沙箱、默认关闭。</li>
+          <li><b>混淆代理：</b>外部内容诱导模型调用工具；需要来源标记与跨源指令拒绝。</li>
+          <li><b>假完成：</b>模型声称完成；需要工具回执必填与结果校验。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="tw reveal" style="margin-top:16px">
+      <table>
+        <thead><tr><th>数据</th><th>默认</th><th>可选</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>照片元数据（时间 / 地点 / 尺寸 / 标签 / OCR）</td><td>发送</td><td>—</td><td>回答所必需</td></tr>
+          <tr><td>原图</td><td>不发送</td><td>手动开启，长边 1024 JPEG，最多 4 张</td><td>默认关闭</td></tr>
+          <tr><td>文件路径</td><td>不发送</td><td>—</td><td>只发显示名</td></tr>
+          <tr><td>API Key</td><td>不发送</td><td>—</td><td>钥匙串</td></tr>
+          <tr><td>会话记录 / 审计 / 长期记忆</td><td>本地</td><td>记忆需用户开启</td><td>按图库隔离，可查看 / 删除</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout reveal" style="margin-top:16px"><b>审批规则：</b>≥ 2 步先批准计划；L2 / L3 必须确认；同类操作合并为一个卡；「本次任务都允许」只对当前任务生效；取消时把结构化原因回传模型；审批 5 分钟无响应自动取消。</div>
+  </section>
+
+  <!-- ================= 08 路线 ================= -->
+  <section id="roadmap">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">08 · Roadmap</div>
+        <h2><span class="num">08</span>三个版本，三种野心</h2>
+      </div>
+      <div class="sec-note">2.2 已补体验层与长期能力；2.3 补后台与可观测性；3.0 才谈多 Agent。</div>
+    </div>
+
+    <div class="road reveal">
+      <div class="col now">
+        <div class="ver">2.2</div>
+        <div class="name">从「会聊」到「会做完」</div>
+        <ul>
+          <li>流式 + 工具时间线</li>
+          <li>计划卡 + 批量审批</li>
+          <li>字段级 diff + 检查点 + 撤销</li>
+          <li>接管（暂停 / 继续 / 结束）</li>
+          <li>成果物卡 + 独立成果物库</li>
+          <li>上下文胶囊 + 工具路由</li>
+          <li>长期记忆 + 语音输入</li>
+          <li>指认（@照片 / @时间点）</li>
+          <li>结果内容卡 + MCP 客户端 + 连接器预设</li>
+          <li>技能库 + 定时任务</li>
+          <li>角色边界 + 只读子 Agent 委派（支持并行 3 个）</li>
+          <li>四态工作台 + 半隐藏入口 + 助手控制台</li>
+          <li>错误卡 + 防假完成 2.0</li>
+          <li>编辑重发 + 主动追问 + 思考摘要</li>
+          <li>审批记忆（本次 / 始终允许）</li>
+          <li>token 用量 + 审计日志 + 注入提醒</li>
+          <li>成果物库面板 + 任务中心</li>
+          <li>连接器环境变量白名单 + 固定工作目录</li>
+        </ul>
+      </div>
+      <div class="col next">
+        <div class="ver">2.3</div>
+        <div class="name">从「一次任务」到「长期助手」</div>
+        <ul>
+          <li>跨重启的后台任务队列与错过补跑</li>
+          <li>通知中心与可观测性面板</li>
+          <li>远程连接器与技能分发</li>
+          <li>多分支对话树 + 共享黑板编排</li>
+          <li>OS 级沙箱与金额级成本预算</li>
+        </ul>
+        <div class="callout" style="margin-top:10px">全部本地，默认关闭外部连接。</div>
+      </div>
+      <div class="col later">
+        <div class="ver">3.0</div>
+        <div class="name">从「助手」到「媒体库操作系统」</div>
+        <ul>
+          <li>模型路由与预算</li>
+          <li>多 Agent：并行、共享黑板与后台自治</li>
+          <li>跨设备任务接力（评估）</li>
+        </ul>
+        <div class="warnbox" style="margin-top:10px">非目标：通用聊天 / 写作 / 编程；社交与内容平台；云账户；无人值守高风险操作。</div>
+      </div>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">2.2 验收指标：目标 vs 已证明</h4>
+        <div class="tw" style="margin-top:8px">
+          <table style="min-width:0">
+            <thead><tr><th>指标</th><th>目标</th><th>怎么验</th><th>现状</th></tr></thead>
+            <tbody>
+              <tr><td>任务成功率</td><td>≥ 85%</td><td>任务中心 / metrics.jsonl</td><td><span class="pill part">待样本</span></td></tr>
+              <tr><td>工具选择准确率</td><td>≥ 90%</td><td><code>swift run LumaAIChecks</code> 60 例</td><td><span class="pill done">100%</span></td></tr>
+              <tr><td>首字延迟</td><td>&lt; 1.5s</td><td>埋点 firstTokenMs</td><td><span class="pill part">待样本</span></td></tr>
+              <tr><td>审批疲劳</td><td>≤ 1.2 次 / 任务</td><td>埋点 approvalCount</td><td><span class="pill part">待样本</span></td></tr>
+              <tr><td>撤销成功率</td><td>&gt; 99%</td><td>埋点 undoEntries</td><td><span class="pill part">部分</span></td></tr>
+              <tr><td>假完成率</td><td>0（30 条对抗集）</td><td>LumaAIChecks 30 例</td><td><span class="pill done">0 / 30</span></td></tr>
+              <tr><td>单任务成本</td><td>下降 20%</td><td>schema 体积 + 真实 token 基线</td><td><span class="pill done">−76.9%</span> <span class="pill part">金额待基线</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">离线可证的三项已跑通；其余四项已埋点，需要有真实任务样本才有数字。不把「目标」写成「已达」。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">五个反模式</h4>
+        <ol class="list-tight" style="font-size:13px">
+          <li>把「工具数量」当卖点，而不是「任务成功率」。</li>
+          <li>用「自动应用」换短期爽感，牺牲可逆与信任。</li>
+          <li>在提示词里堆规则，而不是在产品结构里做约束。</li>
+          <li>用「AI 说完成了」代替「工具回执 + 结果校验」。</li>
+          <li>把成果物做成聊天记录截图，而不是可继续编辑的对象。</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 09 来源 ================= -->
+  <section id="sources">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">09 · Sources</div>
+        <h2><span class="num">09</span>证据、口径与不确定性</h2>
+      </div>
+      <div class="sec-note">本报告是产品能力对比，不是逐项实测；未验证项不参与结论。</div>
+    </div>
+
+    <div class="grid g2 reveal">
+      <div class="panel src">
+        <h4 style="margin-top:0">官方来源</h4>
+        <ul class="list-tight">
+          <li><a href="https://openai.com/chatgpt/" target="_blank" rel="noreferrer">ChatGPT</a> · <a href="https://help.openai.com/en/articles/6825453-chatgpt-release-notes" target="_blank" rel="noreferrer">Release Notes</a></li>
+          <li><a href="https://claude.ai/" target="_blank" rel="noreferrer">Claude</a> · <a href="https://www.anthropic.com/news/model-context-protocol" target="_blank" rel="noreferrer">MCP</a> · <a href="https://code.claude.com/docs/en/permission-modes" target="_blank" rel="noreferrer">Claude Code 权限模式</a></li>
+          <li><a href="https://gemini.google.com/" target="_blank" rel="noreferrer">Gemini</a> · <a href="https://blog.google/products/gemini/" target="_blank" rel="noreferrer">Google Blog</a></li>
+          <li><a href="https://www.microsoft.com/microsoft-365/copilot" target="_blank" rel="noreferrer">Microsoft 365 Copilot</a> · <a href="https://learn.microsoft.com/en-us/microsoft-365/copilot/release-notes" target="_blank" rel="noreferrer">Release Notes</a></li>
+          <li><a href="https://www.perplexity.ai/" target="_blank" rel="noreferrer">Perplexity</a> · <a href="https://manus.im/" target="_blank" rel="noreferrer">Manus</a></li>
+          <li><a href="https://www.kimi.com/" target="_blank" rel="noreferrer">Kimi</a> · <a href="https://www.doubao.com/" target="_blank" rel="noreferrer">豆包</a> · <a href="https://www.qianwen.com/" target="_blank" rel="noreferrer">通义</a> · <a href="https://chatglm.cn/" target="_blank" rel="noreferrer">智谱清言</a> · <a href="https://www.deepseek.com/" target="_blank" rel="noreferrer">DeepSeek</a></li>
+          <li><a href="https://www.apple.com/apple-intelligence/" target="_blank" rel="noreferrer">Apple Intelligence</a> · <a href="https://blog.google/products-and-platforms/products/photos/ask-photos-google-io-2024/" target="_blank" rel="noreferrer">Ask Photos</a></li>
+          <li><a href="https://www.adobe.com/products/photoshop-lightroom.html" target="_blank" rel="noreferrer">Lightroom</a> · <a href="https://immich.app/" target="_blank" rel="noreferrer">Immich</a> · <a href="https://cursor.com/help/ai-features/agent" target="_blank" rel="noreferrer">Cursor Agent</a></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">明确未验证（D）</h4>
+        <ul class="list-tight" style="font-size:12.8px">
+          <li>各竞品在 2026-11 的具体模型版本、灰度与套餐差异。</li>
+          <li>Manus Wide Research 的并行规模与实际成功率。</li>
+          <li>Copilot Cowork 的完整 GA 范围与审批细节。</li>
+          <li>Apple 与外部模型合作的具体架构与时间表。</li>
+          <li>Ask Photos 的地区 / 账号可用性。</li>
+          <li>各家流式与工具调用的协议层实现。</li>
+          <li>竞品的真实任务成功率与成本（未统一评测）。</li>
+        </ul>
+        <div class="warnbox" style="margin-top:10px">以上未验证项不参与 2.2 结论；任何写进需求的数字，应在立项前用官方文档或自有评测补齐。</div>
+      </div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:16px">
+      <h4 style="margin-top:0">配套档案</h4>
+      <p style="font-size:13px;margin:0 0 8px">完整版包含八维矩阵、分产品深读、15 个工作流、交互规范、威胁模型、86 个工具清单与来源表：</p>
+      <p style="margin:0"><a href="luma-ai-assistant-competitive-analysis-2026-11.md" style="color:#2C4C7A">docs/ai/luma-ai-assistant-competitive-analysis-2026-11.md</a></p>
+    </div>
+  </section>
+
+  <footer>
+    <div>拾光 Luma · 内部产品研究 · 2026-11-28</div>
+    <div>把对话变成做完一件事。</div>
+  </footer>
+</div>
+
+<script>
+  // 矩阵 tab 切换
+  (function(){
+    var tabs = document.querySelectorAll('#matrixTabs button');
+    tabs.forEach(function(btn){
+      btn.addEventListener('click', function(){
+        tabs.forEach(function(b){ b.classList.remove('active'); });
+        btn.classList.add('active');
+        document.querySelectorAll('#matrix .panel-body').forEach(function(p){ p.classList.remove('active'); });
+        var target = document.getElementById(btn.dataset.panel);
+        if (target) target.classList.add('active');
+      });
+    });
+  })();
+
+  // 滚动进入动画
+  (function(){
+    var items = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      items.forEach(function(el){ el.classList.add('in'); });
+      return;
+    }
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.06, rootMargin: '0px 0px -30px 0px' });
+    items.forEach(function(el){ io.observe(el); });
+  })();
+
+  // TOC 高亮（按滚动位置，避免底部 section 无法进入检测带）
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var sections = links.map(function(a){ return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+    if (!sections.length) return;
+    function update(){
+      var y = window.scrollY + 150;
+      var current = sections[0];
+      sections.forEach(function(s){
+        var top = s.getBoundingClientRect().top + window.scrollY;
+        if (top <= y) current = s;
+      });
+      links.forEach(function(l){
+        l.classList.toggle('active', l.getAttribute('href') === '#' + current.id);
+      });
+    }
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    update();
+  })();
+</script>
+</body>
+</html>

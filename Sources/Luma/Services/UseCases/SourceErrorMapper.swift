@@ -84,6 +84,10 @@ enum SourceErrorMapper {
             return SourceError(kind: .parse,
                                message: error.localizedDescription,
                                recovery: [.reconfigureSource])
+        case .authRequired:
+            return SourceError(kind: .unauthorized,
+                               message: error.localizedDescription,
+                               recovery: [.reauthorize, .retry])
         case .http(let status):
             return .http(status, message: error.localizedDescription)
         case .parse(_):

@@ -1,0 +1,1273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>拾光 Luma · 本地图像理解能力档案 2026-11</title>
+<style>
+  :root{
+    --paper:#F7F5F1; --panel:#FFFDFA; --panel-2:#F1EDE6;
+    --ink:#17161C; --ink-2:#4E4B57; --ink-3:#6E6878;
+    --line:rgba(23,22,28,.10); --line-2:rgba(23,22,28,.18);
+    --amber:#F5A623; --coral:#F26D6D; --pink:#E86FA8; --violet:#8E6CF0; --teal:#3FB6C9;
+    --green:#2B7A55; --green-soft:#E3F1E9;
+    --gold:#9A6B12; --gold-soft:#F7ECD7;
+    --rose:#A5262F; --rose-soft:#FBE7E8;
+    --blue:#1F5F8B; --blue-soft:#E3EFF7;
+    --serif:"Songti SC","Noto Serif SC","Source Han Serif SC",Georgia,serif;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,monospace;
+    --radius:18px;
+    --shadow:0 24px 60px -38px rgba(30,22,50,.45);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;color:var(--ink);font:15px/1.78 var(--sans);
+    background:
+      radial-gradient(1100px 520px at 6% -10%, #fff 0%, transparent 58%),
+      radial-gradient(900px 460px at 100% 0%, #F0EDF8 0%, transparent 52%),
+      var(--paper);
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+  ::selection{background:#F6E3C6}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 26px 96px}
+  .mono{font-family:var(--mono)}
+
+  /* ---------- Hero ---------- */
+  header.hero{
+    position:relative;overflow:hidden;margin-top:30px;border-radius:26px;
+    padding:46px 46px 36px;color:#fff;
+    background:linear-gradient(140deg,#12101A 0%,#1B1730 48%,#2A1E45 100%);
+    box-shadow:0 34px 80px -46px rgba(24,16,46,.75);
+  }
+  header.hero::before{
+    content:"";position:absolute;right:-160px;top:-190px;width:600px;height:600px;border-radius:50%;
+    background:radial-gradient(circle,rgba(142,108,240,.34),transparent 62%);
+  }
+  header.hero::after{
+    content:"";position:absolute;left:-140px;bottom:-220px;width:540px;height:540px;border-radius:50%;
+    background:radial-gradient(circle,rgba(242,109,109,.24),transparent 64%);
+  }
+  .spectrum{position:relative;height:4px;width:220px;border-radius:999px;margin-bottom:22px;
+    background:linear-gradient(90deg,var(--amber),var(--coral),var(--pink),var(--violet),var(--teal));}
+  .eyebrow{position:relative;font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:#CDBBFF;font-weight:700;margin-bottom:16px}
+  h1{position:relative;font-family:var(--serif);font-size:clamp(32px,4.4vw,52px);line-height:1.18;margin:0 0 16px;letter-spacing:.01em}
+  h1 em{font-style:normal;background:linear-gradient(90deg,#FFD889,#FF9E9E 42%,#E7A4FF 72%,#8FE3EE);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{position:relative;margin:0;max-width:900px;color:#D9D4E6;font-size:15.5px}
+  .meta{position:relative;display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
+  .meta span{font-size:11.5px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.16);color:#EDE9F7}
+  .hero-note{position:relative;margin-top:26px;display:flex;gap:14px;align-items:flex-start;padding:15px 18px;border-radius:16px;
+    background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(10px)}
+  .hero-note b{color:#FFD889}
+  .hero-note p{margin:0;color:#CFC8E0;font-size:13.5px}
+
+  /* ---------- TOC ---------- */
+  nav.toc{position:sticky;top:0;z-index:40;margin:20px 0 0;
+    background:rgba(247,245,241,.86);backdrop-filter:blur(16px) saturate(1.2);
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  nav.toc .inner{max-width:1200px;margin:0 auto;padding:9px 26px;display:flex;gap:6px;overflow-x:auto}
+  nav.toc a{flex:0 0 auto;font-size:12px;color:var(--ink-2);text-decoration:none;padding:6px 11px;border-radius:999px;white-space:nowrap;transition:.18s}
+  nav.toc a:hover{background:rgba(23,22,28,.06);color:var(--ink)}
+  nav.toc a.active{background:var(--ink);color:#fff}
+
+  /* ---------- 版式 ---------- */
+  section{padding:58px 0 8px;scroll-margin-top:64px}
+  .kicker{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);font-weight:700}
+  h2{font-family:var(--serif);font-size:clamp(25px,2.9vw,35px);line-height:1.26;margin:6px 0 10px;font-weight:700}
+  h2 .num{color:#B94A52;font-family:var(--sans);font-size:13px;letter-spacing:.1em;vertical-align:4px;margin-right:10px}
+  h3{font-size:18px;margin:34px 0 10px;font-weight:650}
+  h4{font-size:14.5px;margin:20px 0 7px;font-weight:650}
+  p{margin:0 0 12px;color:var(--ink-2)}
+  ul,ol{margin:0 0 14px;padding-left:21px;color:var(--ink-2)}
+  li{margin:4px 0}
+  strong{color:var(--ink);font-weight:650}
+  code{font-family:var(--mono);font-size:12.2px;background:#ECE9F2;border-radius:5px;padding:1px 5px;color:#3B3855}
+  .sub{font-size:13px;color:var(--ink-3)}
+  .sec-head{display:flex;align-items:flex-end;justify-content:space-between;gap:22px}
+  .sec-note{font-size:12.5px;color:var(--ink-3);max-width:360px;text-align:right;padding-bottom:12px}
+  .divider{height:1px;background:var(--line);margin:26px 0}
+
+  /* ---------- 卡片 ---------- */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;box-shadow:0 1px 0 #fff inset}
+  .grid{display:grid;gap:14px}
+  .grid > *{min-width:0}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  @media(max-width:960px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:680px){.g2,.g3,.g4{grid-template-columns:1fr}.sec-note{display:none}}
+  .lift{transition:transform .22s ease, box-shadow .22s ease}
+  .lift:hover{transform:translateY(-3px);box-shadow:0 28px 54px -34px rgba(30,22,50,.45)}
+
+  .callout{background:linear-gradient(180deg,#F3F7FB,#EDF3F9);border:1px solid #D9E6F1;border-radius:14px;padding:15px 17px;font-size:13.5px;color:#23395C}
+  .callout b{color:#12233F}
+  .warnbox{background:var(--rose-soft);border:1px solid #F3CDD0;border-radius:14px;padding:15px 17px;font-size:13.5px;color:#7A2730}
+  .okbox{background:var(--green-soft);border:1px solid #CAE5D6;border-radius:14px;padding:15px 17px;font-size:13.5px;color:#1D553D}
+  .quote{border-left:3px solid transparent;border-image:linear-gradient(180deg,var(--amber),var(--violet),var(--teal)) 1;
+    padding:6px 0 6px 20px;font-family:var(--serif);font-size:clamp(20px,2.4vw,28px);line-height:1.55;color:var(--ink);margin:18px 0}
+
+  /* ---------- 标签 ---------- */
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;vertical-align:1px}
+  .p0{background:var(--rose-soft);color:#A5262F}
+  .p1{background:var(--gold-soft);color:#8A5D10}
+  .p2{background:var(--blue-soft);color:#14657C}
+  .p3{background:#EEEDF4;color:#565A76}
+  .tag{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:6px;background:var(--panel-2);color:var(--ink-3);border:1px solid var(--line);white-space:nowrap}
+  .tag.a{background:var(--green-soft);color:#1D6848;border-color:#CDE6D9}
+  .tag.b{background:var(--gold-soft);color:#8A5D10;border-color:#EDDFC2}
+  .tag.c{background:#EEEDF4;color:#565A76;border-color:#DCDCE7}
+  .tag.d{background:var(--rose-soft);color:#A5262F;border-color:#F3CDD0}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:6px 11px;border-radius:999px;
+    background:rgba(255,255,255,.72);border:1px solid var(--line);color:var(--ink-2)}
+  .chip i{width:7px;height:7px;border-radius:50%;background:linear-gradient(135deg,var(--amber),var(--violet));display:inline-block}
+
+  /* ---------- KPI ---------- */
+  .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+  @media(max-width:960px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:560px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .kpi{padding:16px 14px;border-radius:16px;background:var(--panel);border:1px solid var(--line)}
+  .kpi b{display:block;font-family:var(--serif);font-size:26px;line-height:1.2;letter-spacing:.01em}
+  .kpi span{display:block;font-size:11px;color:var(--ink-3);margin-top:3px}
+  .kpi.hot b{background:linear-gradient(90deg,var(--coral),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .kpi small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:4px}
+
+  /* ---------- 条形 ---------- */
+  .bars{display:grid;gap:10px}
+  .bar-row{display:grid;grid-template-columns:112px 1fr 62px;gap:12px;align-items:center;font-size:12.5px;color:var(--ink-2)}
+  .bar-track{height:10px;border-radius:999px;background:#EEEAE2;overflow:hidden}
+  .bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--amber),var(--coral),var(--violet))}
+  .bar-fill.alt{background:linear-gradient(90deg,var(--teal),var(--violet))}
+  .bar-row b{text-align:right;color:var(--ink);font-family:var(--mono);font-size:12px;font-weight:600}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-3);margin:8px 0 14px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+
+  /* ---------- 流程 ---------- */
+  .flow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;align-items:stretch}
+  @media(max-width:980px){.flow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:560px){.flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .step{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 13px;min-height:108px}
+  .step b{display:block;font-size:12.5px;margin-bottom:5px}
+  .step span{display:block;font-size:11px;color:var(--ink-3);line-height:1.55}
+  .step em{position:absolute;left:12px;bottom:10px;font-style:normal;font-family:var(--mono);font-size:10px;color:var(--ink-3)}
+  .step.warm{background:#FFF7EA;border-color:#F0DDBE}
+  .step.rose{background:#FFF1ED;border-color:#F2D6CE}
+  .step.violet{background:#F7F2FF;border-color:#E0D3F7}
+  .step.teal{background:#EFF8F6;border-color:#CFE8E4}
+
+  /* ---------- 表格 ---------- */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#F0EEF6;font-size:11.5px;font-weight:650;color:#3C4054;white-space:nowrap;position:sticky;top:0;z-index:2}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:#FBFAF7}
+  .matrix td:first-child,.matrix th:first-child{position:sticky;left:0;background:var(--panel);z-index:1;min-width:150px}
+  .matrix th:first-child{background:#F0EEF6;z-index:3}
+  .matrix tbody tr:hover td:first-child{background:#FBFAF7}
+  .matrix td,.matrix th{padding:8px 10px;font-size:12.4px}
+  .num-cell{font-family:var(--mono);font-size:12px;white-space:nowrap}
+
+  /* ---------- 结论卡 ---------- */
+  .verdict{position:relative;padding:22px 22px 20px;border-radius:18px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+  .verdict::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    background:linear-gradient(180deg,var(--amber),var(--coral),var(--violet),var(--teal))}
+  .verdict .q{font-size:11.5px;color:var(--ink-3);letter-spacing:.04em}
+  .verdict h4{margin:6px 0 8px;font-size:16px;font-family:var(--serif)}
+  .verdict p{font-size:13px;margin:0}
+  .verdict .ans{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;margin-bottom:8px}
+
+  /* ---------- 路线 ---------- */
+  .prio{display:grid;grid-template-columns:44px 1fr;gap:14px;padding:18px 18px 16px;border-radius:16px;background:var(--panel);border:1px solid var(--line)}
+  .prio .n{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;font-family:var(--serif);font-size:16px;color:#fff;
+    background:linear-gradient(135deg,var(--coral),var(--violet))}
+  .prio h4{margin:0 0 4px;font-size:14.5px}
+  .prio .row{font-size:12.3px;color:var(--ink-2);margin:4px 0}
+  .prio .row b{color:var(--ink)}
+  .prio .acc{font-size:11.5px;color:var(--green);background:var(--green-soft);border-radius:8px;padding:5px 8px;display:inline-block;margin-top:6px}
+  .prio.done .n{background:linear-gradient(135deg,var(--green),#5FB98A)}
+
+  /* ---------- 代码 ---------- */
+  .codeblock{background:#17161C;border-radius:14px;padding:16px 18px;overflow-x:auto;border:1px solid rgba(255,255,255,.08)}
+  .codeblock pre{margin:0;font-family:var(--mono);font-size:11.8px;line-height:1.7;color:#DCD6EA;white-space:pre}
+  .codeblock .c{color:#8B8593}
+  .codeblock .k{color:#FFB86C}
+  .codeblock .s{color:#A8E6A1}
+
+  /* ---------- 其他 ---------- */
+  .split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .split > *{min-width:0}
+  @media(max-width:1100px){.split{grid-template-columns:1fr}}
+  .list-tight li{margin:2px 0}
+  .src{font-size:12.3px;color:var(--ink-2)}
+  .src a{color:#2C4C7A;text-decoration:none;border-bottom:1px solid rgba(44,76,122,.22)}
+  .src a:hover{border-bottom-color:#2C4C7A}
+  .reveal{opacity:0;transform:translateY(10px);transition:opacity .5s ease,transform .5s ease}
+  .reveal.in{opacity:1;transform:none}
+  @media(prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}.lift:hover{transform:none}}
+  footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-3)}
+  @media print{
+    body{background:#fff}
+    nav.toc{display:none}
+    header.hero{box-shadow:none}
+    .reveal{opacity:1;transform:none}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="spectrum"></div>
+    <div class="eyebrow">Luma Internal · Vision Intelligence · 2026.11</div>
+    <h1>把照片读成<br><em>你走过的路</em></h1>
+    <p class="lede">拾光本地图像理解能力档案：当前用了什么模型、是不是最好、调过什么、和谁比、够不够用，以及要提取「人物 / 风景 / 地点 / 食物 / 交通 / 戏水 / 名胜 / 亲子」这些人生轨迹维度，还差哪几步。本轮补充视频抽帧打标、金标集流水线、GPS + POI 具体景点反查，并在真实图库完成 1,200 张审计。全部结论以当前代码、当前模型包与本机实测为准。</p>
+    <div class="meta">
+      <span>版本 v2.0</span><span>2026-11-28</span><span>基线 Luma 2.1.1</span>
+      <span>Apple M5 / 16 GB</span><span>SigLIP 2 Base</span><span>249 个中文标签</span>
+    </div>
+    <div class="hero-note">
+      <p><b>一句话结论：</b>当前不是最强，是端侧折中。标签从 208 扩到 <b>249</b>，落地 <b>L2 融合</b>，并用 Apple 分类器第二信号把真实图库的 0 标签照片从 <b>178 张降到 25 张</b>；A/B 后改成「仅 SigLIP 标签 &lt; 2 时补」，覆盖率不变，39 张接受率 0.579 → 0.705，再修正 7 个过触发标签到 <b>0.780</b>（单信号 <b>0.840</b>）。Qwen3-VL 4B 比 2.5-VL 3B 描述更细、只慢 0.6 秒。So400m 已实测：速度过闸，但覆盖率与 F1 下降，<b>不升级</b>。</p>
+    </div>
+  </header>
+
+  <nav class="toc" id="toc">
+    <div class="inner">
+      <a href="#verdict" class="active">结论</a>
+      <a href="#pipeline">构成</a>
+      <a href="#bench">实测</a>
+      <a href="#bug">修复</a>
+      <a href="#coverage">覆盖</a>
+      <a href="#compare">选型</a>
+      <a href="#baseline">基准</a>
+      <a href="#roadmap">路线</a>
+      <a href="#risk">边界</a>
+      <a href="#appendix">附录</a>
+    </div>
+  </nav>
+
+  <!-- ================= 01 结论 ================= -->
+  <section id="verdict">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">01 · Executive Summary</div>
+        <h2><span class="num">01</span>先回答四个直球问题</h2>
+      </div>
+      <div class="sec-note">数据来自已安装模型的本机实测；横向对比除当前模型外为公开资料，未逐项实测。</div>
+    </div>
+
+    <div class="quote reveal">不是「最好的图像模型」，<br>但可以是「最懂你生活的本地图像底座」——前提是补上评测与事件层。</div>
+
+    <div class="grid g2 reveal">
+      <div class="verdict lift">
+        <div class="q">Q1 · 目前用的是最好的吗</div>
+        <div class="ans" style="background:var(--rose-soft);color:#A5262F">不是</div>
+        <h4>SigLIP 2 Base，ViT-B 级折中</h4>
+        <p>256×256 输入、768 维向量、约 355 MB。同代 SigLIP2-So400m 公开报告 Zero-shot ImageNet <b>83.4%</b>（256px），Base 明显更低；本轮已把 So400m 384px 转成 Core ML 实测，覆盖率与 F1 反而下降（0 标签 17.3% vs 14.8%），因此继续用 Base。选它是为了全库可跑，不是为了刷榜。</p>
+      </div>
+      <div class="verdict lift">
+        <div class="q">Q2 · 做过调优吗</div>
+        <div class="ans" style="background:var(--gold-soft);color:#8A5D10">P1 第一轮 + 代理标定</div>
+        <h4>标签补齐了，阈值还差金标集</h4>
+        <p>标签 208 → <b>249</b>，新增 41 个轨迹标签与双语 prompt；向量重建后存量 208 条 cos ≥ 0.999。7 个新标签用 7 张图做了代理标定，其余仍是 0.085 默认值；<b>真实图库 1,200 张已完成采样、预测与 39 张人工标注</b>，但召回仍测不出，249 个阈值尚未全量校准。</p>
+      </div>
+      <div class="verdict lift">
+        <div class="q">Q3 · 有横向对比选择吗</div>
+        <div class="ans" style="background:var(--blue-soft);color:#14657C">本机实测 + 公开指标</div>
+        <h4>八个方案摆在一张表上</h4>
+        <p>Vision、SigLIP2-B、So400m、CLIP / OpenCLIP、YOLO11n、YOLO-World / Grounding DINO、Qwen 三档、Florence-2。SigLIP2-B、So400m 与 Qwen 三档已有本机数据；其余为论文 / 模型卡公开指标，只做方向判断，不下性能结论。</p>
+      </div>
+      <div class="verdict lift">
+        <div class="q">Q4 · SigLIP2 够用吗</div>
+        <div class="ans" style="background:var(--green-soft);color:#1D6848">分层回答：够 / 不够</div>
+        <h4>全库打标够，事件层还不够</h4>
+        <p>「这张图像什么」够用：5.9 ms、中文零样本、7/7 冒烟。<b>「和谁、在哪、做了什么」</b>已由 L2 融合补上第一版（活动 + 轨迹片段 + 已命名人物）；但「为什么、心情、故事」仍不够，需要 L3 本地 VLM。</p>
+      </div>
+    </div>
+
+    <div class="kpis reveal" style="margin-top:16px">
+      <div class="kpi hot"><b>5.92<span style="font-size:15px"> ms</span></b><span>SigLIP2 图像编码</span><small>p50 / 256²</small></div>
+      <div class="kpi"><b>146<span style="font-size:15px"> ms</span></b><span>单张串行</span><small>解码 + 标签 + Vision</small></div>
+      <div class="kpi"><b>6.8</b><span>张 / 秒</span><small>1 万张 ≈ 24 分钟</small></div>
+      <div class="kpi"><b>249</b><span>中文标签</span><small>15 组 / 新增 41 个轨迹标签</small></div>
+      <div class="kpi"><b>7/7</b><span>标签冒烟命中</span><small>top-6 / 小样本</small></div>
+      <div class="kpi"><b>0.00<span style="font-size:15px">%</span></b><span>OCR CER</span><small>合成印刷体</small></div>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">单张耗时构成（p50，M5 warm）</h4>
+        <div class="bars" style="margin-top:12px">
+          <div class="bar-row"><span>Vision 全量</span><div class="bar-track"><div class="bar-fill" style="width:80%"></div></div><b>116.5 ms</b></div>
+          <div class="bar-row"><span>其中 OCR</span><div class="bar-track"><div class="bar-fill alt" style="width:72%"></div></div><b>104.4 ms</b></div>
+          <div class="bar-row"><span>解码 4K→1200</span><div class="bar-track"><div class="bar-fill" style="width:15%"></div></div><b>22.0 ms</b></div>
+          <div class="bar-row"><span>SigLIP2 文本</span><div class="bar-track"><div class="bar-fill alt" style="width:6%"></div></div><b>8.2 ms</b></div>
+          <div class="bar-row"><span>SigLIP2 图像</span><div class="bar-track"><div class="bar-fill alt" style="width:4%"></div></div><b>5.9 ms</b></div>
+          <div class="bar-row"><span>YOLO11n</span><div class="bar-track"><div class="bar-fill alt" style="width:2%"></div></div><b>1.6 ms</b></div>
+          <div class="bar-row"><span>标签匹配</span><div class="bar-track"><div class="bar-fill alt" style="width:1%"></div></div><b>0.06 ms</b></div>
+        </div>
+        <p class="sub" style="margin:12px 0 0">瓶颈不在 SigLIP，也不是 YOLO——<b>Vision OCR 占了单张 70% 以上</b>。要提速，先看 OCR 能不能按需触发。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">四个判断</h4>
+        <div class="callout" style="margin-bottom:9px"><b>判断一：先补评测，再换模型。</b>39 张人工标注已经够判断一次升级：So400m 速度过闸，但覆盖率与 F1 都下降，所以继续用 B 版——没有标注，连这个结论都给不出。</div>
+        <div class="callout" style="margin-bottom:9px"><b>判断二：标签体系比模型精度更缺。</b>原来 208 个标签没有覆盖亲子、戏水、古迹、高铁、生日；本轮已补 41 个，覆盖缺口从「没有」变成「有但未全量校准」。</div>
+        <div class="callout" style="margin-bottom:9px"><b>判断三：轨迹不是视觉问题。</b>名胜要靠 GPS + POI，人物关系要靠人脸 + 时间，事件要靠 VLM；零样本枚举地标只会产生幻觉。</div>
+        <div class="callout"><b>判断四：本地是底线，不是卖点。</b>人脸、儿童、票据都必须留在本机；L3 事件抽取要默认关闭、按次授权。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 02 构成 ================= -->
+  <section id="pipeline">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">02 · System Composition</div>
+        <h2><span class="num">02</span>这条链路是怎么跑的</h2>
+      </div>
+      <div class="sec-note">以 <code>PhotoIntelligence</code> / <code>SigLIPEngine</code> / <code>ObjectDetector</code> 当前代码为准。</div>
+    </div>
+
+    <div class="flow reveal">
+      <div class="step warm"><b>解码 / 抽帧</b><span>图片解码 1200px；视频在 5%–95% 取 4–6 帧，失败退回 ffmpeg</span><em>DECODE</em></div>
+      <div class="step rose"><b>SigLIP2 图像塔</b><span>256×256 → 768 维归一化向量 → 249 标签中文零样本</span><em>EMBED</em></div>
+      <div class="step violet"><b>YOLO11n</b><span>640×640，COCO 80 类，conf ≥ 0.4，最多补 4 个主体</span><em>DETECT</em></div>
+      <div class="step teal"><b>Vision 结构化</b><span>OCR / 条码 / 人脸 / 姿态 / 文档分割，文档裁切后二次 OCR</span><em>VISION</em></div>
+      <div class="step warm"><b>规则后处理</b><span>发票证件校验、证件照启发式、组内限额、去重、版本标记</span><em>RULES</em></div>
+      <div class="step rose"><b>落库与消费</b><span>labels / text / feature → 场景、搜索、相似照片；再融合成活动 / 轨迹片段</span><em>STORE</em></div>
+    </div>
+
+    <div class="split reveal" style="margin-top:18px">
+      <div class="panel">
+        <h4 style="margin-top:0">代码位置</h4>
+        <div class="tw" style="margin-top:10px">
+          <table style="min-width:0">
+            <thead><tr><th>环节</th><th>文件</th></tr></thead>
+            <tbody>
+              <tr><td>总管线</td><td><code>Services/Media/PhotoIntelligence.swift</code></td></tr>
+              <tr><td>SigLIP2 双塔</td><td><code>Services/Media/SigLIPEngine.swift</code></td></tr>
+              <tr><td>标签与阈值</td><td><code>LumaDomain/PhotoTags.swift</code> · <code>SigLIP2Assets/tags.json</code></td></tr>
+              <tr><td>YOLO11n</td><td><code>Services/Media/ObjectDetector.swift</code></td></tr>
+              <tr><td>批量分析与落库</td><td><code>Store/Library/LibraryStore+Intelligence.swift</code></td></tr>
+              <tr><td>模型安装与解析</td><td><code>Services/Models/ModelRegistry.swift</code> · <code>ModelInstaller.swift</code></td></tr>
+              <tr><td>轨迹融合</td><td><code>LumaDomain/TrajectoryFusion.swift</code> · <code>PlaceInsight.swift</code></td></tr>
+              <tr><td>地点摘要 UI</td><td><code>Features/Maps/PlaceDetailView.swift</code></td></tr>
+              <tr><td>向量构建 / 标定</td><td><code>Tools/vision_bench/tag_embedding_build.swift</code> · <code>tag_calibrate.swift</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">当前资产事实</h4>
+        <div class="tw" style="margin-top:10px">
+          <table style="min-width:0">
+            <thead><tr><th>项</th><th>值</th></tr></thead>
+            <tbody>
+              <tr><td>模型</td><td>SigLIP 2 Base（ViT-B 级）Core ML · <code>palmier-io/siglip2-base-coreml</code></td></tr>
+              <tr><td>输入 / 输出</td><td>256×256 ImageType → 768 维归一化向量</td></tr>
+              <tr><td>体积</td><td>约 355 MB（图像 92 + 文本 259）</td></tr>
+              <tr><td>许可</td><td>Apache-2.0</td></tr>
+              <tr><td>标签</td><td>249 个中文标签 / 15 组 / 组内限额（新增 41 个轨迹标签）</td></tr>
+              <tr><td>阈值</td><td>默认 0.085；范围 0.06–0.115；7 个新标签经 7 图代理标定上调到 0.093–0.111</td></tr>
+              <tr><td>Prompt</td><td>存量 208 个各 2 条英文；新增 41 个各 2 条英文 + 2 条中文</td></tr>
+              <tr><td>向量</td><td>249 × 768 float16 = 382,464 B；存量 208 条重建后 cos ≥ 0.999</td></tr>
+              <tr><td>版本标记</td><td><code>siglip2-v4</code>（第二信号仅 SigLIP 标签 &lt; 2 时补）；旧库分析结果会自动重扫</td></tr>
+              <tr><td>轻资产升级</td><td>启动时按 <code>tags.json</code> 的 <code>version</code> 把内置标签 / 向量 / 分词器同步到已安装模型目录；不重下编码器</td></tr>
+              <tr><td>视频</td><td>本地视频抽 4–6 帧，逐帧复用照片管线；标签 ≥ 1/3 帧才保留，OCR 合并，向量平均</td></tr>
+              <tr><td>物体补充</td><td>YOLO11n 补 80 类主体，仅 SigLIP 标签 &lt; 2 时启用（39 张上新增正确 0、新增错误 12；无条件合入 0.840 → 0.769，门控后 0.827）</td></tr>
+              <tr><td>视频范围</td><td>仅拾光本地图库；AVFoundation 失败时用内置 ffmpeg 按同一组时间点取帧</td></tr>
+              <tr><td>OCR</td><td>Vision accurate，zh-Hans + en-US，最多 2000 字入索引</td></tr>
+              <tr><td>回退</td><td>SigLIP 不可用 → Vision 分类 top 20 + feature print</td></tr>
+              <tr><td>系统要求</td><td>macOS 15+；逐张串行，每 16 张批量写库</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid g3 reveal" style="margin-top:16px">
+      <div class="panel lift">
+        <div class="tag a">L1 · 已具备</div>
+        <h4 style="margin-top:10px">全库打标与向量</h4>
+        <p style="font-size:13px;margin:0">SigLIP2 + YOLO + Vision 对每张图产出标签、文字与向量。这是「拾光」的原料层，决定场景页、搜索、相似照片的底子。</p>
+      </div>
+      <div class="panel lift">
+        <div class="tag a">L2 · 第一版已落地</div>
+        <h4 style="margin-top:10px">地理 / 时间 / 人脸融合</h4>
+        <p style="font-size:13px;margin:0"><code>TrajectoryFusion</code> 把视觉标签映射成活动，按「同一天 + 同一地点」聚成轨迹片段，并挂上已命名人物；地点详情新增「这里的活动」「轨迹片段」。具体景点名仍待 GPS + POI 反查。</p>
+      </div>
+      <div class="panel lift">
+        <div class="tag b">L3 · 模型已接入</div>
+        <h4 style="margin-top:10px">事件与关系抽取</h4>
+        <p style="font-size:13px;margin:0">Qwen2.5-VL 3B（2.8 GB）与 Qwen3-VL 4B / 8B 均已接入本地。同 12 张真实照片：JSON 12/12，中位 4.57 / 5.14 / 10.04 s。Qwen3 动作更具体，但置信度全顶到 0.95；「和谁」继续靠人脸，VLM 只做「做了什么 / 情绪」的按需解析。</p>
+      </div>
+    </div>
+
+    <h3 class="reveal" style="margin-top:34px">开 / 不开本地模型的区别</h3>
+    <p class="sub reveal" style="margin-top:8px">两个开关都在「设置 › 本地模型」，默认关闭，关闭只停用、不删文件。产品里也会直接标注：设置页开关上方有「开 / 关的区别」，照片信息面板会注明当前标签来自哪个模型。</p>
+
+    <div class="tw reveal" style="margin-top:14px">
+      <table>
+        <thead><tr><th>能力</th><th>开启本地模型</th><th>关闭本地模型</th></tr></thead>
+        <tbody>
+          <tr><td>画面标签</td><td>249 个中文标签（含 41 个轨迹标签），阈值 + 组内限额 + top-12；YOLO 物体也只在标签 &lt; 2 时补</td><td>系统 Vision 分类 top-20：少量粗粒度中文（人物 / 儿童 / 文档 / 截图 / 天空 / 树…）+ 英文概念</td></tr>
+          <tr><td>场景 / 轨迹</td><td>标签 → 活动 → 轨迹片段，1,200 张里 57.1% 能映射到活动</td><td>规则仍运行，但可用标签变少，活动与轨迹命中明显下降</td></tr>
+          <tr><td>相似照片</td><td>768 维 SigLIP 向量，同一模型分析的库内可互相比</td><td>退回 Vision FeaturePrint（2,048 维）：能用，但与 SigLIP 向量不互通，混用库只匹配同一来源</td></tr>
+          <tr><td>语义搜索扩展</td><td>文本塔把查询映射到 249 标签空间</td><td>只能关键词命中，不做同义扩展</td></tr>
+          <tr><td>本地语言模型</td><td>Qwen3-VL 4B 等离线可用：对话与看图、体检解读、起名与文案、关键词整理、地点补全、搜索改写、频道清洗、影院兜底、事件三元组</td><td>助手需接云端 API；一次性任务退回规则或模板（标签与轨迹不受影响）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout reveal" style="margin-top:12px"><b>补扫规则：</b>关闭 SigLIP2 的照片不会写入分析版本标记，重新开启后会自动补扫；开着模型但结果来自旧版本时，也按 <code>siglip2-v4</code> 标记补扫。所以「关了再开」不会留下永久降级的标签。</div>
+  </section>
+
+  <!-- ================= 03 实测 ================= -->
+  <section id="bench">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">03 · Measured Baseline</div>
+        <h2><span class="num">03</span>真实跑出来的数字</h2>
+      </div>
+      <div class="sec-note">Apple M5（10 核）/ 16 GB / macOS 27.0.1；warm start，合成图，不含用户照片。</div>
+    </div>
+
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>阶段</th><th>n</th><th>p50</th><th>p95</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>解码 4032 → 1200px</td><td class="num-cell">12</td><td class="num-cell">22.0 ms</td><td class="num-cell">24.8 ms</td><td>ImageIO thumbnail</td></tr>
+          <tr><td><strong>SigLIP2 图像 256²</strong></td><td class="num-cell">30</td><td class="num-cell"><strong>5.92 ms</strong></td><td class="num-cell">6.77 ms</td><td>修复输入类型后</td></tr>
+          <tr><td>SigLIP2 文本 64 token</td><td class="num-cell">20</td><td class="num-cell">8.23 ms</td><td class="num-cell">8.50 ms</td><td>查询时懒加载</td></tr>
+          <tr><td>标签匹配 249×768</td><td class="num-cell">200</td><td class="num-cell">0.07 ms</td><td class="num-cell">0.09 ms</td><td>float16 点积</td></tr>
+          <tr><td>YOLO11n 640²</td><td class="num-cell">20</td><td class="num-cell">1.63 ms</td><td class="num-cell">1.89 ms</td><td>含 NMS 后处理</td></tr>
+          <tr><td>Vision OCR（zh + en）</td><td class="num-cell">12</td><td class="num-cell">104.4 ms</td><td class="num-cell">116.6 ms</td><td>仅 OCR</td></tr>
+          <tr><td>Vision 全量</td><td class="num-cell">12</td><td class="num-cell">116.5 ms</td><td class="num-cell">120.3 ms</td><td>码 / 脸 / 姿态 / 文档 + OCR</td></tr>
+          <tr><td><strong>单张串行估算</strong></td><td class="num-cell">—</td><td class="num-cell"><strong>≈146 ms</strong></td><td class="num-cell">—</td><td>解码 + SigLIP + YOLO + Vision</td></tr>
+          <tr><td>视频 4–6 帧聚合</td><td class="num-cell">—</td><td class="num-cell">0.6–0.9 s</td><td class="num-cell">—</td><td>逐帧复用照片管线，不含抽帧读取</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid g3 reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">吞吐</h4>
+        <p style="font-size:13px;margin:0">约 <b>6.8 张/秒</b>；1 万张全库首扫约 <b>24 分钟</b>（不含磁盘抖动、数据库写入与解码失败重试）。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">模型冷加载</h4>
+        <p style="font-size:13px;margin:0">图像塔 44 ms、文本塔 177 ms、YOLO 24 ms。文本塔只在语义查询时加载。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">OCR 合成图</h4>
+        <p style="font-size:13px;margin:0">4 行中英混排、91 个非空白字符，CER <b>0.00%</b>。只证明管线可用，不代表真实票据 / 手写。</p>
+      </div>
+    </div>
+
+    <h3 class="reveal">标签冒烟：7 张公开样例，top-6 命中 7/7</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>样例</th><th>期望</th><th>top-6 实际（分数）</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>beach</td><td>海边 / 沙滩</td><td>海边 .132 · 日出 .120 · 沙滩 .108 · 日落 .104</td><td><span class="tag a">HIT</span></td></tr>
+          <tr><td>mountain</td><td>山脉 / 雪山</td><td>山脉 .123 · 全景 .116 · 雾 .112 · 日出 .108 · 云朵 .092</td><td><span class="tag a">HIT</span></td></tr>
+          <tr><td>cat</td><td>猫</td><td>猫 .131</td><td><span class="tag a">HIT</span></td></tr>
+          <tr><td>dog</td><td>狗</td><td>狗 .120</td><td><span class="tag a">HIT</span></td></tr>
+          <tr><td>pizza</td><td>披萨 / 美食</td><td>披萨 .140 · 美食 .093 · 中餐 .087</td><td><span class="tag a">HIT</span></td></tr>
+          <tr><td>car</td><td>汽车</td><td>汽车 .137 · 街道 .090 · 摩托车 .082 · 城市 .082</td><td><span class="tag a">HIT</span></td></tr>
+          <tr><td>wedding</td><td>婚礼 / 情侣</td><td>逆光 .116 · 情侣 .114 · 婚纱 .111 · 花束 .103 · 婚礼现场 .094</td><td><span class="tag a">HIT</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="warnbox reveal" style="margin-top:14px"><b>不要把 7/7 当准确率。</b>样本极小、主题典型，只说明「链路已真正生效、方向正确」。儿童、夜景、逆光、截图、票据、多人合影、宠物特写都未覆盖；也尚未测峰值内存、能耗、长时间温控降频与 iCloud / 系统图库读取抖动。249 标签复测仍为 7/7，新增「沙滩」进入前 3，未挤掉原有正确标签。</div>
+  </section>
+
+  <!-- ================= 04 修复 ================= -->
+  <section id="bug">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">04 · P0 Defect</div>
+        <h2><span class="num">04</span>一个让 SigLIP 静默失效的 bug</h2>
+      </div>
+      <div class="sec-note">这是本轮最重要的发现：修复前所有「中文零样本」能力实际上没有生效。</div>
+    </div>
+
+    <div class="split reveal">
+      <div class="panel">
+        <h4 style="margin-top:0">现象</h4>
+        <p style="font-size:13px"><code>SigLIPEngine</code> 始终返回 <code>nil</code>，所有照片静默走 Vision 回退；<code>isAvailable</code> 仍为 <code>true</code>，UI 没有任何提示。用户看到的「中文标签」其实是 Vision 的英文分类兜底。</p>
+        <h4>根因</h4>
+        <p style="font-size:13px;margin-bottom:0">安装包 <code>siglip2-base-coreml</code> 的图像塔输入是 Core ML <code>ImageType</code>（Color，256×256），代码一直按 <code>MLMultiArray [1,3,256,256]</code> 传入。Core ML 报错后被 <code>try?</code> 吞掉：</p>
+        <div class="codeblock" style="margin-top:10px">
+          <pre>The model expects input feature image to be an image,
+but the input (MultiArray : Float32 1 × 3 × 256 × 256 array)
+is of type Image.</pre>
+        </div>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">修复</h4>
+        <p style="font-size:13px">按模型描述自适应：输入为 <code>.image</code> 时用 <code>CVPixelBuffer</code>（尺寸取 <code>imageConstraint</code>），否则保留张量路径；新增 <code>ImagePixelBuffer</code> 做等比铺满缩放。</p>
+        <div class="codeblock">
+          <pre><span class="k">let</span> input = model.modelDescription
+    .inputDescriptionsByName[<span class="s">"image"</span>]
+
+<span class="k">if</span> input?.type == .image {
+    <span class="c">// 模型包图像塔是 ImageType：</span>
+    <span class="c">// 传 MultiArray 会直接抛错并静默回退。</span>
+    <span class="k">let</span> size = input?.imageConstraint?.pixelsWide ?? 256
+    <span class="k">let</span> buffer = ImagePixelBuffer.make(from: cgImage, size: size)
+    provider = <span class="k">try</span> MLDictionaryFeatureProvider(dictionary: [
+        <span class="s">"image"</span>: MLFeatureValue(pixelBuffer: buffer)
+    ])
+} <span class="k">else</span> {
+    <span class="k">let</span> tensor = ImageTensor.make(from: cgImage, size: 256)
+    provider = <span class="k">try</span> MLDictionaryFeatureProvider(dictionary: [
+        <span class="s">"image"</span>: MLFeatureValue(multiArray: tensor)
+    ])
+}</pre>
+        </div>
+        <div class="okbox" style="margin-top:12px"><b>修复后：</b>同一模型输出 768 维向量，标签冒烟 7/7。由于回退结果不写 <code>siglip2</code> 版本标记，安装模型后这些照片会被自动重新分析。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 05 覆盖 ================= -->
+  <section id="coverage">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">05 · Coverage Audit</div>
+        <h2><span class="num">05</span>249 个标签，够讲人生轨迹吗</h2>
+      </div>
+      <div class="sec-note">按「人物 / 风景 / 地点 / 食物 / 交通 / 戏水 / 名胜 / 亲子」等 12 维逐项审计。</div>
+    </div>
+
+    <div class="legend reveal">
+      <span><span class="tag a">覆盖</span> 可做第一版</span>
+      <span><span class="tag b">部分</span> 有标签但粒度不足</span>
+      <span><span class="tag d">缺口</span> 无标签或需新路径</span>
+      <span><span class="tag c">P3</span> 低优先</span>
+    </div>
+
+    <div class="tw matrix reveal">
+      <table>
+        <thead><tr><th>维度</th><th>现有能力</th><th>关键缺口</th><th>优先级</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td><strong>人物 / 亲子</strong></td><td>人物、合影、全家福、儿童、婴儿、老人、微笑、情侣；<b>新增</b>亲子互动、抱孩子、家庭日常、牵手、宠物互动、遛狗</td><td>陪伴质量、情绪仍需 L3</td><td><span class="pill p3">P3</span></td><td><span class="tag a">已补标签</span></td></tr>
+          <tr><td><strong>风景</strong></td><td>海边、湖泊、山脉、森林、草原、沙漠、雪景、日落、星空、云朵、雾、彩虹；<b>新增</b>沙滩、花海、秋色、田园</td><td>潮汐、礁石</td><td><span class="pill p3">P3</span></td><td><span class="tag a">覆盖</span></td></tr>
+          <tr><td><strong>地点 / 名胜</strong></td><td>寺庙、教堂、城堡、塔、古镇、博物馆、公园、街道；<b>新增</b>古迹、遗址、城墙、宫殿、园林、广场</td><td>具体景点名仍需 GPS + POI</td><td><span class="pill p2">P2</span></td><td><span class="tag b">已补类别</span></td></tr>
+          <tr><td><strong>食物</strong></td><td>25 个：火锅、烧烤、披萨、寿司、面条、海鲜、甜点…；<b>新增</b>夜宵、奶茶、地方菜</td><td>菜系细分</td><td><span class="pill p3">P3</span></td><td><span class="tag a">覆盖</span></td></tr>
+          <tr><td><strong>交通</strong></td><td>汽车、火车、飞机、地铁、公交、自行车、船、摩托车；<b>新增</b>高铁、公路、加油站、停车场、自驾</td><td>服务区、充电桩</td><td><span class="pill p3">P3</span></td><td><span class="tag a">已补标签</span></td></tr>
+          <tr><td><strong>游玩 / 戏水</strong></td><td>游泳、海边、船、露营、登山、滑雪、钓鱼、野餐；<b>新增</b>戏水、冲浪、潜水、水上乐园、泳池</td><td>浮潜与潜水未细分</td><td><span class="pill p3">P3</span></td><td><span class="tag a">已补标签</span></td></tr>
+          <tr><td><strong>节庆 / 事件</strong></td><td>婚礼现场、毕业典礼、派对、节日庆祝、演唱会现场；<b>新增</b>生日、纪念日、音乐节、展览、烟花、庙会、团建</td><td>事件规模 / 情绪</td><td><span class="pill p3">P3</span></td><td><span class="tag a">已补标签</span></td></tr>
+          <tr><td><strong>日常地点</strong></td><td>咖啡馆、餐厅、办公室、教室、商场、超市、机场、车站、酒店、图书馆、游乐园、操场、舞台、市集；<b>新增</b>学校、医院、夜市、民宿、健身房</td><td>—</td><td><span class="pill p3">P3</span></td><td><span class="tag a">覆盖</span></td></tr>
+          <tr><td><strong>宠物</strong></td><td>26 个动物标签（猫、狗、鸟、鱼、兔子…）；<b>新增</b>宠物互动、遛狗</td><td>品种级</td><td><span class="pill p3">P3</span></td><td><span class="tag a">覆盖</span></td></tr>
+          <tr><td><strong>票据 / 证件</strong></td><td>文档、票据、证件、二维码、条码、白板、名片、菜单、海报…</td><td>真实票据字段结构化</td><td><span class="pill p2">P2</span></td><td><span class="tag b">部分</span></td></tr>
+          <tr><td><strong>风格</strong></td><td>黑白、复古、胶片、逆光、低光、微距、航拍、长曝光…</td><td>—</td><td><span class="pill p3">P3</span></td><td><span class="tag a">覆盖</span></td></tr>
+          <tr><td><strong>关系 / 事件</strong></td><td><b>新增</b> TrajectoryFusion：活动 + 轨迹片段（who / where / activity / 时间）</td><td>因果、情绪、故事仍需 L3</td><td><span class="pill p0">P0</span></td><td><span class="tag b">部分</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="callout"><b>已补：</b>本轮新增 41 个标签，亲子、戏水、古迹、高铁、生日、夜市从「没有标签」变成「可召回」，并映射进场景页的人物 / 自然风景 / 食物 / 建筑 / 交通 / 室内 / 名胜古迹 / 夜景 / 活动分类。7 图冒烟仍为 7/7，新增「沙滩」在海边样例上以 0.108 进入前 3。</div>
+      <div class="warnbox"><b>仍不够：</b>具体景点名称仍需 <b>GPS + POI 反查</b>，零样本枚举地标容易产生幻觉；情绪、因果、故事仍需 L3 本地 VLM。标签覆盖不等于理解能力。</div>
+    </div>
+
+    <div class="grid g4 reveal" style="margin-top:14px">
+      <div class="panel"><div class="tag a">已补 1</div><h4 style="margin-top:8px">亲子互动</h4><p class="sub" style="margin:0">新增亲子互动、抱孩子、家庭日常、牵手；活动层聚成「亲子时光」，并把已命名家人挂到活动上。</p></div>
+      <div class="panel"><div class="tag a">已补 2</div><h4 style="margin-top:8px">戏水 / 沙滩</h4><p class="sub" style="margin:0">新增戏水、沙滩、冲浪、潜水、水上乐园、泳池；规则层统一映射为「海边戏水」，避免重复计数。</p></div>
+      <div class="panel"><div class="tag a">已补 3</div><h4 style="margin-top:8px">名胜古迹</h4><p class="sub" style="margin:0">新增古迹、遗址、城墙、宫殿、园林、广场；只输出类别，具体景点名留给 GPS + POI。</p></div>
+      <div class="panel"><div class="tag a">已补 4</div><h4 style="margin-top:8px">高铁 / 自驾</h4><p class="sub" style="margin:0">新增高铁、公路、加油站、停车场、自驾；融合层输出「高铁出行」「自驾出行」，构成轨迹骨架。</p></div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:16px">
+      <div class="tag a">L2 · 已落地</div>
+      <h3 style="margin-top:10px">从标签到一段可读的轨迹</h3>
+      <div class="grid g4" style="margin-top:12px">
+        <div class="step warm"><b>标签 → 活动</b><span>按优先级映射；一张图只取第一个活动，避免海边 + 沙滩 + 戏水重复计数</span><em>MAP</em></div>
+        <div class="step rose"><b>活动 + 人物</b><span>挂上已命名的人脸聚类；未命名人物不进入轨迹</span><em>PEOPLE</em></div>
+        <div class="step violet"><b>活动 + 地点 + 时间</b><span>同一天 + 同一地点聚成片段；没有活动证据的日子直接丢弃</span><em>GROUP</em></div>
+        <div class="step teal"><b>消费端</b><span>地点详情新增「这里的活动」「轨迹片段」，叙事补一句「画面里最常见的是 X」</span><em>SHOW</em></div>
+      </div>
+      <div class="split" style="margin-top:14px">
+        <div class="okbox"><b>能做到：</b>哪天、在哪、和谁、像是在做什么。活动分布会带上同框人物，轨迹片段保留日期、地点、照片数与封面。</div>
+        <div class="warnbox"><b>做不到：</b>不推断情绪、不解释因果、不生成故事；地点名只用系统逆地理编码，没有做额外 POI 搜索补全。</div>
+      </div>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="panel">
+        <div class="tag a">视频 · 已接入</div>
+        <h4 style="margin-top:10px">抽帧，而不是逐帧</h4>
+        <p style="font-size:13px">10 分钟 30fps 逐帧是 18,000 次推理，不可接受；只用首帧会把黑场 / 片头当内容。当前在 5%–95% 均匀取 <b>4–6 帧</b>，每帧复用照片管线，最后：</p>
+        <ul style="font-size:12.6px;margin-bottom:0">
+          <li>标签出现 ≥ 1/3 帧才保留，不足时按频次补足；</li>
+          <li>OCR 去重合并，保留前 2000 字；</li>
+          <li>图像向量取平均后归一化，用于相似视频；</li>
+          <li>AVFoundation 失败时退回内置 ffmpeg。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <div class="tag a">GPS + POI · 已增强</div>
+        <h4 style="margin-top:10px">具体景点先于街道</h4>
+        <p style="font-size:13px">逆地理编码的 POI 优先级改成：</p>
+        <ol style="font-size:12.6px">
+          <li><code>CLPlacemark.areasOfInterest</code>（外滩 / 故宫 / 西湖）；</li>
+          <li><code>thoroughfare</code>（街道）；</li>
+          <li><code>name</code> 兜底。</li>
+        </ol>
+        <p class="sub" style="margin:0">没有 GPS 不猜地名；坐标只到城市级时只输出城市，不编造景点。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 06 选型 ================= -->
+  <section id="compare">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">06 · Model Landscape</div>
+        <h2><span class="num">06</span>SigLIP2 够用吗，有没有更好的</h2>
+      </div>
+      <div class="sec-note">公开指标来自论文 / 模型卡；「本地实测」只对当前模型有数据。</div>
+    </div>
+
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>方案</th><th>角色</th><th>优势</th><th>限制</th><th>本地成本</th><th>结论</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Apple Vision</strong></td><td>必选底座</td><td>系统级、零下载；OCR / 人脸 / 姿态很强</td><td>场景标签英文、粒度粗；无中文零样本</td><td>已内置</td><td>保留，OCR 与结构化视觉主力</td></tr>
+          <tr><td><strong>SigLIP2-B 256（当前）</strong></td><td>全库标签 + 向量</td><td>中文零样本、多语言、249 标签、5.9 ms、355 MB</td><td>256px 小目标弱；关系 / 事件弱；Base 精度有限</td><td>已实测</td><td><span class="tag a">保留为 L1</span></td></tr>
+          <tr><td>SigLIP2-So400m</td><td>精度升级档</td><td>公开报告 83.4% ImageNet@256；384px / 1152 维</td><td>镜像 1.56 GB；编码 87.8 ms（B 版 7.2 ms）</td><td>已实测：p95 91 ms 过闸，但 0 标签 17.3% vs 14.8%</td><td><span class="tag b">未通过，不升级</span></td></tr>
+          <tr><td>CLIP / OpenCLIP</td><td>旧基线</td><td>生态成熟</td><td>同尺寸通常弱于 SigLIP2，中文更弱</td><td>—</td><td>不推荐新接入</td></tr>
+          <tr><td>YOLO11n</td><td>主体先验</td><td>1.6 ms、稳定</td><td>仅 80 类；无开放词表</td><td>已内置</td><td>保留</td></tr>
+          <tr><td>YOLO-World / Grounding DINO</td><td>开放词表检测</td><td>可检测冲浪板 / 行李箱 / 高铁等</td><td>100 ms 级、模型大、后处理复杂</td><td>未接入</td><td><span class="tag b">P2 评估</span></td></tr>
+          <tr><td><strong>Qwen2.5-VL-3B</strong></td><td>事件 / 关系抽取</td><td>结构化 JSON、OCR、定位；公开 MMMU 53.1 / DocVQA 93.9</td><td>秒级、GB 级；不适合全库；人物关系会幻觉</td><td>已装 2.8 GB；12 图 4.57 s / 2.92 GB</td><td><span class="tag a">模型已接入</span></td></tr>
+          <tr><td><strong>Qwen3-VL 4B（推荐）</strong></td><td>事件 / 关系抽取</td><td>动作描述更具体；中文更顺</td><td>4.47 GB；人物判断仍会错</td><td>已装 3.3 GB；12 图 5.14 s / 4.47 GB</td><td><span class="tag a">L3 默认档</span></td></tr>
+          <tr><td><strong>Qwen3-VL 8B</strong></td><td>事件 / 关系抽取</td><td>质量略好于 4B</td><td>6.63 GB；16 GB 需把上下文压到 8192</td><td>已装 6.2 GB；12 图 10.04 s / 6.63 GB</td><td><span class="tag b">24 GB 以上再开</span></td></tr>
+          <tr><td>Florence-2-base</td><td>轻量 VLM</td><td>0.23B，caption / OD / OCR 多任务</td><td>中文与关系推理弱于 Qwen</td><td>未实测</td><td>备选，需转换与评测</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid g3 reveal" style="margin-top:16px">
+      <div class="panel lift">
+        <div class="tag a">够用</div>
+        <h4 style="margin-top:10px">全库「这张图像什么」</h4>
+        <p style="font-size:13px;margin:0">5.9 ms 的单图编码、249 个中文标签、768 维向量，做场景页、关键词、相似照片、文搜图已经够。So400m 384px 已实测：编码 87.8 ms、镜像 1.56 GB、0 标签反而增加，收益为负。</p>
+      </div>
+      <div class="panel lift">
+        <div class="tag b">勉强</div>
+        <h4 style="margin-top:10px">「这是哪类地方」</h4>
+        <p style="font-size:13px;margin:0">能分寺庙 / 教堂 / 古镇这一类，但分不出具体景点，也分不出遗址 / 城墙 / 宫殿。名胜要靠 GPS + POI，零样本枚举地标会产生幻觉。</p>
+      </div>
+      <div class="panel lift">
+        <div class="tag d">不够</div>
+        <h4 style="margin-top:10px">「和谁、做了什么」</h4>
+        <p style="font-size:13px;margin:0">亲子互动、同行人、事件、情绪，视觉编码器不负责。需要人脸身份 + 时间聚类 + 本地 VLM 输出 <code>{activity, participants, setting, mood}</code>。</p>
+      </div>
+    </div>
+
+    <div class="split reveal" style="margin-top:14px">
+      <div class="okbox"><b>如果只升一档：</b>先做 30–50 个轨迹标签 + 中英双语 prompt + 阈值校准——本轮已完成 41 个。So400m 已按闸门测过，未通过。</div>
+      <div class="callout"><b>如果要做事件：</b>Qwen2.5-VL 3B / Qwen3-VL 4B / 8B 均已装：同 12 张 JSON 12/12，中位 4.57 / 5.14 / 10.04 s。4B 动作描述明显更细，是当前默认；三档置信度都不可信，只用于活动 / 场景 / 情绪候选，不用于「和谁」。</div>
+    </div>
+
+    <h3 class="reveal">升级评估闸门（So400m 已测：未通过；Qwen 已做三档对比）</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>候选</th><th>先做什么</th><th>通过条件（缺一不可）</th><th>不通过怎么办</th></tr></thead>
+        <tbody>
+          <tr><td><strong>SigLIP2-So400m</strong></td><td>已用公开 384px Core ML 转换跑完 1,200 张 + 39 张标注</td><td>macro-F1 +5 个点；p95 ≤ 250 ms；峰值内存 ≤ 1.2 GB</td><td><b>未通过</b>：p95 91 ms 过闸，但 0 标签 17.3% vs 14.8%、样本内校准 F1 0.788 vs 0.961；继续用 B 版</td></tr>
+          <tr><td><strong>Qwen3-VL 4B（默认）</strong></td><td>已装 3.3 GB；下一步跑 100–200 个候选事件并人工核对</td><td>JSON 合法率 ≥ 98%；三元组 F1 ≥ 0.72；p95 ≤ 8 s；内存 ≤ 8 GB</td><td>退回「标签 + 规则融合」，或换 2.5-VL 3B</td></tr>
+          <tr><td>YOLO-World / Grounding DINO</td><td>只评估戏水 / 交通 / 亲子道具等开放词表细类</td><td>自建 20 类 mAP@0.5 +5 个点；p95 ≤ 100 ms</td><td>继续用 YOLO11n + 标签规则</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="warnbox reveal" style="margin-top:12px"><b>边界：</b>So400m 用的是公开 Core ML 转换（文本塔为 8-bit），金标又是在看着 B 版预测时勾选的，对 B 版有利；但 1,200 张「同阈值覆盖率下降」与标注方式无关。Qwen 三档只做了 JSON / 延迟 / 占用对比与 39 张标签接受率，没有事件金标，不写事件 F1。</div>
+  </section>
+
+  <!-- ================= 07 基准 ================= -->
+  <section id="baseline">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">07 · Benchmark Design</div>
+        <h2><span class="num">07</span>下一步：把「感觉」变成「指标」</h2>
+      </div>
+      <div class="sec-note">1,200 张已采样并预测，人工标签待补；以下为评测设计，不是既有结果。</div>
+    </div>
+
+    <div class="split reveal">
+      <div class="panel">
+        <h4 style="margin-top:0">金标集</h4>
+        <ul class="list-tight" style="font-size:13px">
+          <li><strong>规模：</strong>1,200 张（dev 300 / test 900），按 12 维分层，每维约 100 张。</li>
+          <li><strong>来源：</strong>用户授权图库为主，公开授权集补稀有类；全部去标识化，人脸不外传。</li>
+          <li><strong>切片：</strong>无 GPS 30%、截图 / 文档 20%、夜景 10%、儿童 / 宠物 10%、多人（≥3 脸）10%。</li>
+          <li><strong>标注：</strong>3 人双盲，20% 双标；5–12 标签 / 图 + 事件三元组 + OCR + 地点；α ≥ 0.80。</li>
+          <li><strong>版本：</strong>标签目录冻结版本号；test 集每个模型版本只跑一次，防调参泄漏。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">指标</h4>
+        <div class="tw" style="margin-top:10px">
+          <table style="min-width:0">
+            <thead><tr><th>能力</th><th>指标</th></tr></thead>
+            <tbody>
+              <tr><td>标签</td><td>micro / macro P、R、F1 @top-8；虚幻标签率</td></tr>
+              <tr><td>检索</td><td>文搜图 Recall@10 / mAP@20；图搜图 Recall@10</td></tr>
+              <tr><td>事件 / 轨迹</td><td>三元组 F1（who, where, activity）；月级时间线召回</td></tr>
+              <tr><td>OCR</td><td>CER / WER：印刷、屏幕、手写三桶</td></tr>
+              <tr><td>检测</td><td>mAP@0.5（自建 20 类生活物体）</td></tr>
+              <tr><td>速度</td><td>p50 / p95、吞吐、峰值内存、冷启动、能耗</td></tr>
+              <tr><td>稳定性</td><td>失败率、回退率、重复分析率</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">统计：bootstrap 1,000 次给 95% CI；模型对比用配对 bootstrap / McNemar；所有结论按切片报告，不只报总分。</p>
+      </div>
+    </div>
+
+    <h3 class="reveal">V1 目标值</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>指标</th><th>目标</th><th>为什么</th></tr></thead>
+        <tbody>
+          <tr><td>标签 micro-P / micro-R @top-8</td><td class="num-cell">≥ 0.85 / ≥ 0.70</td><td>宁缺毋滥：误标比漏标更伤信任</td></tr>
+          <tr><td>虚幻标签率</td><td class="num-cell">≤ 10%</td><td>避免「AI 说这是富士山」式尴尬</td></tr>
+          <tr><td>文搜图 Recall@10</td><td class="num-cell">≥ 0.85</td><td>自然语言找照片是核心入口</td></tr>
+          <tr><td>事件三元组 F1</td><td class="num-cell">≥ 0.72</td><td>轨迹的最小可确认单位</td></tr>
+          <tr><td>月级时间线召回</td><td class="num-cell">≥ 0.80</td><td>「那年夏天」要能召回</td></tr>
+          <tr><td>OCR CER（印刷 / 屏幕）</td><td class="num-cell">≤ 3%</td><td>票据、菜单、路牌可搜</td></tr>
+          <tr><td>L1 p95（单张）</td><td class="num-cell">≤ 250 ms</td><td>后台分析不拖慢浏览</td></tr>
+          <tr><td>L1 峰值内存</td><td class="num-cell">≤ 1.2 GB</td><td>与播放、浏览共存</td></tr>
+          <tr><td>L3（4B VLM）单张</td><td class="num-cell">≤ 8 s（12 图 5.14 s）</td><td>按需触发可以慢，但不能失控</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="reveal">金标集流水线（1,200 张已采样并预测，人工标注待补）</h3>
+    <div class="grid g4 reveal">
+      <div class="step warm"><b>1 · 分层采样</b><span><code>goldset_sample</code>：GPS × 夜景 × 合影 / 单人，另切截图与文档</span><em>SAMPLE</em></div>
+      <div class="step rose"><b>2 · 人工标注</b><span>在 goldset.json 填标签 id、OCR 金标、事件三元组</span><em>LABEL</em></div>
+      <div class="step violet"><b>3 · 249 标签预测</b><span><code>vision_predict</code>：与 App 同一图像塔 / 标签向量</span><em>PREDICT</em></div>
+      <div class="step teal"><b>4 · 指标 / 校准 / A-B</b><span><code>goldset_eval</code>：P/R/F1、切片、bootstrap、阈值、配对对比</span><em>EVAL</em></div>
+    </div>
+    <div class="split" style="margin-top:14px">
+      <div class="okbox"><b>已经能跑：</b>7 张冒烟图 + 20 张公开样例 + 真实图库 1,200 张已跑通采样 / 预测 / Apple 对照；A-B 用配对 bootstrap，区间跨 0 就不换模型。</div>
+      <div class="warnbox"><b>还缺什么：</b>1,200 张的人工标签未完成，所以还没有真实 P/R/F1；现有数字是覆盖率与 Apple 一致率，不是金标集结论。</div>
+    </div>
+    <div class="panel reveal" style="margin-top:14px">
+      <h4 style="margin-top:0">20 张公开样例演示 · 2026-11-28</h4>
+      <p class="sub" style="margin:6px 0 12px">同一份数据：采样 → 人工标注 47 个标签 → 249 标签预测 → 切片指标 → 阈值校准。校准与评测同源，属于样本内演示，不是准确率结论。</p>
+      <div class="tw">
+        <table style="min-width:640px">
+          <thead><tr><th>阶段</th><th>micro P</th><th>micro R</th><th>micro F1</th><th>95% CI（F1）</th></tr></thead>
+          <tbody>
+            <tr><td>当前阈值（多为 0.085）</td><td class="num-cell">0.466</td><td class="num-cell">0.783</td><td class="num-cell">0.584</td><td class="num-cell">0.466–0.705</td></tr>
+            <tr><td>20 图样本内校准后</td><td class="num-cell">0.731</td><td class="num-cell">0.826</td><td class="num-cell"><b>0.776</b></td><td class="num-cell">0.681–0.857</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:10px 0 0">macro F1 0.690 → 0.743；44 个标签阈值改动、31 个正样本不足未校准。典型误报：天空 F1 0.500、人物精确率 0.429；室内在咖啡馆图上完全漏掉。20 张均无 GPS / 人脸，对应切片尚不可评估。</p>
+    </div>
+
+    <h3 class="reveal">真实图库审计 · 1,200 张（2026-11-28）</h3>
+    <div class="grid g4 reveal">
+      <div class="panel"><div class="tag b">和谁</div><h4 style="margin:8px 0 2px">61.1%</h4><p class="sub" style="margin:0">有「人物 / 儿童 / 婴儿 / 合影 / 情侣」等标签</p></div>
+      <div class="panel"><div class="tag c">做了什么</div><h4 style="margin:8px 0 2px">57.1%</h4><p class="sub" style="margin:0">能映射到活动；亲子 281、美食 73、旅行 52</p></div>
+      <div class="panel"><div class="tag d">在哪</div><h4 style="margin:8px 0 2px">43.3%</h4><p class="sub" style="margin:0">有 GPS；POI 反查 14/20 命中具体景点</p></div>
+      <div class="panel"><div class="tag e">三者同时</div><h4 style="margin:8px 0 2px">28.1%</h4><p class="sub" style="margin:0">和谁 + 在哪 + 做了什么同时具备</p></div>
+    </div>
+    <div class="split" style="margin-top:14px">
+      <div class="panel">
+        <h4 style="margin-top:0">图库与抽样</h4>
+        <div class="tw" style="border:none">
+          <table style="min-width:0">
+            <tbody>
+              <tr><td>originals 文件</td><td class="num-cell">十万级</td></tr>
+              <tr><td>图片 / 视频</td><td class="num-cell">十万级 / 数万条</td></tr>
+              <tr><td>抽样</td><td class="num-cell">1,200 张（候选池 4,800）</td></tr>
+              <tr><td>GPS / 夜景</td><td class="num-cell">43.3% / 7.3%</td></tr>
+              <tr><td>人脸切片</td><td class="num-cell">合影 13% · 有人 36% · 无人 51%</td></tr>
+              <tr><td>标签触发</td><td class="num-cell">221 / 249；28 个零触发</td></tr>
+              <tr><td>无标签照片</td><td class="num-cell">14.8%（178 张）</td></tr>
+              <tr><td>平均标签</td><td class="num-cell">4.0 / 张（最高 20）</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">真实耗时（外置 HFS）</h4>
+        <div class="tw" style="border:none">
+          <table style="min-width:0">
+            <tbody>
+              <tr><td>SigLIP 解码 + 编码 p50</td><td class="num-cell">31.3 ms</td></tr>
+              <tr><td>SigLIP p95</td><td class="num-cell">160.6 ms</td></tr>
+              <tr><td>Apple 分类 p50 / p95</td><td class="num-cell">17.2 / 45.0 ms</td></tr>
+              <tr><td>1,200 张端到端</td><td class="num-cell">约 2 分钟</td></tr>
+              <tr><td>与合成图基准差异</td><td class="num-cell">主要耗在外置盘解码</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">原始记录：<code>build/goldset/goldset.json</code>、<code>predictions.json</code>、<code>poi.json</code>。未读、未上传照片内容。</p>
+      </div>
+    </div>
+    <div class="tw reveal" style="margin-top:14px">
+      <table>
+        <thead><tr><th>标签</th><th>SigLIP 触发</th><th>Apple 参照</th><th>一致 P</th><th>一致 R</th><th>判断</th></tr></thead>
+        <tbody>
+          <tr><td>人物</td><td class="num-cell">712</td><td class="num-cell">738</td><td class="num-cell">0.91</td><td class="num-cell">0.88</td><td>可靠</td></tr>
+          <tr><td>婴儿</td><td class="num-cell">51</td><td class="num-cell">64</td><td class="num-cell">0.82</td><td class="num-cell">0.66</td><td>可用</td></tr>
+          <tr><td>儿童</td><td class="num-cell">150</td><td class="num-cell">320</td><td class="num-cell">0.83</td><td class="num-cell">0.39</td><td>偏漏</td></tr>
+          <tr><td>美食</td><td class="num-cell">45</td><td class="num-cell">53</td><td class="num-cell">0.80</td><td class="num-cell">0.68</td><td>可用</td></tr>
+          <tr><td>夜景</td><td class="num-cell">59</td><td class="num-cell">46</td><td class="num-cell">0.68</td><td class="num-cell">0.87</td><td>可用</td></tr>
+          <tr><td>文档</td><td class="num-cell">59</td><td class="num-cell">408</td><td class="num-cell">0.98</td><td class="num-cell">0.14</td><td>严重欠触发</td></tr>
+          <tr><td>截图</td><td class="num-cell">101</td><td class="num-cell">299</td><td class="num-cell">0.96</td><td class="num-cell">0.32</td><td>严重欠触发</td></tr>
+          <tr><td>天空</td><td class="num-cell">7</td><td class="num-cell">220</td><td class="num-cell">1.00</td><td class="num-cell">0.03</td><td>严重欠触发</td></tr>
+          <tr><td>树</td><td class="num-cell">11</td><td class="num-cell">146</td><td class="num-cell">0.91</td><td class="num-cell">0.07</td><td>严重欠触发</td></tr>
+          <tr><td>海边</td><td class="num-cell">4</td><td class="num-cell">54</td><td class="num-cell">0.50</td><td class="num-cell">0.04</td><td>严重欠触发</td></tr>
+          <tr><td>汽车</td><td class="num-cell">24</td><td class="num-cell">153</td><td class="num-cell">0.58</td><td class="num-cell">0.09</td><td>欠触发</td></tr>
+          <tr><td>衣服</td><td class="num-cell">6</td><td class="num-cell">313</td><td class="num-cell">0.33</td><td class="num-cell">0.01</td><td>严重欠触发</td></tr>
+          <tr><td>包包</td><td class="num-cell">0</td><td class="num-cell">25</td><td class="num-cell">—</td><td class="num-cell">0.00</td><td>阈值高于最高分</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="split reveal" style="margin-top:14px">
+      <div class="panel">
+        <h4 style="margin-top:0">P2.5 回放：0 标签 178 → 25</h4>
+        <div class="tw" style="border:none">
+          <table style="min-width:0">
+            <thead><tr><th>标签</th><th>修复前</th><th>修复后</th></tr></thead>
+            <tbody>
+              <tr><td>天空</td><td class="num-cell">7</td><td class="num-cell">201</td></tr>
+              <tr><td>文档</td><td class="num-cell">59</td><td class="num-cell">340</td></tr>
+              <tr><td>截图</td><td class="num-cell">101</td><td class="num-cell">288</td></tr>
+              <tr><td>树</td><td class="num-cell">11</td><td class="num-cell">112</td></tr>
+              <tr><td>汽车</td><td class="num-cell">24</td><td class="num-cell">94</td></tr>
+              <tr><td>衣服</td><td class="num-cell">6</td><td class="num-cell">99</td></tr>
+              <tr><td>包包</td><td class="num-cell">0</td><td class="num-cell">12</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">Apple 分类器第二信号 + 截图启发式；分析版本升到 <code>siglip2-v3</code>，A/B 后收敛为门控 <code>v4</code>。衣服 / 海边仍偏低。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">Qwen 三档：同 12 张真实照片</h4>
+        <div class="tw" style="border:none">
+          <table style="min-width:0">
+            <thead><tr><th>模型</th><th>JSON</th><th>中位</th><th>占用</th></tr></thead>
+            <tbody>
+              <tr><td>Qwen2.5-VL 3B</td><td class="num-cell">12/12</td><td class="num-cell">4.57 s</td><td class="num-cell">2.92 GB</td></tr>
+              <tr><td><b>Qwen3-VL 4B</b></td><td class="num-cell">12/12</td><td class="num-cell">5.14 s</td><td class="num-cell">4.47 GB</td></tr>
+              <tr><td>Qwen3-VL 8B</td><td class="num-cell">12/12</td><td class="num-cell">10.04 s</td><td class="num-cell">6.63 GB</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">Qwen3 两档动作更具体（「溪边打卡」「翻土耕作」vs「拍照」「田间劳作」）；置信度全部 0.95，不可当校准值。8B 在 16 GB 上 16384 上下文会 500，8192 稳定。</p>
+      </div>
+    </div>
+    <div class="callout reveal" style="margin-top:14px"><b>结论：</b>「和谁」最可靠；「在哪」的上限是 GPS 43.3%，不是 POI 质量；「做了什么」57.1%，集中在亲子 / 美食 / 旅行，夜宵 / 民宿 / 团建偏宽。<b>P2.5 已实施：</b>Apple 分类器第二信号 + 截图启发式，回放 0 标签 178→25、天空 7→201、文档 59→340、截图 101→288；衣服 / 海边仍偏低。Qwen 三档同 12 张 JSON 12/12，但置信度全顶到 0.95、人物判断互相矛盾。Apple 不是金标，以上是一致率，不是 P/R/F1。</div>
+
+    <h3 class="reveal" style="margin-top:38px">40 张人工标注：第一份真实精度</h3>
+    <p class="sub reveal" style="margin-top:8px">从 1,200 张里分层抽 40 张（GPS / 无人 / 合影 / 夜景 / 零标签 + 亲子 / 美食 / 古迹 / 戏水 / 文档 / 截图等活动），导出缩略图和本地标注页，逐张点选正确标签并补漏。39 张完成，111 个标签、50 种。标注页在 <code>docs/ai/goldset-40/index.html</code>。</p>
+
+    <div class="kpis reveal" style="margin-top:14px">
+      <div class="kpi hot"><b>0.840</b><span>SigLIP 预测接受率</span><small>阈值修正后 110 TP / 21 FP；修正前 0.753</small></div>
+      <div class="kpi"><b>0.579</b><span>P2.5 全量并集</span><small>门控 0.705 → 修正后 0.780</small></div>
+      <div class="kpi"><b>39</b><span>张完成标注</span><small>111 个标签 / 7 张空金标</small></div>
+      <div class="kpi"><b>2.6<span style="font-size:15px">%</span></b><span>0 标签照片</span><small>并集后 1/39</small></div>
+    </div>
+
+    <div class="split reveal" style="margin-top:14px">
+      <div class="panel">
+        <h4 style="margin-top:0">指标（含 7 张空金标）</h4>
+        <div class="tw" style="border:none">
+          <table style="min-width:0">
+            <thead><tr><th>方案</th><th>TP</th><th>FP</th><th>P</th></tr></thead>
+            <tbody>
+              <tr><td>SigLIP 单信号（修正前）</td><td class="num-cell">110</td><td class="num-cell">36</td><td class="num-cell">0.753</td></tr>
+              <tr><td>P2.5 全量并集</td><td class="num-cell">110</td><td class="num-cell">80</td><td class="num-cell">0.579</td></tr>
+              <tr><td>SigLIP 单信号（阈值修正后）</td><td class="num-cell">110</td><td class="num-cell">21</td><td class="num-cell"><b>0.840</b></td></tr>
+              <tr><td>门控 &lt; 2（阈值修正后）</td><td class="num-cell">110</td><td class="num-cell">31</td><td class="num-cell"><b>0.780</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">召回恒为 1：标注页只能从模型给出的标签里勾选，所以本轮测到的是「接受率」而不是 F1。</p>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">分标签事实（TP / 预测次数）</h4>
+        <div class="tw" style="border:none">
+          <table style="min-width:0">
+            <tbody>
+              <tr><td>人物</td><td class="num-cell">23 / 24</td><td>站得住</td></tr>
+              <tr><td>亲子互动</td><td class="num-cell">9 / 9</td><td>站得住</td></tr>
+              <tr><td>儿童</td><td class="num-cell">6 / 6</td><td>站得住</td></tr>
+              <tr><td>旅游</td><td class="num-cell">6 / 7</td><td>可用</td></tr>
+              <tr><td>夜宵 / 天台 / 民宿 / 团建</td><td class="num-cell">0 / 10</td><td>过触发</td></tr>
+              <tr><td>抱孩子</td><td class="num-cell">1 / 4</td><td>过触发</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin:10px 0 0">全家福 / 家庭日常 / 合影 / 夜景 各 3/3，戏水 / 水上乐园 各 1/1 全中被接受。</p>
+      </div>
+    </div>
+
+    <div class="warnbox reveal" style="margin-top:14px"><b>P2.5 的代价：</b>Apple 第二信号把 0 标签照片从 5/39 降到 1/39，但新增 44 个被拒标签，集中在 人物 +6、衣服 +6、天空 +5、文档 +4、树 +4、儿童 +4、汽车 +4、截图 +3。核心人物 / 亲子标签未被破坏（人物 23/24），所以保留第二信号，并已按门控 A/B 收敛（见下）。</div>
+
+    <h3 class="reveal" style="margin-top:34px">第二信号门控 A/B：只补 0–1 个标签的照片</h3>
+    <p class="sub reveal" style="margin-top:8px">同一批 1,200 张 + 39 张标注，离线比较「全量合入 / 仅 SigLIP 标签 &lt; 2 时补 / &lt; 1 时补」。0 标签率只取决于分数与阈值，不受标注方式影响。</p>
+
+    <div class="kpis reveal" style="margin-top:14px">
+      <div class="kpi"><b>26</b><span>0 标签照片（当前）</span><small>阈值修正前 25/1,200</small></div>
+      <div class="kpi"><b>0.780</b><span>39 张接受率（当前）</span><small>修正前 0.705；单信号 0.840</small></div>
+      <div class="kpi"><b>−49</b><span>被拒标签</span><small>全量 80 → 门控 + 修正后 31</small></div>
+      <div class="kpi"><b>869</b><span>被跳过照片</span><small>已有 ≥ 2 个 SigLIP 标签</small></div>
+    </div>
+
+    <div class="tw reveal" style="margin-top:14px">
+      <table>
+        <thead><tr><th>方案</th><th>TP</th><th>FP</th><th>39 张 P</th><th>0 标签 / 1,200</th><th>平均标签</th><th>注入标签</th></tr></thead>
+        <tbody>
+          <tr><td>SigLIP 单信号</td><td class="num-cell">110</td><td class="num-cell">36</td><td class="num-cell">0.753</td><td class="num-cell">178（14.8%）</td><td class="num-cell">3.96</td><td class="num-cell">—</td></tr>
+          <tr><td>全量合入（v3）</td><td class="num-cell">110</td><td class="num-cell">80</td><td class="num-cell">0.579</td><td class="num-cell">25（2.1%）</td><td class="num-cell">5.15</td><td class="num-cell">1,497</td></tr>
+          <tr><td>门控 &lt; 2（v4）</td><td class="num-cell">110</td><td class="num-cell">46</td><td class="num-cell">0.705</td><td class="num-cell">25（2.1%）</td><td class="num-cell">4.38</td><td class="num-cell">508</td></tr>
+          <tr><td>门控 &lt; 1</td><td class="num-cell">110</td><td class="num-cell">43</td><td class="num-cell">0.719</td><td class="num-cell">25（2.1%）</td><td class="num-cell">4.21</td><td class="num-cell">297</td></tr>
+          <tr><td><b>门控 &lt; 2 + 7 个标签阈值修正（当前）</b></td><td class="num-cell">110</td><td class="num-cell">31</td><td class="num-cell"><b>0.780</b></td><td class="num-cell">26（2.2%）</td><td class="num-cell">4.14</td><td class="num-cell">514</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="warnbox reveal" style="margin-top:14px"><b>结论：改成「SigLIP 标签 &lt; 2 才补」，分析版本升到 <code>siglip2-v4</code>。</b>0 标签照片本来就属于「标签 &lt; 2」，所以覆盖率一分没丢；39 张接受率从 0.579 回到 0.705，再对夜宵 / 天台 / 团建 / 民宿 / 运动 / 乐器 / 广场 7 个已证实过触发的标签上调阈值，到 <b>0.780</b>（单信号 0.840），被拒标签 80 → 31，0 标签仍只有 26 张。选 &lt; 2 而不是 &lt; 1：后者只多 1.4 个点，却少补 211 个标签，而「只有 1 个标签」正是最需要补场景 / 文档的情况。39 张仍是非盲标注，0.780 更可能是上界，权威数字等 200 张盲标。</div>
+
+    <h3 class="reveal" style="margin-top:34px">So400m 升级测试：速度过闸，精度不过闸</h3>
+    <p class="sub reveal" style="margin-top:8px">用公开 Core ML 转换（384×384 / 1152 维；图 854 MB fp16 + 文本 709 MB int8），SHA-256 校验通过，重算 249 条标签向量后跑同一批 1,200 张与 39 张标注。</p>
+
+    <div class="kpis reveal" style="margin-top:14px">
+      <div class="kpi"><b>87.8<span style="font-size:15px"> ms</span></b><span>So400m 图像编码</span><small>p50，B 版 7.2 ms</small></div>
+      <div class="kpi hot"><b>17.3<span style="font-size:15px">%</span></b><span>0 标签照片</span><small>B 版 14.8%</small></div>
+      <div class="kpi hot"><b>0.788</b><span>样本内校准 micro F1</span><small>B 版 0.961</small></div>
+      <div class="kpi"><b>1.56<span style="font-size:15px"> GB</span></b><span>镜像体积</span><small>B 版 355 MB</small></div>
+    </div>
+
+    <div class="tw reveal" style="margin-top:14px">
+      <table>
+        <thead><tr><th>指标（1,200 张，同阈值）</th><th>SigLIP2-B 256</th><th>So400m 384</th><th>判断</th></tr></thead>
+        <tbody>
+          <tr><td>0 标签照片</td><td class="num-cell">178（14.8%）</td><td class="num-cell">208（17.3%）</td><td>变差</td></tr>
+          <tr><td>平均标签 / 张</td><td class="num-cell">4.01</td><td class="num-cell">3.02</td><td>变少</td></tr>
+          <tr><td>儿童 / 美食 / 文档</td><td class="num-cell">150 / 45 / 59</td><td class="num-cell">75 / 28 / 19</td><td>覆盖率下降</td></tr>
+          <tr><td>图像编码 p95</td><td class="num-cell">12.1 ms</td><td class="num-cell">90.9 ms</td><td>过 250 ms 闸</td></tr>
+          <tr><td>39 张标注 P / R</td><td class="num-cell">0.753 / 1.000</td><td class="num-cell">0.677 / 0.764</td><td>双降</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="warnbox reveal" style="margin-top:14px"><b>结论：不升级。</b>速度过闸，但中文 249 标签上的覆盖率与精度都下降；唯一增加的是旅游 / 团建 / 民宿 / 夜宵，其中后三个已被人工标注证实是过触发。口径：金标看着 B 版预测勾选，对 B 版有利；文本塔为第三方 8-bit 转换。要重试，先补盲标集与官方 PyTorch 文本塔。</div>
+
+    <div class="callout reveal" style="margin-top:12px"><b>下一步：</b>① 标注页已加盲标（<code>--blind</code>）并扩到 200 张，<code>docs/ai/goldset-200/</code> 待标注，完成后才能测真实召回；② 200 张标完再统一校准剩余 242 个阈值；③ 夜宵 / 天台 / 团建 / 民宿 / 运动 / 乐器 / 广场 7 个过触发标签已做定向阈值修正（单信号 0.840 / 门控 0.780），民宿暂为 0 触发；④ Qwen3-VL 4B 已跑 150 条候选事件，<code>docs/ai/qwen-events/review.html</code> 待人工核对三元组。</div>
+  </section>
+  <section id="roadmap">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">08 · Roadmap</div>
+        <h2><span class="num">08</span>先补短板，再谈换模型</h2>
+      </div>
+      <div class="sec-note">顺序判断：输入 bug → 标签体系 → 地理 / 人脸融合 → 本地 VLM。</div>
+    </div>
+
+    <div class="grid g2 reveal">
+      <div class="prio done">
+        <div class="n">P0</div>
+        <div>
+          <h4>修复与基线（已完成）</h4>
+          <div class="row">修复 SigLIP 输入类型；建立速度 + 7 图冒烟基线；冻结本档案。</div>
+          <div class="acc">验收：标签链路真实生效，基线可复现</div>
+        </div>
+      </div>
+      <div class="prio done">
+        <div class="n">P1</div>
+        <div>
+          <h4>标签体系与阈值（第一轮完成）</h4>
+          <div class="row">新增 41 个轨迹标签（208 → 249）；新增标签双语 prompt；重建 249 条向量；7 图代理标定 7 个阈值；版本标记 <code>siglip2-v2 → v3</code>；金标集采样 / 预测 / 评测 / 校准 / A-B 工具就绪。</div>
+          <div class="acc">验收：7/7 冒烟无回退，存量向量 cos ≥ 0.999；1,200 张中已完成 39 张人工标注</div>
+        </div>
+      </div>
+      <div class="prio done">
+        <div class="n">P2</div>
+        <div>
+          <h4>地理、人脸与时间融合（第一版）</h4>
+          <div class="row"><code>TrajectoryFusion</code>：标签 → 活动；活动 + 已命名人物；同一天 + 同一地点 → 轨迹片段；地点详情新增「这里的活动」「轨迹片段」。</div>
+          <div class="acc">验收：领域检查全通过，地点页可见活动 / 轨迹片段</div>
+        </div>
+      </div>
+      <div class="prio done">
+        <div class="n">P2.5</div>
+        <div>
+          <h4>欠触发修复（第一版完成，已改门控）</h4>
+          <div class="row">Apple Vision 分类器第二信号映射 60+ 概念 + 截图启发式；分析版本 <code>siglip2-v3 → v4</code>。同一批 1,200 张回放：0 标签 178 → 25，天空 7 → 201、文档 59 → 340、截图 101 → 288。A/B 后只在 SigLIP 标签 &lt; 2 时补，39 张接受率 0.579 → 0.705，再做 7 个标签的阈值修正到 <b>0.780</b>。</div>
+          <div class="acc">验收：0 标签 26/1,200（2.2%），误报 80 → 31；衣服 / 海边仍偏低</div>
+        </div>
+      </div>
+      <div class="prio done">
+        <div class="n">P2.6</div>
+        <div>
+          <h4>人工标注与真实精度（第二轮待标注）</h4>
+          <div class="row">40 张分层标注页，用户完成 39 张、111 个标签。SigLIP 预测接受率 <b>0.753</b>，P2.5 并集 <b>0.579</b>；人物 23/24、亲子互动 9/9、儿童 6/6 站得住；夜宵 / 天台 / 民宿 / 团建 / 抱孩子 过触发被证实。做定向阈值修正后单信号 <b>0.840</b>、门控 <b>0.780</b>。标注页已加 <code>--blind</code> 并扩到 200 张（已排除前 40 张）。</div>
+          <div class="acc">验收：盲标完成后测真实召回、统一校准剩余 242 个阈值</div>
+        </div>
+      </div>
+      <div class="prio done">
+        <div class="n">P2.7</div>
+        <div>
+          <h4>So400m 升级评估（已完成）</h4>
+          <div class="row">公开 384px Core ML 转换 + 1152 维标签向量，跑同 1,200 张与 39 张标注。p95 91 ms 过闸，但 0 标签 17.3% vs 14.8%、平均标签 3.02 vs 4.01、样本内校准 F1 0.788 vs 0.961。</div>
+          <div class="acc">验收：未通过，继续用 SigLIP2-B 256；重试需盲标集与官方文本塔</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">P3</div>
+        <div>
+          <h4>本地 VLM 事件抽取（待人工核对）</h4>
+          <div class="row">Qwen2.5-VL 3B / Qwen3-VL 4B / 8B 同 12 张 JSON 12/12，中位 4.57 / 5.14 / 10.04 s；4B 为默认。Qwen3-VL 4B 批量跑 150 条候选事件：JSON <b>150/150</b>、中位 3.9 s，<code>{activity, participants, setting}</code> 核对页待人工判分。</div>
+          <div class="acc">验收：JSON 合法率 ≥ 98%，三元组 F1 ≥ 0.72；「和谁」仍靠人脸</div>
+        </div>
+      </div>
+      <div class="prio">
+        <div class="n">P4</div>
+        <div>
+          <h4>视频金标（数据已就绪，待标注）</h4>
+          <div class="row">约 3.6 万条视频从未评测。已按时长分层抽 120 条，每条取 5 帧（8% / 29% / 50% / 71% / 92%），逐帧跑 SigLIP 并聚合成视频级标签（过半帧命中）；聚合后 <b>0 标签 7/120（5.8%）</b>，标注页待人工完成。</div>
+          <div class="acc">验收：视频标签与图片同口径评测；0 标签率与召回同时可比</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout reveal" style="margin-top:14px"><b>调优顺序的判断：</b>P0 输入 bug 已修；P1 标签已补第一轮；P2 融合已落地第一版；P2.5 欠触发已补、并改成门控（v4）；P2.6 已有 39 张真实标注、200 张盲标页就绪；P2.7 So400m 已测、未通过；P2.8 定向阈值修正已完成（单信号 0.840 / 门控 0.780）；P3 150 条候选事件待判分；P4 120 条视频金标待标注。下一笔预算仍应投给 <b>人工判分（盲标 / 事件 / 视频）</b>，而不是换模型。</div>
+  </section>
+
+  <!-- ================= 09 边界 ================= -->
+  <section id="risk">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">09 · Risk &amp; Boundary</div>
+        <h2><span class="num">09</span>哪些事不能做，哪些话不能说</h2>
+      </div>
+      <div class="sec-note">轨迹理解越深，隐私与幻觉风险越高。</div>
+    </div>
+
+    <div class="grid g3 reveal">
+      <div class="panel"><div class="tag d">隐私</div><h4 style="margin-top:8px">人脸与儿童</h4><p class="sub" style="margin:0">全链路本地。人脸聚类与儿童照片属于敏感数据，L3 必须默认关闭、按次授权、结果只写本机。</p></div>
+      <div class="panel"><div class="tag d">幻觉</div><h4 style="margin-top:8px">地标名称</h4><p class="sub" style="margin:0">没有 GPS 时只输出类别（寺庙 / 教堂 / 古镇），不输出具体景点名。相似建筑不等于同一地点。</p></div>
+      <div class="panel"><div class="tag b">敏感信息</div><h4 style="margin-top:8px">票据与证件</h4><p class="sub" style="margin:0">OCR 文本进入搜索索引，需要可见的清除入口（已有「清空识别结果」）。</p></div>
+      <div class="panel"><div class="tag b">性能</div><h4 style="margin-top:8px">与播放争抢</h4><p class="sub" style="margin:0">Vision OCR 占单张 70%+；与浏览 / 播放同时进行时会争抢 ANE / GPU，需要限流与可暂停。</p></div>
+      <div class="panel"><div class="tag c">许可</div><h4 style="margin-top:8px">模型与体积</h4><p class="sub" style="margin:0">SigLIP2 与 So400m 均为 Apache-2.0；So400m 转换版 1.56 GB（图 854 MB + 文本 709 MB），分发前需确认转换链来源。</p></div>
+      <div class="panel"><div class="tag c">漂移</div><h4 style="margin-top:8px">分布变化</h4><p class="sub" style="margin:0">截图、社交下载图、AI 生成图会拉低阈值有效性；金标集需每半年补样。</p></div>
+      <div class="panel"><div class="tag b">标定</div><h4 style="margin-top:8px">代理 ≠ 校准</h4><p class="sub" style="margin:0">41 个新标签里只有 7 个在 7 张图上调过阈值，其余仍是 0.085；小样本会把阈值带偏，发布前必须用金标集复核。</p></div>
+      <div class="panel"><div class="tag b">融合</div><h4 style="margin-top:8px">不要过度解读</h4><p class="sub" style="margin:0">「亲子时光」只表示画面里有亲子线索，不代表关系质量；文案保持「画面里常见」，不写「他很幸福」。</p></div>
+      <div class="panel"><div class="tag d">隐私</div><h4 style="margin-top:8px">轨迹只用已命名人物</h4><p class="sub" style="margin:0">未命名人脸聚类不进入轨迹片段；所有融合结果只存本机，不上传，不回写系统「照片」。</p></div>
+    </div>
+  </section>
+
+  <!-- ================= 10 附录 ================= -->
+  <section id="appendix">
+    <div class="sec-head reveal">
+      <div>
+        <div class="kicker">10 · Appendix</div>
+        <h2><span class="num">10</span>复现、原始输出与来源</h2>
+      </div>
+      <div class="sec-note">脚本在 <code>Tools/vision_bench/</code>，读取已安装模型，不访问用户照片。</div>
+    </div>
+
+    <div class="split reveal">
+      <div class="panel">
+        <h4 style="margin-top:0">复现命令</h4>
+        <div class="codeblock" style="margin-top:10px">
+          <pre><span class="c"># 1) 标签向量重建（改 tags.json 后必须执行）</span>
+swiftc -O Tools/vision_bench/tag_embedding_build.swift \
+  Sources/Luma/Services/Media/SigLIPTokenizer.swift \
+  -o /tmp/tag_embedding_build \
+  -framework CoreML -framework Foundation
+/tmp/tag_embedding_build \
+  Resources/Models/SigLIP2Assets/tags.json \
+  Resources/Models/SigLIP2Assets
+
+<span class="c"># 2) 阈值标定（manifest 是 {path, tags} 列表）</span>
+swiftc -O Tools/vision_bench/tag_calibrate.swift \
+  Sources/Luma/Services/Media/SigLIPTokenizer.swift \
+  -o /tmp/tag_calibrate \
+  -framework CoreML -framework AppKit -framework ImageIO -framework Foundation
+/tmp/tag_calibrate /tmp/manifest.json \
+  Resources/Models/SigLIP2Assets/tags.json \
+  "$HOME/Library/Application Support/Luma/Models/SigLIP2" \
+  /tmp/tag_calibration.csv
+
+<span class="c"># 3) 速度基线</span>
+swiftc -O Tools/vision_bench/vision_speed_bench.swift \
+  -o /tmp/vision_speed_bench \
+  -framework CoreML -framework Vision -framework AppKit \
+  -framework ImageIO -framework CoreText \
+  -framework UniformTypeIdentifiers
+/tmp/vision_speed_bench
+
+<span class="c"># 4) 标签冒烟（需自备 7 张样例到 build/samples）</span>
+swiftc -O Tools/vision_bench/vision_tag_smoke.swift \
+  -o /tmp/vision_tag_smoke \
+  -framework CoreML -framework AppKit -framework ImageIO
+/tmp/vision_tag_smoke
+
+<span class="c"># 5) 领域检查（融合规则 / 分天分组 / 人物挂载）</span>
+swift run LumaDataChecks</pre>
+        </div>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">本次原始输出（摘要）</h4>
+        <div class="codeblock" style="margin-top:10px">
+          <pre>machine: Apple M5  cores=10  mem=16GB  macOS=27.0.1
+load: siglip_image=44ms siglip_text=177ms yolo=24ms
+siglip imageConstraint: Color, 256 x 256
+SigLIP2 image 256x256   p50=5.92ms  p95=6.77ms  (复测 6.30ms)
+SigLIP2 text 64 tokens  p50=8.23ms  p95=8.50ms
+tag match 249x768       p50=0.07ms
+YOLO11n 640^2           p50=1.63ms  p95=1.89ms
+Vision full             p50=116.5ms p95=120.3ms  (高负载 143.7ms)
+Vision OCR only         p50=104.4ms p95=116.6ms
+decode 4032->1200px     p50=22.0ms  p95=24.8ms
+synthetic OCR: CER=0.00%
+tag smoke: 7/7 top-6 hit  (beach: 海边 .132 / 沙滩 .108)
+tag vectors: 249 x 768 float16 = 382464 B
+rebuild: 存量 208 条 cos >= 0.999
+calibration: 7 个新标签上调，其余 34 个保持 0.085</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="split reveal" style="margin-top:16px">
+      <div class="panel">
+        <h4 style="margin-top:0">现有能力速览</h4>
+        <div class="tw" style="margin-top:10px">
+          <table style="min-width:0">
+            <thead><tr><th>能力</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td>中文零样本标签 / 向量</td><td><span class="tag a">已生效 · 249</span></td></tr>
+              <tr><td>OCR / 条码 / 人脸 / 姿态 / 文档</td><td><span class="tag a">已生效</span></td></tr>
+              <tr><td>YOLO 80 类主体补充</td><td><span class="tag a">已生效</span></td></tr>
+              <tr><td>轨迹融合（活动 / 轨迹片段）</td><td><span class="tag a">第一版</span></td></tr>
+              <tr><td>图片理解金标集</td><td><span class="tag b">已标注 39 / 1,200</span></td></tr>
+              <tr><td>阈值校准记录</td><td><span class="tag b">7 图代理</span></td></tr>
+              <tr><td>So400m / 384px 档</td><td><span class="tag b">已实测 / 未通过</span></td></tr>
+              <tr><td>L3 事件 / 关系抽取</td><td><span class="tag b">模型已接入 / 事件 F1 待测</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h4 style="margin-top:0">来源与配套</h4>
+        <ul class="src" style="font-size:12.5px;padding-left:18px">
+          <li>SigLIP 2: Multilingual Vision-Language Encoders…, arXiv:2502.14786（模型规模与公开指标）</li>
+          <li>Qwen2.5-VL-3B-Instruct 模型卡（MMMU 53.1 / DocVQA 93.9 / InfoVQA 77.1）</li>
+          <li>仓库实现：<code>PhotoIntelligence</code> / <code>SigLIPEngine</code> / <code>ObjectDetector</code> / <code>LibraryStore+Intelligence</code></li>
+        </ul>
+        <div class="divider" style="margin:14px 0"></div>
+        <p style="font-size:12.8px;margin:0">完整 Markdown 版（含逐节数据与变更记录）：<br><a href="vision-understanding-benchmark-2026-11.md" style="color:#2C4C7A">docs/ai/vision-understanding-benchmark-2026-11.md</a></p>
+      </div>
+    </div>
+
+    <div class="panel reveal" style="margin-top:16px">
+      <h4 style="margin-top:0">金标集流水线</h4>
+      <div class="codeblock" style="margin-top:10px">
+        <pre><span class="c"># 1) 分层采样 1,200 张候选（只读元数据 / 缩略图）</span>
+swiftc -O -parse-as-library Tools/vision_bench/goldset_sample.swift \
+  -o /tmp/goldset_sample \
+  -framework AppKit -framework Vision -framework ImageIO -framework Foundation
+/tmp/goldset_sample "/path/to/photos" goldset.json 1200
+
+<span class="c"># 2) 人工标注 labels / text / event 后，跑 249 标签预测</span>
+swiftc -O -parse-as-library Tools/vision_bench/vision_predict.swift \
+  -o /tmp/vision_predict \
+  -framework CoreML -framework AppKit -framework ImageIO -framework Foundation
+/tmp/vision_predict goldset.json \
+  Resources/Models/SigLIP2Assets/tags.json \
+  "$HOME/Library/Application Support/Luma/Models/SigLIP2" predictions.json
+
+<span class="c"># 3) P/R/F1 + 切片 + bootstrap；249 阈值校准；A-B 对比</span>
+python3 Tools/vision_bench/goldset_eval.py eval goldset.json predictions.json \
+  --out report.md --csv report.csv
+python3 Tools/vision_bench/goldset_eval.py calibrate goldset.json predictions.json \
+  --out thresholds.json --min-pos 5
+python3 Tools/vision_bench/goldset_eval.py compare goldset.json base.json so400m.json</pre>
+      </div>
+    </div>
+
+    <h3 class="reveal">7 图代理标定（不是金标集）</h3>
+    <div class="tw reveal">
+      <table>
+        <thead><tr><th>标签</th><th>正样本最低分</th><th>负样本最高分</th><th>原阈值</th><th>新阈值</th><th>依据</th></tr></thead>
+        <tbody>
+          <tr><td>沙滩</td><td class="num-cell">0.108</td><td class="num-cell">0.022</td><td class="num-cell">0.085</td><td class="num-cell">0.103</td><td>正负可分，取最低正样本 − 0.005</td></tr>
+          <tr><td>自驾</td><td class="num-cell">—</td><td class="num-cell">0.106</td><td class="num-cell">0.085</td><td class="num-cell">0.111</td><td>无正样本，抬到最高负样本之上</td></tr>
+          <tr><td>纪念日</td><td class="num-cell">—</td><td class="num-cell">0.088</td><td class="num-cell">0.085</td><td class="num-cell">0.093</td><td>同上</td></tr>
+          <tr><td>牵手</td><td class="num-cell">—</td><td class="num-cell">0.093</td><td class="num-cell">0.085</td><td class="num-cell">0.098</td><td>同上</td></tr>
+          <tr><td>宠物互动</td><td class="num-cell">—</td><td class="num-cell">0.090</td><td class="num-cell">0.085</td><td class="num-cell">0.095</td><td>同上</td></tr>
+          <tr><td>遛狗</td><td class="num-cell">—</td><td class="num-cell">0.089</td><td class="num-cell">0.085</td><td class="num-cell">0.094</td><td>同上</td></tr>
+          <tr><td>停车场</td><td class="num-cell">—</td><td class="num-cell">0.089</td><td class="num-cell">0.085</td><td class="num-cell">0.094</td><td>同上</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub reveal" style="margin-top:8px">其余 34 个新标签的负样本最高分低于 0.085，保持默认阈值。这不是准确率证据，只说明在 7 张已见图上没有明显误报。</p>
+
+    <div class="warnbox reveal" style="margin-top:16px"><b>边界声明：</b>本页的本机实测覆盖 SigLIP2-B、So400m 384px、Apple 分类器与 Qwen 三档；Florence-2、CLIP、YOLO-World 等仍为公开论文 / 模型卡指标，未在拾光内复测。7/7 冒烟、0.00% CER、39 张标注与 7 图代理标定只证明链路可用与方向，不等于全库准确率；249 个阈值仍需盲标集正式校准。</div>
+  </section>
+
+  <footer>
+    <div>拾光 Luma · 本地图像理解能力档案 · 2026-11-28</div>
+    <div>读图，是为了读懂你走过的路。</div>
+  </footer>
+</div>
+
+<script>
+  // 滚动进入动画
+  (function(){
+    var items = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      items.forEach(function(el){ el.classList.add('in'); });
+      return;
+    }
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.06, rootMargin: '0px 0px -30px 0px' });
+    items.forEach(function(el){ io.observe(el); });
+  })();
+
+  // TOC 高亮
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var sections = links.map(function(a){ return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+    if (!('IntersectionObserver' in window)) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        if (entry.isIntersecting) {
+          links.forEach(function(l){ l.classList.remove('active'); });
+          var active = links.find(function(l){ return l.getAttribute('href') === '#' + entry.target.id; });
+          if (active) active.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-40% 0px -50% 0px', threshold: 0 });
+    sections.forEach(function(s){ io.observe(s); });
+    // 回到页首时复位到第一条
+    window.addEventListener('scroll', function(){
+      if (window.scrollY < 220) {
+        links.forEach(function(l){ l.classList.remove('active'); });
+        if (links[0]) links[0].classList.add('active');
+      }
+    }, { passive: true });
+  })();
+</script>
+</body>
+</html>

@@ -37,6 +37,8 @@ struct GalleryView: View {
     @Environment(CatalogBrowserModel.self) var catalog
     @Environment(AppSettings.self) var settings
     @Environment(SelectionModel.self) var selectionModel
+    /// 搜索框里的「改写」是一次性 AI 任务：状态单独观察，避免拖慢整页刷新。
+    @ObservedObject var aiAssist = AIAssistCenter.shared
     /// 图库总览的合计读数：标题与副标题直接读这一份，与页面内容同源。
     @EnvironmentObject var libraryAggregate: LibraryAggregateModel
     @AppStorage(LibraryHubTab.storageKey) var libraryHubTabRaw = LibraryHubTab.resources.rawValue
@@ -60,6 +62,8 @@ struct GalleryView: View {
     @State var systemRenderLimit = 1_200
     /// 「图库」页：滚动条进入虚拟占位区后按排名重定位窗口的防抖任务。
     @State var timelineJumpTask: Task<Void, Never>?
+    /// 缩放停手后补齐分页窗口的防抖任务（捏合过程中不取页）。
+    @State var zoomFillTask: Task<Void, Never>?
     /// 首次进入的滚动位置由 `.defaultScrollAnchor(.bottom)` 决定；落位前不能把 offset≈0 当成用户拖动。
     @State var timelineGridReady = false
     /// 上一次重定位窗口时的滚动位置，避免同一位置反复换页。
@@ -71,9 +75,6 @@ struct GalleryView: View {
     @State var olderLoadAnchor: UUID?
     /// 从年 / 月总览切回「所有照片」：网格是新建的，需要把视野拉回已加载窗口。
     @State var needsTimelineRestore = false
-    /// 视野落在虚拟占位区（还没取到这一段照片）：用来显示「正在定位…」提示，
-    /// 只在进入 / 离开占位时切换，不参与逐帧刷新。
-    @State var isInVirtualPlaceholder = false
     /// 位置页的搜索关键词：搜索框已移到顶部工具栏，状态放在这里与内容共享。
     @State var placesQuery = ""
     /// 滚动记账：只服务分页与顶栏日期范围计算，不参与渲染。
@@ -91,11 +92,6 @@ struct GalleryView: View {
     var lastForwardPreloadOffset: CGFloat {
         get { scrollBook.lastForwardPreloadOffset }
         nonmutating set { scrollBook.lastForwardPreloadOffset = newValue }
-    }
-
-    var lastDateSpanOffset: CGFloat {
-        get { scrollBook.lastDateSpanOffset }
-        nonmutating set { scrollBook.lastDateSpanOffset = newValue }
     }
 
     var lastScrollOffset: CGFloat {
@@ -120,12 +116,12 @@ struct GalleryView: View {
              .allAlbums, .folder, .systemFolder, .people, .duplicates, .health, .systemHealth,
              .mediaTypes, .scenes, .systemAlbums, .systemMediaTypes, .systemScenes,
              .moreItems, .systemMoreItems, .systemLibraries, .cloudStorages,
-             .catalogSources, .networkCinema,
+             .catalogSources, .networkCinema, .atlas,
              .systemDuplicates, .systemImports, .revisit, .systemRevisit,
              .keywords, .systemKeywords,
              .ratings, .flags, .colorLabels, .systemRatings, .systemFlags, .systemColorLabels,
              .cinema, .cloudCinema, .catalogSource, .videos, .systemVideos,
-             .iptv:
+             .iptv, .assistant:
             return false
         default:
             // 网络存储也使用照片网格：排序、筛选、搜索、缩放与键盘导航一致可用。
@@ -150,6 +146,8 @@ struct GalleryView: View {
             return [.networkCinema]
         case .catalogSources, .catalogSource:
             return [.catalog]
+        case .atlas:
+            return [.atlas]
         case .cinema, .cloudCinema:
             return [.cinema]
         case .iptv:
@@ -165,7 +163,7 @@ struct GalleryView: View {
     var supportsWindowSearch: Bool {
         if isHubBarScope || isNetworkCinemaScope || isCatalogScope || isTVHubScope { return false }
         switch store.sidebarItem {
-        case .cinema, .cloudCinema: return false
+        case .cinema, .cloudCinema, .atlas, .assistant: return false
         default: return true
         }
     }
@@ -206,20 +204,15 @@ struct GalleryView: View {
         return store.sidebarTitle
     }
 
-    /// 顶栏副标题：图库总览展示合计体量，其它页面沿用网格算出的日期范围。
+    /// 顶栏副标题：显示已加载窗口的日期跨度。
+    /// 只读窗口首尾两张（O(1)），不随滚动重算——之前逐帧扫全部单元格并写 `@Observable`，
+    /// 每帧都会让整棵网格重新求值，是上下拖动发卡的主因。
     var navigationSubtitleText: String {
-        guard isLibraryHubScope else { return store.visibleDateSpanText }
-        let libraries = libraryAggregate.summaries.count
-        switch LibraryHubTab(rawValue: libraryHubTabRaw) ?? .resources {
-        case .resources:
-            let photos = libraryAggregate.summaries.reduce(0) { $0 + $1.photos }
-            let videos = libraryAggregate.summaries.reduce(0) { $0 + $1.videos }
-            return "\(libraries) 个图库 · \(photos.formatted()) 张照片 · \(videos.formatted()) 个视频"
-        case .photos:
-            return "\(libraries) 个图库 · \(libraryAggregate.items.count.formatted()) 张"
-        case .favorites:
-            return "\(libraries) 个图库 · \(libraryAggregate.favorites.count.formatted()) 张"
-        }
+        guard !isLibraryHubScope, store.isTimelineScope, store.grouping == .all else { return "" }
+        let photos = store.loadedWindowPhotos.isEmpty ? store.visiblePhotos : store.loadedWindowPhotos
+        guard let first = photos.first, let last = photos.last else { return "" }
+        return DateText.span(from: min(first.capturedAt, last.capturedAt),
+                             to: max(first.capturedAt, last.capturedAt))
     }
 
     var isRevisitScope: Bool {
@@ -251,6 +244,17 @@ struct GalleryView: View {
     /// 网络资源总览：浏览 / 片单 / 更新日历的分页切换放在工具栏中区。
     var isCatalogHubScope: Bool {
         store.sidebarItem == .catalogSources
+    }
+
+    /// 图集详情：显示形式与缩略图缩放搬到窗口工具栏，与普通图库一致；
+    /// 正文里不再单独占一条控制条。
+    var showsCatalogGalleryToolbar: Bool {
+        guard isCatalogScope,
+              catalog.inlineDetailItem != nil,
+              catalog.selectedSource?.kind.isGallerySite == true,
+              let detail = catalog.detail,
+              detail.item.id == catalog.inlineDetailItem?.id else { return false }
+        return !detail.articleImages.isEmpty
     }
 
     /// 网络存储总览：存储 / 索引 / 影院 / 续播 / 维护的分页切换同样放在工具栏中区。
@@ -323,6 +327,9 @@ struct GalleryView: View {
 
     /// 需要缩放控件的范围：照片/相簿网格，以及人物、位置这类卡片墙。
     var supportsZoomControl: Bool {
+        // 查看器打开时网格不在最前：这个滑杆调不动照片，容易让人以为「缩不小」，
+        // 顶栏改由查看器自己的「− 100% +」接管。
+        if store.viewerPhoto != nil { return false }
         // 总览类分页（图库 / 网络资源 / 网络存储 / 影院 / 电视）是导航卡片，没有可缩放的网格。
         if isLibraryHubScope || isCatalogHubScope || isCloudStoragesHubScope
             || isNetworkCinemaScope || isTVHubScope {
@@ -383,6 +390,11 @@ struct GalleryView: View {
             // 大图库：筛选/排序/分段下推到 SQLite，这里只加载窗口的第一页。
             store.reloadVisibleWindowIfNeeded()
         }
+        // 缩放档位（600 / 1200 / 2400 一页）变化后才补齐窗口：
+        // 捏合过程中不取页，停手 0.26 秒再按缺口追加，缩放路径上没有任何加载与整表替换。
+        .onChange(of: store.windowPageSizeForCurrentZoom) { _, _ in
+            scheduleZoomWindowFill()
+        }
         // 影院页的标题由顶栏控制台自己承担，避免「系统标题 + 控制台」两套标题并排。
         // 分页胶囊本身已表明当前模块，五个总览页不再单独写窗口标题。
         .navigationTitle(isWindowedViewing || showsCinemaConsole
@@ -397,33 +409,23 @@ struct GalleryView: View {
                             ? Text("")
                             : Text(navigationSubtitleText))
         .onChange(of: store.grouping) { _, grouping in
-            if grouping != .all {
-                store.visibleDateSpanText = ""
-            } else {
+            if grouping == .all {
                 // 回到「所有照片」时网格会重新创建：标记一次视野恢复，交给网格 onAppear 处理。
                 needsTimelineRestore = true
             }
-            lastDateSpanOffset = .greatestFiniteMagnitude
-            isInVirtualPlaceholder = false
         }
         .onChange(of: store.sidebarItem) { _, _ in
-            store.visibleDateSpanText = ""
-            lastDateSpanOffset = .greatestFiniteMagnitude
             // 换到另一个范围时网格整体换页：等新窗口取回后再锚定一次，
             // 避免沿用上一个范围的滚动偏移，停在空白占位或半屏照片上。
             needsTimelineRestore = true
             timelineGridReady = false
             lastTimelineJumpOffset = -1
-            isInVirtualPlaceholder = false
         }
         // 网盘的 sidebarItem 始终是 `.cloudMount`：切换范围 / 目录 / 总览时同样要重置网格状态。
         .onChange(of: cloudPageIdentity) { _, _ in
-            store.visibleDateSpanText = ""
-            lastDateSpanOffset = .greatestFiniteMagnitude
             needsTimelineRestore = true
             timelineGridReady = false
             lastTimelineJumpOffset = -1
-            isInVirtualPlaceholder = false
         }
         .toolbar {
             // 影院控制台由 CinemaTitlebarConsoleHost 直接铺在标题栏上，
@@ -451,6 +453,9 @@ struct GalleryView: View {
                 ToolbarItem(placement: .navigation) {
                     if supportsZoomControl {
                         zoomControl
+                    } else if showsCatalogGalleryToolbar {
+                        // 图集详情：显示形式 + 缩放进顶栏，正文只留图片。
+                        CatalogGalleryToolbarControls()
                     }
                 }
                 ToolbarItem(placement: .navigation) {
@@ -567,8 +572,12 @@ struct GalleryView: View {
 @MainActor
 final class GalleryScrollBookkeeping {
     var lastScrollOffset: CGFloat = 0
-    var lastDateSpanOffset: CGFloat = .greatestFiniteMagnitude
     var lastForwardPreloadOffset: CGFloat = -.greatestFiniteMagnitude
     var lastTimelineJumpOffset: CGFloat = -1
+    /// 最后一次按视野中心预取缩略图的位置（窗口下标）与时间：避免每帧重复排队。
+    var lastPrefetchCenterIndex: Int = -1
+    var lastPrefetchStamp: TimeInterval = 0
+    /// 反序网格上一次检查「向上接续下一页」的偏移：连续上滑时按 24pt 节流。
+    var lastReversePreloadOffset: CGFloat = .greatestFiniteMagnitude
 }
 

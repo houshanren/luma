@@ -98,6 +98,8 @@ struct CinemaSeriesCard: View {
     let series: CinemaSeries
     /// 海报墙里跟随网格列宽（外框和海报永远同宽）；书架里固定 156×234。
     var fillWidth: Bool = false
+    /// 键盘游标停在这一张：画一圈琥珀色外框。
+    var isCursor: Bool = false
     let onOpen: () -> Void
 
     @Environment(LibraryStore.self) private var store
@@ -185,8 +187,9 @@ struct CinemaSeriesCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(hovered ? LumaBrand.amber.opacity(0.55) : Color.white.opacity(0.08),
-                                  lineWidth: hovered ? 1.2 : 0.5)
+                    .strokeBorder(isCursor ? LumaBrand.amber
+                                  : (hovered ? LumaBrand.amber.opacity(0.55) : Color.white.opacity(0.08)),
+                                  lineWidth: isCursor ? 2.2 : (hovered ? 1.2 : 0.5))
             }
             // 悬停只加深描边与投影，不再放大卡片：放大后描边会溢出格子，外框和海报对不齐。
             .shadow(color: .black.opacity(hovered ? 0.26 : 0.14),

@@ -141,20 +141,28 @@ final class SearchCenter: ObservableObject {
                                total: running.count,
                                message: "正在检索 \(running.count) 个来源")
 
-        var collected: [SearchSection] = []
+        // 资源这类「一个来源内部还有多个站点」的分区会边检索边回调：
+        // 每到一个站点就替换同来源分区并刷新计数，不再等全部站点跑完。
+        let publish: @MainActor (SearchSection) -> Void = { [weak self] section in
+            guard let self, !Task.isCancelled, self.query == keyword else { return }
+            self.merge(section)
+            self.store?.updateSourceJob(self.jobID,
+                                        completed: running.count - self.searchingSources.count,
+                                        total: running.count,
+                                        message: "\(section.source.title) · 已找到 \(self.totalCount) 项")
+        }
         await withTaskGroup(of: SearchSection.self) { group in
             for provider in running {
-                group.addTask { await provider.search(query: keyword, limit: self.limit) }
+                group.addTask {
+                    await provider.search(query: keyword, limit: self.limit, onPartial: publish)
+                }
             }
             for await section in group {
                 guard !Task.isCancelled, query == keyword else {
                     group.cancelAll()
                     return
                 }
-                collected.append(section)
-                collected.sort { order($0.source) < order($1.source) }
-                sections = collected
-                counts[section.source] = section.total
+                merge(section)
                 searchingSources.remove(section.source)
                 let done = running.count - searchingSources.count
                 store?.updateSourceJob(jobID,
@@ -188,6 +196,13 @@ final class SearchCenter: ObservableObject {
 
     private func order(_ source: SearchSourceKind) -> Int {
         scopes.firstIndex(of: source) ?? scopes.count
+    }
+
+    /// 同一来源的多次发布按「替换」处理：分区间顺序保持稳定，不随到达顺序抖动。
+    private func merge(_ section: SearchSection) {
+        sections = (sections.filter { $0.source != section.source } + [section])
+            .sorted { order($0.source) < order($1.source) }
+        counts[section.source] = section.total
     }
 
     // MARK: - 助手现场

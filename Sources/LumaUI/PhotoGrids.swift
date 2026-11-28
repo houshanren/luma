@@ -51,7 +51,9 @@ package struct SectionHeaderView: View {
 }
 
 package struct SquarePhotoGrid: View {
-    @EnvironmentObject private var host: PhotoGridHost
+    @Environment(PhotoGridHost.self) private var host
+    /// 单元格矩形写进共享缓存（引用类型），滚动时不再走 Preference 逐帧回传。
+    @Environment(\.photoFrames) private var frames
     package let photos: [PhotoItem]
     package let availableWidth: CGFloat
     /// 非图库网格（人物详情等）打开查看器时的顺序基准。
@@ -88,14 +90,7 @@ package struct SquarePhotoGrid: View {
                           stackCount: stacks[photo.id]?.count ?? 1,
                           stackIsBurst: stacks[photo.id]?.isBurst ?? false)
                     .id(photo.id)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: PhotoFramePreferenceKey.self,
-                                value: [photo.id: geo.frame(in: .named(PhotoMarqueeSpace.name))]
-                            )
-                        }
-                    )
+                    .modifier(PhotoFrameReporter(id: photo.id, cache: frames))
             }
         }
     }
@@ -115,7 +110,7 @@ package struct JustifiedRowEntry: Identifiable {
 }
 
 package struct JustifiedPhotoGrid: View {
-    @EnvironmentObject private var host: PhotoGridHost
+    @Environment(PhotoGridHost.self) private var host
     package let photos: [PhotoItem]
     package let availableWidth: CGFloat
     package let targetHeight: CGFloat
@@ -184,7 +179,7 @@ package struct JustifiedPhotoGrid: View {
 /// 瀑布流：等宽多列、每列高度自适应，保留原始宽高比，竖图横图混排也不留空洞。
 /// 卡片比其它网格更大，并常驻投影，让照片从背景里浮出来。
 package struct MasonryPhotoGrid: View {
-    @EnvironmentObject private var host: PhotoGridHost
+    @Environment(PhotoGridHost.self) private var host
     package let photos: [PhotoItem]
     package let availableWidth: CGFloat
     package let targetWidth: CGFloat
@@ -262,7 +257,7 @@ package struct MasonryPhotoGrid: View {
 
 /// 列表：一行一项，缩略图 + 文件名 + 拍摄日期 / 尺寸 / 大小，适合快速查找与核对元数据。
 package struct PhotoListView: View {
-    @EnvironmentObject private var host: PhotoGridHost
+    @Environment(PhotoGridHost.self) private var host
     package let photos: [PhotoItem]
     package let availableWidth: CGFloat
     /// 堆叠网格：列表里标注整组张数。
@@ -324,7 +319,7 @@ package struct PhotoListView: View {
 }
 
 private struct PhotoListRow: View {
-    @EnvironmentObject private var host: PhotoGridHost
+    @Environment(PhotoGridHost.self) private var host
     let photo: PhotoItem
     let thumbSide: CGFloat
     let showsResolution: Bool
@@ -456,6 +451,5 @@ private struct PhotoListRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(photo.displayTitle)
         .accessibilityValue("\(kindText) · \(DateText.dayFormatter.string(from: photo.capturedAt))")
-        .help(photo.originalName)
     }
 }

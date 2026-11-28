@@ -41,6 +41,8 @@ struct SmartCollectionCard: Identifiable {
 struct CollectionsView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    /// 回忆 / 旅行的 AI 起名状态：卡片右键触发，进度只影响这一张卡。
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
     @State private var hoveredID: String?
 
     var cards: [SmartCollectionCard] {
@@ -162,6 +164,8 @@ struct CollectionsView: View {
             }
             .padding(24)
         }
+        // 只存取本图库的起名结果；切图库后自动换成另一份。
+        .task { store.restoreAIStoryTitles() }
     }
 
     func throwbackBanner(_ memory: PhotoMemory) -> some View {
@@ -217,7 +221,8 @@ struct CollectionsView: View {
     }
 
     func tripCard(_ trip: TripStory) -> some View {
-        Button {
+        let aiTitle = store.aiStoryTitle(for: trip)
+        return Button {
             store.activeTrip = trip
         } label: {
             ZStack(alignment: .bottomLeading) {
@@ -225,11 +230,11 @@ struct CollectionsView: View {
                 LinearGradient(colors: [.clear, .black.opacity(0.8)],
                                startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(trip.title)
+                    Text(aiTitle?.title ?? trip.title)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(trip.subtitle)
+                    Text(aiTitle?.narration.isEmpty == false ? aiTitle!.narration : trip.subtitle)
                         .font(.system(size: 10))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)
@@ -245,6 +250,12 @@ struct CollectionsView: View {
                             .background(.black.opacity(0.3), in: Circle())
                             .background(.ultraThinMaterial, in: Circle())
                         Spacer()
+                        if aiAssist.storyLoadingID == trip.id {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .padding(6)
+                                .background(.black.opacity(0.3), in: Circle())
+                        }
                     }
                     Spacer()
                 }
@@ -258,11 +269,17 @@ struct CollectionsView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("查看旅行故事线")
+        .contextMenu {
+            Button(aiTitle == nil ? "AI 起名与旁白" : "重新 AI 起名") {
+                Task { await store.generateAIStoryTitle(for: trip) }
+            }
+        }
+        .help("查看旅行故事线 · 右键可用 AI 起名")
     }
 
     func memoryCard(_ memory: PhotoMemory) -> some View {
-        Button {
+        let aiTitle = store.aiStoryTitle(for: memory)
+        return Button {
             store.activeMemory = memory
         } label: {
             ZStack(alignment: .bottomLeading) {
@@ -275,21 +292,29 @@ struct CollectionsView: View {
                 LinearGradient(colors: [.clear, .black.opacity(0.78)],
                                startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(memory.title)
+                    Text(aiTitle?.title ?? memory.title)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text(memory.subtitle)
+                    Text(aiTitle?.narration.isEmpty == false ? aiTitle!.narration : memory.subtitle)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(2)
                 }
                 .padding(12)
 
                 VStack {
                     HStack {
                         Spacer()
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 21))
-                            .foregroundStyle(.white.opacity(0.9))
+                        if aiAssist.storyLoadingID == memory.id {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .padding(6)
+                                .background(.black.opacity(0.3), in: Circle())
+                        } else {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 21))
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
                     }
                     Spacer()
                 }
@@ -303,7 +328,12 @@ struct CollectionsView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("播放回忆影片")
+        .contextMenu {
+            Button(aiTitle == nil ? "AI 起名与旁白" : "重新 AI 起名") {
+                Task { await store.generateAIStoryTitle(for: memory) }
+            }
+        }
+        .help("播放回忆影片 · 右键可用 AI 起名")
     }
 
     func collectionCard(_ card: SmartCollectionCard) -> some View {

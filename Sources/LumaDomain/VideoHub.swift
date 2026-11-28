@@ -153,8 +153,12 @@ package struct VideoHubData {
     package var durations: [VideoGroup] = []
     package var places: [VideoGroup] = []
     package var people: [VideoGroup] = []
+    /// 时间轴布局按天分好的组：放在这里预生成，避免视图每次重绘都重新分组。
+    package var days: [VideoGroup] = []
     package var availableYears: [Int] = []
     package var totalDuration: Double = 0
+    /// 有有效时长的视频数，用于「平均时长」；避免每次重绘都扫一遍全部视频。
+    package var durationSamples: Int = 0
     package var recentCount: Int = 0
     package var longest: PhotoItem?
     package init(
@@ -166,8 +170,10 @@ package struct VideoHubData {
         durations: [VideoGroup] = [],
         places: [VideoGroup] = [],
         people: [VideoGroup] = [],
+        days: [VideoGroup] = [],
         availableYears: [Int] = [],
         totalDuration: Double = 0,
+        durationSamples: Int = 0,
         recentCount: Int = 0,
         longest: PhotoItem? = nil
     ) {
@@ -179,8 +185,10 @@ package struct VideoHubData {
         self.durations = durations
         self.places = places
         self.people = people
+        self.days = days
         self.availableYears = availableYears
         self.totalDuration = totalDuration
+        self.durationSamples = durationSamples
         self.recentCount = recentCount
         self.longest = longest
     }
@@ -230,7 +238,13 @@ package func videoHubHeadline(_ photo: PhotoItem) -> String {
 }
 
 package func videoHubTotalDurationText(_ videos: [PhotoItem]) -> String {
-    let total = Int(videos.compactMap(\.duration).reduce(0, +).rounded())
+    let total = videos.compactMap(\.duration).reduce(0, +)
+    return videoHubDurationText(total)
+}
+
+/// 秒数 → 「x 小时 y 分」：汇总结果里已经算好总秒数，视图不必再扫一遍全部视频。
+package func videoHubDurationText(_ totalSeconds: Double) -> String {
+    let total = Int(totalSeconds.rounded())
     guard total > 0 else { return "时长未知" }
     let hours = total / 3600
     let minutes = (total % 3600) / 60
@@ -246,4 +260,36 @@ package func videoHubTotalDurationText(_ videos: [PhotoItem]) -> String {
 package func videoHubIsSituation(_ photo: PhotoItem) -> Bool {
     photo.isScreenRecording || photo.isSlowMotion || photo.isTimelapse
         || photo.isCinematic || photo.isSpatial
+}
+
+/// 时间轴布局：按天分组。放在 Domain 层预生成，视图每次重绘不必再分组 + 格式化日期。
+package func makeVideoDayGroups(_ videos: [PhotoItem]) -> [VideoGroup] {
+    guard !videos.isEmpty else { return [] }
+    let calendar = Calendar.current
+    let grouped = Dictionary(grouping: videos) {
+        calendar.startOfDay(for: $0.capturedAt)
+    }
+    return grouped.keys.sorted(by: >).map { day in
+        let items = (grouped[day] ?? []).sorted { $0.capturedAt > $1.capturedAt }
+        return VideoGroup(id: "day-\(day.timeIntervalSince1970)",
+                          title: VideoHubDayFormat.title.string(from: day),
+                          detail: VideoHubDayFormat.weekday.string(from: day),
+                          videos: items)
+    }
+}
+
+private enum VideoHubDayFormat {
+    static let title: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日"
+        return formatter
+    }()
+
+    static let weekday: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "EEE"
+        return formatter
+    }()
 }

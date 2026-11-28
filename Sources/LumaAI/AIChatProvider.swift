@@ -46,8 +46,41 @@ package struct AIChatRequest {
     }
 }
 
+/// 流式事件：文本增量、思考摘要增量、完整工具调用、最终结果。
+package enum AIStreamEvent {
+    case text(String)
+    /// 思考摘要增量（reasoning_content）：界面折叠展示，不进入正式回答。
+    case reasoning(String)
+    case toolCall(AIToolCall)
+    case finished(AICompletion)
+}
+
 /// 模型后端的最小契约：完成一次对话（可带工具调用）。
 package protocol AIChatProvider {
     var descriptor: AIChatProviderDescriptor { get }
     func complete(_ request: AIChatRequest) async throws -> AICompletion
+    func stream(_ request: AIChatRequest) -> AsyncThrowingStream<AIStreamEvent, Error>
+}
+
+package extension AIChatProvider {
+    /// 默认实现：不支持流式的后端一次性返回，再依次补发事件。
+    func stream(_ request: AIChatRequest) -> AsyncThrowingStream<AIStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let completion = try await complete(request)
+                    if !completion.content.isEmpty {
+                        continuation.yield(.text(completion.content))
+                    }
+                    for call in completion.toolCalls {
+                        continuation.yield(.toolCall(call))
+                    }
+                    continuation.yield(.finished(completion))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
 }

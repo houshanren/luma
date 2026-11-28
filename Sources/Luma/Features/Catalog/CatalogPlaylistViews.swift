@@ -8,6 +8,7 @@ struct CatalogPlaylistDetailView: View {
     var onClose: (() -> Void)? = nil
 
     @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @State private var nameDraft = ""
@@ -290,6 +291,15 @@ struct CatalogPlaylistDetailView: View {
                         Text(source.name)
                             .font(.system(size: 9.5))
                             .foregroundStyle(.tertiary)
+                        if source.kind.isGallerySite {
+                            Text("图集")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(Color.accentColor)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Color.accentColor.opacity(0.12),
+                                            in: Capsule(style: .continuous))
+                        }
                     }
                     if !entry.remark.isEmpty {
                         Text(entry.remark)
@@ -308,15 +318,16 @@ struct CatalogPlaylistDetailView: View {
 
             Button {
                 if let source {
-                    catalog.playRemote(sourceID: source.id, item: entry.item)
+                    store.openCatalogItem(sourceID: source.id, item: entry.item)
                 }
             } label: {
-                Image(systemName: "play.circle.fill")
+                Image(systemName: source?.kind.isGallerySite == true
+                      ? "photo.stack.fill" : "play.circle.fill")
                     .font(.system(size: 19))
                     .foregroundStyle(Color.accentColor)
             }
             .buttonStyle(.plain)
-            .help("播放这一部")
+            .help(source?.kind.isGallerySite == true ? "浏览这一套图" : "播放这一部")
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
@@ -324,9 +335,9 @@ struct CatalogPlaylistDetailView: View {
             Button("设为片单封面") {
                 catalog.setPlaylistCover(playlistID: playlistID, coverURL: entry.coverURL)
             }
-            Button("播放这一部") {
+            Button(source?.kind.isGallerySite == true ? "浏览这一套图" : "播放这一部") {
                 if let source {
-                    catalog.playRemote(sourceID: source.id, item: entry.item)
+                    store.openCatalogItem(sourceID: source.id, item: entry.item)
                 }
             }
             Divider()

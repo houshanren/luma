@@ -48,7 +48,8 @@ struct VideoHubView: View {
     @ViewBuilder
     private var content: some View {
         if data.videos.isEmpty {
-            if store.isPagedWindowLoading {
+            // 首帧的派生数据还没生成时只是还在汇总，不能先闪一下「没有视频」。
+            if !store.hasVideoHubSnapshot || store.isVideoHubLoading || store.isPagedWindowLoading {
                 loadingState
             } else if store.videoHubFilter.isActive {
                 filteredEmptyState
@@ -138,7 +139,7 @@ struct VideoHubView: View {
                      unit: "段",
                      detail: detail)
             statCard(title: "总时长",
-                     value: loading ? "正在汇总…" : videoHubTotalDurationText(data.videos),
+                     value: loading ? "正在汇总…" : videoHubDurationText(data.totalDuration),
                      unit: nil,
                      detail: loading ? "读取视频元数据" : averageDurationText)
             statCard(title: "最近 30 天",
@@ -153,9 +154,9 @@ struct VideoHubView: View {
     }
 
     private var averageDurationText: String {
-        let durations = data.videos.compactMap(\.duration).filter { $0 > 0 }
-        guard !durations.isEmpty else { return "时长未知" }
-        let average = durations.reduce(0, +) / Double(durations.count)
+        // 总时长与样本数已在派生数据里算好，这里不再扫一遍全部视频。
+        guard data.durationSamples > 0 else { return "时长未知" }
+        let average = data.totalDuration / Double(data.durationSamples)
         return "平均 \(formatDuration(average))"
     }
 
@@ -445,22 +446,10 @@ struct VideoHubView: View {
 
     // MARK: - 时间轴
 
-    private var dayGroups: [VideoGroup] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: data.videos) {
-            calendar.startOfDay(for: $0.capturedAt)
-        }
-        return grouped.keys.sorted(by: >).map { day in
-            let items = (grouped[day] ?? []).sorted { $0.capturedAt > $1.capturedAt }
-            return VideoGroup(id: "day-\(day.timeIntervalSince1970)",
-                              title: Self.dayTitleFormatter.string(from: day),
-                              detail: Self.weekdayFormatter.string(from: day),
-                              videos: items)
-        }
-    }
-
     private var timeline: some View {
-        LazyVStack(alignment: .leading, spacing: 26) {
+        // 按天分组已经随派生数据算好：视图重绘（悬停、折叠）不再重新分组。
+        let dayGroups = data.days
+        return LazyVStack(alignment: .leading, spacing: 26) {
             ForEach(dayGroups) { group in
                 let collapsed = collapsedDays.contains(group.id)
                 HStack(alignment: .top, spacing: 14) {
@@ -536,20 +525,6 @@ struct VideoHubView: View {
             }
         }
     }
-
-    private static let dayTitleFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日"
-        return formatter
-    }()
-
-    private static let weekdayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "EEE"
-        return formatter
-    }()
 
     // MARK: - 状态
 

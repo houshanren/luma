@@ -39,8 +39,14 @@ struct CatalogHistoryView: View {
 
     private var records: [CatalogProgress] {
         let ids = effectiveScope
-        return catalog.allContinueWatching.filter { ids.contains($0.sourceID) }
+        return catalog.allContinueWatching.filter {
+            ids.contains($0.sourceID)
+                && (!usesMediaFilter || catalog.matchesMediaFilter(sourceID: $0.sourceID))
+        }
     }
+
+    /// 网络影院没有图集，不参与媒体类型筛选。
+    private var usesMediaFilter: Bool { domain == .networkResource }
     private var unfinished: [CatalogProgress] { records.filter { $0.fraction < 0.97 } }
     private var finished: [CatalogProgress] { records.filter { $0.fraction >= 0.97 } }
     private var hero: CatalogProgress? { unfinished.first }
@@ -114,7 +120,11 @@ struct CatalogHistoryView: View {
                 statTile("checkmark.circle", "\(finished.count)", "已看完", tint: LumaBrand.mint)
                 if compact {
                     Spacer(minLength: 8)
+                    if usesMediaFilter { CatalogMediaFilterChips() }
                     clearButton
+                } else {
+                    Spacer(minLength: 8)
+                    if usesMediaFilter { CatalogMediaFilterChips() }
                 }
             }
         }
@@ -596,6 +606,16 @@ struct CatalogHistoryView: View {
     private var emptyState: some View {
         // 网络资源总览与网络影院共用一份空态，只是文案与跳转目标不同。
         let isCinema = sourceScope != nil
+        // 图集没有播放进度：筛选到图集时如实说明，而不是提示「去播放一集」。
+        if usesMediaFilter, catalog.mediaFilter == .gallery {
+            return LumaEmptyState(
+                symbol: "photo.stack.fill",
+                title: "图集没有播放进度",
+                message: "足迹记录的是视频的观看进度；图集可以去「图集」分页整套浏览。",
+                actions: [LumaEmptyAction(title: "去看图集", symbol: "photo.stack", filled: true) {
+                    catalog.setHubTab(.galleries)
+                }])
+        }
         return LumaEmptyState(
             symbol: "clock.arrow.circlepath",
             title: "还没有观看记录",

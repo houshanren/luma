@@ -624,14 +624,24 @@ enum PhotoKitBridge {
     // MARK: - 媒体类型
     //
     // 长曝光 / 电影效果在 Photos.sqlite 里没有稳定字段，只能通过 PhotoKit 的智能相簿取 ID。
+    // RAW / 录屏在库里虽有字段，但都缺少能直接分页的索引：RAW 的 UTI 只能 `LIKE '%raw%'`
+    // （本机 155 张要 2.6 秒），录屏只占 `Z_Asset_forAllPhotosFilteredBySavedAssetType`
+    // 里极少一部分（强制走它 4.6 秒）。这两类交给智能相簿直接给出 ID 更快。
 
-    /// 读取「长曝光」与「电影效果」智能相簿里的项目 ID；没有照片权限时返回 nil。
+    /// 读取「长曝光 / 电影效果 / RAW / 录屏」智能相簿里的项目 ID；没有照片权限时返回 nil。
     /// 只做静默读取：授权只应由「打开系统图库」这类明确的相册动作触发。
-    static func specialMediaTypeAssetIDs() async -> (longExposure: Set<UUID>, cinematic: Set<UUID>)? {
+    static func specialMediaTypeAssetIDs() async -> (
+        longExposure: Set<UUID>,
+        cinematic: Set<UUID>,
+        raw: Set<UUID>,
+        screenRecording: Set<UUID>
+    )? {
         guard hasReadWritePermission else { return nil }
-        let longExposure = await smartAlbumAssetIDs(.smartAlbumLongExposures)
-        let cinematic = await smartAlbumAssetIDs(.smartAlbumCinematic)
-        return (longExposure ?? [], cinematic ?? [])
+        let longExposure = await smartAlbumAssetIDs(.smartAlbumLongExposures) ?? []
+        let cinematic = await smartAlbumAssetIDs(.smartAlbumCinematic) ?? []
+        let raw = await smartAlbumAssetIDs(.smartAlbumRAW) ?? []
+        let screenRecording = await smartAlbumAssetIDs(.smartAlbumScreenRecordings) ?? []
+        return (longExposure, cinematic, raw, screenRecording)
     }
 
     private static func smartAlbumAssetIDs(_ subtype: PHAssetCollectionSubtype) async -> Set<UUID>? {
@@ -651,26 +661,42 @@ enum PhotoKitBridge {
 
     // MARK: - 视频素材
 
+    /// 系统图库视频的取回结果：失败时带上真实原因，避免把任何失败都说成「还在 iCloud」。
+    enum SystemVideoAsset {
+        case ready(AVAsset, URL?)
+        case unauthorized
+        /// PhotoKit 里找不到这个项目（已删除 / 移出本机图库 / 标识对不上）。
+        case notFound
+        /// 项目在，但资源没交出来。`isInCloud` 来自 `PHImageResultIsInCloudKey`：
+        /// 只有它为真才能确定「确实还在云端」；其余情况只如实转述系统错误。
+        case unavailable(error: String?, isInCloud: Bool)
+    }
+
     /// 从系统「照片」取回可播放的视频素材。
     /// 共享相簿与仅存 iCloud 的视频在本机没有原图文件，必须由 Photos 自己按需下载。
     /// 返回的 URL 只是本地缓存路径，流式素材可能为 nil。
-    static func videoAsset(id: UUID) async -> (asset: AVAsset, url: URL?)? {
-        guard await ensureAuthorized() else { return nil }
+    static func videoAsset(id: UUID) async -> SystemVideoAsset {
+        guard await ensureAuthorized() else { return .unauthorized }
         // 共享相簿要逐本枚举才能找到项目，大图库上很慢：不能占用主线程。
         let source = await Task.detached(priority: .userInitiated) {
             videoPHAsset(id: id)
         }.value
-        guard let source else { return nil }
-        let avAsset: AVAsset? = await withCheckedContinuation { continuation in
-            let options = PHVideoRequestOptions()
-            options.isNetworkAccessAllowed = true
-            options.deliveryMode = .automatic
-            PHImageManager.default().requestAVAsset(forVideo: source, options: options) { asset, _, _ in
-                continuation.resume(returning: asset)
+        guard let source else { return .notFound }
+        let outcome: (asset: AVAsset?, error: String?, isInCloud: Bool) =
+            await withCheckedContinuation { continuation in
+                let options = PHVideoRequestOptions()
+                options.isNetworkAccessAllowed = true
+                options.deliveryMode = .automatic
+                PHImageManager.default().requestAVAsset(forVideo: source, options: options) { asset, _, info in
+                    let isInCloud = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
+                    let error = info?[PHImageErrorKey] as? Error
+                    continuation.resume(returning: (asset, error?.localizedDescription, isInCloud))
+                }
             }
+        guard let avAsset = outcome.asset else {
+            return .unavailable(error: outcome.error, isInCloud: outcome.isInCloud)
         }
-        guard let avAsset else { return nil }
-        return (avAsset, (avAsset as? AVURLAsset)?.url)
+        return .ready(avAsset, (avAsset as? AVURLAsset)?.url)
     }
 
     /// 先按 localIdentifier 找；共享相簿里的项目不在主图库的全局集合里，需要逐个共享相簿查。

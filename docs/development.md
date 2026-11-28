@@ -16,6 +16,7 @@
 | 改搜索 | §10 搜索 |
 | 改播放器 | §14 播放内核 |
 | 跑测试 / 看界面性能 | §19 测试 |
+| 生成测试集 / 拍产品截图 / 视频性能 | §19.9 测试集与产品截图 + [Tools/testkit/README.md](../Tools/testkit/README.md) |
 | 打包 / 签名 / 排查构建 | §18 构建与发布 + §21 排错 |
 
 **同步规则**：新增或移动文件后，必须同时更新 §4 清册与 AGENTS.md 的「文件职责」表；否则下一个人（或 Agent）会照着过期路径找你根本不存在的东西。这是本项目最容易被忽略的一条。
@@ -64,7 +65,8 @@ photos/
 | `Luma.entitlements` | 正式签名用的权限（仅 `CODESIGN_IDENTITY` 分支使用） |
 | `PrivacyInfo.xcprivacy` | 隐私清单 |
 | `CloudIcons/` | `aliyun.png` `baidu.png` `quark.png` `pan115.png`，网盘品牌图标 |
-| `Catalog/catalog.sqlite` | 内置资料库：演员 / 片商 / 标签 / 头像，详情页与标题识别直接读，不联网 |
+| `Catalog/catalog.sqlite` | 资料库源文件：演员 / 片商 / 标签 / 头像 / 作品。**不随安装包内置**，只由 `Tools/catalog_build` 生成；用户从菜单「文件 › 星图 › 加载星图资料库…」选择后，标题识别、目录档案与星图一起读它 |
+| `Atlas/woman-base.usdz` | 星图人物详情 3D 舞台的人体网格：CC0 女性基础模型（1.68m，A-pose，约 19MB）。`AtlasHumanModel` 首次解析后缓存并 clone；文件缺失时自动退回 `AtlasBodyViewer` 里的程序化身形 |
 | `Models/YOLO11n/` | Core ML 目标检测模型 |
 | `Models/Places/world-cities.json` | 离线城市库 |
 | `Models/SigLIP2Assets/` | 场景识别的文本塔与词表（tokenizer 三个 bin + `tags.json` + `tag_embeddings.bin`） |
@@ -77,12 +79,13 @@ photos/
 | --- | --- |
 | `catalog_build/` | 资料库流水线，入口 `catalog_build/refresh_catalog.sh`（抓取 / 归一 / R18 / 建库 / 头像 / 打包） |
 | `catalog_build/fetch/` | `fetch_*.py` 一手源抓取 |
-| `catalog_build/build/` | `build_*.py` 本地归一、`fix_*` / `match_*` 补丁、`build_catalog_db.py` 生成 `Resources/Catalog/catalog.sqlite` |
+| `catalog_build/build/` | `build_*.py` 本地归一、`fix_*` / `match_*` 补丁、`build_catalog_db.py` 生成 `~/Downloads/catalog.sqlite`（可用 `LUMA_CATALOG_DB` 覆盖） |
 | `catalog_build/import/` | `import_*.py` 大盘数据导入（javrate / R18 dump） |
 | `catalog_build/t2s.swift` | 简繁转换（归一化共用） |
 | `build/` | `make_vendor_runtime.sh` 生成 `Vendor/ffmpeg-dv`、`bundle_ffmpeg.py` 整理 ffmpeg 依赖、`quick_app.sh` 快速重启 |
 | `design/` | `make_icon.swift` 画 1024 图标、`brand_hero_gif.py` 生成 README 品牌动图 |
 | `dev/` | `avplayer_probe.swift` · `media_matrix.py` 片源能力探测与媒体矩阵、`playback_log_report.py` 播放日志归因、`ui_perf.py` 界面性能基准、`ui_trace.sh` Instruments trace |
+| `testkit/` | 测试集 / 产品截图 / 视频性能：入口 `testkit.py`（`dataset` / `serve` / `screens` / `perf` / `validate` / `regression`）；`mock_sources.py` 提供 WebDAV、苹果CMS、HLS、EPG；`fixtures/generate_images.swift` 生成带 EXIF 的照片与海报；`screens/screens.json` 是截图页面清单与 AI 文档入口 |
 
 `Vendor/` 下的 `ffmpeg/`、`ffmpeg-dv/` 都是 `build.sh` 现场生成或下载的，不进版本库。
 
@@ -232,10 +235,13 @@ Trips
 - `Luma` 侧适配：`Store/Shared/LibraryStore+FeatureHosts.swift` 实现 `MemoryHost`，`LumaApp.init` 把 `ImageLoader.displayImage` 注入 `MemoryFrameLoader.load`。
 - 这是 Feature target 的试点模式：功能模块自包含视图与服务，App 只实现宿主协议与调用点。
 
-### 4.4 `Features/`（21 个子目录，146 个文件）
+### 4.4 `Features/`（21 个子目录，194 个文件）
 
 ```
 AI/            AIAssistantView
+Atlas/         AtlasArchiveView · AtlasBodyViewer · AtlasComponents
+               AtlasConstellationView · AtlasDiscoverView · AtlasGalleriesView
+               AtlasHubView · AtlasPeopleAnalysis · AtlasTheaterView · AtlasWorksView
 Catalog/       CatalogAvatarView · CatalogCalendarView · CatalogChannelComponents
                CatalogChannelView · CatalogDetailView · CatalogFollowingView
                CatalogHistoryView · CatalogHubView · CatalogPalette
@@ -301,9 +307,10 @@ Viewer/        FilmstripView · InfoPanelView · LivePhotoLayerView
 - `Gallery/` 是图库主界面：`GalleryView` 是容器（网格 / 工具栏 / 拖放 / 框选），`+Content` `+Chrome` `+Keyboard` `+ModuleReadout` `+VideoHub` 是它的扩展；`SearchResultsPage` 是搜索结果页（虽然叫 Search，但它属于图库页）。四种网格布局已上移到 `LumaUI`（见 §4.3.3）。
 - `Viewer/` 同时承载图片查看器与视频播放界面：`PhotoViewer`、`FilmstripView`、`InfoPanelView`、`SlideshowView` 是图片侧；`VideoPlayback` / `VideoPlaybackUI` / `VideoScrubThumbnails` / `TVPlaybackOverlay` 是视频侧。
 - `Catalog/` = 网络资源（站点聚合、海报墙、详情、演员、片单、追更）；`NetworkCinema/` = 网络影院（影视源聚合）；两者数据源同类但页面不同，不要互相引用视图。
-- `Settings/AppModules.swift` 定义 `AppModule` 的 5 个模块（`library` / `cloud` / `catalog` / `television` / `cinema`），控制侧边栏入口、搜索来源与文案；关闭模块不删数据。
+- `Settings/AppModules.swift` 定义 `AppModule` 的 5 个模块（`library` / `cloud` / `catalog` / `television` / `cinema`），控制侧边栏入口、搜索来源与文案；关闭模块不删数据。星图不在这里：它由资料库是否加载决定。
+- `Atlas/` = 拾光星图（资料库 × 网络资源的大结合，六个看法：发现 / 星图 / 影院 / 作品集 / 图集 / 人物）。它不是模块开关：安装包不内置 `catalog.sqlite`，用户从菜单「文件 › 星图 › 加载星图资料库…」选中并校验通过后，侧边栏入口与搜索来源才出现；卸载后一起消失。人物页分五个视角（`AtlasPeopleView`）：「档案」逐个看，顶部是 3D 身材模型（`AtlasBodyViewer`：SceneKit 按三围生成网格 + 数据环，可拖动旋转、双指缩放），下方内联「联动资源站」搜索（`AtlasOnlineStore` 跨源搜视频 / 图集，不在弹窗里）；「胸型谱」把罩杯拟人成全身女性剪影（初樱→山峦，`AtlasBustGlyph` + `AtlasFemaleFigureShape`，胸部随杯变化，并给出该杯平均胸围）；「身高谱」一排女性剪影站在同一条地平线（同一套身形）；「标签星座」把 tags 分成身材 / 长相 / 气质 / 风格四片星区，每个标签都画成一个对应的小人（`AtlasTagMotif` / `AtlasTagGlyph`：罩杯身形、头像、姿态、道具）并给共现；「作品量」五档（殿堂 / 常青 / 高产 / 活跃 / 新人）。花名册与分析结果共用 `AtlasPersonSort` 排序（作品数 / 身高 / 罩杯 / 名字 / 出生），标签另有按人数 / 名称切换。各视角的结果卡点一下回档案并自动加载在线资源，右侧 ↗ 直接去图集站找她。这些分面全部落到 SQL（`rosterPeople` / `rosterCount` / `cupFacets` / `heightBands` / `tagFacets` / `cupHeightMatrix` / `workTierFacets`），筛选结果与图上的计数同源；档案里的三围用 60–110cm 小尺子画。它与 `Catalog/`（网络资源）的耦合点只有两处：`AtlasOnlineStore` 用 `CatalogSearchSupport` 跨源抓视频 / 图集（带 7 天缓存），点开时写入 `CatalogBrowserModel.pendingInlineItem` 并 `navigate(.catalogSource)`；视图层不引用 `Catalog/` 的页面。
 
-### 4.5 `Services/`（19 个子目录，138 个文件）
+### 4.5 `Services/`（19 个子目录，151 个文件）
 
 ```
 AI/            Integrations/ · Media/ · Tools/
@@ -371,7 +378,7 @@ Video/         DisplayModeMatcher · EmbeddedSubtitleLoader · NowPlayingCenter
 - `Services/App/UpdateChecker` 是唯一对外网络访问（GitHub Releases）；`Diagnostics` 生成不含照片与凭据的诊断报告。
 - `Services/App/UIBenchmarkRunner` 只在 `LUMA_UI_BENCH` 环境变量下运行，正常启动不注册 display link、不采样图片加载；`UIPerformanceMonitor` 采样帧间隔并驱动 NSScrollView，`UIPerformanceMetrics` 记录缩略图 / 海报加载耗时。
 
-### 4.6 `Store/`（68 个文件，其中 58 个 `LibraryStore+*` 扩展；按领域分 7 组）
+### 4.6 `Store/`（89 个文件，其中 62 个 `LibraryStore+*` 扩展；按领域分 8 组）
 
 ```
 Library/   LibraryStore.swift
@@ -386,6 +393,7 @@ Library/   LibraryStore.swift
 AI/        LibraryStore+AIAgent · +AICinemaTools · +AIContext
            +AINetworkCinemaTools · +AITools · +AIToolsCatalog · +AIToolsCinema
            +AITVTools
+Atlas/     AtlasCatalogLibrary · AtlasDatabase · AtlasOnlineStore · AtlasStore
 Catalog/   CatalogBrowserModel · CatalogBrowserModel+Discovery · LibraryStore+Catalog
 Cinema/    LibraryStore+Cinema · +CinemaBrowse · +CinemaDetail · +CinemaFiles
            NetworkCinemaModel
@@ -399,10 +407,10 @@ TV/        IPTVBrowserModel · LibraryStore+TV
 
 **分组规矩**：`Library/` 是图库本身的读写与派生（默认落点）；其余目录只放该领域的扩展与状态对象，跨领域共用逻辑放 `Shared/`。
 
-独立状态对象（各自 `ObservableObject`，避免一张照片的选择触发整页重算）：
+独立状态对象（各自 `@Observable`，避免一张照片的选择触发整页重算）：
 
 ```
-CatalogBrowserModel · CatalogBrowserModel+Discovery · CloudBrowserModel
+AtlasCatalogLibrary · AtlasOnlineStore · AtlasStore · CatalogBrowserModel · CatalogBrowserModel+Discovery · CloudBrowserModel
 IPTVBrowserModel · NetworkCinemaModel · SelectionModel
 SourceHubModel · ViewerModel
 ```
@@ -514,7 +522,7 @@ My.photoslibrary/                     # 官方库的情况
 | `Luma.sqlite` | 图库内 `Luma/database/` | `MetadataStore`（自建库元数据、系统库识别缓存、网盘缓存、影院条目、图库级设置） |
 | `Television.sqlite` | 图库内 `Luma/resources/tv/` | `TVDatabase` |
 | `SystemIndex-<hash>.sqlite` | `Application Support/Luma/resources/system-index/` | `SystemIndex`（系统图库只读索引） |
-| `catalog.sqlite` | `Resources/Catalog/`（只读内置） | `CatalogDatabase` 读取 |
+| `catalog.sqlite` | 用户选择的位置（不随包内置） | `CatalogDatabase` / 星图只读；路径存在 `UserDefaults["atlas.catalogPath"]` |
 
 ### 8.1 `MetadataStore` 的表（16）
 
@@ -617,7 +625,7 @@ cinema_entries
 
 ## 11. 源与模块
 
-- `AppModule`（`Features/Settings/AppModules.swift`）5 个：`library` `cloud` `catalog` `television` `cinema`。每个模块带标题、副标题、关闭说明、SF Symbol、双色渐变、`UserDefaults` key、对应 `SourceKind`。图库模块始终开启。
+- `AppModule`（`Features/Settings/AppModules.swift`）5 个：`library` `cloud` `catalog` `television` `cinema`。每个模块带标题、副标题、关闭说明、SF Symbol、双色渐变、`UserDefaults` key、对应 `SourceKind`。图库模块始终开启。星图不是模块开关：`AtlasCatalogPaths.isLoaded` 决定入口与搜索来源。
 - `SourceKind`（`Sources/LumaContentCore/Source/Source.swift`）5 种：`library` `cloudMount` `cinemaFeed` `catalogSite` `iptv`。
 - `SourceDescriptor` 是侧边栏统一行模型（`Store/Shared/LibraryStore+SourceRegistry.swift`）；新增来源 = 新增 provider + 注册表条目 + 能力位，不改侧边栏结构。
 - 归类看 `CatalogProviderKind.supportsNetworkCinema`（`maccms` / `fofo` / `ikanpp` / `iyf`）：它们只进「网络影院」，不再在「网络资源」重复出现；网盘里的影片随「网络存储」，不算影院模块。
@@ -927,6 +935,38 @@ xcrun xctrace list templates      # 应能看到 Animation Hitches / Time Profil
 
 - **新增图片加载埋点**：在加载路径记下 `CFAbsoluteTimeGetCurrent()` 起始时间，完成后调用 `UIPerformanceMetrics.shared.record(kind:tier:seconds:success:)`。`tier` 只有 `quick / target / poster`，新类型优先复用 `kind` 区分而不是加 `Tier`；没开基准时调用是空操作。
 - **新增基准场景**：在 `UIBenchmarkRunner.Scene` 加 case（`rawValue` 就是 `--scenes` 用的名字），在 `prepare(_:store:)` 里切好界面并等到有数据，滚动与采样交给现有逻辑；再把场景名补进 `ui_perf.py` 的 `DEFAULT_SCENES` 和 `ui_trace.sh` 的默认 `SCENES`，最后更新 19.6 的场景表。
+
+### 19.9 测试集、产品截图与视频性能（`Tools/testkit`）
+
+入口只有一个：`python3 Tools/testkit/testkit.py`。产物默认写 `~/Movies/LumaTestKit`，**不提交**；仓库里只保留脚本、页面清单与说明。
+
+| 命令 | 作用 |
+| --- | --- |
+| `dataset` | 生成图片（65 张 EXIF / GPS 家庭照片，覆盖自拍 / 全景 / 动图 / RAW / 截屏 / 实况）、视频矩阵、WebDAV 目录树、影院 NFO、苹果CMS 海报、图集站素材、HLS / 台标 / EPG；`--photos 5000` 进入规模模式，按 2010–2026 分年相簿生成 5000+ 张 |
+| `serve` | 启动 mock 源：WebDAV（PROPFIND / Range）、苹果CMS JSON、图集站 HTML、HLS、XMLTV、多线路 M3U |
+| `screens` | 构建并启动应用内 `TestKitHarness`，导入演示图库、接入 mock 源、逐页截真实界面 |
+| `perf` | 转封装 / 重编码实时倍率、拖动解码耗时、AVPlayer 可播性，输出 JSON + Markdown |
+| `validate` | 校验媒体可解析、EXIF / GPS、损坏样本、HLS、NFO、海报与 mock 源自检 |
+| `regression` | `validate` + 三组 Swift 断言（可选 `--with-ui` 再跑全部截图） |
+
+**测试集故事线**：一个中国家庭（爸爸、妈妈、姐姐、弟弟）2010–2026 年的生活记录——四个人物使用真实人像素材（见下一条），照片按主题相簿组织：第一次出发、家里日常（上学 / 上班 / 超市 / 生日）、亚洲邻居、周末与补课（钢琴 / 奥数 / 运动会 / 长隆 / 水世界 / 迪士尼 / 婚礼 / 写作业）、欧洲夏天、跨过海洋、国内山河（九寨沟 / 布达拉宫 / 张家界 / 黄山 / 迪士尼烟花 / 全家福），另有自拍、全景足迹、动图、RAW 与摄影练习。演示库导入后会自动建好 4 个文件夹（旅行 / 家里与成长 / 国内山河 / 精选）、14 个相簿，并把精选、每个相簿首张与自拍 / 全景标为收藏、写入星级，让「个人收藏」「图库整理」有真实分布。`--photos 5000` 会把这些场景铺到 2010–2026 的每一年，按年份分相簿，用于图库规模 / 性能回归。视频矩阵的每一帧都取自对应照片并叠加「年月 + 地点」角标，编码 / 容器 / HDR / 音轨 / 字幕能力保持不变；视频拍摄时间写进 `creation_time`，MKV / TS / AVI 由 `dataset/.meta/video_dates.json` 兜底，应用内自动应用。来源侧由 `StreamSource/` 的三份导出 JSON（网络资源 / 网络影院 / 网络电视）在启动时直接导入，覆盖「创建 → 导入」链路。
+
+**照片级真人**：`Tools/testkit/fixtures/faces/` 内置 `father / mother / elder / younger` 四张透明背景人像（Pexels License，可免费商用），`dataset` 会自动带 `--faces-dir`，按身高把真人照片贴进场景（脚底对齐地面，孩子随年份长高）。删掉这四张即退回 CoreGraphics 绘制的插画人物。换人时用 `Tools/testkit/fixtures/split_family.swift`（全家福按列拆人）或 `cutout_faces.swift`（单人照抠图）重新生成素材，两者都走 Vision 人像分割。素材只在本地使用，不联网。
+
+**应用内入口**：`Sources/Luma/Services/App/TestKitHarness.swift`。只由环境变量触发，正常启动不参与；支持 `LUMA_TESTKIT_DATASET` / `LUMA_TESTKIT_SEED` / `LUMA_TESTKIT_MODULES` / `LUMA_TESTKIT_SERVER` / `LUMA_TESTKIT_TV_PLAYLIST` / `LUMA_TESTKIT_SOURCE_BUNDLE` / `LUMA_TESTKIT_SIDEBAR_EXPAND` / `LUMA_TESTKIT_SCREEN` / `LUMA_TESTKIT_SCREENS` / `LUMA_TESTKIT_SHOTS` / `LUMA_TESTKIT_SETTLE` / `LUMA_TESTKIT_SIZE` / `LUMA_TESTKIT_QUIT`。
+
+**截图页面清单**：`Tools/testkit/screens/screens.json`，字段为 `id / title / module / description / docSection / suggestedCaption / action`。给官网、手册或 AI 写文档时：
+
+1. 按章节选 `id`；
+2. 运行 `python3 Tools/testkit/testkit.py screens --screens <id>`；
+3. 引用 `~/Movies/LumaTestKit/screenshots/<id>.png`，图注用 `suggestedCaption`；
+4. 不编造截图里没有的功能。
+
+**新增截图页面**：只改 `screens.json`。`action.kind` 支持 `gallery`（视图 / 分组 / 排序）、`navigate`（侧边栏目标）、`viewer`（照片 / 视频 / 信息面板）、`search`、`select`（多选 N 张）、`sheet`（新建相簿 / 命名 / 批量修改 / 导出 / 压缩 / 关键词 / 快捷键）、`overlay`（删除确认 / 幻灯片）、`editor`、`wizard`（资源 / 网盘 / 电视接入）、`menu`（右键菜单，按窗口比例定位）、`window`（导入等独立窗口）、`sidebar`（侧边栏逐项点击，一条 JSON 产出多张 `<id>.<suffix>.png`，`target` 为 `basics / albums / folders / cloud / catalog / tv / scenes`）、`ai`（AI 智能助手整页，`target` 为 `welcome / chat / approval`）。应用内的 `TestKitHarness` 只按 `action` 执行，不再维护第二份页面清单；新增一种交互才需要加一个 `kind`。
+
+**侧边栏逐层展开**：`LUMA_TESTKIT_SIDEBAR_EXPAND=1` 会让 `SidebarView` 把所有分区 / 文件夹 / 网盘 / 电视源一次展开；`sidebar` 分组还会按目标分区（图库 / 相簿 / 网盘 / 资源 / 电视）自动收拢其它一级分区，让被拍摄的那一段落在可视区域（见 `SidebarView.expandLevels(focus:)`）。
+
+**已知边界**：mock 图集站只实现 Tuzac 一套 HTML 模板，其它网页源适配器仍依赖真实站点；本地影院刮削需要用户自备 TMDB / 豆瓣网络与凭据（自动截图不包含本地影院，产品图用网络影院）；电视录制 / 时移需要真实播放会话；SMB 网络存储需要本机共享与钥匙串里的账号密码，测试集默认用 WebDAV mock；设置（SwiftUI `Settings` scene）暂不纳入批量截图。详细清单见 [Tools/testkit/README.md](../Tools/testkit/README.md)。
 
 ---
 

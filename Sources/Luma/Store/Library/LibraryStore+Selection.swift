@@ -633,7 +633,8 @@ extension LibraryStore {
 
     /// 幻灯片播放（⌥⌘P）。
     func presentSlideshow() {
-        guard !visiblePhotos.isEmpty else {
+        // 图集 / 地图这类外部上下文不在图库可见集合里，但它们有自己的播放列表。
+        guard !viewerContextPhotos.isEmpty || !visiblePhotos.isEmpty else {
             showToast("没有可播放的项目")
             return
         }

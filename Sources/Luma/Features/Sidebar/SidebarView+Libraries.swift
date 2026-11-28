@@ -283,10 +283,18 @@ extension SidebarView {
         return name.isEmpty ? "图库" : name
     }
 
+    /// 当前图库的树是否正渲染在它的行下面。渲染时高亮交给树里更具体的那一行，
+    /// 父级图库行让位，避免父行与子行同时点亮。
+    var currentLibraryTreeVisible: Bool {
+        expandedLinkedLibraryPath == nil && !isCollapsed("library.current")
+    }
+
     /// 当前图库行是否处于高亮：外接 B 时 A 必须让出高亮，避免两行同时选中。
     var currentLibraryIsActive: Bool {
         // 「图库资源」是跨图库总览：不点亮任何图库行。
         if store.sidebarItem == .systemLibraries { return false }
+        // 树展开时，选中的是树里的某一具体页面，高亮由那一行承担。
+        if currentLibraryTreeVisible { return false }
         if !store.isSystemScope { return true }
         return store.isNativeContainer && store.isBrowsingContainerSystemLibrary
     }
@@ -393,11 +401,11 @@ extension SidebarView {
         if hasUnpinnedScenes {
             sectionHeader("场景", key: "luma.scenes", topPadding: 14, indent: 0, navigateTo: .scenes) {
                 // 识别中的状态与进度只在任务中心展示，侧边栏不再出现「停止分析」这类状态项。
-                Button(store.analyzedCount > 0 ? "分析新照片…" : "分析照片内容…") {
+                Button(store.analyzedCount > 0 ? "分析新照片与视频…" : "分析照片与视频内容…") {
                     store.analyzeIntelligence()
                 }
                 if store.analyzedCount > 0 {
-                    Button("重新分析全部照片…") {
+                    Button("重新分析全部照片与视频…") {
                         store.reanalyzeIntelligence()
                     }
                     Button("重置（清空结果）…", role: .destructive) {
@@ -416,7 +424,10 @@ extension SidebarView {
             }
         }
 
-        sectionHeader("相簿", key: "luma.albums", topPadding: 14, indent: 0, navigateTo: .allAlbums) {
+        sectionHeader("相簿", key: "luma.albums", topPadding: 14, indent: 0,
+                      navigateTo: .allAlbums,
+                      // 展开时下面有「所有相簿」行，高亮让给它；收起时才落在标题上。
+                      active: store.sidebarItem == .allAlbums && isCollapsed("luma.albums")) {
             Button("新建相簿") {
                 store.showNewAlbumSheet = true
             }
@@ -452,8 +463,10 @@ extension SidebarView {
     /// 已连接的系统图库列表；同一时间只有一个处于连接/展开状态。
     func systemLibraryRefRow(_ ref: SystemLibraryRef, isExpanded: Bool) -> some View {
         let isActive = store.systemLibraryPath.map { store.isSameSystemLibraryPath($0, ref.path) } ?? false
-        // 图库资源总览不属于某一个图库：即使这个库正在连接中也不高亮。
-        let isHighlighted = isActive && store.isSystemScope && store.sidebarItem != .systemLibraries
+        // 图库资源总览不属于某一个图库；树展开时高亮同样交给下面的具体行。
+        let isHighlighted = isActive && store.isSystemScope
+            && store.sidebarItem != .systemLibraries
+            && !isExpanded
         let isHovered = hoveredSystemLibraryPath == ref.path
         let isDefault = store.isDefaultLibrary(ref.path)
 

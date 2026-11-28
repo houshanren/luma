@@ -56,7 +56,7 @@ struct VideoDeckButton: View {
 
 /// 播放舱里的播放控制组：上一个 / 后退 10 秒 / 播放 / 前进 10 秒 / 下一个。
 struct VideoToolbarTransport: View {
-    @ObservedObject var model: VideoPlayerModel
+    let model: VideoPlayerModel
     let hasPrev: Bool
     let hasNext: Bool
     let onPrev: () -> Void
@@ -150,12 +150,14 @@ struct VideoToolbarTransport: View {
 
 /// 工具栏中部的进度行：当前时间 / 可拖动进度条 / 总时长（点击切换剩余时间）。
 struct VideoToolbarProgress: View {
-    @ObservedObject var model: VideoPlayerModel
+    let model: VideoPlayerModel
     /// 播放编排：缓冲区间从它的已生成末尾 / 保留起点来。
-    @ObservedObject var session: PlaybackSession
+    let session: PlaybackSession
     @Binding var showsRemaining: Bool
     /// 章节刻度（比例）：顶栏进度条与画面内进度条保持一致。
     var chapterFractions: [Double] = []
+    /// 是否允许悬停抽帧预览。图库视频传 false：抽帧会和播放解码抢资源，拖动会卡。
+    var previewEnabled: Bool = true
 
     /// 悬停预览需要窗口坐标来对准光标（工具栏自己装不下气泡）。
     @State private var hostWindow: NSWindow?
@@ -198,7 +200,7 @@ struct VideoToolbarProgress: View {
                           duration: model.duration,
                           chapterFractions: chapterFractions,
                           onPreviewChange: { fraction in
-                              guard AppSettings.shared.scrubPreviewEnabled else {
+                              guard previewEnabled, AppSettings.shared.scrubPreviewEnabled else {
                                   VideoScrubPreviewCenter.shared.end()
                                   return
                               }
@@ -242,7 +244,7 @@ struct VideoToolbarProgress: View {
 /// 进度条右侧的音量：平时只是一枚扬声器图标，鼠标移上去向左展开一条可拖动的小轨道，
 /// 移开自动收起；点图标静音。轨道与进度条同一套配色和进度点样式，展开过程带弹簧动画。
 struct VideoInlineVolume: View {
-    @ObservedObject var model: VideoPlayerModel
+    let model: VideoPlayerModel
 
     @State private var isHovering = false
     @State private var isDragging = false
@@ -458,11 +460,12 @@ struct VideoToolbarOptions: View {
         .fixedSize()
         .help(quarterTurns == 0 ? "播放选项" : "播放选项（画面已旋转）")
         // 只在这几个值真的变化时同步快照；播放时间推进不会触发重绘。
-        .onReceive(model.$speed) { speed = $0 }
-        .onReceive(model.$isLooping) { looping = $0 }
-        .onReceive(model.$isMuted) { muted = $0 }
-        .onReceive(model.$isPipActive) { pipActive = $0 }
-        .onReceive(model.$isPipAvailable) { pipAvailable = $0 }
+        // `model` 已是 @Observable：这里读到的属性才会建立依赖，菜单不会被 250ms 的时间轴刷新带动。
+        .onChange(of: model.speed) { _, value in speed = value }
+        .onChange(of: model.isLooping) { _, value in looping = value }
+        .onChange(of: model.isMuted) { _, value in muted = value }
+        .onChange(of: model.isPipActive) { _, value in pipActive = value }
+        .onChange(of: model.isPipAvailable) { _, value in pipAvailable = value }
     }
 
     private func setVolume(_ value: Double) {
@@ -493,8 +496,8 @@ struct VideoMediaMenuButtons: View {
         case toolbar
     }
 
-    @ObservedObject var ui: VideoPlaybackUI
-    @ObservedObject var model: VideoPlayerModel
+    let ui: VideoPlaybackUI
+    let model: VideoPlayerModel
     var style: Style = .overlay
     @Environment(AppSettings.self) private var settings
 

@@ -23,6 +23,10 @@ extension LibraryStore {
         if catalogPlaybackPhoto(for: id) == nil {
             finishCatalogPlayback()
         }
+        // 打开的不是图集虚拟照片时，结束上一次看图会话。
+        if catalogGalleryPhoto(for: id) == nil {
+            finishCatalogGalleryViewer()
+        }
         // 打开的不是电视频道时，结束上一次直播会话。
         if tvPlaybackPhoto(for: id) == nil {
             finishTVPlayback()
@@ -49,12 +53,21 @@ extension LibraryStore {
     }
 
     func closeViewer() {
+        // 图集看图：上下文马上要被清空，先记下当前看到的是第几张，
+        // 关闭后详情页据此滚回那张图。
+        let galleryReturnIndex = viewerID.flatMap { catalogGalleryContexts[$0]?.index }
         finishCinemaPlayback()
         finishCatalogPlayback()
+        finishCatalogGalleryViewer()
         finishTVPlayback()
         let lastID = viewerID
         withAnimation(AppSettings.shared.motion.overlay) {
             viewerID = nil
+        }
+        if let galleryReturnIndex {
+            catalogGalleryReturnToken += 1
+            catalogGalleryReturnRequest = CatalogGalleryReturnRequest(index: galleryReturnIndex,
+                                                                      token: catalogGalleryReturnToken)
         }
         cinemaPlaybackPhoto = nil
         viewerStrip = []
@@ -115,7 +128,16 @@ extension LibraryStore {
             let count = viewerNavigationPhotos.count
             guard count > 0,
                   let current = viewerNavigationPhotos.firstIndex(where: { $0.id == viewerID }) else { return }
-            let target = viewerNavigationPhotos[(current + viewerNavigationStep(delta) + count) % count]
+            let step = viewerNavigationStep(delta)
+            let next: Int
+            if catalogGalleryContext(for: viewerID) != nil {
+                // 图集：整套翻到最后一张就停住，不再绕回第一张，也不触发任何入库动作。
+                next = current + step
+                guard next >= 0, next < count else { return }
+            } else {
+                next = (current + step + count) % count
+            }
+            let target = viewerNavigationPhotos[next]
             viewerIndexCache = nil
             self.viewerID = target.id
             selection = [target.id]
@@ -236,6 +258,18 @@ extension LibraryStore {
     func usesEpisodeTransport(for photo: PhotoItem) -> Bool {
         if catalogPlaybackContexts[photo.id] != nil { return true }
         return photo.isCloud && cinemaPlaybackPhoto != nil
+    }
+
+    /// 图库视频：从图库（本地 / 系统图库 / 网盘）直接打开的视频，不是网络资源分集，
+    /// 也不是影院或电视直播。这类片源拖动进度条不做抽帧预览——抽帧会和播放解码抢
+    /// CPU / GPU，拖动时画面明显卡顿。
+    func isLibraryVideoPlayback(_ photo: PhotoItem) -> Bool {
+        guard photo.isVideo else { return false }
+        if catalogPlaybackContexts[photo.id] != nil { return false }
+        if cinemaPlaybackEntry?.file.photoID == photo.id { return false }
+        if cinemaPlaybackPhoto?.id == photo.id { return false }
+        if tvPlaybackChannel(for: photo.id) != nil { return false }
+        return true
     }
 
     /// 从指定项目出发，前 / 后是否还有可跳转的视频。

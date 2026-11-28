@@ -36,6 +36,8 @@ struct PhotoMapView: View {
     @State private var viewportPhotoCount = 0
     @State private var viewportPhotos: [PhotoItem] = []
     @State private var footprintPhotos: [PhotoItem] = []
+    /// 内容版本变化后的视野统计刷新：补齐地名期间版本会连着跳，合并成一次再算。
+    @State private var revisionRefreshTask: Task<Void, Never>?
     @AppStorage("map.style") private var styleRaw = MapStyleMode.map.rawValue
     @AppStorage("map.provider") private var providerRaw = MapProvider.apple.rawValue
     @AppStorage("map.baiduAccessKey") private var baiduKey = ""
@@ -49,7 +51,21 @@ struct PhotoMapView: View {
     var body: some View {
         Group {
             if photos.isEmpty {
-                EmptyStateView()
+                if store.isLoadingSystemLibrary, store.isSystemScope {
+                    // 系统图库还在读取：空态这里直接显示进度，顶部不再重复一条胶囊。
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.large)
+                        Text(store.systemScanCount > 0
+                             ? "正在读取系统图库… \(store.systemScanCount.formatted()) 项"
+                             : "正在读取系统图库…")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    EmptyStateView()
+                }
             } else {
                 ZStack {
                     if style == .grid {
@@ -117,10 +133,33 @@ struct PhotoMapView: View {
                     if style == .grid {
                         styleRaw = MapStyleMode.map.rawValue
                     }
+                }
+                .task {
+                    // 直连模式的地图样本在后台分段读取：等它就绪再补地名，
+                    // 否则会在部分样本上补完一轮就停下，剩下的要等下次进页面。
+                    await store.awaitDirectGeoIfNeeded()
                     store.resolveMissingPlacesIfNeeded()
+                    if let region = camera.mapView?.region ?? viewport {
+                        updateViewport(region)
+                    }
+                }
+                .task(id: store.isMapDataWarmingUp) {
+                    // 数据还在后台分批补齐：持续用当前镜头刷新图钉与「视野内」统计，
+                    // 直到全量就绪，不必等用户拖动地图才更新。
+                    while !Task.isCancelled {
+                        if !store.isMapDataWarmingUp { return }
+                        if let region = camera.mapView?.region ?? viewport {
+                            updateViewport(region)
+                        }
+                        try? await Task.sleep(nanoseconds: 700_000_000)
+                    }
                 }
                 .onChange(of: store.contentRevision) { _, _ in
-                    if let viewport { updateViewport(viewport) }
+                    refreshViewportSoon(after: 0.4)
+                }
+                .onChange(of: store.placeClustersRevision) { _, _ in
+                    // 后台聚类完成：只重算一次视野统计，不触发整库重算。
+                    refreshViewportSoon(after: 0.12)
                 }
             }
         }
@@ -128,14 +167,25 @@ struct PhotoMapView: View {
 
     // MARK: - 视野统计
 
+    /// 合并短时间内的多次刷新请求：内容版本 / 聚类版本连着变化时只算最后一次。
+    private func refreshViewportSoon(after seconds: Double) {
+        guard viewport != nil else { return }
+        revisionRefreshTask?.cancel()
+        revisionRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, let viewport else { return }
+            updateViewport(viewport)
+        }
+    }
+
     /// 地图缩放 / 平移后重算「视野内」的地点与照片数量，并记录这一片照片供网格使用。
     private func updateViewport(_ region: MKCoordinateRegion) {
         viewport = region
         let allPhotos = photos
         let placeClusters = clusters
-        // 聚类与图钉必须来自同一批照片：切库 / 切范围后聚类缓存还没跟上时退回逐张扫描，
-        // 否则会出现「地图上有图钉、徽标却显示 0」。
-        let clustered = Self.photoCount(of: placeClusters) == allPhotos.count
+        // 聚类由后台维护：有结果就按聚类口径统计。聚类可能比内容版本滞后一次重算，
+        // 不再因为版本不一致退回逐张扫描——补地名 / 缩放期间那会在主线程反复聚类。
+        let clustered = !placeClusters.isEmpty
 
         // 视野已经覆盖全部地点（默认的整库视角）：直接用整库口径，不必逐张扫描。
         if clustered, Self.region(region, coversAllOf: placeClusters) {
@@ -186,13 +236,6 @@ struct PhotoMapView: View {
             viewportPhotoCount = visible.count
             viewportPhotos = visible
         }
-    }
-
-    /// 聚类累计的照片数：与图钉口径不一致说明聚类缓存属于另一个数据源 / 版本。
-    private static func photoCount(of clusters: [PlaceCluster]) -> Int {
-        var total = 0
-        for cluster in clusters { total += cluster.photos.count }
-        return total
     }
 
     /// 视野是否覆盖全部地点的包围盒（快速判断，避免大图库在整库视角下逐张扫描）。

@@ -15,7 +15,7 @@ struct TVPlaybackOverlay: View {
     let controlsVisible: Bool
     @Binding var timeshiftActive: Bool
     @Binding var showGuide: Bool
-    @ObservedObject var model: VideoPlayerModel
+    let model: VideoPlayerModel
     /// 全部线路失败：只保留顶部频道信息，收起时间河 / 抽屉。
     var failureMode: Bool = false
     /// 频道级动作（截帧 / 节目单 / 收藏频道）是否已经由窗口工具栏承载：

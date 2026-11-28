@@ -2,200 +2,12 @@
 set -eu
 cd "$(dirname "$0")"
 
-# ./build.sh preview —— 快速预览：只增量编译并替换 Luma.app 里的可执行文件，然后重启 App。
-# 不复制资源、不签名、不打包 zip：改一两个文件通常 1~2 分钟就能直接看到界面。
-if [ "${1:-}" = "preview" ]; then
-    APP="Luma.app"
-    EXEC="Luma"
-    if [ ! -d "$APP/Contents/MacOS" ]; then
-        echo "还没有完整的 $APP，先跑一次完整构建…"
-        exec ./build.sh release
-    fi
-    echo "快速增量编译…"
-    swift build -c release -Xswiftc -no-whole-module-optimization --product Luma
-    BIN_PATH="$(swift build -c release --show-bin-path)/Luma"
-    cp "$BIN_PATH" "$APP/Contents/MacOS/$EXEC"
-    chmod +x "$APP/Contents/MacOS/$EXEC"
-    echo "重启 $APP …"
-    osascript -e 'quit app "Luma"' >/dev/null 2>&1 || true
-    sleep 1
-    open "$APP"
-    exit 0
-fi
-
-CONFIG="${1:-release}"
-APP="Luma.app"
-EXEC="Luma"
-
-swift build -c "$CONFIG" --product Luma
-BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/Luma"
-
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN_PATH" "$APP/Contents/MacOS/$EXEC"
-cp Resources/Info.plist "$APP/Contents/Info.plist"
-printf 'APPL????' > "$APP/Contents/PkgInfo"
-if [ -f Resources/AppIcon.icns ]; then
-    cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-fi
-if [ -f Resources/PrivacyInfo.xcprivacy ]; then
-    cp Resources/PrivacyInfo.xcprivacy "$APP/Contents/Resources/PrivacyInfo.xcprivacy"
-fi
-# 网盘产品图标（阿里云盘 / 百度网盘 / 夸克网盘 / 115）。
-if [ -d Resources/CloudIcons ]; then
-    mkdir -p "$APP/Contents/Resources/CloudIcons"
-    cp Resources/CloudIcons/*.png "$APP/Contents/Resources/CloudIcons/"
-fi
-# 内置女优 / 片商资料库（SQLite）：详情页与标题识别直接读它，不再联网搜索。
-if [ -d Resources/Catalog ]; then
-    mkdir -p "$APP/Contents/Resources/Catalog"
-    cp Resources/Catalog/*.sqlite "$APP/Contents/Resources/Catalog/"
-fi
-# 只内置轻量小模型（YOLO、地点库）。SigLIP2 由用户在设置里按需下载，
-# 避免安装包无谓增加 370MB；开发期 `swift run` 仍会回退读取仓库里的完整模型。
-if [ -d Resources/Models ]; then
-    mkdir -p "$APP/Contents/Resources/Models"
-    for item in Resources/Models/*; do
-        case "$(basename "$item")" in
-            SigLIP2) continue ;;
-        esac
-        cp -R "$item" "$APP/Contents/Resources/Models/"
-    done
-fi
-chmod +x "$APP/Contents/MacOS/$EXEC"
-
-# MKV / AVI 等容器系统无法解码，App 内置 ffmpeg / ffprobe 负责转封装与抽帧。
-# 首选把 Homebrew 的 ffmpeg-full（带 libplacebo）连同全部 dylib 与 MoltenVK 打进来：
-# 杜比视界 Profile 5 的 DOVI RPU 只有 libplacebo 能应用，打进包内用户无需自行安装。
-# 没装 ffmpeg-full 时退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
-FFMPEG_DIR="Vendor/ffmpeg"
-mkdir -p "$FFMPEG_DIR"
-case "$(uname -m)" in
-    arm64)
-        FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
-        FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-arm64/-/darwin-arm64-5.0.1.tgz"
-        ;;
-    *)
-        FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/snapshot/ffmpeg.zip"
-        FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-x64/-/darwin-x64-5.1.0.tgz"
-        ;;
-esac
-fetch_ffmpeg() {
-    dest="$FFMPEG_DIR/ffmpeg"
-    if [ -x "$dest" ]; then
-        # 旧静态包不含 zscale：检测到缺滤镜就重新下载，避免发布不具备 HDR 映射能力的包。
-        if "$dest" -hide_banner -filters 2>/dev/null | grep -q "zscale"; then return 0; fi
-        echo "内置 ffmpeg 缺少 zscale，重新下载…"
-        rm -f "$dest"
-    fi
-    echo "下载内置 ffmpeg …"
-    work="$(mktemp -d)"
-    if ! curl -fsSL --retry 3 --max-time 900 -o "$work/ffmpeg.zip" "$FFMPEG_URL"; then
-        echo "警告：下载 ffmpeg 失败，本次构建不内置（运行时回退系统 ffmpeg）"
-        rm -rf "$work"
-        return 0
-    fi
-    unzip -q -o "$work/ffmpeg.zip" -d "$work"
-    if [ ! -f "$work/ffmpeg" ]; then
-        echo "警告：压缩包内未找到 ffmpeg"
-        rm -rf "$work"
-        return 0
-    fi
-    cp "$work/ffmpeg" "$dest"
-    chmod +x "$dest"
-    rm -rf "$work"
-    if ! "$dest" -hide_banner -filters 2>/dev/null | grep -q "zscale"; then
-        echo "警告：内置 ffmpeg 不含 zscale，HDR 色调映射将不可用"
-    fi
-}
-fetch_probe() {
-    dest="$FFMPEG_DIR/ffprobe"
-    if [ -x "$dest" ]; then return 0; fi
-    echo "下载内置 ffprobe …"
-    work="$(mktemp -d)"
-    if ! curl -fsSL --retry 3 --max-time 600 -o "$work/pkg.tgz" "$FFPROBE_URL"; then
-        echo "警告：下载 ffprobe 失败，本次构建不内置（运行时回退系统 ffprobe）"
-        rm -rf "$work"
-        return 0
-    fi
-    tar -xzf "$work/pkg.tgz" -C "$work"
-    cp "$work/package/ffprobe" "$dest"
-    chmod +x "$dest"
-    rm -rf "$work"
-}
-# 优先打包带 libplacebo 的 ffmpeg-full：杜比视界 Profile 5 的 DOVI RPU 只有它能应用。
-# 找不到时退回原来的静态 ffmpeg（P5 会偏绿，其余 SDR / HDR10 照常）。
-# 优先使用 Vendor 里已生成的杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK + 全部 dylib）。
-# 缺失时调用 Tools/build/make_vendor_runtime.sh 从本机 Homebrew 现场生成一份；
-# 都没有才退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
-DV_RUNTIME="Vendor/ffmpeg-dv"
-BUNDLED_DV=0
-if [ ! -x "$DV_RUNTIME/bin/ffmpeg" ]; then
-    sh Tools/build/make_vendor_runtime.sh >/dev/null 2>&1 || true
-fi
-if [ -x "$DV_RUNTIME/bin/ffmpeg" ]; then
-    echo "复制杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK）…"
-    cp -R "$DV_RUNTIME/bin" "$DV_RUNTIME/lib" "$APP/Contents/Resources/"
-    if [ -f "$DV_RUNTIME/VERSIONS.txt" ]; then
-        cp "$DV_RUNTIME/VERSIONS.txt" "$APP/Contents/Resources/FFmpeg-VERSIONS.txt"
-    fi
-    BUNDLED_DV=1
-fi
-
-if [ "$BUNDLED_DV" = "0" ]; then
-    fetch_ffmpeg
-    fetch_probe
-    if [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ]; then
-        mkdir -p "$APP/Contents/Resources/bin"
-        cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$APP/Contents/Resources/bin/"
-        chmod +x "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"
-    fi
-fi
-
-# 内置二进制必须先单独签名（hardened runtime 不允许未签名的嵌套可执行文件）。
-# dylib 要在 ffmpeg / ffprobe 之前签，最后再签外层 App。
-sign_nested() {
-    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
-        codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$1"
-    else
-        codesign --force --sign - "$1" >/dev/null 2>&1 || true
-    fi
-}
-if [ -d "$APP/Contents/Resources/lib" ]; then
-    for library in "$APP/Contents/Resources/lib"/*.dylib; do
-        [ -e "$library" ] || continue
-        sign_nested "$library"
-    done
-fi
-for binary in "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"; do
-    [ -x "$binary" ] || continue
-    sign_nested "$binary"
-done
-
-# 打包了 GPL 组件（ffmpeg-full / x264 / x265）时随包附带许可与源码说明。
-if [ "$BUNDLED_DV" = "1" ]; then
-    cat > "$APP/Contents/Resources/FFmpeg-NOTICE.txt" <<'NOTICE'
-本应用内置 FFmpeg 及其依赖，用于视频转封装与 HDR / 杜比视界色调映射。
-
-组件与许可：
-- FFmpeg 9.0.2 — GPL-3.0-or-later · https://ffmpeg.org
-- libplacebo — LGPL-2.1-or-later · https://code.videolan.org/videolan/libplacebo
-- MoltenVK — Apache-2.0 · https://github.com/KhronosGroup/MoltenVK
-- x264 / x265 — GPL-2.0 / GPL-3.0
-- 其余依赖（aom、dav1d、svt-av1、rav1e、libvpx、opus、zimg 等）许可见各自项目主页
-
-对应源码：
-https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
-https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/f/ffmpeg-full.rb
-
-如需完整对应源码包，请联系分发者。
-NOTICE
-fi
-
-
-# 固定的本地开发签名身份。
-# ad-hoc 签名的身份等于二进制哈希，每次重编译都会变，钥匙串会把新包当成另一个 App
-# 反复要求授权；用一张一次生成的自签名证书签名，钥匙串的「始终允许」才能长期有效。
+# MARK: - 签名（preview 与完整构建共用）
+#
+# 固定的本地开发签名身份：ad-hoc 签名的身份等于二进制哈希，每次重编译都会变，
+# 钥匙串会把新包当成另一个 App 反复要求授权；用一张一次生成的自签名证书签名，
+# 钥匙串的「始终允许」才能长期有效。preview 也必须走这里：只替换二进制会让包
+# 回到 ad-hoc 身份，登录 Cookie / 网盘凭据就会在保存时反复弹钥匙串授权。
 LOCAL_SIGN_IDENTITY="Luma Local Dev"
 SIGNING_KEYCHAIN="$HOME/Library/Keychains/LumaDev.keychain-db"
 SIGNING_PASS_FILE="$HOME/.luma-signing/pass"
@@ -279,17 +91,298 @@ CNF
         | grep -q "$LOCAL_SIGN_IDENTITY"
 }
 
-# 有开发者证书时使用 hardened runtime + entitlements；否则用固定本地身份签名。
-if [ -n "${CODESIGN_IDENTITY:-}" ]; then
-    codesign --force --deep --options runtime --timestamp \
-        --entitlements Resources/Luma.entitlements \
-        --sign "$CODESIGN_IDENTITY" "$APP"
-elif ensure_local_signing; then
-    codesign --force --deep --sign "$LOCAL_SIGN_IDENTITY" "$APP"
-    echo "已用固定本地身份签名（${LOCAL_SIGN_IDENTITY}）：重新编译不再重复弹钥匙串授权"
-else
-    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# 对 App 包签名：有开发者证书时用 hardened runtime + entitlements，
+# 否则用固定本地身份；两者都不可用时退回 ad-hoc。
+sign_app_bundle() {
+    APP_PATH="$1"
+    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+        codesign --force --deep --options runtime --timestamp \
+            --entitlements Resources/Luma.entitlements \
+            --sign "$CODESIGN_IDENTITY" "$APP_PATH"
+    elif ensure_local_signing; then
+        codesign --force --deep --sign "$LOCAL_SIGN_IDENTITY" "$APP_PATH"
+        echo "已用固定本地身份签名（${LOCAL_SIGN_IDENTITY}）：重新编译不再重复弹钥匙串授权"
+    else
+        codesign --force --deep --sign - "$APP_PATH" >/dev/null 2>&1 || true
+    fi
+}
+
+# ./build.sh preview —— 快速预览：只增量编译并替换 Luma.app 里的可执行文件，然后重启 App。
+# 不复制资源、不打包 zip：改一两个文件通常 1~2 分钟就能直接看到界面。
+# 替换二进制后仍会用固定本地身份重新签名，保证钥匙串授权跨构建保留。
+if [ "${1:-}" = "preview" ]; then
+    APP="Luma.app"
+    EXEC="Luma"
+    if [ ! -d "$APP/Contents/MacOS" ]; then
+        echo "还没有完整的 ${APP}，先跑一次完整构建…"
+        exec ./build.sh release
+    fi
+    echo "快速增量编译…"
+    swift build -c release -Xswiftc -no-whole-module-optimization --product Luma
+    BIN_PATH="$(swift build -c release --show-bin-path)/Luma"
+    cp "$BIN_PATH" "$APP/Contents/MacOS/$EXEC"
+    chmod +x "$APP/Contents/MacOS/$EXEC"
+    # 只替换可执行文件会让包签名失效、回到 ad-hoc 身份：钥匙串会把新包当成另一个
+    # App，登录 Cookie / 网盘凭据或统一凭据条目又会逐项弹授权。这里重新签一次。
+    sign_app_bundle "$APP"
+    echo "重启 $APP …"
+    osascript -e 'quit app "Luma"' >/dev/null 2>&1 || true
+    sleep 1
+    open "$APP"
+    exit 0
 fi
+
+CONFIG="${1:-release}"
+APP="Luma.app"
+EXEC="Luma"
+
+# 发布包默认出通用二进制：Apple 芯片 + Intel 都能跑。
+# 只在本机调试时可以 ARCHS=arm64 ./build.sh release 跳过 Intel 那一份。
+ARCHS="${ARCHS:-arm64 x86_64}"
+
+BUILT_BINS=""
+for arch in $ARCHS; do
+    TRIPLE="${arch}-apple-macosx14.0"
+    echo "编译 ${arch}（${TRIPLE}）…"
+    if ! swift build -c "$CONFIG" --product Luma --triple "$TRIPLE"; then
+        echo "编译 ${arch} 失败"
+        exit 1
+    fi
+    ARCH_BIN="$(swift build -c "$CONFIG" --triple "$TRIPLE" --show-bin-path)/Luma"
+    if [ ! -x "$ARCH_BIN" ]; then
+        echo "找不到 $arch 产物：$ARCH_BIN"
+        exit 1
+    fi
+    BUILT_BINS="$BUILT_BINS $ARCH_BIN"
+done
+
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# shellcheck disable=SC2086
+lipo -create $BUILT_BINS -output "$APP/Contents/MacOS/$EXEC"
+lipo -info "$APP/Contents/MacOS/$EXEC"
+cp Resources/Info.plist "$APP/Contents/Info.plist"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+if [ -f Resources/AppIcon.icns ]; then
+    cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+fi
+if [ -f Resources/PrivacyInfo.xcprivacy ]; then
+    cp Resources/PrivacyInfo.xcprivacy "$APP/Contents/Resources/PrivacyInfo.xcprivacy"
+fi
+# 网盘产品图标（阿里云盘 / 百度网盘 / 夸克网盘 / 115）。
+if [ -d Resources/CloudIcons ]; then
+    mkdir -p "$APP/Contents/Resources/CloudIcons"
+    cp Resources/CloudIcons/*.png "$APP/Contents/Resources/CloudIcons/"
+fi
+# 星图界面用的 CC0 人体网格（女性人体基础模型），缺失时界面会退回程序化身形。
+if [ -d Resources/Atlas ]; then
+    mkdir -p "$APP/Contents/Resources/Atlas"
+    cp Resources/Atlas/* "$APP/Contents/Resources/Atlas/"
+fi
+# 星图资料库（catalog.sqlite）不再随安装包内置：由用户从菜单「星图 › 加载星图资料库…」手动选择。
+# 仓库里的 Resources/Catalog 只供 Tools/catalog_build 生成与本地调试使用。
+# 只内置轻量小模型（YOLO、地点库）。SigLIP2 由用户在设置里按需下载，
+# 避免安装包无谓增加 370MB；开发期 `swift run` 仍会回退读取仓库里的完整模型。
+if [ -d Resources/Models ]; then
+    mkdir -p "$APP/Contents/Resources/Models"
+    for item in Resources/Models/*; do
+        case "$(basename "$item")" in
+            SigLIP2) continue ;;
+        esac
+        cp -R "$item" "$APP/Contents/Resources/Models/"
+    done
+fi
+chmod +x "$APP/Contents/MacOS/$EXEC"
+
+# MKV / AVI 等容器系统无法解码，App 内置 ffmpeg / ffprobe 负责转封装与抽帧。
+# 首选把 Homebrew 的 ffmpeg-full（带 libplacebo）连同全部 dylib 与 MoltenVK 打进来：
+# 杜比视界 Profile 5 的 DOVI RPU 只有 libplacebo 能应用，打进包内用户无需自行安装。
+# 没装 ffmpeg-full 时退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
+FFMPEG_DIR="Vendor/ffmpeg"
+mkdir -p "$FFMPEG_DIR"
+case "$(uname -m)" in
+    arm64)
+        FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
+        FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-arm64/-/darwin-arm64-5.0.1.tgz"
+        ;;
+    *)
+        FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/snapshot/ffmpeg.zip"
+        FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-x64/-/darwin-x64-5.1.0.tgz"
+        ;;
+esac
+fetch_ffmpeg() {
+    dest="$FFMPEG_DIR/ffmpeg"
+    if [ -x "$dest" ]; then
+        # 旧静态包不含 zscale：检测到缺滤镜就重新下载，避免发布不具备 HDR 映射能力的包。
+        if "$dest" -hide_banner -filters 2>/dev/null | grep -q "zscale"; then return 0; fi
+        echo "内置 ffmpeg 缺少 zscale，重新下载…"
+        rm -f "$dest"
+    fi
+    echo "下载内置 ffmpeg …"
+    work="$(mktemp -d)"
+    if ! curl -fsSL --retry 3 --max-time 900 -o "$work/ffmpeg.zip" "$FFMPEG_URL"; then
+        echo "警告：下载 ffmpeg 失败，本次构建不内置（运行时回退系统 ffmpeg）"
+        rm -rf "$work"
+        return 0
+    fi
+    unzip -q -o "$work/ffmpeg.zip" -d "$work"
+    if [ ! -f "$work/ffmpeg" ]; then
+        echo "警告：压缩包内未找到 ffmpeg"
+        rm -rf "$work"
+        return 0
+    fi
+    cp "$work/ffmpeg" "$dest"
+    chmod +x "$dest"
+    rm -rf "$work"
+    if ! "$dest" -hide_banner -filters 2>/dev/null | grep -q "zscale"; then
+        echo "警告：内置 ffmpeg 不含 zscale，HDR 色调映射将不可用"
+    fi
+}
+fetch_probe() {
+    dest="$FFMPEG_DIR/ffprobe"
+    if [ -x "$dest" ]; then return 0; fi
+    echo "下载内置 ffprobe …"
+    work="$(mktemp -d)"
+    if ! curl -fsSL --retry 3 --max-time 600 -o "$work/pkg.tgz" "$FFPROBE_URL"; then
+        echo "警告：下载 ffprobe 失败，本次构建不内置（运行时回退系统 ffprobe）"
+        rm -rf "$work"
+        return 0
+    fi
+    tar -xzf "$work/pkg.tgz" -C "$work"
+    cp "$work/package/ffprobe" "$dest"
+    chmod +x "$dest"
+    rm -rf "$work"
+}
+# Intel 版内置 ffmpeg：静态包（带 zscale，不含 libplacebo），与 Apple 芯片的 ffmpeg-full 分目录存放。
+# 缓存在 Vendor/ffmpeg/intel，重复构建不会重新下载。
+INTEL_FFMPEG_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/snapshot/ffmpeg.zip"
+INTEL_FFPROBE_URL="https://registry.npmjs.org/@ffprobe-installer/darwin-x64/-/darwin-x64-5.1.0.tgz"
+INTEL_CACHE="$FFMPEG_DIR/intel"
+fetch_intel_ffmpeg() {
+    dest="$INTEL_CACHE/ffmpeg"
+    if [ -x "$dest" ]; then return 0; fi
+    mkdir -p "$INTEL_CACHE"
+    echo "下载 Intel 内置 ffmpeg …"
+    work="$(mktemp -d)"
+    if ! curl -fsSL --retry 3 --max-time 900 -o "$work/ffmpeg.zip" "$INTEL_FFMPEG_URL"; then
+        echo "警告：下载 Intel ffmpeg 失败，Intel 机器上将回退系统 ffmpeg"
+        rm -rf "$work"
+        return 0
+    fi
+    unzip -q -o "$work/ffmpeg.zip" -d "$work"
+    if [ -f "$work/ffmpeg" ]; then
+        cp "$work/ffmpeg" "$dest"
+        chmod +x "$dest"
+    fi
+    rm -rf "$work"
+    if [ -x "$dest" ] && ! "$dest" -hide_banner -filters 2>/dev/null | grep -q zscale; then
+        echo "提示：Intel 内置 ffmpeg 不含 zscale，Intel 机器上的 HDR 映射会退回系统 ffmpeg"
+    fi
+}
+fetch_intel_probe() {
+    dest="$INTEL_CACHE/ffprobe"
+    if [ -x "$dest" ]; then return 0; fi
+    mkdir -p "$INTEL_CACHE"
+    echo "下载 Intel 内置 ffprobe …"
+    work="$(mktemp -d)"
+    if ! curl -fsSL --retry 3 --max-time 600 -o "$work/pkg.tgz" "$INTEL_FFPROBE_URL"; then
+        echo "警告：下载 Intel ffprobe 失败，Intel 机器上将回退系统 ffprobe"
+        rm -rf "$work"
+        return 0
+    fi
+    tar -xzf "$work/pkg.tgz" -C "$work"
+    if [ -f "$work/package/ffprobe" ]; then
+        cp "$work/package/ffprobe" "$dest"
+        chmod +x "$dest"
+    fi
+    rm -rf "$work"
+}
+
+# 优先打包带 libplacebo 的 ffmpeg-full：杜比视界 Profile 5 的 DOVI RPU 只有它能应用。
+# 找不到时退回原来的静态 ffmpeg（P5 会偏绿，其余 SDR / HDR10 照常）。
+# 优先使用 Vendor 里已生成的杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK + 全部 dylib）。
+# 缺失时调用 Tools/build/make_vendor_runtime.sh 从本机 Homebrew 现场生成一份；
+# 都没有才退回静态包（带 zscale + tonemap，HDR10 / HLG 可用，P5 会偏绿）。
+DV_RUNTIME="Vendor/ffmpeg-dv"
+BUNDLED_DV=0
+if [ ! -x "$DV_RUNTIME/bin/ffmpeg" ]; then
+    sh Tools/build/make_vendor_runtime.sh >/dev/null 2>&1 || true
+fi
+if [ -x "$DV_RUNTIME/bin/ffmpeg" ]; then
+    echo "复制杜比视界运行时（ffmpeg-full + libplacebo + MoltenVK）…"
+    cp -R "$DV_RUNTIME/bin" "$DV_RUNTIME/lib" "$APP/Contents/Resources/"
+    if [ -f "$DV_RUNTIME/VERSIONS.txt" ]; then
+        cp "$DV_RUNTIME/VERSIONS.txt" "$APP/Contents/Resources/FFmpeg-VERSIONS.txt"
+    fi
+    BUNDLED_DV=1
+fi
+
+if [ "$BUNDLED_DV" = "0" ]; then
+    fetch_ffmpeg
+    fetch_probe
+    if [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ]; then
+        mkdir -p "$APP/Contents/Resources/bin"
+        cp "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$APP/Contents/Resources/bin/"
+        chmod +x "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe"
+    fi
+fi
+
+# Intel（x86_64）内置静态 ffmpeg / ffprobe：只有通用包（含 x86_64）才需要。
+# 运行时按架构选择目录（见 VideoSupport.bundledBinaryDirectory）。
+if echo " $ARCHS " | grep -q " x86_64 "; then
+    fetch_intel_ffmpeg
+    fetch_intel_probe
+    if [ -x "$INTEL_CACHE/ffmpeg" ] && [ -x "$INTEL_CACHE/ffprobe" ]; then
+        mkdir -p "$APP/Contents/Resources/bin-x86_64"
+        cp "$INTEL_CACHE/ffmpeg" "$INTEL_CACHE/ffprobe" "$APP/Contents/Resources/bin-x86_64/"
+        chmod +x "$APP/Contents/Resources/bin-x86_64/ffmpeg" "$APP/Contents/Resources/bin-x86_64/ffprobe"
+    fi
+fi
+
+# 内置二进制必须先单独签名（hardened runtime 不允许未签名的嵌套可执行文件）。
+# dylib 要在 ffmpeg / ffprobe 之前签，最后再签外层 App。
+sign_nested() {
+    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+        codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$1"
+    else
+        codesign --force --sign - "$1" >/dev/null 2>&1 || true
+    fi
+}
+if [ -d "$APP/Contents/Resources/lib" ]; then
+    for library in "$APP/Contents/Resources/lib"/*.dylib; do
+        [ -e "$library" ] || continue
+        sign_nested "$library"
+    done
+fi
+for binary in "$APP/Contents/Resources/bin/ffmpeg" "$APP/Contents/Resources/bin/ffprobe" \
+              "$APP/Contents/Resources/bin-x86_64/ffmpeg" "$APP/Contents/Resources/bin-x86_64/ffprobe"; do
+    [ -x "$binary" ] || continue
+    sign_nested "$binary"
+done
+
+# 打包了 GPL 组件（ffmpeg-full / x264 / x265）时随包附带许可与源码说明。
+if [ "$BUNDLED_DV" = "1" ]; then
+    cat > "$APP/Contents/Resources/FFmpeg-NOTICE.txt" <<'NOTICE'
+本应用内置 FFmpeg 及其依赖，用于视频转封装与 HDR / 杜比视界色调映射。
+
+组件与许可：
+- FFmpeg 9.0.2 — GPL-3.0-or-later · https://ffmpeg.org
+- libplacebo — LGPL-2.1-or-later · https://code.videolan.org/videolan/libplacebo
+- MoltenVK — Apache-2.0 · https://github.com/KhronosGroup/MoltenVK
+- x264 / x265 — GPL-2.0 / GPL-3.0
+- 其余依赖（aom、dav1d、svt-av1、rav1e、libvpx、opus、zimg 等）许可见各自项目主页
+
+对应源码：
+https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/f/ffmpeg-full.rb
+
+如需完整对应源码包，请联系分发者。
+NOTICE
+fi
+
+
+# 有开发者证书时使用 hardened runtime + entitlements；否则用固定本地身份签名。
+sign_app_bundle "$APP"
 
 # 可选：打包 zip。PACKAGE=1 ./build.sh
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist 2>/dev/null || echo 0)"
@@ -297,6 +390,10 @@ ZIP="Luma-${VERSION}-macOS.zip"
 if [ "${PACKAGE:-0}" = "1" ]; then
     rm -f "$ZIP"
     ditto -c -k --keepParent "$APP" "$ZIP"
+    # 安装说明随包附带：Gatekeeper 放行步骤、系统要求都在这一份里。
+    if [ -f "Resources/Install-README.txt" ]; then
+        zip -g -j "$ZIP" "Resources/Install-README.txt" >/dev/null
+    fi
     echo "已打包 $ZIP"
 fi
 
@@ -308,6 +405,9 @@ if [ "${NOTARIZE:-0}" = "1" ]; then
     : "${APP_PASSWORD:?NOTARIZE=1 需要 APP_PASSWORD（app-specific password）}"
     rm -f "$ZIP"
     ditto -c -k --keepParent "$APP" "$ZIP"
+    if [ -f "Resources/Install-README.txt" ]; then
+        zip -g -j "$ZIP" "Resources/Install-README.txt" >/dev/null
+    fi
     xcrun notarytool submit "$ZIP" \
         --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
     xcrun stapler staple "$APP"

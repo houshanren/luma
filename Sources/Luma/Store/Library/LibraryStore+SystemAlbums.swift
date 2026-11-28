@@ -18,7 +18,25 @@ struct EmptyFoldersCleanupRequest: Identifiable {
     let folderName: String
     /// 会被删掉的空子文件夹（顶层，删除即带走整棵空子树）。
     let folders: [SystemFolderInfo]
+
     var folderCount: Int { folders.count }
+}
+
+extension LibraryStore {
+    /// 系统图库「结构写」：新建 / 重命名 / 删除相簿与文件夹。
+    ///
+    /// 这些操作直接写 PhotoKit，之前是裸 `Task { }`：换库或退出时既不取消、
+    /// 也无从知道还在跑。现在每次分配独立槽位登记到任务中心，并发发起互不打断，
+    /// 换库 / 退出时由 `tasks.cancelAll()` 一起收掉。
+    /// 闭包在 MainActor 上执行；调用点用 `{ [self] in` 保留原来的隐式 self 写法。
+    func runSystemStructureWrite(_ operation: @escaping @MainActor () async -> Void) {
+        let slot = StoreTaskCenter.Slot.systemStructureWrite(UUID())
+        let task = Task {
+            defer { tasks.finish(slot) }
+            await operation()
+        }
+        tasks.attach(slot, task)
+    }
 }
 
 /// 系统图库文件夹整理流程：确认 → 执行中 → 清理空文件夹。
@@ -247,7 +265,7 @@ extension LibraryStore {
         systemFolderPrompt = .working(title: "正在提取相簿",
                                       message: "把 \(plan.albums.count) 个相簿提到「\(plan.folderName)」…")
         let movingIDs = Set(plan.albums.map(\.id))
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else {
                 systemFolderPrompt = nil
                 return
@@ -306,7 +324,7 @@ extension LibraryStore {
         let identifiers = ids.compactMap { idMap[$0] }
         systemFolderPrompt = .working(title: "正在清理空文件夹",
                                       message: "删除「\(request.folderName)」下 \(ids.count) 个空子文件夹…")
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else {
                 systemFolderPrompt = nil
                 return
@@ -429,7 +447,7 @@ extension LibraryStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let folderIdentifier = parentID.flatMap { systemFolderIdentifier($0) }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 let identifier = try await PhotoKitBridge.createAlbum(title: trimmed)
@@ -452,7 +470,7 @@ extension LibraryStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let parentIdentifier = parentID.flatMap { systemFolderIdentifier($0) }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 _ = try await PhotoKitBridge.createFolder(title: trimmed, inFolder: parentIdentifier)
@@ -471,7 +489,7 @@ extension LibraryStore {
             showToast("请先在菜单里「重新读取」系统图库后再试")
             return
         }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.renameAlbum(albumID: identifier, title: name)
@@ -488,7 +506,7 @@ extension LibraryStore {
             showToast("请先在菜单里「重新读取」系统图库后再试")
             return
         }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.deleteAlbums(albumIDs: [identifier])
@@ -518,7 +536,7 @@ extension LibraryStore {
             return
         }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await runSystemLibraryJob(
@@ -544,7 +562,7 @@ extension LibraryStore {
             return
         }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await runSystemLibraryJob(
@@ -569,7 +587,7 @@ extension LibraryStore {
             return
         }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await runSystemLibraryJob(
@@ -651,7 +669,7 @@ extension LibraryStore {
             return
         }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await runSystemLibraryJob(
@@ -679,7 +697,7 @@ extension LibraryStore {
     func deleteSystemToPhotosTrash(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await runSystemLibraryJob(
@@ -708,7 +726,7 @@ extension LibraryStore {
             showToast("请先在菜单里「重新读取」系统图库后再试")
             return
         }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.renameFolder(identifier: identifier, title: trimmed)
@@ -775,7 +793,7 @@ extension LibraryStore {
             showToast("请先在菜单里「重新读取」系统图库后再试")
             return
         }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.deleteFolders(identifiers: [identifier])
@@ -877,7 +895,7 @@ extension LibraryStore {
         }
         let albumIdentifiers = Array(systemAlbumIdentifiers(albumsToRemove).values)
         let folderIdentifiers = Array(systemFolderIdentifiers(foldersToRemove).values)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else {
                 systemToolsRequest = nil
                 return
@@ -932,7 +950,7 @@ extension LibraryStore {
             return
         }
         let identifiers = albumIDs.compactMap { albumMap[$0] }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 let moved = try await PhotoKitBridge.extractAlbums(identifiers, intoFolder: folderIdentifier)
@@ -969,7 +987,7 @@ extension LibraryStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 _ = try await PhotoKitBridge.createAlbum(title: trimmed, adding: targets)
@@ -993,7 +1011,7 @@ extension LibraryStore {
               let sourceIdentifier = systemAlbumIdentifier(source),
               let targetIdentifier = systemAlbumIdentifier(target) else { return }
         let targets = Array(ids)
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.addAssets(targets, toAlbum: targetIdentifier)
@@ -1019,7 +1037,7 @@ extension LibraryStore {
     /// 修改拍摄时间 / 位置；传 nil 表示该项保持不变。
     func updateSystemMetadata(_ ids: Set<UUID>, creationDate: Date?, location: CLLocation?) {
         guard !ids.isEmpty, creationDate != nil || location != nil else { return }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.updateMetadata(assetIDs: Array(ids),
@@ -1048,7 +1066,7 @@ extension LibraryStore {
 
     /// 编辑器保存：把渲染结果作为非破坏性调整写回「照片」。
     func saveSystemEdit(photoID: UUID, jpegData: Data) {
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else { return }
             do {
                 try await PhotoKitBridge.applyEdit(assetID: photoID, jpegData: jpegData)

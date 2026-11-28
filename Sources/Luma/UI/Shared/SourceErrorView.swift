@@ -16,7 +16,7 @@ struct SourceErrorView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.system(size: 12.5, weight: .semibold))
-                    Text(error.message)
+                    Text(detail)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -49,13 +49,23 @@ struct SourceErrorView: View {
         case .unauthorized: return "需要重新授权"
         case .keychainDenied: return "无法读取保存的凭据"
         case .tlsUntrusted: return "证书校验失败"
-        case .http: return error.statusCode.map { "请求被拒绝（HTTP \($0)）" } ?? "请求被拒绝"
+        case .http:
+            if error.statusCode == 429 { return "请求过于频繁（HTTP 429）" }
+            return error.statusCode.map { "请求被拒绝（HTTP \($0)）" } ?? "请求被拒绝"
         case .parse: return "返回内容无法解析"
         case .unavailable: return "来源暂时不可用"
         case .cancelled: return "操作已取消"
         case .blocked: return "站点要求先完成验证"
         case .unsupported: return "当前来源不支持"
         }
+    }
+
+    /// 429 是站点按 IP 限流，不是源坏了：说清原因与建议，别让用户以为要重新配置。
+    private var detail: String {
+        if error.kind == .http, error.statusCode == 429 {
+            return "站点短时间内收到的请求太多（已自动退避重试）。等几秒再刷新，或减少连续翻页 / 悬停预览即可。"
+        }
+        return error.message
     }
 
     private var iconName: String {

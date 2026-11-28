@@ -4,7 +4,7 @@ import LumaCore
 import LumaDomain
 
 package struct PhotoCell: View {
-    @EnvironmentObject private var host: PhotoGridHost
+    @Environment(PhotoGridHost.self) private var host
     package let photo: PhotoItem
     package let width: CGFloat
     package let height: CGFloat
@@ -20,6 +20,8 @@ package struct PhotoCell: View {
     package var stackIsBurst: Bool = false
     @State private var image: NSImage?
     @State private var didLoad = false
+    /// 当前图片的解码档位（像素）。缩小时不重新请求更小的图，避免缩放过程中反复换图闪烁。
+    @State private var loadedPixel = 0
     @State private var isHovering = false
     /// 鼠标在格子里的位置：让悬停高光跟着指针走，画面不位移也能有玻璃质感。
     @State private var hoverPoint: CGPoint?
@@ -56,6 +58,10 @@ package struct PhotoCell: View {
     /// 网格单元格跟随设置里的小封面圆角，和侧边栏缩略图保持同一套半径。
     private var corner: CGFloat { cornerRadius ?? host.smallCoverRadius }
 
+    /// 马赛克档位：格子小到读不清文字时，只画照片本身与必要的角标，
+    /// 省掉元数据、悬停光效与描边——这既是系统「照片」的观感，也是最小缩放能流畅的前提。
+    private var isMosaic: Bool { min(width, height) < 56 }
+
     /// 网格加载键：只有格子尺寸档位变化时才重新解码缩略图。
     private var gridLoadKey: String {
         "\(photo.cacheKey)|\(ThumbnailSizing.bucket(for: max(width, height) * 2))"
@@ -63,27 +69,6 @@ package struct PhotoCell: View {
 
     private var actionIDs: Set<UUID> {
         host.selectedIDs.contains(photo.id) && !host.selectedIDs.isEmpty ? host.selectedIDs : [photo.id]
-    }
-
-    /// 悬停提示：鼠标停在缩略图上就能确认文件名、拍摄时间与规格，不用打开信息面板。
-    private var hoverHelpText: String {
-        var parts: [String] = [photo.displayFilename,
-                               DateText.dayFormatter.string(from: photo.capturedAt)]
-        if photo.pixelWidth > 0, photo.pixelHeight > 0 {
-            parts.append("\(photo.pixelWidth)×\(photo.pixelHeight)")
-        }
-        if photo.fileSize > 0 {
-            parts.append(formatFileSize(photo.fileSize))
-        }
-        if photo.isVideo, let duration = photo.duration, duration > 0 {
-            parts.append(formatDuration(duration))
-        }
-        if stackCount > 1 {
-            parts.append(host.isStackExpanded(photo.id)
-                         ? "已展开的堆叠 · \(stackCount) 张，双击收起"
-                         : "堆叠 · \(stackCount) 张，双击展开")
-        }
-        return parts.joined(separator: " · ")
     }
 
     /// 按设置打开：查看器 / 编辑器 / 系统默认应用。
@@ -230,23 +215,26 @@ package struct PhotoCell: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: width, height: height)
-                    .scaleEffect(isHovering ? 1.03 : 1)
-                    .brightness(isHovering ? 0.07 : 0)
-                    .saturation(isHovering ? 1.08 : 1)
+                    .scaleEffect(isHovering && !isMosaic ? 1.03 : 1)
+                    .brightness(isHovering && !isMosaic ? 0.07 : 0)
+                    .saturation(isHovering && !isMosaic ? 1.08 : 1)
                     .clipped()
                     .transition(.opacity)
-            } else if didLoad {
-                Image(systemName: photo.isVideo ? "video" : "photo")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(.tertiary)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.secondary)
+            } else if !isMosaic {
+                if didLoad {
+                    Image(systemName: photo.isVideo ? "video" : "photo")
+                        .font(.system(size: 20, weight: .light))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.secondary)
+                }
             }
 
             // 悬停质感：轻微放大提亮 + 斜向玻璃反光 + 跟随指针的柔和高光。
-            if isHovering {
+            // 马赛克档位不画这些层：格子只有几十像素，画了也看不清，反而拖慢整墙重绘。
+            if isHovering && !isMosaic {
                 LinearGradient(colors: [Color.white.opacity(0.20),
                                         .clear,
                                         Color.black.opacity(0.10)],
@@ -268,12 +256,27 @@ package struct PhotoCell: View {
                 .allowsHitTesting(false)
             }
 
-            if host.metadata.hasTextOverlay {
+            if !isMosaic, host.metadata.hasTextOverlay {
                 metadataOverlay
             }
 
             // 视频角标：始终显示，让视频在网格里一眼可辨；右下角对齐系统「照片」。
             if photo.isVideo {
+                if isMosaic {
+                    // 最小档只留一枚小图标，省掉胶囊与时长文字。
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Image(systemName: "video.fill")
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.55), radius: 1.5)
+                        }
+                    }
+                    .padding(3)
+                    .allowsHitTesting(false)
+                } else {
                 VStack {
                     Spacer()
                     HStack {
@@ -299,9 +302,10 @@ package struct PhotoCell: View {
                     .padding(6)
                 }
                 .allowsHitTesting(false)
+                }
             }
 
-            if photo.isFavorite, host.metadata.favorite {
+            if photo.isFavorite, !isMosaic, host.metadata.favorite {
                 VStack {
                     HStack {
                         Spacer()
@@ -322,7 +326,7 @@ package struct PhotoCell: View {
             }
 
             // 堆叠角标：左上角显示整组张数，一眼看出这是一摞照片。
-            if stackCount > 1 {
+            if stackCount > 1, !isMosaic {
                 VStack {
                     HStack(spacing: 0) {
                         HStack(spacing: 2.5) {
@@ -360,7 +364,7 @@ package struct PhotoCell: View {
             }
 
             // 评分 / 旗标：左下角小胶囊，避免与右下角视频时长冲突。
-            if photo.starRating > 0 || photo.pickFlag != .none {
+            if (photo.starRating > 0 || photo.pickFlag != .none), !isMosaic {
                 VStack {
                     Spacer()
                     HStack(spacing: 4) {
@@ -397,7 +401,7 @@ package struct PhotoCell: View {
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay {
             // 常驻发丝边；悬停时换成跟随指针方向的强调色渐变描边，并带一圈柔和光晕。
-            if isHovering && !isSelected {
+            if isHovering && !isSelected && !isMosaic {
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
                     .strokeBorder(
                         AngularGradient(colors: [
@@ -413,12 +417,13 @@ package struct PhotoCell: View {
                     .allowsHitTesting(false)
             } else {
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+                    .strokeBorder(Color.primary.opacity(isMosaic ? 0.04 : 0.07),
+                                  lineWidth: LumaControlMetrics.hairline)
             }
         }
         .overlay(alignment: .top) {
             // 顶部 1px 高光，模拟玻璃边缘受光；只在悬停时出现，不做扫光动画。
-            LinearGradient(colors: [.white.opacity(isHovering ? 0.45 : 0), .clear],
+            LinearGradient(colors: [.white.opacity(isHovering && !isMosaic ? 0.45 : 0), .clear],
                            startPoint: .top, endPoint: .bottom)
                 .frame(height: 1)
                 .padding(.horizontal, corner + 2)
@@ -438,7 +443,7 @@ package struct PhotoCell: View {
                     .strokeBorder(.white.opacity(0.35), lineWidth: 0.8)
             }
         }
-        .modifier(PhotoCellShadow(selected: isSelected, elevated: elevated))
+        .modifier(PhotoCellShadow(selected: isSelected, elevated: elevated && !isMosaic))
         .animation(host.hoverAnimation, value: isHovering)
         .animation(.easeOut(duration: 0.18), value: image != nil)
         .contentShape(Rectangle())
@@ -448,10 +453,12 @@ package struct PhotoCell: View {
             PhotoDragPreview(image: image, count: actionIDs.count)
         }
         .onContinuousHover { phase in
+            // 马赛克档不画悬停光效，也就不必跟着鼠标逐点重算这个格子。
+            guard !isMosaic else { return }
             switch phase {
             case .active(let point):
-                hoverPoint = point
                 if !isHovering { isHovering = true }
+                hoverPoint = point
             case .ended:
                 isHovering = false
                 hoverPoint = nil
@@ -495,22 +502,35 @@ package struct PhotoCell: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(photo.displayTitle)
-        .accessibilityValue(accessibilityValueText)
+        // 马赛克档不生成日期 / 时长文案：这几行在捏合缩放的每一帧都会对全部可见格子求值。
+        .accessibilityValue(isMosaic ? "" : accessibilityValueText)
         .accessibilityHint("单击选择；双击打开；按住 ⌘ 或 ⇧ 单击可多选")
-        .help(hoverHelpText)
         .task(id: gridLoadKey) {
+            let target = ThumbnailSizing.bucket(for: max(width, height) * 2)
+            // 缩小（目标档位不高于手里这张）不重新解码：直接沿用，缩放过程不换图、不闪烁。
+            guard image == nil || target > loadedPixel else {
+                didLoad = true
+                return
+            }
             didLoad = false
             guard let loader = ThumbnailLoaderRegistry.load else {
                 didLoad = true
                 return
             }
             let loaded = await loader(photo, .grid(maxPixel: max(width, height) * 2)) { quick in
-                // 快速层先出图；滑出视野时任务被取消，目标档位不会再覆盖。
+                // 已经有图时不再用低清快速层覆盖：大图换小图会闪一下。
+                guard loadedPixel == 0, image == nil else { return }
                 image = quick
+                loadedPixel = ThumbnailSizing.quickPixel
                 didLoad = true
             }
             guard !Task.isCancelled else { return }
-            if let loaded { image = loaded }
+            if let loaded {
+                image = loaded
+                // 系统图库 32px 微缩略图不是目标档位：记住实际像素，放大时才会再取更清晰的图。
+                let pixel = loaded.representations.first.map { max($0.pixelsWide, $0.pixelsHigh) } ?? target
+                loadedPixel = min(target, pixel)
+            }
             didLoad = true
         }
     }
@@ -560,6 +580,18 @@ package struct PhotoFramePreferenceKey: PreferenceKey {
 /// 框选用的单元格位置缓存。用引用类型保存，更新时不触发视图重排。
 package final class PhotoFrameCache {
     package var frames: [UUID: CGRect] = [:]
+
+    /// 单个格子上报（macOS 15+ 走 onGeometryChange，每帧一次，必须是 O(1) 且不触发刷新）。
+    package func store(_ frame: CGRect, for id: UUID) {
+        if frames.count > 4_000 { frames.removeAll(keepingCapacity: true) }
+        frames[id] = frame
+    }
+
+    /// 合并一批上报（旧系统走 Preference）。超过上限直接清空，长距离滚动后旧矩形没有价值。
+    package func mergeFrames(_ other: [UUID: CGRect]) {
+        if frames.count + other.count > 4_000 { frames.removeAll(keepingCapacity: true) }
+        frames.merge(other) { _, new in new }
+    }
 
     package init() {}
 }

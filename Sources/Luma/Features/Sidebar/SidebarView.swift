@@ -23,6 +23,8 @@ struct SidebarView: View {
     private var showCloudModule: Bool { settings.moduleCloud }
     private var showCatalogModule: Bool { settings.moduleCatalog }
     private var showCinemaModule: Bool { settings.moduleCinema }
+    /// 星图不看模块开关：资料库被加载后入口才出现，卸载后整段消失。
+    private var showAtlasLibrary: Bool { AtlasCatalogLibrary.shared.isLoaded }
     /// 侧边栏相簿默认全部收起，只记录被用户展开的文件夹，避免一次渲染上千行。
     /// 展开 / 收起状态写入本地，下次启动沿用上次的层级。
     @State private var expandedFolders: Set<UUID> =
@@ -33,9 +35,6 @@ struct SidebarView: View {
     @State var systemExpansionRevision = 0
     @State var collapsedSystemLibraries: Set<String> =
         SidebarStateStorage.stringSet(SidebarStateStorage.Key.collapsedSystemLibraries)
-    @State var hoveredItem: SidebarItem?
-    /// 与 hoveredItem 搭配的分区标识：同一个相簿可能同时出现在「固定」和「相簿」里。
-    @State private var hoveredItemScope: String = ""
     @State var hoveredSystemLibraryPath: String?
     /// 已收起的侧边栏分区（键为分区标识），同样持久化。
     @State var collapsedSections: Set<String> =
@@ -74,6 +73,9 @@ struct SidebarView: View {
         ScrollView {
             // 系统图库可能带成千上万个相簿，侧边栏必须懒加载，否则一次性创建全部行会卡死主线程。
             LazyVStack(alignment: .leading, spacing: 1) {
+                // 智能助手工作台：左侧菜单里的独立一页，不挂在任何图库实例下面。
+                sidebarRow(.assistant, icon: "sparkles", title: "助手", color: Color.accentColor)
+                    .padding(.bottom, 6)
                 librariesSection
                 if showCloudModule {
                     cloudSection
@@ -86,6 +88,9 @@ struct SidebarView: View {
                 }
                 if showTelevision {
                     tvSection
+                }
+                if showAtlasLibrary {
+                    atlasSection
                 }
             }
             .padding(.horizontal, 8)
@@ -102,6 +107,10 @@ struct SidebarView: View {
             }
         }
         .scrollIndicators(.never)
+        // 截图工具要求「逐层展开」时，把分区 / 文件夹 / 网盘 / 电视源一次展开。
+        .onChange(of: store.sidebarExpandRequest) { _, _ in
+            expandLevels(focus: store.sidebarExpandTarget)
+        }
         // 环境光垫在材质下面：侧边栏不是一块死灰，而是一层带颜色的磨砂玻璃。
         .background {
             ZStack {
@@ -126,7 +135,7 @@ struct SidebarView: View {
         // 之前用 containerRelativeFrame，分栏拖拽的实时布局里会按上一帧列宽算宽，
         // 内容缩成一条贴在右边的窄栏、两侧大片空白（截图里的错位就是这样来的）。
         .navigationSplitViewColumnWidth(min: 150, ideal: 248, max: 360)
-        .confirmationDialog("清空照片内容分析结果？",
+        .confirmationDialog("清空照片与视频的内容分析结果？",
                             isPresented: $showResetAnalysisConfirm,
                             titleVisibility: .visible) {
             Button("清空全部结果", role: .destructive) {
@@ -134,7 +143,7 @@ struct SidebarView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会删除全部照片的场景标签、图内文字与相似检索特征（含已保存到图库的结果）；照片本身不受影响，之后可重新分析。")
+            Text("会删除全部照片与视频的场景标签、图内文字与相似检索特征（含已保存到图库的结果）；原文件本身不受影响，之后可重新分析。")
         }
         .confirmationDialog("重新识别全部照片？",
                             isPresented: $showRestartSystemAnalysisConfirm,
@@ -162,23 +171,13 @@ struct SidebarView: View {
                             icon: String,
                             title: String,
                             color: Color = .secondary,
-                            scope: String = "main",
                             pinKey: String? = nil) -> some View {
         SidebarCategoryRow(icon: icon,
                            title: title,
                            iconColor: color,
                            trailingIcon: pinKey == "trash" ? "lock.fill" : nil,
                            isActive: store.sidebarItem == item,
-                           isHovered: hoveredItem == item && hoveredItemScope == scope,
                            action: { store.navigate(to: item) })
-            .onHover { hovering in
-                if hovering {
-                    hoveredItem = item
-                    hoveredItemScope = scope
-                } else if hoveredItem == item && hoveredItemScope == scope {
-                    hoveredItem = nil
-                }
-            }
             .contextMenu {
                 if let pinKey {
                     Button(store.isPinned(.system(pinKey)) ? "取消固定" : "固定到侧边栏") {
@@ -272,7 +271,7 @@ struct SidebarView: View {
         case .system(let key):
             if let info = pinnedSystemInfo(for: key, system: system) {
                 sidebarRow(info.item, icon: info.icon, title: info.title,
-                           color: info.color, scope: "fixed", pinKey: key)
+                           color: info.color, pinKey: key)
             }
         case .album(let id):
             if let album = store.albums.first(where: { $0.id == id }) {
@@ -394,62 +393,53 @@ struct SidebarView: View {
 
         return AnyView(
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: Self.folderChevronGap) {
-                    Button {
-                        withAnimation(settings.motion.layout) {
-                            if isExpanded {
-                                expandedFolders.remove(folder.id)
-                            } else {
-                                expandedFolders.insert(folder.id)
+                // 悬停高亮收进行内：父视图不再因为鼠标划过而在上百行之间整体重算。
+                HoverRowHighlight(active: store.sidebarItem == .folder(folder.id)) {
+                    HStack(spacing: Self.folderChevronGap) {
+                        Button {
+                            withAnimation(settings.motion.layout) {
+                                if isExpanded {
+                                    expandedFolders.remove(folder.id)
+                                } else {
+                                    expandedFolders.insert(folder.id)
+                                }
                             }
-                        }
-                        persistExpansionState()
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8.5, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: Self.folderChevronWidth, height: 18)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .opacity(hasChildren ? 1 : 0)
-                    .disabled(!hasChildren)
-
-                    Button {
-                        store.navigate(to: .folder(folder.id))
-                    } label: {
-                        HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                            Image(systemName: "folder.fill")
-                                .font(.system(size: 12))
+                            persistExpansionState()
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 8.5, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                                .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
-                                .background(Color.primary.opacity(0.08),
-                                            in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
-                                                                 style: .continuous))
-                            Text(folder.name)
-                                .font(.system(size: LumaMetrics.sidebarTextSize))
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
+                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                                .frame(width: Self.folderChevronWidth, height: 18)
+                                .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .opacity(hasChildren ? 1 : 0)
+                        .disabled(!hasChildren)
+
+                        Button {
+                            store.navigate(to: .folder(folder.id))
+                        } label: {
+                            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                                Image(systemName: "folder.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
+                                    .background(Color.primary.opacity(0.08),
+                                                in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                                                     style: .continuous))
+                                Text(folder.name)
+                                    .font(.system(size: LumaMetrics.sidebarTextSize))
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                }
-                .padding(.leading, rowLeadingPadding(level))
-                .padding(.trailing, 8)
-                .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
-                .background {
-                    LumaRowHighlight(active: store.sidebarItem == .folder(folder.id),
-                                     hovered: hoveredItem == .folder(folder.id) && hoveredItemScope == scope)
-                }
-                .onHover { hovering in
-                    if hovering {
-                        hoveredItem = .folder(folder.id)
-                        hoveredItemScope = scope
-                    } else if hoveredItem == .folder(folder.id) && hoveredItemScope == scope {
-                        hoveredItem = nil
-                    }
+                    .padding(.leading, rowLeadingPadding(level))
+                    .padding(.trailing, 8)
+                    .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
                 }
                 .contextMenu {
                     Button("打开文件夹") {
@@ -487,24 +477,23 @@ struct SidebarView: View {
     }
 
     func albumRow(_ album: Album, level: Int, scope: String = "albums") -> some View {
-        Button {
-            store.navigate(to: .album(album.id))
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                AlbumCoverView(album: album)
-                Text(album.name)
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.leading, albumLeadingPadding(level, scope: scope))
-            .padding(.trailing, 8)
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
-            .background {
-                ZStack {
-                    LumaRowHighlight(active: store.sidebarItem == .album(album.id),
-                                     hovered: hoveredItem == .album(album.id) && hoveredItemScope == scope)
+        // 悬停高亮收进行内：相簿多时，鼠标划过只重算这一行。
+        HoverRowHighlight(active: store.sidebarItem == .album(album.id)) {
+            Button {
+                store.navigate(to: .album(album.id))
+            } label: {
+                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                    AlbumCoverView(album: album)
+                    Text(album.name)
+                        .font(.system(size: LumaMetrics.sidebarTextSize))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, albumLeadingPadding(level, scope: scope))
+                .padding(.trailing, 8)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+                .background {
                     if dropTargetAlbumID == album.id {
                         RoundedRectangle(cornerRadius: LumaMetrics.rowRadius, style: .continuous)
                             .fill(Color.accentColor.opacity(0.24))
@@ -515,15 +504,7 @@ struct SidebarView: View {
                     }
                 }
             }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            if hovering {
-                hoveredItem = .album(album.id)
-                hoveredItemScope = scope
-            } else if hoveredItem == .album(album.id) && hoveredItemScope == scope {
-                hoveredItem = nil
-            }
+            .buttonStyle(.plain)
         }
         .onDrop(of: [.plainText], isTargeted: Binding(
             get: { dropTargetAlbumID == album.id },
@@ -573,38 +554,28 @@ struct SidebarView: View {
 
     func smartAlbumRow(_ album: SmartAlbum, scope: String = "smart") -> some View {
         let item = SidebarItem.smartAlbum(album.id)
-        return Button {
-            store.navigate(to: item)
-        } label: {
-            HStack(spacing: LumaMetrics.sidebarRowSpacing) {
-                Image(systemName: "gearshape.2.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
-                    .background(Color.primary.opacity(0.08),
-                                in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
-                                                     style: .continuous))
-                Text(album.name)
-                    .font(.system(size: LumaMetrics.sidebarTextSize))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+        return HoverRowHighlight(active: store.sidebarItem == item) {
+            Button {
+                store.navigate(to: item)
+            } label: {
+                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                    Image(systemName: "gearshape.2.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
+                        .background(Color.primary.opacity(0.08),
+                                    in: RoundedRectangle(cornerRadius: LumaMetrics.sidebarCoverRadius,
+                                                         style: .continuous))
+                    Text(album.name)
+                        .font(.system(size: LumaMetrics.sidebarTextSize))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
-            .background {
-                LumaRowHighlight(active: store.sidebarItem == item,
-                                 hovered: hoveredItem == item && hoveredItemScope == scope)
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            if hovering {
-                hoveredItem = item
-                hoveredItemScope = scope
-            } else if hoveredItem == item && hoveredItemScope == scope {
-                hoveredItem = nil
-            }
+            .buttonStyle(.plain)
         }
         .contextMenu {
             Button("打开智能相簿") { store.navigate(to: item) }
@@ -620,6 +591,8 @@ struct SidebarView: View {
 
     /// 可收起的分区头：悬停时显示「更多」与「收起 / 展开」。
     /// 传入 `navigateTo` 时标题可点击，右侧显示该分区的二级总览视图。
+    /// `active` 可覆盖默认判定：一级标题与二级行同属一个 `sidebarItem` 时，
+    /// 由调用方按更具体的选择（某个源 / 某个分类）让标题让位，保证同一时刻只有一处高亮。
     func sectionHeader<MenuContent: View>(
         _ title: String,
         key: String,
@@ -627,13 +600,14 @@ struct SidebarView: View {
         indent: CGFloat = 0,
         isModule: Bool = false,
         navigateTo: SidebarItem? = nil,
+        active: Bool? = nil,
         beforeNavigate: (() -> Void)? = nil,
         @ViewBuilder menu: @escaping () -> MenuContent = { EmptyView() }
     ) -> some View {
         SidebarSectionHeader(
             title: title,
             collapsed: isCollapsed(key),
-            active: navigateTo.map { $0 == store.sidebarItem } ?? false,
+            active: active ?? (navigateTo.map { $0 == store.sidebarItem } ?? false),
             topPadding: topPadding,
             indent: indent,
             isModule: isModule,
@@ -657,7 +631,7 @@ struct SidebarView: View {
         }
     }
 
-    private func toggleSection(_ key: String) {
+    func toggleSection(_ key: String) {
         if isCollapsed(key) {
             if isTopLevelSection(key) {
                 expandExclusively(key)
@@ -675,7 +649,7 @@ struct SidebarView: View {
     /// 顶层分区（图库 / 网络存储 / 网络资源 / 网络电视）做手风琴：
     /// 展开一个，其余已展开的顶层分区自动合上；嵌套分区不参与。
     private static let topLevelSectionKeys: Set<String> = [
-        "library", "cloud", "catalog", "netcinema", "tv"
+        "library", "cloud", "catalog", "netcinema", "tv", "atlas"
     ]
 
     private func isTopLevelSection(_ key: String) -> Bool {
@@ -690,6 +664,7 @@ struct SidebarView: View {
         if showCatalogModule { keys.append("catalog") }
         if showCinemaModule { keys.append("netcinema") }
         if showTelevision { keys.append("tv") }
+        if showAtlasLibrary { keys.append("atlas") }
         return keys
     }
 
@@ -717,4 +692,65 @@ struct SidebarView: View {
         if collapsedSections.contains(key) { return true }
         return Self.defaultCollapsedSections.contains(key) && !expandedSections.contains(key)
     }
+
+    /// 把侧边栏各层级一次性展开：分区头、相簿文件夹、网盘分类、电视源分类。
+    /// - Parameter focus: 要聚焦的分区；其它一级分区会收起，让目标段落在可视区域里。
+    ///   只由截图工具的 `sidebarExpandRequest` 触发，正常交互仍按用户自己的展开状态走。
+    func expandLevels(focus: String) {
+        collapsedSections.removeAll()
+        expandedSections.removeAll()
+        switch focus {
+        case "albums":
+            // 相簿上面的分区保持收起，相簿列表才能落进首屏。
+            expandedSections.formUnion(["library", "library.current", "luma.albums", "luma.smart"])
+            collapsedSections.formUnion(["luma.fixed", "luma.media", "luma.more", "luma.scenes"])
+        case "scenes":
+            expandedSections.formUnion(["library", "library.current", "luma.scenes"])
+            collapsedSections.formUnion(["luma.fixed", "luma.media", "luma.more",
+                                         "luma.albums", "luma.smart"])
+        case "library":
+            expandedSections.formUnion(["library", "library.current", "luma.fixed", "luma.media",
+                                        "luma.more", "luma.scenes", "luma.albums", "luma.smart"])
+        case "cloud", "catalog", "tv":
+            expandedSections.insert(focus)
+            if focus == "catalog" {
+                for category in CatalogSiteCategory.displayOrder {
+                    expandedSections.insert("catalog.site.\(category.rawValue)")
+                }
+            }
+        default:
+            expandedSections.formUnion(Self.allSectionKeys)
+            for category in CatalogSiteCategory.displayOrder {
+                expandedSections.insert("catalog.site.\(category.rawValue)")
+            }
+        }
+        // 聚焦某一个一级分区时，其余一级分区全部收起（与手风琴一致）。
+        let focusTop = (focus == "library" || focus == "albums" || focus == "scenes") ? "library" : focus
+        if focusTop != "all" {
+            for key in Self.topLevelSectionKeys where key != focusTop {
+                collapsedSections.insert(key)
+                expandedSections.remove(key)
+            }
+        }
+        expandedFolders.formUnion(store.folders.map(\.id))
+        expandedSystemFolders.formUnion(store.systemFolders.map(\.id))
+        expandedTVSources.formUnion(tv.playlists.map(\.id))
+        if let firstMount = store.cloudMounts.first?.id {
+            expandedCloudMountID = firstMount
+        }
+        // 网盘内的分类分区在 CloudMountDetailView 首次出现时读这份记录。
+        for mount in store.cloudMounts {
+            SidebarStateStorage.save(SidebarStateStorage.Key.cloudDetailSections(mount.id),
+                                     Set<String>())
+        }
+        persistExpansionState()
+    }
+
+    /// 侧边栏可能出现的全部分区 key（含默认收起的几个）。
+    private static let allSectionKeys: Set<String> = [
+        "library", "library.current",
+        "luma.fixed", "luma.media", "luma.more", "luma.scenes", "luma.albums", "luma.smart",
+        "sys.fixed", "sys.media", "sys.more", "sys.scenes", "sys.albums",
+        "cloud", "catalog", "netcinema", "tv", "atlas"
+    ]
 }

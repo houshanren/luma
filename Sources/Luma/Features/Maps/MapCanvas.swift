@@ -59,9 +59,12 @@ enum MapStyleMode: String, CaseIterable, Identifiable {
 
 final class MapCameraController: ObservableObject {
     weak var mapView: MKMapView?
+    /// 用户点过缩放按钮：地图页据此停止「数据到齐后自动重新适配视野」，免得把用户放大的镜头拽回去。
+    var didUserZoom = false
 
     func zoom(factor: Double) {
         guard let mapView else { return }
+        didUserZoom = true
         var region = mapView.region
         region.span.latitudeDelta = min(max(region.span.latitudeDelta * factor, 0.0008), 120)
         region.span.longitudeDelta = min(max(region.span.longitudeDelta * factor, 0.0008), 160)
@@ -514,6 +517,11 @@ struct MapCanvasView: NSViewRepresentable {
         private var styleSignature = ""
         private var clusterSignature = ""
         private var didFit = false
+        /// 上次自动适配时的照片张数：直连模式先给最近 600 张、后台补齐全量后张数会跳变，
+        /// 只要用户还没调过镜头就重新适配，图钉与「视野内」数字自己长到全量。
+        private var fittedPhotoCount = 0
+        /// 用户亲手调过镜头（拖动 / 捏合）：此后不再自动重新适配，避免抢镜头。
+        private var userAdjustedCamera = false
         /// 视口变化很密集，合并成一次回调，避免缩放时反复重算视野统计。
         private var regionWorkItem: DispatchWorkItem?
         /// 视野稳定后再决定往 MapKit 里放哪些标注：拖动 / 缩放过程中零重建。
@@ -534,6 +542,14 @@ struct MapCanvasView: NSViewRepresentable {
         deinit {
             regionWorkItem?.cancel()
             rebuildWorkItem?.cancel()
+        }
+
+        /// 只有手势（拖动 / 捏合）算用户调镜头；自动适配与按钮缩放走的是代码路径。
+        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+            let gestures = mapView.subviews.first?.gestureRecognizers ?? []
+            if gestures.contains(where: { $0.state == .began || $0.state == .changed }) {
+                userAdjustedCamera = true
+            }
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
@@ -581,7 +597,8 @@ struct MapCanvasView: NSViewRepresentable {
                 self.refreshClusterBadges(mapView)
             }
             regionWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+            // 统计只用于左上角数字：稍晚一点再算，缩放过程中不抢主线程。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
         }
 
         /// MapKit 缩放重聚类时常就地增删聚合成员、合并气泡，**不一定重新回调 viewFor**，
@@ -612,17 +629,33 @@ struct MapCanvasView: NSViewRepresentable {
                 reloadAnnotations(mapView)
             }
 
-            if !didFit, !parent.photos.isEmpty {
+            let photoCount = parent.photos.count
+            guard photoCount > 0 else { return }
+            if !didFit {
                 didFit = true
+                fittedPhotoCount = photoCount
                 let coordinates = parent.photos.compactMap(displayCoordinate)
                 let preferred = parent.preferredRegion
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if let preferred {
+                        // 恢复上次的视野：那是用户自己调过的镜头，不再自动重新适配。
+                        self.userAdjustedCamera = true
                         self.parent.controller.restore(preferred)
                     } else {
                         self.parent.controller.fit(coordinates: coordinates)
                     }
+                }
+            } else if photoCount > fittedPhotoCount, !userAdjustedCamera,
+                      !parent.controller.didUserZoom {
+                // 数据还在分批载入（直连模式先给最近 600 张，后台再补齐全量）：
+                // 用户还没调过镜头，就跟着全量数据重新适配——图钉与「视野内」数字
+                // 自己一批批长到全量，不必等用户拖动地图。
+                fittedPhotoCount = photoCount
+                let coordinates = parent.photos.compactMap(displayCoordinate)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.userAdjustedCamera else { return }
+                    self.parent.controller.fit(coordinates: coordinates)
                 }
             }
         }
@@ -676,7 +709,7 @@ struct MapCanvasView: NSViewRepresentable {
             }
         }
 
-        /// 视野停下 0.25s 后再决定是否重建标注：拖动 / 缩放过程中的每一帧都重建会非常卡。
+        /// 视野停下 0.35s 后再决定是否重建标注：拖动 / 缩放过程中的每一帧都重建会非常卡。
         private func scheduleRebuild(_ mapView: MKMapView) {
             rebuildWorkItem?.cancel()
             let work = DispatchWorkItem { [weak self, weak mapView] in
@@ -685,7 +718,7 @@ struct MapCanvasView: NSViewRepresentable {
                 self.reloadAnnotations(mapView)
             }
             rebuildWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
         }
 
         /// 视野指纹：缩放按 1.4 倍一档、平移按 1/4 屏一格，轻微移动不触发整批重建。
@@ -712,15 +745,17 @@ struct MapCanvasView: NSViewRepresentable {
             let center = mapView.region.center
             let halfLat = span.latitudeDelta * 0.7
             let halfLon = span.longitudeDelta * 0.7
-            var candidates: [PhotoItem] = []
+            // 一次遍历同时做视野粗筛与坐标换算：换算（高德 / 百度偏移）有三角函数开销，
+            // 之前候选与聚合各算一遍，等于把最贵的一步做了两次。
+            var candidates: [(photo: PhotoItem, point: MKMapPoint)] = []
             candidates.reserveCapacity(min(parent.photos.count, 20_000))
             for photo in parent.photos {
                 guard let latitude = photo.latitude, let longitude = photo.longitude else { continue }
                 var deltaLon = longitude - center.longitude
                 if deltaLon > 180 { deltaLon -= 360 } else if deltaLon < -180 { deltaLon += 360 }
-                if abs(latitude - center.latitude) <= halfLat, abs(deltaLon) <= halfLon {
-                    candidates.append(photo)
-                }
+                guard abs(latitude - center.latitude) <= halfLat, abs(deltaLon) <= halfLon else { continue }
+                guard let coordinate = displayCoordinate(photo) else { continue }
+                candidates.append((photo, MKMapPoint(coordinate)))
             }
 
             let pairs = annotationsForViewport(candidates, mapView: mapView)
@@ -730,7 +765,8 @@ struct MapCanvasView: NSViewRepresentable {
         /// 按屏幕空间分格聚合：每个格子约 150pt 见方，格内只有一张时就是普通照片标记，
         /// 多张时折叠为带真实张数的聚合点，位置取格内照片的真实平均坐标。
         /// 格子给得越大，同屏标记越少，缩放时聚合越积极。
-        private func annotationsForViewport(_ photos: [PhotoItem],
+        /// - Parameter items: 已换算好的地图点坐标，避免这里再算一次坐标偏移。
+        private func annotationsForViewport(_ items: [(photo: PhotoItem, point: MKMapPoint)],
                                             mapView: MKMapView) -> [(key: String, annotation: MKAnnotation)] {
             struct GridKey: Hashable {
                 let row: Int64
@@ -749,9 +785,8 @@ struct MapCanvasView: NSViewRepresentable {
             let cellSize = pow(2, max(round(log2(max(rawCell, 1))), 0))
             var buckets: [GridKey: Bucket] = [:]
             buckets.reserveCapacity(512)
-            for photo in photos {
-                guard let coordinate = displayCoordinate(photo) else { continue }
-                let point = MKMapPoint(coordinate)
+            for item in items {
+                let point = item.point
                 let key = GridKey(row: Int64(floor(point.y / cellSize)),
                                   col: Int64(floor(point.x / cellSize)))
                 if var bucket = buckets[key] {
@@ -760,7 +795,7 @@ struct MapCanvasView: NSViewRepresentable {
                     bucket.y += point.y
                     buckets[key] = bucket
                 } else {
-                    buckets[key] = Bucket(count: 1, cover: photo, x: point.x, y: point.y)
+                    buckets[key] = Bucket(count: 1, cover: item.photo, x: point.x, y: point.y)
                 }
             }
 

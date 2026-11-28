@@ -6,11 +6,13 @@ import AppKit
 struct ProductizationSettingsView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(\.colorScheme) private var scheme
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
 
     @State private var checking = false
     @State private var latest: UpdateInfo?
     @State private var status: Status = .idle
     @State private var exportMessage: String?
+    @State private var showPerformance = false
 
     private var currentVersion: String { UpdateChecker.currentVersion }
 
@@ -25,6 +27,10 @@ struct ProductizationSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(Color.primary.opacity(0.06))
+            aiAssistRow
+            Divider().overlay(Color.primary.opacity(0.06))
+            performanceRow
+            Divider().overlay(Color.primary.opacity(0.06))
             if let latest {
                 updatePanel(latest)
                     .padding(.horizontal, 16)
@@ -37,6 +43,19 @@ struct ProductizationSettingsView: View {
         .background(cardBackground)
         .animation(.easeOut(duration: 0.2), value: latest?.version)
         .animation(.easeOut(duration: 0.18), value: exportMessage)
+        // 面板挂在设置窗口内：从设置页点的入口就在设置页里出结果。
+        .sheet(isPresented: $aiAssist.showHelpSheet) {
+            AIHelpSheet()
+                .environment(store)
+        }
+        .sheet(isPresented: $aiAssist.showDiagnosticsSheet) {
+            AIDiagnosticsSummarySheet()
+                .environment(store)
+        }
+        .sheet(isPresented: $showPerformance) {
+            LibraryPerformanceSheet()
+                .environment(store)
+        }
     }
 
     // MARK: - 身份与状态
@@ -143,6 +162,83 @@ struct ProductizationSettingsView: View {
     }
 
     // MARK: - 维护动作
+
+    /// 两个不需要离开设置页的一次性 AI 入口：日志摘要与离线帮助。
+    private var aiAssistRow: some View {
+        let availability = store.aiAssistAvailability
+        return HStack(spacing: 9) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Text("一次性 AI 辅助")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Button {
+                Task { await store.summarizeDiagnostics() }
+            } label: {
+                Text(aiAssist.diagnosticsLoading ? "读日志中…" : "总结最近日志")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(availability.isReady ? Color.accentColor : Color.secondary)
+            .disabled(aiAssist.diagnosticsLoading || !availability.isReady)
+            .help("把最近 300 行日志压成「问题 / 原因 / 建议」，已脱敏")
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(width: 1, height: 12)
+
+            Button {
+                aiAssist.showHelpSheet = true
+            } label: {
+                Text("帮助问答")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("用内置帮助资料回答用法问题")
+
+            Spacer(minLength: 0)
+
+            if let hint = availability.hint {
+                Text(hint)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
+
+    /// 大图库自查：只在用户点开时测量，不后台跑。
+    private var performanceRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "speedometer")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("大图库自查")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            Button {
+                showPerformance = true
+            } label: {
+                Text("测量关键词 / 搜索 / 重复分组")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .help("跑一次全量路径测量，结果写入诊断日志")
+            Spacer(minLength: 0)
+            Text("图库 \(store.photos.count) 项")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
 
     /// 两个动作收进卡片右上角，与状态胶囊同列，给正文留出完整宽度。
     private var checkUpdateButton: some View {

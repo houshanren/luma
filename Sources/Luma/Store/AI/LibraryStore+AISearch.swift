@@ -122,6 +122,8 @@ extension LibraryStore {
             return [.cinema]
         case .catalogSources, .catalogSource:
             return [.catalog]
+        case .atlas:
+            return [.atlas]
         case .cloudStorages, .cloudMount:
             return [.cloud]
         default:
@@ -137,6 +139,7 @@ extension LibraryStore {
         case "networkcinema", "网络影院": return .networkCinema
         case "television", "tv", "电视", "网络电视": return .television
         case "catalog", "resource", "资源", "网络资源": return .catalog
+        case "atlas", "星图", "拾光星图", "资料库": return .atlas
         default: return nil
         }
     }
@@ -225,6 +228,10 @@ extension LibraryStore {
             body["source_id"] = sourceID.uuidString
             body["item_id"] = item.id
             body["is_tv"] = isTV
+        case .atlasPerson(let id):
+            body["actress_id"] = String(id)
+        case .atlasWork(let id):
+            body["work_id"] = String(id)
         }
         return body
     }

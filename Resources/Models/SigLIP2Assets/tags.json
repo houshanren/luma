@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "model": "siglip2-base-patch16-256",
   "embeddingDim": 768,
   "defaultThreshold": 0.085,
@@ -9,12 +9,16 @@
     "plant": 2,
     "food": 3,
     "object": 4,
-    "transport": 2,
-    "activity": 2,
+    "transport": 3,
+    "activity": 3,
     "person": 3,
     "framing": 1,
     "doc": 3,
-    "style": 3
+    "style": 3,
+    "landmark": 2,
+    "event": 2,
+    "daily": 2,
+    "relationship": 2
   },
   "tags": [
     {
@@ -874,7 +878,7 @@
         "屋顶",
         "rooftop"
       ],
-      "threshold": 0.085
+      "threshold": 0.11
     },
     {
       "id": "selfie",
@@ -2266,7 +2270,7 @@
       "id": "instrument",
       "title": "乐器",
       "group": "object",
-      "threshold": 0.08,
+      "threshold": 0.09,
       "prompts": [
         "a photo of a musical instrument",
         "instruments on a stage"
@@ -2519,7 +2523,7 @@
       "id": "sports",
       "title": "运动",
       "group": "activity",
-      "threshold": 0.07,
+      "threshold": 0.09,
       "prompts": [
         "a photo of people doing sports",
         "a sports activity"
@@ -3167,6 +3171,774 @@
       "aliases": [
         "柔焦",
         "soft focus"
+      ]
+    },
+    {
+      "id": "historic_site",
+      "title": "古迹",
+      "group": "landmark",
+      "threshold": 0.085,
+      "prompts": [
+        "a photo of ancient ruins or a historic site",
+        "a visit to a historic monument",
+        "一张古迹遗址的照片",
+        "一张历史遗迹的照片"
+      ],
+      "aliases": [
+        "古迹",
+        "历史遗迹",
+        "historic site",
+        "ancient ruins",
+        "monument"
+      ]
+    },
+    {
+      "id": "archaeological_site",
+      "title": "遗址",
+      "group": "landmark",
+      "threshold": 0.085,
+      "prompts": [
+        "an archaeological site with excavated ruins",
+        "an ancient settlement or excavation site",
+        "一张考古遗址的照片",
+        "一张古代遗址的照片"
+      ],
+      "aliases": [
+        "遗址",
+        "遗迹",
+        "考古遗址",
+        "archaeological site",
+        "excavation"
+      ]
+    },
+    {
+      "id": "city_wall",
+      "title": "城墙",
+      "group": "landmark",
+      "threshold": 0.085,
+      "prompts": [
+        "an ancient city wall or fortification",
+        "a historic gate tower on a city wall",
+        "一张古城墙的照片",
+        "一张城门城楼的照片"
+      ],
+      "aliases": [
+        "城墙",
+        "城门",
+        "城楼",
+        "city wall",
+        "fortification"
+      ]
+    },
+    {
+      "id": "palace",
+      "title": "宫殿",
+      "group": "landmark",
+      "threshold": 0.085,
+      "prompts": [
+        "a grand palace or imperial residence",
+        "the interior of a royal palace",
+        "一张宫殿的照片",
+        "一张皇宫建筑的照片"
+      ],
+      "aliases": [
+        "宫殿",
+        "皇宫",
+        "王宫",
+        "palace",
+        "imperial palace"
+      ]
+    },
+    {
+      "id": "classical_garden",
+      "title": "园林",
+      "group": "landmark",
+      "threshold": 0.085,
+      "prompts": [
+        "a classical Chinese garden with pavilions",
+        "a traditional landscaped garden",
+        "一张中式园林的照片",
+        "一张古典园林的照片"
+      ],
+      "aliases": [
+        "园林",
+        "庭园",
+        "苏州园林",
+        "classical garden",
+        "chinese garden"
+      ]
+    },
+    {
+      "id": "public_square",
+      "title": "广场",
+      "group": "landmark",
+      "threshold": 0.095,
+      "prompts": [
+        "a large public square or plaza",
+        "people gathering in a city square",
+        "一张城市广场的照片",
+        "一张公共广场的照片"
+      ],
+      "aliases": [
+        "广场",
+        "城市广场",
+        "plaza",
+        "public square"
+      ]
+    },
+    {
+      "id": "birthday",
+      "title": "生日",
+      "group": "event",
+      "threshold": 0.085,
+      "prompts": [
+        "a birthday celebration with a cake and candles",
+        "a person blowing out birthday candles",
+        "一张生日蛋糕的照片",
+        "一张过生日庆祝的照片"
+      ],
+      "aliases": [
+        "生日",
+        "过生日",
+        "生日蛋糕",
+        "birthday",
+        "birthday cake"
+      ]
+    },
+    {
+      "id": "anniversary",
+      "title": "纪念日",
+      "group": "event",
+      "threshold": 0.093,
+      "prompts": [
+        "an anniversary celebration with flowers or gifts",
+        "a couple celebrating an anniversary",
+        "一张纪念日庆祝的照片",
+        "一张周年纪念的照片"
+      ],
+      "aliases": [
+        "纪念日",
+        "周年纪念",
+        "anniversary"
+      ]
+    },
+    {
+      "id": "music_festival",
+      "title": "音乐节",
+      "group": "event",
+      "threshold": 0.085,
+      "prompts": [
+        "an outdoor music festival with a crowd",
+        "a live music stage at a festival",
+        "一张户外音乐节的照片",
+        "一张音乐节舞台的照片"
+      ],
+      "aliases": [
+        "音乐节",
+        "音乐现场",
+        "music festival",
+        "live music"
+      ]
+    },
+    {
+      "id": "exhibition",
+      "title": "展览",
+      "group": "event",
+      "threshold": 0.085,
+      "prompts": [
+        "an art exhibition in a gallery",
+        "people viewing exhibits in a museum",
+        "一张艺术展览的照片",
+        "一张看展览的照片"
+      ],
+      "aliases": [
+        "展览",
+        "看展",
+        "艺术展",
+        "exhibition",
+        "art show"
+      ]
+    },
+    {
+      "id": "fireworks",
+      "title": "烟花",
+      "group": "event",
+      "threshold": 0.085,
+      "prompts": [
+        "fireworks exploding in the night sky",
+        "a fireworks display over a city",
+        "一张夜空烟花的照片",
+        "一张节日烟花的照片"
+      ],
+      "aliases": [
+        "烟花",
+        "焰火",
+        "礼花",
+        "fireworks"
+      ]
+    },
+    {
+      "id": "temple_fair",
+      "title": "庙会",
+      "group": "event",
+      "threshold": 0.085,
+      "prompts": [
+        "a traditional temple fair with lanterns",
+        "a lively street fair during a festival",
+        "一张庙会灯会的照片",
+        "一张传统庙会的照片"
+      ],
+      "aliases": [
+        "庙会",
+        "灯会",
+        "花市",
+        "temple fair",
+        "lantern fair"
+      ]
+    },
+    {
+      "id": "team_building",
+      "title": "团建",
+      "group": "event",
+      "threshold": 0.10,
+      "prompts": [
+        "a team building activity with colleagues",
+        "a group outing or company event",
+        "一张公司团建的照片",
+        "一张团队活动的照片"
+      ],
+      "aliases": [
+        "团建",
+        "公司活动",
+        "团队活动",
+        "team building",
+        "company event"
+      ]
+    },
+    {
+      "id": "water_play",
+      "title": "戏水",
+      "group": "activity",
+      "threshold": 0.085,
+      "prompts": [
+        "children playing and splashing in water",
+        "people playing in shallow water",
+        "一张孩子戏水的照片",
+        "一张玩水打水仗的照片"
+      ],
+      "aliases": [
+        "戏水",
+        "玩水",
+        "打水仗",
+        "playing in water",
+        "splashing"
+      ]
+    },
+    {
+      "id": "surfing",
+      "title": "冲浪",
+      "group": "activity",
+      "threshold": 0.085,
+      "prompts": [
+        "a person surfing on a wave",
+        "a surfer riding a surfboard",
+        "一张冲浪的照片",
+        "一张冲浪板的照片"
+      ],
+      "aliases": [
+        "冲浪",
+        "冲浪板",
+        "surfing",
+        "surfboard"
+      ]
+    },
+    {
+      "id": "diving",
+      "title": "潜水",
+      "group": "activity",
+      "threshold": 0.085,
+      "prompts": [
+        "scuba diving underwater",
+        "snorkeling in clear blue water",
+        "一张潜水的照片",
+        "一张海底浮潜的照片"
+      ],
+      "aliases": [
+        "潜水",
+        "浮潜",
+        "水肺潜水",
+        "diving",
+        "snorkeling"
+      ]
+    },
+    {
+      "id": "water_park",
+      "title": "水上乐园",
+      "group": "activity",
+      "threshold": 0.085,
+      "prompts": [
+        "a water park with slides and pools",
+        "people enjoying water slides",
+        "一张水上乐园的照片",
+        "一张水滑梯的照片"
+      ],
+      "aliases": [
+        "水上乐园",
+        "水滑梯",
+        "water park",
+        "water slide"
+      ]
+    },
+    {
+      "id": "swimming_pool",
+      "title": "泳池",
+      "group": "activity",
+      "threshold": 0.085,
+      "prompts": [
+        "a swimming pool with blue water",
+        "people swimming in a pool",
+        "一张游泳池的照片",
+        "一张泳池边休闲的照片"
+      ],
+      "aliases": [
+        "泳池",
+        "游泳池",
+        "swimming pool",
+        "pool"
+      ]
+    },
+    {
+      "id": "parent_child",
+      "title": "亲子互动",
+      "group": "relationship",
+      "threshold": 0.085,
+      "prompts": [
+        "a parent playing with a child",
+        "a parent and child spending time together",
+        "一张父母陪孩子玩耍的照片",
+        "一张亲子互动的照片"
+      ],
+      "aliases": [
+        "亲子",
+        "亲子互动",
+        "陪孩子",
+        "parent and child",
+        "parenting"
+      ]
+    },
+    {
+      "id": "holding_child",
+      "title": "抱孩子",
+      "group": "relationship",
+      "threshold": 0.085,
+      "prompts": [
+        "an adult holding a baby in their arms",
+        "a parent carrying a young child",
+        "一张抱着孩子的照片",
+        "一张抱宝宝的照片"
+      ],
+      "aliases": [
+        "抱孩子",
+        "抱宝宝",
+        "抱娃",
+        "holding a child",
+        "carrying a baby"
+      ]
+    },
+    {
+      "id": "family_time",
+      "title": "家庭日常",
+      "group": "relationship",
+      "threshold": 0.085,
+      "prompts": [
+        "a family spending time together at home",
+        "a family gathering in a living room",
+        "一张家庭日常的照片",
+        "一张一家人在家的照片"
+      ],
+      "aliases": [
+        "家庭日常",
+        "一家人",
+        "家庭时光",
+        "family time",
+        "family at home"
+      ]
+    },
+    {
+      "id": "holding_hands",
+      "title": "牵手",
+      "group": "relationship",
+      "threshold": 0.098,
+      "prompts": [
+        "two people holding hands",
+        "a couple walking hand in hand",
+        "一张牵手的照片",
+        "一张手牵手的照片"
+      ],
+      "aliases": [
+        "牵手",
+        "手牵手",
+        "holding hands",
+        "hand in hand"
+      ]
+    },
+    {
+      "id": "pet_play",
+      "title": "宠物互动",
+      "group": "relationship",
+      "threshold": 0.095,
+      "prompts": [
+        "a person playing with a pet",
+        "someone cuddling a cat or dog",
+        "一张和宠物互动的照片",
+        "一张撸猫撸狗的照片"
+      ],
+      "aliases": [
+        "宠物互动",
+        "撸猫",
+        "撸狗",
+        "playing with pet",
+        "cuddling pet"
+      ]
+    },
+    {
+      "id": "dog_walking",
+      "title": "遛狗",
+      "group": "relationship",
+      "threshold": 0.094,
+      "prompts": [
+        "a person walking a dog on a leash",
+        "a dog walking outdoors with its owner",
+        "一张遛狗的照片",
+        "一张牵狗散步的照片"
+      ],
+      "aliases": [
+        "遛狗",
+        "牵狗",
+        "walking the dog",
+        "dog walking"
+      ]
+    },
+    {
+      "id": "high_speed_train",
+      "title": "高铁",
+      "group": "transport",
+      "threshold": 0.085,
+      "prompts": [
+        "a high-speed train at a station",
+        "a bullet train speeding through the countryside",
+        "一张高铁动车的照片",
+        "一张复兴号列车的照片"
+      ],
+      "aliases": [
+        "高铁",
+        "动车",
+        "复兴号",
+        "high-speed train",
+        "bullet train"
+      ]
+    },
+    {
+      "id": "highway",
+      "title": "公路",
+      "group": "transport",
+      "threshold": 0.085,
+      "prompts": [
+        "a long highway stretching into the distance",
+        "a scenic road through mountains",
+        "一张公路的照片",
+        "一张高速公路的照片"
+      ],
+      "aliases": [
+        "公路",
+        "高速公路",
+        "国道",
+        "highway",
+        "road"
+      ]
+    },
+    {
+      "id": "gas_station",
+      "title": "加油站",
+      "group": "transport",
+      "threshold": 0.085,
+      "prompts": [
+        "a gas station with fuel pumps",
+        "a car refueling at a petrol station",
+        "一张加油站的照片",
+        "一张汽车加油的照片"
+      ],
+      "aliases": [
+        "加油站",
+        "加油",
+        "gas station",
+        "petrol station"
+      ]
+    },
+    {
+      "id": "parking_lot",
+      "title": "停车场",
+      "group": "transport",
+      "threshold": 0.094,
+      "prompts": [
+        "a parking lot filled with cars",
+        "an underground parking garage",
+        "一张停车场的照片",
+        "一张地下车库的照片"
+      ],
+      "aliases": [
+        "停车场",
+        "车库",
+        "parking lot",
+        "parking garage"
+      ]
+    },
+    {
+      "id": "road_trip",
+      "title": "自驾",
+      "group": "transport",
+      "threshold": 0.111,
+      "prompts": [
+        "a road trip by car",
+        "a car driving on a scenic road",
+        "一张自驾游的照片",
+        "一张开车旅行的照片"
+      ],
+      "aliases": [
+        "自驾",
+        "自驾游",
+        "开车旅行",
+        "road trip",
+        "driving trip"
+      ]
+    },
+    {
+      "id": "school",
+      "title": "学校",
+      "group": "daily",
+      "threshold": 0.085,
+      "prompts": [
+        "a school campus with a teaching building",
+        "students on a school playground",
+        "一张学校校园的照片",
+        "一张教学楼的照片"
+      ],
+      "aliases": [
+        "学校",
+        "校园",
+        "教学楼",
+        "school",
+        "campus"
+      ]
+    },
+    {
+      "id": "hospital",
+      "title": "医院",
+      "group": "daily",
+      "threshold": 0.085,
+      "prompts": [
+        "a hospital building or hospital interior",
+        "a medical clinic or hospital ward",
+        "一张医院的照片",
+        "一张医院病房的照片"
+      ],
+      "aliases": [
+        "医院",
+        "诊所",
+        "病房",
+        "hospital",
+        "clinic"
+      ]
+    },
+    {
+      "id": "night_market",
+      "title": "夜市",
+      "group": "daily",
+      "threshold": 0.085,
+      "prompts": [
+        "a busy night market with food stalls",
+        "street food vendors at night",
+        "一张夜市小吃街的照片",
+        "一张夜市摊位的照片"
+      ],
+      "aliases": [
+        "夜市",
+        "小吃街",
+        "夜市摊",
+        "night market",
+        "street food"
+      ]
+    },
+    {
+      "id": "guesthouse",
+      "title": "民宿",
+      "group": "daily",
+      "threshold": 0.115,
+      "prompts": [
+        "a cozy guesthouse or homestay",
+        "a rural bed and breakfast",
+        "一张民宿客栈的照片",
+        "一张乡村民宿的照片"
+      ],
+      "aliases": [
+        "民宿",
+        "客栈",
+        "农家乐",
+        "guesthouse",
+        "homestay"
+      ]
+    },
+    {
+      "id": "gym",
+      "title": "健身房",
+      "group": "daily",
+      "threshold": 0.085,
+      "prompts": [
+        "a gym with fitness equipment",
+        "people working out in a gym",
+        "一张健身房的照片",
+        "一张健身器械的照片"
+      ],
+      "aliases": [
+        "健身房",
+        "健身",
+        "器械区",
+        "gym",
+        "fitness"
+      ]
+    },
+    {
+      "id": "sandy_beach",
+      "title": "沙滩",
+      "group": "scene",
+      "threshold": 0.103,
+      "prompts": [
+        "a sandy beach with dunes",
+        "sand and sea on a sunny beach",
+        "一张沙滩的照片",
+        "一张海边沙地的照片"
+      ],
+      "aliases": [
+        "沙滩",
+        "沙地",
+        "sandy beach",
+        "sand"
+      ]
+    },
+    {
+      "id": "flower_field",
+      "title": "花海",
+      "group": "scene",
+      "threshold": 0.085,
+      "prompts": [
+        "a vast field of blooming flowers",
+        "a flower field stretching to the horizon",
+        "一张花海的照片",
+        "一张花田的照片"
+      ],
+      "aliases": [
+        "花海",
+        "花田",
+        "油菜花",
+        "flower field",
+        "flower sea"
+      ]
+    },
+    {
+      "id": "autumn_colors",
+      "title": "秋色",
+      "group": "scene",
+      "threshold": 0.085,
+      "prompts": [
+        "autumn foliage with red and yellow leaves",
+        "a tree-lined path in autumn colors",
+        "一张秋天红叶的照片",
+        "一张银杏秋色的照片"
+      ],
+      "aliases": [
+        "秋色",
+        "秋天",
+        "红叶",
+        "银杏",
+        "autumn",
+        "fall foliage"
+      ]
+    },
+    {
+      "id": "rural_countryside",
+      "title": "田园",
+      "group": "scene",
+      "threshold": 0.085,
+      "prompts": [
+        "rural countryside with farmland",
+        "a village surrounded by fields",
+        "一张田园风光的照片",
+        "一张乡村农田的照片"
+      ],
+      "aliases": [
+        "田园",
+        "农田",
+        "村庄",
+        "乡下",
+        "countryside",
+        "rural"
+      ]
+    },
+    {
+      "id": "late_night_snack",
+      "title": "夜宵",
+      "group": "food",
+      "threshold": 0.11,
+      "prompts": [
+        "late-night street food",
+        "a late-night supper with friends",
+        "一张夜宵小吃的照片",
+        "一张深夜食堂的照片"
+      ],
+      "aliases": [
+        "夜宵",
+        "宵夜",
+        "深夜食堂",
+        "late night snack",
+        "supper"
+      ]
+    },
+    {
+      "id": "milk_tea",
+      "title": "奶茶",
+      "group": "food",
+      "threshold": 0.085,
+      "prompts": [
+        "a cup of milk tea with pearls",
+        "bubble tea on a table",
+        "一张奶茶的照片",
+        "一张珍珠奶茶的照片"
+      ],
+      "aliases": [
+        "奶茶",
+        "珍珠奶茶",
+        "果茶",
+        "milk tea",
+        "bubble tea"
+      ]
+    },
+    {
+      "id": "local_cuisine",
+      "title": "地方菜",
+      "group": "food",
+      "threshold": 0.085,
+      "prompts": [
+        "local regional cuisine on a table",
+        "traditional dishes from a region",
+        "一张地方特色菜的照片",
+        "一张家乡菜的照片"
+      ],
+      "aliases": [
+        "地方菜",
+        "特色菜",
+        "家乡菜",
+        "local cuisine",
+        "regional food"
       ]
     }
   ]

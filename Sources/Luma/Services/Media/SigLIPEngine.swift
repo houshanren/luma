@@ -133,13 +133,25 @@ final class SigLIPEngine {
     }
 
     private func embeddingLocked(cgImage: CGImage) -> Data? {
-        guard let model = ensureImageModel(),
-              let tensor = ImageTensor.make(from: cgImage, size: 256) else { return nil }
+        guard let model = ensureImageModel() else { return nil }
         do {
-            let input = try MLDictionaryFeatureProvider(dictionary: [
-                "image": MLFeatureValue(multiArray: tensor)
-            ])
-            let output = try model.prediction(from: input)
+            let provider: MLFeatureProvider
+            let input = model.modelDescription.inputDescriptionsByName["image"]
+            if input?.type == .image {
+                // 模型包（siglip2-base-coreml）的图像塔输入是 ImageType：
+                // 传 MultiArray 会直接抛「expects image」，整条 SigLIP 链路会静默回退 Vision。
+                let size = input?.imageConstraint?.pixelsWide ?? 256
+                guard let buffer = ImagePixelBuffer.make(from: cgImage, size: size) else { return nil }
+                provider = try MLDictionaryFeatureProvider(dictionary: [
+                    "image": MLFeatureValue(pixelBuffer: buffer)
+                ])
+            } else {
+                guard let tensor = ImageTensor.make(from: cgImage, size: 256) else { return nil }
+                provider = try MLDictionaryFeatureProvider(dictionary: [
+                    "image": MLFeatureValue(multiArray: tensor)
+                ])
+            }
+            let output = try model.prediction(from: provider)
             guard let array = output.featureValue(for: "embedding")?.multiArrayValue else { return nil }
             var vector = Self.floatValues(array)
             guard vector.count >= 32 else { return nil }
@@ -196,10 +208,10 @@ final class SigLIPEngine {
         let count = data.count / (dimension * 2)
         guard count > 0 else { return }
         var vectors = [Float](repeating: 0, count: count * dimension)
-        data.withUnsafeBytes { raw in
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             let half = raw.bindMemory(to: UInt16.self)
             for index in 0..<(count * dimension) {
-                vectors[index] = Float(Float16(bitPattern: half[index]))
+                vectors[index] = Self.halfToFloat(half[index])
             }
         }
         tagVectors = vectors
@@ -271,7 +283,7 @@ final class SigLIPEngine {
         case .float16:
             let pointer = array.dataPointer.bindMemory(to: UInt16.self, capacity: count)
             var result = [Float](repeating: 0, count: count)
-            for index in 0..<count { result[index] = Float(Float16(bitPattern: pointer[index])) }
+            for index in 0..<count { result[index] = halfToFloat(pointer[index]) }
             return result
         case .float32:
             let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: count)
@@ -284,6 +296,31 @@ final class SigLIPEngine {
         }
     }
 
+    /// IEEE 754 半精度 → 单精度。
+    /// Intel 目标的 Swift 标准库里没有可用的 `Float16`（x86_64 上直接编译不过），
+    /// 这里按位展开，Apple 芯片与 Intel 结果完全一致。
+    static func halfToFloat(_ bits: UInt16) -> Float {
+        let sign = UInt32(bits & 0x8000) << 16
+        let exponent = Int((bits >> 10) & 0x1F)
+        var mantissa = UInt32(bits & 0x03FF)
+        // 非规格化数（含 ±0）：借移位把它规格化成正规数。
+        if exponent == 0 {
+            guard mantissa != 0 else { return Float(bitPattern: sign) }
+            var shift = -1
+            repeat {
+                shift += 1
+                mantissa <<= 1
+            } while (mantissa & 0x0400) == 0
+            mantissa &= 0x03FF
+            return Float(bitPattern: sign | (UInt32(112 - shift) << 23) | (mantissa << 13))
+        }
+        // Inf / NaN：尾数原样搬到单精度，无穷与 NaN 语义不变。
+        if exponent == 0x1F {
+            return Float(bitPattern: sign | 0x7F80_0000 | (mantissa << 13))
+        }
+        return Float(bitPattern: sign | (UInt32(exponent + 127 - 15) << 23) | (mantissa << 13))
+    }
+
     private static func normalize(_ vector: inout [Float]) {
         var sum: Float = 0
         for value in vector { sum += value * value }
@@ -292,6 +329,37 @@ final class SigLIPEngine {
         for index in vector.indices { vector[index] *= scale }
     }
 
+}
+
+/// 把 CGImage 缩放成 Core ML ImageType 需要的 CVPixelBuffer。
+/// 色彩转换交给 Core ML（模型声明的 Color 布局），这里只负责等比铺满 + BGRA 位图。
+enum ImagePixelBuffer {
+    static func make(from image: CGImage, size: Int) -> CVPixelBuffer? {
+        guard size > 0 else { return nil }
+        let attributes: [String: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+        ]
+        var buffer: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, size, size,
+                                  kCVPixelFormatType_32BGRA,
+                                  attributes as CFDictionary,
+                                  &buffer) == kCVReturnSuccess,
+              let pixelBuffer = buffer else { return nil }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        guard let context = CGContext(data: CVPixelBufferGetBaseAddress(pixelBuffer),
+                                      width: size,
+                                      height: size,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+                                      space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                          | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+        return pixelBuffer
+    }
 }
 
 /// 把 CGImage 转成模型需要的 NCHW 浮点张量（RGB，0…255）。

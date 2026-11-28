@@ -271,7 +271,7 @@ open -W -n \
   --env DYLD_INSERT_LIBRARIES=/tmp/luma_photokit_probe/probe_full.dylib \
   -o /tmp/luma_probe_out.txt \
   --stderr /tmp/luma_probe_err.txt \
-  /Users/lijialong/Documents/gitlab/photos/Luma.app
+  ./Luma.app
 ```
 
 原始日志：

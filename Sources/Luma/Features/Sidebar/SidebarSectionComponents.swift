@@ -18,7 +18,8 @@ struct SidebarCategoryRow: View {
     var trailingIcon: String?
     var count: Int?
     var isActive: Bool = false
-    var isHovered: Bool = false
+    /// 悬停状态由行自己持有：整条侧边栏有上百行时，父视图不再因为鼠标划过而整体重算。
+    @State private var isHovered = false
     var helpText: String?
     /// 传了缩略图就用它替代系统图标（网络资源的分类行用站点真实封面）。
     var thumbnailSource: CatalogSource?
@@ -58,6 +59,7 @@ struct SidebarCategoryRow: View {
             }
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .help(helpText ?? title)
         .accessibilityLabel(title)
     }
@@ -87,6 +89,63 @@ struct SidebarCategoryRow: View {
                 .font(.system(size: iconSize ?? LumaMetrics.sidebarIconSize))
                 .foregroundStyle(isActive ? Color.accentColor : iconColor)
         }
+    }
+}
+
+/// 网络资源的三组小标题（视频站 / 图集站 / 综合站）：同一套排版与交互。
+/// 悬停时整行轻微提亮，点击收起 / 展开；类型只体现在图标与颜色上。
+struct CatalogSiteGroupLabel: View {
+    let title: String
+    let symbol: String
+    let tint: Color
+    let count: Int
+    let hint: String
+    let collapsed: Bool
+    let onToggle: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 7.5, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                Image(systemName: symbol)
+                    .font(.system(size: 7.5, weight: .bold))
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(hovered ? Color.primary.opacity(0.75) : Color.secondary)
+                Text("\(count)")
+                    .font(.system(size: 8.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Rectangle()
+                    .fill(LinearGradient(colors: [tint.opacity(hovered ? 0.45 : 0.28),
+                                                  tint.opacity(0.03)],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(height: 0.8)
+            }
+            .contentShape(Rectangle())
+            .padding(.leading, 36)
+            .padding(.trailing, 12)
+            .padding(.top, 9)
+            .padding(.bottom, 3)
+        }
+        .buttonStyle(.plain)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active:
+                if !hovered { hovered = true }
+            case .ended:
+                hovered = false
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: hovered)
+        .animation(.easeOut(duration: 0.18), value: collapsed)
+        .help(hint)
     }
 }
 

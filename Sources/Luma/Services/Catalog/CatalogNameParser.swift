@@ -39,9 +39,41 @@ enum CatalogNameParser {
     private static let sortedDictionaryNames: [String] = CatalogNameDictionary.payload.actresses
         .sorted { $0.count > $1.count }
 
-    /// 内置资料库 + 学习到的名字，长的优先。
-    private static var knownNames: [String] {
-        sortedDictionaryNames + learnedNames()
+    /// 词典项：名字的归一化结果只算一次。
+    /// 以前每个标题都要把上万条名字重新归一化（折叠 + 繁简 + 逐字符过滤），
+    /// 打开详情页时会把主线程卡住几百毫秒。
+    private struct NameEntry {
+        let name: String
+        let key: String
+        let latin: Bool
+    }
+
+    private static func makeEntry(_ name: String) -> NameEntry? {
+        let key = normalize(name)
+        guard key.count >= 2, key.count <= 24 else { return nil }
+        return NameEntry(name: name, key: key, latin: isLatin(name))
+    }
+
+    private static let dictionaryEntries: [NameEntry] = sortedDictionaryNames.compactMap(makeEntry)
+
+    /// 学习到的名字：条目缓存到下一次 `learn` 为止，不在每次解析里重读数据库。
+    private static let learnedEntryLock = NSLock()
+    private static var learnedEntryCache: [NameEntry]?
+    /// 学习写库的串行锁：详情 / 关注 / 档案可能同时从后台线程写入。
+    private static let learnLock = NSLock()
+
+    private static func learnedEntries() -> [NameEntry] {
+        learnedEntryLock.lock()
+        if let cached = learnedEntryCache {
+            learnedEntryLock.unlock()
+            return cached
+        }
+        learnedEntryLock.unlock()
+        let built = learnedNames().compactMap(makeEntry)
+        learnedEntryLock.lock()
+        learnedEntryCache = built
+        learnedEntryLock.unlock()
+        return built
     }
 
     private struct StudioMatcher {
@@ -115,6 +147,9 @@ enum CatalogNameParser {
 
     /// 学到新名字（来自详情字段 / 关注 / 档案），下次标题里就能直接点亮。
     static func learn(names: [String]) {
+        // 详情解析、关注页、档案页都可能从后台线程学习：串行写入，避免互相覆盖。
+        learnLock.lock()
+        defer { learnLock.unlock() }
         var current = Set(learnedNames())
         var changed = false
         for name in names.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
@@ -125,10 +160,31 @@ enum CatalogNameParser {
         if let data = try? JSONEncoder().encode(Array(current)) {
             CatalogStore.set(data, forKey: dictionaryKey)
         }
+        // 词典变了：条目缓存与解析结果都要作废，否则新名字要等重启才会被认出来。
+        learnedEntryLock.lock()
+        learnedEntryCache = nil
+        learnedEntryLock.unlock()
+        parseCacheLock.lock()
+        parseCache.removeAll(keepingCapacity: true)
+        parseCacheLock.unlock()
+    }
+
+    /// 后台预热：把姓名条目、厂牌匹配器、资料库索引提前建好。
+    /// 启动后跑一次，详情页首次识别时不再付读库 / 建索引的成本。
+    static func prewarm() {
+        CatalogNameDictionary.prewarm()
+        _ = dictionaryEntries
+        _ = studioMatchers
+        _ = learnedEntries()
     }
 
     /// 从详情页已解析的字段里学女优名，供给标题识别使用。
     static func learn(from detail: CatalogDetail) {
+        learn(names: learnableNames(from: detail))
+    }
+
+    /// 只做字符串提取，不读写词典：调用方可以拿到后台线程再 `learn(names:)`。
+    static func learnableNames(from detail: CatalogDetail) -> [String] {
         var names: [String] = []
         for fact in detail.facts {
             let label = fact.label.lowercased()
@@ -137,12 +193,35 @@ enum CatalogNameParser {
             guard isActress else { continue }
             names.append(contentsOf: splitNames(fact.value))
         }
-        learn(names: names)
+        return names
     }
 
     // MARK: 解析
 
+    /// 解析结果按标题缓存：详情页正文 / 标题会随滚动反复求值，
+    /// 以前每一帧都重扫一遍上万条词典，是打开图集时「整页卡住」的主因。
+    private static let parseCacheLock = NSLock()
+    private static var parseCache: [String: Result] = [:]
+
     static func parse(title: String) -> Result {
+        guard !title.isEmpty else { return Result() }
+        parseCacheLock.lock()
+        if let cached = parseCache[title] {
+            parseCacheLock.unlock()
+            return cached
+        }
+        parseCacheLock.unlock()
+
+        let result = parseUncached(title: title)
+
+        parseCacheLock.lock()
+        if parseCache.count >= 256 { parseCache.removeAll(keepingCapacity: true) }
+        parseCache[title] = result
+        parseCacheLock.unlock()
+        return result
+    }
+
+    private static func parseUncached(title: String) -> Result {
         var result = Result()
         if let code = extractCode(title) {
             result.code = code.text
@@ -219,26 +298,29 @@ enum CatalogNameParser {
         for index in 0..<ns.length { present.insert(ns.character(at: index)) }
         var occupied: [NSRange] = []
         var found: [String] = []
-        for name in knownNames {
-            let key = normalize(name)
-            guard key.count >= 2, key.count <= 24 else { continue }
-            guard let first = key.utf16.first, present.contains(first) else { continue }
-            let latin = isLatin(name)
-            var search = NSRange(location: 0, length: ns.length)
-            while search.length > 0 {
-                let hit = ns.range(of: key, options: [], range: search)
-                if hit.location == NSNotFound { break }
-                let overlaps = occupied.contains { NSIntersectionRange($0, hit).length > 0 }
-                // 拉丁艺名要求词边界，避免 AKI 命中 MAKINO 这类误判。
-                if !overlaps, !latin || hasWordBoundary(hit, in: ns) {
-                    occupied.append(hit)
-                    if !found.contains(name) { found.append(name) }
+
+        func scan(_ entries: [NameEntry]) {
+            for entry in entries {
+                guard let first = entry.key.utf16.first, present.contains(first) else { continue }
+                var search = NSRange(location: 0, length: ns.length)
+                while search.length > 0 {
+                    let hit = ns.range(of: entry.key, options: [], range: search)
+                    if hit.location == NSNotFound { break }
+                    let overlaps = occupied.contains { NSIntersectionRange($0, hit).length > 0 }
+                    // 拉丁艺名要求词边界，避免 AKI 命中 MAKINO 这类误判。
+                    if !overlaps, !entry.latin || hasWordBoundary(hit, in: ns) {
+                        occupied.append(hit)
+                        if !found.contains(entry.name) { found.append(entry.name) }
+                    }
+                    let next = hit.location + max(1, hit.length)
+                    guard next < ns.length else { break }
+                    search = NSRange(location: next, length: ns.length - next)
                 }
-                let next = hit.location + max(1, hit.length)
-                guard next < ns.length else { break }
-                search = NSRange(location: next, length: ns.length - next)
             }
         }
+
+        scan(dictionaryEntries)
+        scan(learnedEntries())
         return found
     }
 

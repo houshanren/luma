@@ -19,6 +19,7 @@ struct RootView: View {
     @Environment(ViewerModel.self) private var viewer
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var sidebarChrome: SidebarChrome
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     /// 主窗口与全局空格键监听：相簿 / 媒体类型 / 人物 / 地点等任意照片网格都能用空格打开查看。
@@ -30,8 +31,21 @@ struct RootView: View {
     /// 侧边栏重建信号：视频全屏 / 窗口尺寸还原后，SwiftUI 偶尔会把分栏停在
     /// 「列还在、内容没铺开」的中间态（左侧一片空白）。换个身份强制重建侧边栏内容。
     @State private var sidebarRelayoutToken = 0
+    /// 合并短时间内的多次侧边栏重建请求：来回快速切换时只重建最后一次，
+    /// 避免每次切换都整棵侧边栏重建、把点击回应拖慢。
+    @State private var sidebarRelayoutTask: Task<Void, Never>?
     /// 进入视频全屏前的窗口尺寸，退出全屏后还原。
     @State private var windowFrameBeforeFullScreen: NSRect?
+    /// 浮窗拖动位置：只记住这次打开期间的位置。
+    @State private var aiFloatingOffset: CGSize = .zero
+    @State private var aiFloatingBaseOffset: CGSize = .zero
+    /// 浮窗尺寸：右下角拖拽调整。
+    @State private var aiFloatingSize = CGSize(width: 880, height: 740)
+    @State private var aiFloatingSizeBase = CGSize(width: 880, height: 740)
+    /// 侧栏拖宽：拖动开始时记一次基准，避免每次增量叠加。
+    @State private var aiDockWidthBase: Double?
+    /// 半隐藏入口开关：关闭后查看器里不再出现竖标签。
+    @AppStorage("ai.peek.enabled") private var aiPeekEnabled = true
 
     var body: some View {
         @Bindable var store = store
@@ -77,6 +91,14 @@ struct RootView: View {
                 .environment(catalog)
                 .environment(store)
         }
+        // 粘贴 Cookie：Wuso / V2PH 不在应用内登录，从浏览器复制 Cookie 粘进来，
+        // 保存后自动续期会带着这份登录态在后台重新访问站点。
+        .sheet(item: Bindable(catalog).cookiePromptSource) { source in
+            CatalogCookiePasteSheet(source: source) { cookie in
+                catalog.applyCookie(for: source, cookie: cookie, expiresAt: nil)
+                catalog.dismissCookiePrompt()
+            }
+        }
         .sheet(isPresented: Bindable(tv).showWizard) {
             TVSourceWizardView()
                 .environment(tv)
@@ -114,11 +136,35 @@ struct RootView: View {
         .sheet(isPresented: $store.showShortcutHelp) {
             ShortcutHelpView(showsCloseButton: true)
         }
-        .sheet(isPresented: $store.showAIAssistant) {
-            AIAssistantView()
+        // 六个一次性 AI 辅助里从查看器发起的两个：分享文案 / 关键词补全。
+        .sheet(isPresented: $aiAssist.showShareSheet) {
+            AIShareCopySheet()
+                .environment(store)
+        }
+        .sheet(isPresented: $aiAssist.showKeywordSheet) {
+            AIKeywordSheet()
+                .environment(store)
+        }
+        .sheet(isPresented: $aiAssist.showPlaceSheet) {
+            AIPlaceSuggestionSheet()
+                .environment(store)
+        }
+        // 影院顶栏控制台触发的两个只读面板。
+        .sheet(isPresented: $store.cinemaWatchPlanVisible) {
+            CinemaWatchPlanSheet(scope: store.cinemaConsoleScope)
+                .environment(store)
+        }
+        .sheet(isPresented: $store.cinemaGapReportVisible) {
+            CinemaGapSheet(scope: store.cinemaConsoleScope)
+                .environment(store)
+        }
+        // 任务中心挂在主窗口：助手收起后，从菜单打开仍能看到运行中的任务。
+        .sheet(isPresented: $store.showAITaskCenter) {
+            AITaskCenterSheet()
                 .environment(store)
                 .environment(settings)
         }
+
         .sheet(isPresented: $store.showBeautyPanel) {
             BeautyRecommendView()
                 .environment(store)
@@ -223,6 +269,11 @@ struct RootView: View {
             guard let reportPath = ProcessInfo.processInfo.environment["LUMA_UI_BENCH"] else { return }
             await UIBenchmarkRunner.runIfRequested(store: store, reportPath: reportPath)
         }
+        // 环境变量驱动的测试集 / 产品截图入口：导入演示库、接入 mock 源并逐页截图。
+        .task {
+            await TestKitHarness.runIfRequested(store: store, settings: settings,
+                                                catalog: catalog, tv: tv, cloud: cloud)
+        }
         // 影院详情跟随应用外观：浅色皮肤下页面、标题栏与控制台一起保持浅色，
         // 深色皮肤下仍是影院暗色，不再整窗固定切深色。
         .preferredColorScheme(settings.appearance.colorScheme)
@@ -236,6 +287,19 @@ struct RootView: View {
         .animation(settings.motion.overlay, value: store.activeTrip?.id)
         .animation(settings.motion.overlay, value: store.pendingDeletion?.id)
         .animation(settings.motion.overlay, value: store.pendingDisconnect?.id)
+        .overlay {
+            if store.aiSurfaceMode == .floating, !store.needsLibrarySetup {
+                aiFloatingOverlay
+                    .transition(.opacity)
+                    .zIndex(30)
+            }
+        }
+        // 从工作台切到别的页面：助手形态跟着收起，避免「工作台页」和「并排 / 叠放」叠在一起。
+        .onChange(of: store.sidebarItem) { _, item in
+            if store.aiSurfaceMode == .workspace, item != .assistant {
+                store.aiSurfaceMode = .hidden
+            }
+        }
         .background(WindowAccessor { window in
             if hostWindow !== window { hostWindow = window }
             // 选取图库窗口打开期间主窗口不能露出框架：捕获到窗口就立刻隐藏，
@@ -291,7 +355,7 @@ struct RootView: View {
     /// 会替换工具栏中区的模块总览页：网络存储 / 网络资源 / 网络影院 / 网络电视 / 图库总览。
     private static func isModuleHubItem(_ item: SidebarItem) -> Bool {
         switch item {
-        case .cloudStorages, .catalogSources, .networkCinema, .iptv, .systemLibraries:
+        case .cloudStorages, .catalogSources, .networkCinema, .iptv, .systemLibraries, .atlas:
             return true
         default:
             return false
@@ -380,36 +444,301 @@ struct RootView: View {
         .help("显示边栏（⌃⌘S）")
     }
 
+    /// 侧栏是否可见：只在浏览态停靠；查看器 / 编辑器 / 全屏时让位。
+    private var aiDockVisible: Bool {
+        store.aiSurfaceMode == .docked && store.aiDockAvailable
+    }
+
+    /// 叠放是否可见：浮卡盖在内容上、不参与布局；看图 / 播放时同样让位。
+    private var aiOverlayVisible: Bool {
+        store.aiSurfaceMode == .overlay && store.aiDockAvailable
+    }
+
+    /// 叠放：右侧浮卡，和并排共用同一份宽度记忆，拖左边缘改宽。
+    private var aiOverlayPanel: some View {
+        HStack(spacing: 0) {
+            aiDockResizeHandle
+            AIAssistantView(presentation: .overlay,
+                            onClose: { store.hideAISurface() },
+                            onExpand: { store.expandAISurface() },
+                            onCollapse: { store.dockAISurface() },
+                            fillContainer: true)
+        }
+        .frame(width: CGFloat(store.aiInspectorWidth) + 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.22), radius: 28, y: 10)
+        .padding(.vertical, 12)
+        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+    }
+
+    /// 半隐藏入口：在查看器 / 播放里只留一条竖标签，点开浮窗。
+    private var aiPeekVisible: Bool {
+        guard aiPeekEnabled,
+              store.aiSurfaceMode == .hidden || store.aiSurfaceMode == .docked else { return false }
+        guard viewer.editorID == nil, !viewer.videoImmersiveFullScreen else { return false }
+        return store.viewerPhoto != nil && !aiDockVisible
+    }
+
+    /// 浏览态收起后的常驻入口。
+    private var aiFabVisible: Bool {
+        store.aiSurfaceMode == .hidden && store.aiDockAvailable
+    }
+
+    /// 助手侧边栏收起后的常驻入口：不占工具栏，也不遮挡网格。
+    private var aiRevealButton: some View {
+        Button {
+            store.toggleAIInspector()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("问 AI")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("⌘J")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8)
+            }
+            .shadow(color: Color.black.opacity(0.12), radius: 12, y: 4)
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("打开智能助手（⌘J）")
+    }
+
+    /// 侧栏左边缘：横向拖拽调整宽度。9pt 热区保证好抓，中间只画 1pt 细线。
+    private var aiDockResizeHandle: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.clear)
+            Rectangle()
+                .fill(Color.primary.opacity(0.10))
+                .frame(width: 1)
+        }
+        .frame(width: 9)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                NSCursor.resizeLeftRight.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    let base = aiDockWidthBase ?? store.aiInspectorWidth
+                    if aiDockWidthBase == nil { aiDockWidthBase = base }
+                    store.aiInspectorWidth = min(560, max(320, base - value.translation.width))
+                }
+                .onEnded { _ in
+                    aiDockWidthBase = nil
+                }
+        )
+        .help("左右拖动调整助手宽度")
+    }
+
+    /// 半隐藏入口：贴在右边缘的一条竖标签，不打断播放与看图。
+    private var aiPeekTab: some View {
+        Button {
+            store.expandAISurface()
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("AI")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(.secondary)
+            .frame(width: 26, height: 92)
+            .background(.ultraThinMaterial,
+                        in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
+            )
+            .shadow(color: Color.black.opacity(0.18), radius: 10, y: 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("问 AI（浮窗，不打断当前画面）")
+    }
+
+    /// 统一浮窗：同一段会话，盖在当前页面上，可拖动、可收进侧栏。
+    private var aiFloatingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    store.hideAISurface()
+                }
+            GeometryReader { geo in
+                VStack(spacing: 0) {
+                    aiFloatingDragStrip
+                    AIAssistantView(presentation: .sheet,
+                                    onClose: { store.hideAISurface() },
+                                    onCollapse: { store.collapseAISurface() },
+                                    fillContainer: true)
+                        .environment(store)
+                        .environment(settings)
+                }
+                .frame(width: min(max(aiFloatingSize.width, 520), geo.size.width - 72),
+                       height: min(max(aiFloatingSize.height, 480), geo.size.height - 64))
+                .background(.regularMaterial,
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    aiFloatingResizeHandle
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .shadow(color: Color.black.opacity(0.30), radius: 42, y: 18)
+                .offset(aiFloatingOffset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private var aiFloatingDragStrip: some View {
+        HStack {
+            Capsule()
+                .fill(Color.primary.opacity(0.20))
+                .frame(width: 38, height: 4)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 14)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    aiFloatingOffset = CGSize(width: aiFloatingBaseOffset.width + value.translation.width,
+                                              height: aiFloatingBaseOffset.height + value.translation.height)
+                }
+                .onEnded { _ in
+                    aiFloatingBaseOffset = aiFloatingOffset
+                }
+        )
+        .help("拖动浮窗")
+    }
+
+    private var aiFloatingResizeHandle: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(7)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        aiFloatingSize = CGSize(
+                            width: max(520, aiFloatingSizeBase.width + value.translation.width),
+                            height: max(480, aiFloatingSizeBase.height + value.translation.height)
+                        )
+                    }
+                    .onEnded { _ in
+                        aiFloatingSizeBase = aiFloatingSize
+                    }
+            )
+            .help("拖拽调整浮窗大小")
+    }
+
     @ViewBuilder
     private var mainContent: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView()
                 .id(sidebarRelayoutToken)
         } detail: {
-            ZStack {
-                // 环境光垫在内容之下：磨砂侧边栏、浮动胶囊与网格间隙都能透出颜色。
-                LumaAmbientBackground()
-                GalleryView()
-                // 侧边栏收起后：系统自带的 toggle 会跟着侧边栏一起从工具栏消失，
-                // 这里补一个常驻的「显示边栏」入口，收起后随时能展开。
-                if !sidebarChrome.isVisible {
-                    sidebarRevealButton
-                        .padding(.top, 10)
-                        .padding(.leading, 12)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .transition(.opacity)
-                        .zIndex(0.5)
+            HStack(spacing: 0) {
+                ZStack {
+                    // 环境光垫在内容之下：磨砂侧边栏、浮动胶囊与网格间隙都能透出颜色。
+                    LumaAmbientBackground()
+                    // 工作台是左侧菜单里的独立一页：整幅对话，不叠加照片页的网格与工具栏控件。
+                    if store.aiSurfaceMode == .workspace {
+                        AIWorkspacePageView()
+                            .transition(.opacity)
+                    } else {
+                        GalleryView()
+                    }
+                    // 侧边栏收起后：系统自带的 toggle 会跟着侧边栏一起从工具栏消失，
+                    // 这里补一个常驻的「显示边栏」入口，收起后随时能展开。
+                    if !sidebarChrome.isVisible {
+                        sidebarRevealButton
+                            .padding(.top, 10)
+                            .padding(.leading, 12)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .transition(.opacity)
+                            .zIndex(0.5)
+                    }
+                    if aiFabVisible {
+                        aiRevealButton
+                            .padding(.trailing, 18)
+                            .padding(.bottom, 24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                            .zIndex(0.6)
+                    }
+                    if aiPeekVisible {
+                        aiPeekTab
+                            .padding(.trailing, 6)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .zIndex(1.4)
+                    }
+                    // 叠放：侧栏盖在页面上，不挤压布局，也不遮标题栏（搜索仍然可用）。
+                    if aiOverlayVisible {
+                        aiOverlayPanel
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .zIndex(1.6)
+                    }
+                    if settings.viewerLayout == .window, store.viewerPhoto != nil {
+                        PhotoViewerView(embedded: true)
+                            // 视频真全屏：查看器自身伸进顶部安全区，把工具栏空出来的那一条吃掉。
+                            // 只加在组件上、不加在整窗或分栏上，避免影响窗口尺寸计算。
+                            .ignoresSafeArea(edges: viewer.videoImmersiveFullScreen ? .all : [])
+                            .background(Color(nsColor: .windowBackgroundColor))
+                            .transition(.opacity)
+                            .zIndex(1)
+                    }
                 }
-                if settings.viewerLayout == .window, store.viewerPhoto != nil {
-                    PhotoViewerView(embedded: true)
-                        // 视频真全屏：查看器自身伸进顶部安全区，把工具栏空出来的那一条吃掉。
-                        // 只加在组件上、不加在整窗或分栏上，避免影响窗口尺寸计算。
-                        .ignoresSafeArea(edges: viewer.videoImmersiveFullScreen ? .all : [])
-                        .background(Color(nsColor: .windowBackgroundColor))
-                        .transition(.opacity)
-                        .zIndex(1)
+
+                if aiDockVisible {
+                    aiDockResizeHandle
+                    AIAssistantView(presentation: .inspector,
+                                    onClose: { store.hideAISurface() },
+                                    onExpand: { store.expandAISurface() },
+                                    onCollapse: { store.dockAISurface() })
+                        .frame(width: CGFloat(store.aiInspectorWidth))
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        .zIndex(2)
                 }
             }
+            .animation(settings.motion.overlay, value: store.aiSurfaceMode)
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar(toolbarHidden ? .hidden : .visible, for: .windowToolbar)
@@ -518,7 +847,10 @@ struct RootView: View {
 
     /// 全屏 / 窗口尺寸变化后重建侧边栏内容，修复「列还在、内容空白」的分栏中间态。
     private func nudgeSidebarLayout(after delay: TimeInterval) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        sidebarRelayoutTask?.cancel()
+        sidebarRelayoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard !Task.isCancelled, sidebarChrome.isVisible else { return }
             sidebarRelayoutToken &+= 1
         }
     }
@@ -548,6 +880,9 @@ struct RootView: View {
         viewer.editorID != nil
             || (store.viewerPhoto != nil && settings.viewerLayout == .fullscreen)
             || viewer.videoImmersiveFullScreen
+            // 助手浮窗自带全窗遮罩：标题栏（含统一搜索框）在视图层之上，
+            // 不隐藏就会浮在遮罩之上、仍可点击。浮窗期间整条让出，收起后恢复。
+            || store.aiSurfaceMode == .floating
     }
 }
 

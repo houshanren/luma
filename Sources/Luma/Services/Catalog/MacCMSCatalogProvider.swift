@@ -15,7 +15,81 @@ struct MacCMSCatalogProvider: CatalogProvider {
     /// 苹果CMS 的 `type_id` 每个站不同，不能写死分类骨架；只有站点返回 `class` 时才知道分类。
     static let defaultCategories: [CatalogCategory] = []
 
-    /// 苹果CMS 只有一个默认顺序：最新更新。
+    /// 量子资源（lzzy.tv）的分类骨架：一级、二级及顺序都照站点导航排列。
+    /// 该站的 `type_id` 长期稳定，导入时先铺好，实时分类拉取失败或站点换接口时也不会退化成空目录。
+    static let lzzyCategories: [CatalogCategory] = [
+        CatalogCategory(id: "52", title: "AI漫剧"),
+        CatalogCategory(id: "1", title: "电影片", children: [
+            CatalogCategory(id: "6", title: "动作片"),
+            CatalogCategory(id: "7", title: "喜剧片"),
+            CatalogCategory(id: "9", title: "科幻片"),
+            CatalogCategory(id: "10", title: "恐怖片"),
+            CatalogCategory(id: "8", title: "爱情片"),
+            CatalogCategory(id: "11", title: "剧情片"),
+            CatalogCategory(id: "12", title: "战争片"),
+            CatalogCategory(id: "20", title: "记录片"),
+            CatalogCategory(id: "34", title: "伦理片"),
+            CatalogCategory(id: "45", title: "预告片"),
+            CatalogCategory(id: "49", title: "动画片")
+        ], isGroup: true),
+        CatalogCategory(id: "2", title: "连续剧", children: [
+            CatalogCategory(id: "13", title: "国产剧"),
+            CatalogCategory(id: "16", title: "欧美剧"),
+            CatalogCategory(id: "14", title: "香港剧"),
+            CatalogCategory(id: "15", title: "韩国剧"),
+            CatalogCategory(id: "21", title: "台湾剧"),
+            CatalogCategory(id: "22", title: "日本剧"),
+            CatalogCategory(id: "23", title: "海外剧"),
+            CatalogCategory(id: "24", title: "泰国剧")
+        ], isGroup: true),
+        CatalogCategory(id: "4", title: "动漫片", children: [
+            CatalogCategory(id: "29", title: "国产动漫"),
+            CatalogCategory(id: "30", title: "日韩动漫"),
+            CatalogCategory(id: "31", title: "欧美动漫"),
+            CatalogCategory(id: "32", title: "港台动漫"),
+            CatalogCategory(id: "33", title: "海外动漫")
+        ], isGroup: true),
+        CatalogCategory(id: "46", title: "短剧"),
+        CatalogCategory(id: "3", title: "综艺片", children: [
+            CatalogCategory(id: "25", title: "大陆综艺"),
+            CatalogCategory(id: "26", title: "港台综艺"),
+            CatalogCategory(id: "27", title: "日韩综艺"),
+            CatalogCategory(id: "28", title: "欧美综艺")
+        ], isGroup: true),
+        CatalogCategory(id: "35", title: "电影解说"),
+        CatalogCategory(id: "36", title: "体育", children: [
+            CatalogCategory(id: "37", title: "足球"),
+            CatalogCategory(id: "38", title: "篮球"),
+            CatalogCategory(id: "39", title: "网球"),
+            CatalogCategory(id: "40", title: "斯诺克")
+        ], isGroup: true)
+    ]
+
+    /// 把已保存 / 接口返回的分类对齐到量子资源的真实导航：
+    /// `ac=list` 的 `class` 顺序与站点导航不同（爱情片在科幻片前、欧美剧在香港剧后），
+    /// 这里按导航重排一、二级，补上缺失项；接口里多出来的分类追加到末尾，不丢条目。
+    static func alignedWithLzzyNavigation(_ categories: [CatalogCategory]) -> [CatalogCategory] {
+        guard !categories.isEmpty else { return lzzyCategories }
+        let saved = Dictionary(categories.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var aligned = lzzyCategories.map { skeleton -> CatalogCategory in
+            var item = saved[skeleton.id] ?? skeleton
+            if let children = skeleton.children, !children.isEmpty {
+                let savedChildren = Dictionary((saved[skeleton.id]?.children ?? []).map { ($0.id, $0) },
+                                               uniquingKeysWith: { first, _ in first })
+                var ordered = children.map { savedChildren[$0.id] ?? $0 }
+                // 站点将来新增的二级分类追加在后面，不因为骨架没更新就丢掉。
+                let skeletonIDs = Set(children.map(\.id))
+                ordered += (saved[skeleton.id]?.children ?? []).filter { !skeletonIDs.contains($0.id) }
+                item.children = ordered
+                item.isGroup = true
+            }
+            return item
+        }
+        let known = Set(aligned.map(\.id))
+        aligned += categories.filter { !known.contains($0.id) }
+        return aligned
+    }
+
     var supportedSorts: [CatalogSort] { [.latest] }
 
     // MARK: - 请求
@@ -182,7 +256,12 @@ struct MacCMSCatalogProvider: CatalogProvider {
         let known = Set(tops.map(\.id))
         tops = tops.map { top in
             var copy = top
-            if let kids = children[top.id], !kids.isEmpty { copy.children = kids }
+            if let kids = children[top.id], !kids.isEmpty {
+                copy.children = kids
+                // 苹果CMS 的父分类页（t=父 id）通常只有极少数直属条目，
+                // 真正的列表都在子分类里：把父分类标成分组，点它等于打开第一个子频道。
+                copy.isGroup = true
+            }
             return copy
         }
         // 父分类缺失的孤儿子分类提升为一级，别让它们消失。

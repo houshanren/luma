@@ -8,6 +8,22 @@ enum CatalogPlaylistPage: Equatable {
     case smart(UUID)
 }
 
+/// 整本图集保存到本地图库的进度：卡片、详情页与看图模式共用同一份状态。
+struct CatalogGallerySaveProgress: Equatable {
+    var sourceID: UUID
+    var itemID: String
+    var title: String
+    /// 已处理的张数（成功 + 失败）。
+    var completed: Int = 0
+    /// 图集总张数；详情刚解析完之前是 0。
+    var total: Int = 0
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1, Double(completed) / Double(total))
+    }
+}
+
 /// 网络资源的浏览状态：源列表、当前分类、分页、详情、续看与播放请求。
 /// 资源属于「本机配置」而不是某个图库，因此用 UserDefaults 保存，切换图库不受影响。
 @MainActor
@@ -19,6 +35,20 @@ final class CatalogBrowserModel {
     var categories: [CatalogCategory] = []
     /// 站点热门标签：跨分类的额外筛选入口。
     var tags: [CatalogCategory] = []
+    /// 分组标签（分类 / 模特 / 发布商等）：频道页按组展示，点一项即按该标签筛选。
+    var tagGroups: [CatalogTagGroup] = []
+    /// 「全部分类」标签墙：站点标签上千个，这里一次取全量，界面端做搜索与客户端分页。
+    private(set) var tagWallTags: [CatalogTag] = []
+    private(set) var isTagWallLoading = false
+    /// 当前 tagWallTags 属于哪个源：切源后重新加载，避免串源。
+    @ObservationIgnored private var tagWallSourceID: UUID?
+    /// 本次运行里已经向站点取过全量标签墙的源：缓存非空时只刷新一次，避免每次进页面重抓十几页。
+    @ObservationIgnored private var tagWallLiveSourceIDs: Set<UUID> = []
+    /// 博文归档：站点一次给全量（91图图的 archives.json），界面端做月份筛选与标题搜索。
+    private(set) var archiveEntries: [CatalogArchiveEntry] = []
+    private(set) var isArchiveLoading = false
+    @ObservationIgnored private var archiveSourceID: UUID?
+    @ObservationIgnored private var archiveLiveSourceIDs: Set<UUID> = []
     var sort: CatalogSort = .latest
     /// 站点不支持服务端排序时，对当前已加载列表做的本页排序。
     var localSort: CatalogLocalSort?
@@ -27,6 +57,8 @@ final class CatalogBrowserModel {
     var isLoading = false
     var isLoadingMore = false
     var hasMore = false
+    /// 已加载到第几页：底部翻页提示用。
+    var loadedPage: Int { page }
     var error: String?
     /// 结构化错误：界面优先用它统一展示恢复动作。
     var sourceError: SourceError?
@@ -45,6 +77,8 @@ final class CatalogBrowserModel {
     var notice: String?
     /// 正在下载到图库的条目 id：卡片据此显示转圈。
     var savingItemID: String?
+    /// 正在把整本图集保存到图库时的进度（nil = 空闲）。
+    var gallerySave: CatalogGallerySaveProgress?
 
     var detail: CatalogDetail?
     /// 关闭播放器后要在频道页里恢复的内联详情条目。
@@ -78,6 +112,19 @@ final class CatalogBrowserModel {
     /// 当前展开的一级分类。同一个二级 id 可能挂在多个一级下（例如 XSZAV 的「無碼流出」），
     /// 必须记住用户实际点开的是哪个一级，不能按二级 id 反查（会命中第一个）。
     var activeTopCategoryID: String?
+    /// 从合集卡片（专题 / 人物与作品实体）下钻前停留的界面：频道页据此显示「返回」。
+    private(set) var collectionOrigin: CollectionOrigin?
+    /// 当前所在合集的名称（返回按钮旁边显示「合集 · 名称」）。
+    private(set) var collectionTitle: String?
+
+    /// 进入合集详情前的上一层界面快照。
+    struct CollectionOrigin {
+        var section: CatalogSection
+        var topCategoryID: String?
+        var topTitle: String
+        var sort: CatalogSort
+        var localSort: CatalogLocalSort?
+    }
     /// 侧边栏分类图标：每个分类拿该分类第一张卡片封面当缩略图。
     /// key = "源 UUID|分类 id"，值只在 URL 变化时写盘。
     private(set) var categoryThumbs: [String: String] = [:]
@@ -85,6 +132,15 @@ final class CatalogBrowserModel {
     var showWizard = false
     /// 导入向导当前服务的域：从网络影院进入只接收影视源，从网络资源进入只接收资源站。
     var wizardDomain: CatalogDomain?
+
+    // MARK: 登录态
+    /// 当前打开「粘贴 Cookie」窗口的来源（RootView 的 sheet 绑定它）。
+    var cookiePromptSource: CatalogSource?
+    /// 本次运行中被登录墙拦下的来源：请求失败时写入，Cookie 更新后移除。
+    private(set) var loginRequiredSourceIDs: Set<UUID> = []
+    /// 正在静默续期（隐藏 WebView 刷新登录态）的来源：界面可显示「正在自动续期」。
+    private(set) var cookieRefreshingSourceIDs: Set<UUID> = []
+    private var cookieRefreshAttemptAt: [UUID: Date] = [:]
 
     // MARK: 网络资源 2.0：发现 / 关注 / 健康度
     /// 每个源最近一次连通性检测的结果。
@@ -110,6 +166,27 @@ final class CatalogBrowserModel {
     /// 「今天新增」的榜单结果：从更新日历派生，改数据时重算一次，
     /// 不在工具栏角标 / 榜单渲染时反复过滤 2400 条日历。
     var todaySpotlight: [CatalogSpotlightItem] = []
+    /// 今天新增的图集：同样从更新日历派生，图集分页与「今日精选」直接读这一份。
+    var todayGallerySpotlight: [CatalogSpotlightItem] = []
+    /// 图集分页的跨源内容：混排 feed + 每个图集站自己的轨道。
+    var galleryFeed: [CatalogSpotlightItem] = []
+    var galleryBySource: [UUID: [CatalogSpotlightItem]] = [:]
+    var isGalleryFeedLoading = false
+    var galleryFeedLoaded = false
+    /// 继续往下翻：各站下一页页码、已经翻到底的站、整体是否没有更多。
+    var galleryNextPage: [UUID: Int] = [:]
+    var galleryExhaustedSources: Set<UUID> = []
+    var galleryFeedExhausted = false
+    var isGalleryFeedLoadingMore = false
+    /// 图集悬停预览：条目 key → 前几张原图（解析过一次就复用）。
+    var galleryPreviewCache: [String: [String]] = [:]
+    /// 榜单 / 日历 / 足迹 / 片单共用的媒体类型筛选。
+    var mediaFilter: CatalogMediaFilter = .all {
+        didSet {
+            guard oldValue != mediaFilter else { return }
+            CatalogStore.string(forKey: Self.mediaFilterKey, value: mediaFilter.rawValue)
+        }
+    }
     /// 跨源聚合搜索。
     var globalQuery = ""
     var globalResults: [CatalogGlobalResult] = []
@@ -186,6 +263,11 @@ final class CatalogBrowserModel {
     static let smartNewIDsKey = "catalog.smartPlaylistNew.v1"
     static let calendarNewIDsKey = "catalog.calendar.newIDs.v1"
     static let hubTabKey = "catalog.hubTab.v1"
+    /// 榜单 / 日历 / 足迹 / 片单共用的媒体类型筛选。
+    static let mediaFilterKey = "catalog.mediaFilter.v1"
+    /// 图集分页的跨源 feed 与各源轨道：启动先铺上次的内容，再后台刷新。
+    static let galleryFeedKey = "catalog.gallery.feed.v1"
+    static let galleryRailsKey = "catalog.gallery.rails.v1"
     static let peopleKey = "catalog.people.v1"
     static let followPostersKey = "catalog.follow.posters.v1"
     static let followAggregatesKey = "catalog.follow.aggregates.v1"
@@ -216,6 +298,18 @@ final class CatalogBrowserModel {
     private var noticeToken = 0
     /// 二级标签的请求标记：切换分类时迟到的结果不能覆盖新上下文。
     private var tagsToken = 0
+    /// 最近浏览位置的内存副本：点击源时只改内存，落盘统一延迟合并，
+    /// 避免同步 SQLite 写入把侧边栏点击卡慢。
+    @ObservationIgnored var lastViewMemo: [String: [String: String]]?
+    @ObservationIgnored var lastViewSaveTask: Task<Void, Never>?
+    /// 当前源 ID 与「新内容」红点同样延后落盘，点击只改内存。
+    @ObservationIgnored var selectedSourceSaveTask: Task<Void, Never>?
+    @ObservationIgnored var newFlagsSaveTask: Task<Void, Never>?
+    /// 首页 404 自动重试的节流记录（源 id → 上次重试时间）。
+    @ObservationIgnored var home404RetryAt: [UUID: Date] = [:]
+    /// 连续「翻页拉回来的全是已有条目」的次数：有些站点偶尔把上一页原样再给一遍，
+    /// 一次重复不代表到底，连续两次才停，避免明明还有内容却提示已加载全部。
+    @ObservationIgnored private var duplicatePageStreak = 0
     private var cachedPages: [String: CachedPage] = [:]
     /// 上次成功加载的首屏快照：先铺内容再请求最新，切换源时不会先闪一片骨架。
     var pageSnapshots: [String: CatalogPageSnapshot] = [:]
@@ -284,6 +378,15 @@ final class CatalogBrowserModel {
         section = .home
         categories = []
         tags = []
+        tagGroups = []
+        tagWallTags = []
+        tagWallSourceID = nil
+        tagWallLiveSourceIDs = []
+        isTagWallLoading = false
+        archiveEntries = []
+        archiveSourceID = nil
+        archiveLiveSourceIDs = []
+        isArchiveLoading = false
         activeTopCategoryID = nil
         items = []
         detail = nil
@@ -326,6 +429,15 @@ final class CatalogBrowserModel {
         spotlightByDomain = [:]
         spotlightHotByDomain = [:]
         todaySpotlight = []
+        todayGallerySpotlight = []
+        galleryFeed = []
+        galleryBySource = [:]
+        galleryFeedLoaded = false
+        galleryNextPage = [:]
+        galleryExhaustedSources = []
+        galleryFeedExhausted = false
+        isGalleryFeedLoadingMore = false
+        galleryPreviewCache = [:]
         spotlightLoadedDomains = []
         spotlightHotLoadedDomains = []
         health = [:]
@@ -334,6 +446,7 @@ final class CatalogBrowserModel {
         localSort = nil
         sort = .latest
         hubTab = browseTabFromDisk()
+        mediaFilter = CatalogMediaFilter(rawValue: CatalogStore.string(forKey: Self.mediaFilterKey) ?? "") ?? .all
         channelRequests = []
         thumbAttemptedSources = []
 
@@ -358,6 +471,15 @@ final class CatalogBrowserModel {
                let cached = try? JSONDecoder().decode([CatalogSpotlightItem].self, from: data) {
                 spotlightHotByDomain[domain] = cached
             }
+        }
+        // 图集分页先铺上次的墙，等页面 task 再后台刷新一次。
+        if let data = CatalogStore.data(forKey: Self.galleryFeedKey),
+           let cached = try? JSONDecoder().decode([CatalogSpotlightItem].self, from: data) {
+            galleryFeed = cached
+        }
+        if let data = CatalogStore.data(forKey: Self.galleryRailsKey),
+           let cached = try? JSONDecoder().decode([UUID: [CatalogSpotlightItem]].self, from: data) {
+            galleryBySource = cached
         }
         let storedID = CatalogStore.string(forKey: Self.selectedSourceKey)
             .flatMap(UUID.init(uuidString:))
@@ -412,12 +534,20 @@ final class CatalogBrowserModel {
 
     /// 这次失败更像是站点要求人机验证 / 拦截，而不是单纯网络问题。
     var errorNeedsVerification: Bool {
+        if errorNeedsLogin { return false }
         guard let error else { return false }
         if let id = selectedSourceID, health[id] == .limited { return true }
         let text = error.lowercased()
         let marks = ["403", "forbidden", "waf", "pow", "challenge",
                      "cloudflare", "captcha", "验证", "拦截"]
         return marks.contains { text.contains($0) }
+    }
+
+    /// 这次失败需要用户登录（Cookie 缺失 / 失效）：页面展示登录入口，而不是「在浏览器打开」。
+    var errorNeedsLogin: Bool {
+        guard let id = selectedSourceID, let source = selectedSource else { return false }
+        guard source.kind.mayRequireLogin else { return false }
+        return loginRequiredSourceIDs.contains(id)
     }
 
     /// 显示一条自动消失的操作提示（保存到图库等）。
@@ -668,6 +798,20 @@ final class CatalogBrowserModel {
         })
     }
 
+    /// 新一页到达后预热封面：滚到这些卡片时直接命中缓存，翻页不会一格一格闪白。
+    func prefetchCovers(for items: [CatalogItem], source: CatalogSource) {
+        let targets = Array(items.filter { !$0.coverURL.isEmpty }.prefix(12))
+        guard !targets.isEmpty else { return }
+        Task {
+            for item in targets {
+                if Task.isCancelled { break }
+                _ = await CatalogArtworkCache.shared.image(source: source,
+                                                           urlString: item.coverURL,
+                                                           quick: true)
+            }
+        }
+    }
+
     /// 按 id 在任何层级里找分类：优先二级分类，保证标题显示的是具体频道。
     func category(withID id: String) -> CatalogCategory? {
         for top in categories {
@@ -685,7 +829,15 @@ final class CatalogBrowserModel {
     var sectionTitle: String {
         switch section {
         case .home: return "首页"
-        case .category(let id): return category(withID: id)?.title ?? "分类"
+        case .category(let id):
+            if let category = category(withID: id) { return category.title }
+            if let tag = tagGroups.flatMap(\.items).first(where: { $0.id == id }) {
+                return tag.title
+            }
+            // 合集详情（专题 / 人物）不在分类树里：用进入时记下的名称。
+            if id.hasPrefix("topic/") || id.hasPrefix("entity/"),
+               let collectionTitle { return collectionTitle }
+            return "分类"
         case .rank: return "排行榜"
         case .search(let keyword): return "搜索“\(keyword)”"
         case .continueWatching: return "继续观看"
@@ -701,12 +853,12 @@ final class CatalogBrowserModel {
               let source = sources.first(where: { $0.id == id && $0.domain == .networkResource })
         else {
             selectedSourceID = nil
-            CatalogStore.string(forKey: Self.selectedSourceKey, value: nil)
+            persistSelectedSource(nil)
             items = []
             return
         }
         selectedSourceID = source.id
-        CatalogStore.string(forKey: Self.selectedSourceKey, value: source.id.uuidString)
+        persistSelectedSource(source.id)
         markSourceViewed(source.id)
         prepare(source: source)
         openHome()
@@ -718,14 +870,26 @@ final class CatalogBrowserModel {
         markSourceViewed(source.id)
         if selectedSourceID != id {
             selectedSourceID = id
-            CatalogStore.string(forKey: Self.selectedSourceKey, value: id.uuidString)
+            persistSelectedSource(id)
             prepare(source: source)
+        }
+    }
+
+    /// 选中的源延后 300ms 合并落盘：点击路径上不做同步 SQLite 写入。
+    private func persistSelectedSource(_ id: UUID?) {
+        selectedSourceSaveTask?.cancel()
+        selectedSourceSaveTask = Task { [id] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            CatalogStore.string(forKey: Self.selectedSourceKey, value: id?.uuidString)
         }
     }
 
     func openHome() {
         section = .home
         activeTopCategoryID = nil
+        collectionOrigin = nil
+        collectionTitle = nil
         rememberView()
         if let source = selectedSource {
             refreshTags(source: source, category: nil)
@@ -737,6 +901,19 @@ final class CatalogBrowserModel {
         // 分组节点（如「午夜影院」）自己没有页面，等价于打开第一个子频道。
         let target = category.isGroupCategory ? (category.children?.first ?? category) : category
         guard !target.id.isEmpty else { return }
+        // 合集卡片（专题 / 人物与作品实体）下钻：记住上一层界面，频道页可一键返回；
+        // 进入普通分类时清掉返回入口，避免停留在过期的上一层。
+        if target.isCollectionPage {
+            collectionOrigin = CollectionOrigin(section: section,
+                                               topCategoryID: activeTopCategoryID,
+                                               topTitle: activeTopCategory?.title ?? "上一页",
+                                               sort: sort,
+                                               localSort: localSort)
+            collectionTitle = category.title
+        } else {
+            collectionOrigin = nil
+            collectionTitle = nil
+        }
         section = target.isRank ? .rank : .category(target.id)
         // 记住实际点开的一级：同一个二级 id 可能挂在多个一级下，不能按 id 反查。
         if target.isRank {
@@ -755,13 +932,195 @@ final class CatalogBrowserModel {
         }
         sort = .latest
         localSort = nil
+        // 进入「全部分类」或从标签墙点某个标签时，确保标签墙数据可用。
+        if let source = selectedSource,
+           target.showsTagWall || (activeTopCategory?.showsTagWall ?? false) {
+            loadTagWallIfNeeded(source: source)
+        }
+        // 进入「归档」时加载全量归档数据。
+        if let source = selectedSource,
+           target.showsArchive || (activeTopCategory?.showsArchive ?? false) {
+            loadArchiveIfNeeded(source: source)
+        }
         rememberView()
         reload()
+    }
+
+    /// 从合集内退回到上一层（专题 / 人物卡片墙）：原样恢复分类、高亮与排序。
+    func closeCollectionDetail() {
+        guard let origin = collectionOrigin else { return }
+        collectionOrigin = nil
+        collectionTitle = nil
+        section = origin.section
+        activeTopCategoryID = origin.topCategoryID
+        sort = origin.sort
+        localSort = origin.localSort
+        rememberView()
+        reload()
+    }
+
+    /// 返回按钮上显示的上一层名称（如「角色」「专题」）。
+    var collectionReturnTitle: String? { collectionOrigin?.topTitle }
+
+    // MARK: - 「全部分类」标签墙
+
+    /// 标签墙按需加载：先用上次缓存铺满（上千个标签不可能每次重抓），再后台刷新一次全量。
+    /// 站点 `/all-tags` 每页 120 个、约 13 页，适配器内部并发取回后这里整体缓存。
+    func loadTagWallIfNeeded(source: CatalogSource, force: Bool = false) {
+        if tagWallSourceID != source.id {
+            tagWallSourceID = source.id
+            tagWallTags = Self.loadTagWallCache(sourceID: source.id)
+            isTagWallLoading = false
+        }
+        guard force || !tagWallLiveSourceIDs.contains(source.id) else { return }
+        // 缓存一天内更新过：直接铺缓存，不再重抓十几页标签。
+        if !force, !tagWallTags.isEmpty,
+           Self.taxonomyFresh("tagWall", sourceID: source.id) { return }
+        guard !isTagWallLoading,
+              let provider = CatalogProviders.provider(for: source.kind) else { return }
+        tagWallLiveSourceIDs.insert(source.id)
+        isTagWallLoading = true
+        Task { [weak self] in
+            let live = try? await provider.allTags(source: source)
+            guard let self else { return }
+            self.isTagWallLoading = false
+            guard self.selectedSourceID == source.id, let live, !live.isEmpty else {
+                // 这次没抓到（断网 / 站点限流）：下次进页面再试，不把失败记成「已加载」。
+                self.tagWallLiveSourceIDs.remove(source.id)
+                return
+            }
+            self.tagWallTags = live
+            Self.saveTagWallCache(live, sourceID: source.id)
+            Self.markTaxonomyFetched("tagWall", sourceID: source.id)
+        }
+    }
+
+    private static func tagWallCacheKey(_ sourceID: UUID) -> String {
+        "catalog.tagWall.v1.\(sourceID.uuidString)"
+    }
+
+    private static func loadTagWallCache(sourceID: UUID) -> [CatalogTag] {
+        guard let data = CatalogStore.data(forKey: tagWallCacheKey(sourceID)),
+              let tags = try? JSONDecoder().decode([CatalogTag].self, from: data) else { return [] }
+        return tags
+    }
+
+    private static func saveTagWallCache(_ tags: [CatalogTag], sourceID: UUID) {
+        guard let data = try? JSONEncoder().encode(tags) else { return }
+        CatalogStore.set(data, forKey: tagWallCacheKey(sourceID))
+    }
+
+    // MARK: - 博文归档
+
+    /// 归档按需加载：先用本地缓存铺满，再后台拉一次全量（全部条目一次给回，无需逐页抓）。
+    func loadArchiveIfNeeded(source: CatalogSource, force: Bool = false) {
+        if archiveSourceID != source.id {
+            archiveSourceID = source.id
+            archiveEntries = Self.loadArchiveCache(sourceID: source.id)
+            isArchiveLoading = false
+        }
+        guard force || !archiveLiveSourceIDs.contains(source.id) else { return }
+        // 缓存一天内更新过：先铺缓存，不必每次进归档都重抓全量。
+        if !force, !archiveEntries.isEmpty,
+           Self.taxonomyFresh("archive", sourceID: source.id) { return }
+        guard !isArchiveLoading,
+              let provider = CatalogProviders.provider(for: source.kind) else { return }
+        archiveLiveSourceIDs.insert(source.id)
+        isArchiveLoading = true
+        Task { [weak self] in
+            let live = try? await provider.archiveEntries(source: source)
+            guard let self else { return }
+            self.isArchiveLoading = false
+            guard self.selectedSourceID == source.id, let live, !live.isEmpty else {
+                self.archiveLiveSourceIDs.remove(source.id)
+                return
+            }
+            self.archiveEntries = live
+            Self.saveArchiveCache(live, sourceID: source.id)
+            Self.markTaxonomyFetched("archive", sourceID: source.id)
+        }
+    }
+
+    private static func archiveCacheKey(_ sourceID: UUID) -> String {
+        "catalog.archive.v1.\(sourceID.uuidString)"
+    }
+
+    private static func loadArchiveCache(sourceID: UUID) -> [CatalogArchiveEntry] {
+        guard let data = CatalogStore.data(forKey: archiveCacheKey(sourceID)),
+              let entries = try? JSONDecoder().decode([CatalogArchiveEntry].self, from: data)
+        else { return [] }
+        return entries
+    }
+
+    private static func saveArchiveCache(_ entries: [CatalogArchiveEntry], sourceID: UUID) {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        CatalogStore.set(data, forKey: archiveCacheKey(sourceID))
+    }
+
+    // MARK: - 分类 / 标签本地缓存
+    //
+    // 站点的导航与标签行几乎不变：本地存一份占位，切源 / 切分类先铺缓存，
+    // 一天内不再重复抓首页与标签接口，过期后进页面时再后台刷新一次。
+
+    /// 分类 / 标签的刷新周期：一天。
+    private static let taxonomyTTL: TimeInterval = 24 * 3600
+
+    private static func taxonomyStampKey(_ kind: String, sourceID: UUID,
+                                         scope: String = "root") -> String {
+        // 分类结构改版（麻豆导航、JavGG 五个一级、肉视频、JavCl 导航 / 名册去重名合集、
+        // Avple 标签分组）需要立刻生效，而不是等 24 小时过期；
+        // 标签墙 / 归档缓存不受影响，避免重新抓十几页。
+        let version = kind == "categories" ? "v9" : "v3"
+        return "catalog.taxonomy.\(kind).\(version).\(sourceID.uuidString)|\(scope)"
+    }
+
+    private static func taxonomyFresh(_ kind: String, sourceID: UUID,
+                                      scope: String = "root") -> Bool {
+        guard let raw = CatalogStore.string(forKey: taxonomyStampKey(kind, sourceID: sourceID,
+                                                                     scope: scope)),
+              let stamp = TimeInterval(raw) else { return false }
+        return Date().timeIntervalSince1970 - stamp < taxonomyTTL
+    }
+
+    private static func markTaxonomyFetched(_ kind: String, sourceID: UUID,
+                                            scope: String = "root") {
+        CatalogStore.string(forKey: taxonomyStampKey(kind, sourceID: sourceID, scope: scope),
+                            value: "\(Date().timeIntervalSince1970)")
+    }
+
+    /// 一组「当前一级分类下的标签」快照：标签行 + 分组标签一起存。
+    private struct TagSnapshot: Codable {
+        var tags: [CatalogCategory]
+        var groups: [CatalogTagGroup]
+    }
+
+    private static func tagSnapshotKey(sourceID: UUID, scope: String) -> String {
+        "catalog.taxonomy.tags.v1.\(sourceID.uuidString)|\(scope)"
+    }
+
+    private static func loadTagSnapshot(sourceID: UUID, scope: String) -> TagSnapshot? {
+        guard let data = CatalogStore.data(forKey: tagSnapshotKey(sourceID: sourceID, scope: scope))
+        else { return nil }
+        return try? JSONDecoder().decode(TagSnapshot.self, from: data)
+    }
+
+    private static func saveTagSnapshot(_ snapshot: TagSnapshot, sourceID: UUID, scope: String) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        CatalogStore.set(data, forKey: tagSnapshotKey(sourceID: sourceID, scope: scope))
+    }
+
+    /// 源被编辑（地址 / Cookie / UA）后，分类与标签缓存立刻作废，下次进页面重新取。
+    private static func invalidateTaxonomy(sourceID: UUID) {
+        CatalogStore.set(nil, forKey: taxonomyStampKey("categories", sourceID: sourceID))
+        CatalogStore.set(nil, forKey: taxonomyStampKey("tagWall", sourceID: sourceID))
+        CatalogStore.set(nil, forKey: taxonomyStampKey("archive", sourceID: sourceID))
     }
 
     func openRank() {
         section = .rank
         activeTopCategoryID = categories.first(where: { $0.isRank })?.id
+        collectionOrigin = nil
+        collectionTitle = nil
         rememberView()
         if let source = selectedSource {
             refreshTags(source: source, category: nil)
@@ -795,6 +1154,8 @@ final class CatalogBrowserModel {
         requestToken &+= 1
         section = target
         activeTopCategoryID = nil
+        collectionOrigin = nil
+        collectionTitle = nil
         items = []
         hasMore = false
         error = nil
@@ -833,6 +1194,8 @@ final class CatalogBrowserModel {
         searchText = trimmed
         section = .search(trimmed)
         activeTopCategoryID = nil
+        collectionOrigin = nil
+        collectionTitle = nil
         reload()
     }
 
@@ -869,6 +1232,8 @@ final class CatalogBrowserModel {
         error = nil
         sourceError = nil
         freshItemKeys = []
+        // Cookie 快过期时顺手在后台续一次；失败会走登录墙分支再提示。
+        renewCookieIfNeeded(source)
         let key = cacheKey(source: source, page: 1)
         // 注意：这里不能「同 key 在途就直接 return」。
         // 上面已经取消旧任务并换了 token，旧任务回来时会被 token 校验丢掉；
@@ -952,7 +1317,9 @@ final class CatalogBrowserModel {
                let cover = result.items.first(where: { !$0.coverURL.isEmpty })?.coverURL {
                 storeThumb(cover, categoryID: id, sourceID: source.id)
             }
+            var nextHasMore = result.hasMore
             if page == 1 {
+                duplicatePageStreak = 0
                 // 与上次同一列表的快照比较：新出现的条目打「刚上架」。
                 let listKey = cacheKey(source: source, page: 1)
                 let previousIDs = Set((pageSnapshots[listKey]?.items ?? []).map(\.id))
@@ -975,11 +1342,22 @@ final class CatalogBrowserModel {
                     break
                 }
             } else {
-                items.append(contentsOf: result.items.filter { item in
-                    !items.contains(where: { $0.id == item.id })
-                })
+                // 站点偶尔把上一页原样再给一遍：去重后一条没增加只记一次，
+                // 连续两次才当作到底，免得明明还有内容却提前停住。
+                var seen = Set(items.map(\.id))
+                let fresh = result.items.filter { seen.insert($0.id).inserted }
+                items.append(contentsOf: fresh)
+                if fresh.isEmpty {
+                    duplicatePageStreak += 1
+                    if duplicatePageStreak >= 2 { nextHasMore = false }
+                } else {
+                    duplicatePageStreak = 0
+                }
+                Diagnostics.record("分页 \(source.name) 第 \(page) 页 · 返回 \(result.items.count)"
+                                   + " · 新增 \(fresh.count) · 连续重复 \(duplicatePageStreak)"
+                                   + " · hasMore \(nextHasMore)")
             }
-            hasMore = result.hasMore
+            hasMore = nextHasMore
             self.page = page
             error = nil
             sourceError = nil
@@ -992,12 +1370,80 @@ final class CatalogBrowserModel {
             }
         } catch {
             guard token == requestToken, !Task.isCancelled else { return }
+            // 站点下线 / 改了分类路径：不要再把 404 摆在页面上。
+            // 首页永远可用，直接退回首页；分页 404 视为已经到底。
+            if isHTTP404(error) {
+                switch section {
+                case .home:
+                    // 站点偶尔会在 Cloudflare / 缓存回源时抽风返回 404：自动重试一次。
+                    if page == 1, shouldRetryHome404(source.id) {
+                        Task { [weak self] in
+                            try? await Task.sleep(nanoseconds: 600_000_000)
+                            guard let self, self.requestToken == token,
+                                  self.selectedSourceID == source.id,
+                                  case .home = self.section else { return }
+                            self.reload()
+                        }
+                        return
+                    }
+                case .category, .rank:
+                    if page == 1 {
+                        section = .home
+                        activeTopCategoryID = nil
+                        self.error = nil
+                        self.sourceError = nil
+                        rememberView()
+                        reload()
+                        return
+                    }
+                    hasMore = false
+                    self.error = nil
+                    self.sourceError = nil
+                    return
+                case .search:
+                    if page > 1 {
+                        hasMore = false
+                        self.error = nil
+                        self.sourceError = nil
+                        return
+                    }
+                    self.error = "该站点没有可用的搜索入口（HTTP 404）。"
+                    self.sourceError = .unavailable(self.error ?? "")
+                    return
+                default:
+                    break
+                }
+            }
+            // 登录态站点被登录墙 / 403 拦下：不要退化成「离线快照」，直接给登录入口。
+            if source.kind.mayRequireLogin, Self.isLoginWall(error) {
+                markLoginRequired(source.id)
+                if page == 1, listSnapshotAt == nil { items = [] }
+                self.error = "站点需要登录后才能浏览完整内容。"
+                self.sourceError = .unauthorized("站点需要登录后才能浏览完整内容。")
+                beginSilentCookieRefresh(source)
+                return
+            }
             // 有快照就继续显示快照（页面顶部会提示离线视图），没有才退回空态。
             if page == 1, listSnapshotAt == nil { items = [] }
             self.error = error.localizedDescription
             self.sourceError = SourceErrorMapper.map(error)
             Diagnostics.record("影视源加载失败 \(source.name) \(sectionTitle)：\(error.localizedDescription)")
         }
+    }
+
+    /// 站点明确回了 404：分类 / 条目已经不存在，和网络故障区分处理。
+    private func isHTTP404(_ error: Error) -> Bool {
+        guard case .http(let status)? = error as? CatalogError else { return false }
+        return status == 404
+    }
+
+    /// 首页 404 的自动重试节流：同一源 20 秒内只重试一次，避免真下线时无限循环。
+    private func shouldRetryHome404(_ sourceID: UUID) -> Bool {
+        if let last = home404RetryAt[sourceID], Date().timeIntervalSince(last) < 20 {
+            return false
+        }
+        home404RetryAt[sourceID] = Date()
+        return true
     }
 
     // MARK: - 本页排序
@@ -1078,45 +1524,146 @@ final class CatalogBrowserModel {
 
     // MARK: - 详情
 
+    /// 正在解析的详情：同一部作品重复进入时不重复请求，直接等它的结果。
+    @ObservationIgnored private var detailTask: Task<Void, Never>?
+    @ObservationIgnored private var detailTaskKey: String?
+    /// 详情解析在任务中心的登记 id：取消 / 归档都靠它。
+    @ObservationIgnored private var detailJobID: UUID?
+
     func loadDetail(item: CatalogItem, force: Bool = false) {
         guard let source = selectedSource else { return }
         let key = detailKey(source: source, itemID: item.id)
-        detailToken &+= 1
-        let token = detailToken
         if !force, let cached = cachedDetails[key] {
             detail = cached
             detailError = nil
             isLoadingDetail = false
             // 详情里的女优字段顺手补进识别词典：以后标题里也能认出她。
-            CatalogNameParser.learn(from: cached)
+            learnNamesInBackground(from: cached)
             return
         }
+        // 同一部作品已经在后台解析：界面继续转圈，结果到了自然刷新，不再发第二次请求。
+        if !force, detailTaskKey == key, detailTask != nil {
+            isLoadingDetail = true
+            detailError = nil
+            return
+        }
+        detailToken &+= 1
+        let token = detailToken
+        // 换了一部作品：上一次的解析作废，静默撤掉任务，不在记录里留一串「已取消」。
+        abandonDetailParse(discardJob: true)
         isLoadingDetail = true
         detail = nil
         detailError = nil
 
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if token == self.detailToken { self.isLoadingDetail = false }
+        // 解析登记成后台任务：页面先展示列表里已有的封面与标题，进度在左下角任务条可见，
+        // 离开详情页也不会中断，回来时直接用缓存。
+        let jobID = jobCenter?.begin(
+            SourceJob(sourceID: .catalog(source.id),
+                      kind: .parse,
+                      title: "解析《\(item.title)》"),
+            cancel: { [weak self] in
+                Task { @MainActor in self?.abandonDetailParse(discardJob: false) }
             }
+        )
+        detailJobID = jobID
+        onJobChange?()
+
+        detailTaskKey = key
+        detailTask = Task { [weak self] in
+            guard let self else { return }
             guard let provider = CatalogProviders.provider(for: source.kind) else {
+                self.detailTask = nil
+                self.detailTaskKey = nil
+                self.isLoadingDetail = false
                 self.detailError = CatalogError.unsupportedProvider.localizedDescription
+                self.failDetailParse(jobID, message: CatalogError.unsupportedProvider.localizedDescription)
                 return
             }
             do {
                 var result = try await provider.detail(source: source, itemID: item.id)
-                guard token == self.detailToken, !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return }
                 if result.item.coverURL.isEmpty { result.item.coverURL = item.coverURL }
                 if result.item.title.isEmpty { result.item.title = item.title }
                 self.cachedDetails[key] = result
-                self.detail = result
-                CatalogNameParser.learn(from: result)
+                learnNamesInBackground(from: result)
+                self.detailTask = nil
+                self.detailTaskKey = nil
+                if token == self.detailToken {
+                    self.detail = result
+                    self.isLoadingDetail = false
+                }
+                self.finishDetailParse(jobID,
+                                       message: result.episodes.isEmpty
+                                           ? "\(result.articleImages.count) 张"
+                                           : "\(result.episodes.count) 集")
             } catch {
-                guard token == self.detailToken, !Task.isCancelled else { return }
-                self.detailError = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                self.detailTask = nil
+                self.detailTaskKey = nil
+                if token == self.detailToken {
+                    if self.isHTTP404(error) {
+                        // 快照里的旧条目在站点上已经下架：丢弃这一页的快照，返回列表时会自动刷新。
+                        let listKey = self.cacheKey(source: source, page: 1)
+                        self.pageSnapshots[listKey] = nil
+                        self.cachedPages[listKey] = nil
+                        self.detailError = "这条内容可能已经下架（HTTP 404）。返回列表刷新后再试。"
+                    } else if source.kind.mayRequireLogin, Self.isLoginWall(error) {
+                        self.markLoginRequired(source.id)
+                        self.detailError = "站点需要登录后才能查看这条内容。"
+                        self.beginSilentCookieRefresh(source)
+                    } else {
+                        self.detailError = error.localizedDescription
+                    }
+                    self.isLoadingDetail = false
+                }
+                self.failDetailParse(jobID, message: error.localizedDescription)
             }
         }
+    }
+
+    /// 把详情字段里学到的女优名写进识别词典：读库 + 写库都放后台，
+    /// 详情页首帧不再被词典 I/O 占用主线程。
+    private func learnNamesInBackground(from detail: CatalogDetail) {
+        let names = CatalogNameParser.learnableNames(from: detail)
+        guard !names.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            CatalogNameParser.learn(names: names)
+        }
+    }
+
+    /// 解析完成：任务中心收尾并归档进任务记录。
+    private func finishDetailParse(_ id: UUID?, message: String?) {
+        guard let id else { return }
+        jobCenter?.finish(id, message: message)
+        detailJobID = nil
+        onJobChange?()
+        onJobFinished?(id)
+    }
+
+    private func failDetailParse(_ id: UUID?, message: String?) {
+        guard let id else { return }
+        jobCenter?.fail(id, message: message)
+        detailJobID = nil
+        onJobChange?()
+        onJobFinished?(id)
+    }
+
+    /// 放弃当前解析：`discardJob` 为真时（换作品）连任务记录一起丢掉；
+    /// 为假时是用户在任务条里点的取消，保留「已取消」记录。
+    private func abandonDetailParse(discardJob: Bool) {
+        detailTask?.cancel()
+        detailTask = nil
+        detailTaskKey = nil
+        if let id = detailJobID {
+            if discardJob {
+                jobCenter?.discard(id)
+            } else {
+                onJobFinished?(id)
+            }
+            detailJobID = nil
+        }
+        isLoadingDetail = false
+        onJobChange?()
     }
 
     func closeDetail() {
@@ -1238,8 +1785,25 @@ final class CatalogBrowserModel {
     // MARK: - 配置导入导出
 
     /// 导出某个域的来源配置：只装这一域的源，导入时不会跨域混入。
+    /// 登录态属于本机凭据，导出时一律剔除。
+    ///
+    /// 顺序按侧边栏看到的样子写：综合站 → 视频站 → 图集站，组内保持手动排序，
+    /// 导入时按文件顺序落库，换一台机器也复原同样的排列。
     func exportSourceBundle(domain: CatalogDomain) -> Data? {
-        let list = sources(in: domain)
+        let scoped = sources(in: domain)
+        let ordered = CatalogSiteCategory.displayOrder.flatMap { category in
+            scoped.filter { $0.kind.siteCategory == category }
+        }
+        let list = ordered.map { source -> CatalogSource in
+            var copy = source
+            copy.cookie = nil
+            copy.cookieExpiresAt = nil
+            // 永久地址是可迁移的站点元数据：显式写进文件，换机器后仍能自动找镜像。
+            if copy.addressPageURL == nil {
+                copy.addressPageURL = source.kind.defaultAddressPageURL
+            }
+            return copy
+        }
         guard !list.isEmpty else { return nil }
         return SourceTransferJSON.encode(domain.transferScope, items: list)
     }
@@ -1270,15 +1834,41 @@ final class CatalogBrowserModel {
         applyDomainOrder(list, domain: item.domain)
     }
 
-    /// 右键菜单上移 / 下移：-1 上移，+1 下移，只在本域内交换。
+    /// 侧边栏同一分组（综合站 / 视频站 / 图集站）里的源，顺序与侧边栏看到的一致。
+    /// 侧边栏按站点类型分组展示，所以上移 / 下移、按钮可用性都只在这一组内算。
+    func sourceSiblings(_ id: UUID) -> [CatalogSource] {
+        guard let item = sources.first(where: { $0.id == id }) else { return [] }
+        return sources(in: item.domain)
+            .filter { $0.kind.siteCategory == item.kind.siteCategory }
+    }
+
+    /// 右键菜单上移 / 下移：-1 上移，+1 下移。
+    /// 只和同组的相邻项换位：跟别的组交换时两组各自的行序其实没变，界面上就会「点了没反应」。
     func moveSource(_ id: UUID, by offset: Int) {
         guard let item = sources.first(where: { $0.id == id }) else { return }
-        var list = sources(in: item.domain)
-        guard let from = list.firstIndex(where: { $0.id == id }) else { return }
+        let siblings = sourceSiblings(id)
+        guard let from = siblings.firstIndex(where: { $0.id == id }) else { return }
         let to = from + offset
-        guard list.indices.contains(to) else { return }
-        list.swapAt(from, to)
-        applyDomainOrder(list, domain: item.domain)
+        guard siblings.indices.contains(to) else { return }
+        var ordered = siblings
+        ordered.swapAt(from, to)
+        applyGroupOrder(ordered, domain: item.domain, category: item.kind.siteCategory)
+    }
+
+    /// 把某一组的新顺序填回域内属于这一组的槽位，其它组的行保持原位。
+    private func applyGroupOrder(_ ordered: [CatalogSource],
+                                 domain: CatalogDomain,
+                                 category: CatalogSiteCategory) {
+        var next = ordered.makeIterator()
+        let merged = sources.map { current -> CatalogSource in
+            guard current.domain == domain,
+                  current.kind.siteCategory == category,
+                  let replacement = next.next() else { return current }
+            return replacement
+        }
+        guard merged != sources else { return }
+        sources = merged
+        saveSources()
     }
 
     /// 把重排后的本域清单写回完整源列表：另一个域的源保持原有位置不动。
@@ -1298,10 +1888,126 @@ final class CatalogBrowserModel {
         sources[index] = source
         saveSources()
         CatalogTrust.sync(sources: sources)
+        if let cookie = source.cookie, !cookie.isEmpty {
+            loginRequiredSourceIDs.remove(source.id)
+        }
         if selectedSourceID == source.id {
-            categories = source.categories
-            refreshCategories(source: source)
-            if !source.isEnabled { reload() }
+            categories = Self.droppingDuplicateHome(source.categories)
+            // 地址 / Cookie / UA 变了：分类与归档缓存立即作废并重新取一次。
+            Self.invalidateTaxonomy(sourceID: source.id)
+            refreshCategories(source: source, force: true)
+            // 地址 / Cookie / UA 都是抓取参数：保存后按新配置重新读一遍，
+            // 否则用户填完 Cookie 仍然看到旧的登录墙。
+            refresh()
+        }
+    }
+
+    // MARK: - 登录态
+
+    /// 打开「粘贴 Cookie」窗口：Wuso / V2PH 不在应用内登录，统一从浏览器复制 Cookie。
+    func presentCookiePrompt(for source: CatalogSource) {
+        cookiePromptSource = source
+    }
+
+    func dismissCookiePrompt() {
+        cookiePromptSource = nil
+    }
+
+    /// 保存用户粘贴 / 自动续期拿到的 Cookie，清掉旧缓存并按新登录态重新加载。
+    func applyCookie(for source: CatalogSource, cookie: String, expiresAt: Date?,
+                     announce: Bool = true) {
+        let trimmed = Self.normalizedCookie(cookie)
+        guard !trimmed.isEmpty else { return }
+        var updated = source
+        updated.cookie = trimmed
+        updated.cookieExpiresAt = expiresAt
+        loginRequiredSourceIDs.remove(source.id)
+        health[source.id] = .online
+        healthCheckedAt[source.id] = Date()
+        // 旧的页面 / 详情可能来自登录墙：按源清掉，避免更新 Cookie 后仍看到旧结果。
+        let prefix = source.id.uuidString
+        cachedPages = cachedPages.filter { !$0.key.hasPrefix(prefix) }
+        cachedDetails = cachedDetails.filter { !$0.key.hasPrefix(prefix) }
+        updateSource(updated)
+        if selectedSourceID == source.id {
+            cachedDetails.removeAll()
+            freshItemKeys = []
+            if let item = inlineDetailItem { loadDetail(item: item, force: true) }
+        }
+        if announce { showNotice("已保存 \(source.name) 的 Cookie") }
+    }
+
+    /// 从浏览器复制来的 Cookie 常带 `Cookie:` 前缀与换行：统一成请求头格式。
+    static func normalizedCookie(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("cookie:") {
+            value = String(value.dropFirst("cookie:".count))
+        }
+        return value
+            .components(separatedBy: .newlines)
+            .flatMap { $0.components(separatedBy: ";") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "; ")
+    }
+
+    /// 请求命中登录墙：记录状态，页面据此展示「粘贴 Cookie」入口。
+    func markLoginRequired(_ sourceID: UUID) {
+        loginRequiredSourceIDs.insert(sourceID)
+        health[sourceID] = .needsLogin
+    }
+
+    /// 页面是否应该提示 Cookie：缺失 / 过期 / 本次请求被登录墙拦下。
+    func loginPromptNeeded(for source: CatalogSource) -> Bool {
+        guard source.kind.mayRequireLogin else { return false }
+        if loginRequiredSourceIDs.contains(source.id) { return true }
+        return source.cookieState.needsAttention
+    }
+
+    func isRefreshingCookie(_ sourceID: UUID) -> Bool {
+        cookieRefreshingSourceIDs.contains(sourceID)
+    }
+
+    /// 隐藏 WebView 静默续期：带上现有 Cookie 重新访问站点，
+    /// 取回刷新后的 Cookie（Cloudflare clearance / 论坛会话）并替换。
+    private func beginSilentCookieRefresh(_ source: CatalogSource) {
+        guard source.kind.mayRequireLogin,
+              !cookieRefreshingSourceIDs.contains(source.id),
+              let cookie = source.cookie, !cookie.isEmpty else { return }
+        if let last = cookieRefreshAttemptAt[source.id], Date().timeIntervalSince(last) < 300 {
+            return
+        }
+        cookieRefreshAttemptAt[source.id] = Date()
+        cookieRefreshingSourceIDs.insert(source.id)
+        Task { [weak self] in
+            let result = await CatalogCookieRefreshGate.shared.refresh(source: source)
+            guard let self else { return }
+            self.cookieRefreshingSourceIDs.remove(source.id)
+            guard let result, result.cookie != source.cookie else { return }
+            self.applyCookie(for: source, cookie: result.cookie,
+                             expiresAt: result.expiresAt, announce: false)
+        }
+    }
+
+    /// Cookie 快过期时提前在后台续一次（隐藏 WebView，不弹窗）。
+    private func renewCookieIfNeeded(_ source: CatalogSource) {
+        guard source.kind.mayRequireLogin,
+              let cookie = source.cookie, !cookie.isEmpty else { return }
+        if source.cookieState == .expiringSoon || source.cookieState == .expired {
+            beginSilentCookieRefresh(source)
+        }
+    }
+
+    /// 登录墙 / 403：与普通网络故障区分，避免把「需要登录」显示成离线快照。
+    private static func isLoginWall(_ error: Error) -> Bool {
+        guard let catalogError = error as? CatalogError else { return false }
+        switch catalogError {
+        case .authRequired:
+            return true
+        case .http(let status):
+            return status == 401 || status == 403
+        default:
+            return false
         }
     }
 
@@ -1310,7 +2016,7 @@ final class CatalogBrowserModel {
         sources[index].isEnabled = enabled
         saveSources()
         if selectedSourceID == id {
-            categories = sources[index].categories
+            categories = Self.droppingDuplicateHome(sources[index].categories)
             refreshCategories(source: sources[index])
             reload()
         }
@@ -1335,6 +2041,7 @@ final class CatalogBrowserModel {
 
     func remove(_ id: UUID) {
         sources.removeAll { $0.id == id }
+        CatalogCookieVault.save(nil, for: id)
         CatalogTrust.sync(sources: sources)
         progress = progress.filter { $0.value.sourceID != id }
         favorites = favorites.filter { $0.value.sourceID != id }
@@ -1381,9 +2088,22 @@ final class CatalogBrowserModel {
     // MARK: - 内部
 
     private func prepare(source: CatalogSource) {
-        categories = source.categories
+        categories = Self.droppingDuplicateHome(source.categories)
         activeTopCategoryID = nil
+        collectionOrigin = nil
+        collectionTitle = nil
         tags = []
+        tagGroups = []
+        if tagWallSourceID != source.id {
+            tagWallTags = []
+            tagWallSourceID = nil
+            isTagWallLoading = false
+        }
+        if archiveSourceID != source.id {
+            archiveEntries = []
+            archiveSourceID = nil
+            isArchiveLoading = false
+        }
         // 换源后旧源的排序可能不受支持：退回站点默认顺序，避免界面显示「热播」但结果没变。
         if let provider = CatalogProviders.provider(for: source.kind),
            !provider.supportedSorts.contains(sort) {
@@ -1395,15 +2115,21 @@ final class CatalogBrowserModel {
         refreshCategories(source: source)
     }
 
-    /// 分类以站点导航为准：先渲染本地骨架，再用站点实时分类覆盖；标签按当前一级分类取。
-    private func refreshCategories(source: CatalogSource) {
+    /// 分类以站点导航为准：先用本地保存的一二级占位，一天内不再重复抓首页；
+    /// 缓存过期（或没有缓存）时再后台拉一次站点分类。
+    private func refreshCategories(source: CatalogSource, force: Bool = false) {
         guard let provider = CatalogProviders.provider(for: source.kind) else { return }
+        if !force, !categories.isEmpty,
+           Self.taxonomyFresh("categories", sourceID: source.id) {
+            refreshTags(source: source, category: activeTopCategory)
+            return
+        }
         Task { [weak self] in
             let live = try? await provider.categories(source: source)
             guard let self, self.selectedSourceID == source.id else { return }
             if let live, !live.isEmpty {
                 // 已经按需补齐的二级频道不能被实时分类覆盖掉。
-                let merged = live.map { fresh in
+                var merged = live.map { fresh in
                     guard fresh.children?.isEmpty ?? true,
                           let local = self.categories.first(where: { $0.id == fresh.id }),
                           let children = local.children, !children.isEmpty else { return fresh }
@@ -1411,11 +2137,28 @@ final class CatalogBrowserModel {
                     updated.children = children
                     return updated
                 }
-                self.categories = merged
+                // 苹果CMS 的接口顺序和站点导航不一致：量子资源按站点的真实导航重排，
+                // 其它站保留本地已排好的顺序，新增分类追加到末尾。
+                if Self.isLzzyBookmark(source) {
+                    merged = MacCMSCatalogProvider.alignedWithLzzyNavigation(merged)
+                } else if source.kind == .maccms, !self.categories.isEmpty {
+                    let order = Dictionary(uniqueKeysWithValues: self.categories.enumerated()
+                        .map { ($0.element.id, $0.offset) })
+                    merged.sort { (order[$0.id] ?? Int.max) < (order[$1.id] ?? Int.max) }
+                }
+                self.categories = Self.droppingDuplicateHome(merged)
                 // 写回源配置：下次进来第一眼看到的就是最新的一、二级，而不是导入时的旧骨架。
-                self.persistCategories(merged, for: source.id)
+                self.persistCategories(self.categories, for: source.id)
+                Self.markTaxonomyFetched("categories", sourceID: source.id)
             }
             self.refreshTags(source: source, category: self.activeTopCategory)
+        }
+    }
+
+    /// 频道页顶部已经有统一的「首页」入口，站点自带的首頁 / 首页分类会和它重复。
+    static func droppingDuplicateHome(_ categories: [CatalogCategory]) -> [CatalogCategory] {
+        categories.filter {
+            $0.id != "home" && !["首页", "首頁", "主页", "主頁"].contains($0.title)
         }
     }
 
@@ -1428,14 +2171,36 @@ final class CatalogBrowserModel {
     }
 
     /// 二级标签跟随当前一级分类：肉视频这类站点把片商 / 题材挂在主分类下面。
+    /// 每个一级分类的标签各存一份，先铺缓存占位，一天内不重复请求。
     private func refreshTags(source: CatalogSource, category: CatalogCategory?) {
         guard let provider = CatalogProviders.provider(for: source.kind) else { return }
+        let scope = category?.id ?? "root"
+        let cached = Self.loadTagSnapshot(sourceID: source.id, scope: scope)
+        if let cached {
+            tags = cached.tags
+            tagGroups = cached.groups
+        }
+        // 缓存命中也要让在途请求失效：否则上一个一级分类的实时结果会覆盖当前标签。
         tagsToken &+= 1
+        if cached != nil, Self.taxonomyFresh("tags", sourceID: source.id, scope: scope) {
+            return
+        }
         let token = tagsToken
         Task { [weak self] in
-            let live = try? await provider.tags(source: source, category: category)
+            let liveTags = try? await provider.tags(source: source, category: category)
+            let liveGroups = try? await provider.tagGroups(source: source, category: category)
             guard let self, self.tagsToken == token, self.selectedSourceID == source.id else { return }
-            self.tags = live ?? []
+            if let liveTags { self.tags = liveTags }
+            if let liveGroups { self.tagGroups = liveGroups }
+            // 这次完全没取到（断网 / 限流）不写缓存，下次进页面再试。
+            guard liveTags != nil || liveGroups != nil else { return }
+            let nextTags = self.tags
+            let nextGroups = self.tagGroups
+            // 空结果同样不写缓存：可能只是这次没取到。
+            guard !nextTags.isEmpty || !nextGroups.isEmpty else { return }
+            Self.saveTagSnapshot(TagSnapshot(tags: nextTags, groups: nextGroups),
+                                 sourceID: source.id, scope: scope)
+            Self.markTaxonomyFetched("tags", sourceID: source.id, scope: scope)
         }
     }
 
@@ -1490,15 +2255,28 @@ final class CatalogBrowserModel {
     private func load() {
         if let data = CatalogStore.data(forKey: Self.sourcesKey),
            let decoded = try? JSONDecoder().decode([CatalogSource].self, from: data) {
-            // 站点换了官方域名：旧的爱壹帆地址迁移到 kubb.tv（同一套接口）。
-            let hasKubb = decoded.contains {
-                (URL(string: $0.baseURL)?.host ?? "").lowercased().contains("kubb.tv")
-            }
-            let normalized = hasKubb ? decoded : decoded.map(Self.migratedEndpoint)
+            // 站点换域名：爱壹帆迁移到 kubb.tv，量子资源迁移到 lzzy.tv；迁移函数本身幂等。
+            let normalized = decoded.map(Self.migratedEndpoint)
             // 旧配置里只有一级：按适配器最新的站点骨架补齐二级分类，并写回。
             let enriched = normalized.map { CatalogProviders.enrich($0) }
-            sources = enriched
-            if enriched != decoded { saveSources() }
+            // 登录态 Cookie 从钥匙串恢复；旧版本写在 JSON 里的明文顺便迁进去并抹掉。
+            var migratedLegacyCookie = false
+            var hydrated: [CatalogSource] = []
+            hydrated.reserveCapacity(enriched.count)
+            for var source in enriched {
+                let legacy = source.cookie?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !legacy.isEmpty {
+                    if CatalogCookieVault.cookie(for: source.id) == nil {
+                        CatalogCookieVault.save(legacy, for: source.id)
+                    }
+                    source.cookie = nil
+                    migratedLegacyCookie = true
+                }
+                source.cookie = CatalogCookieVault.cookie(for: source.id)
+                hydrated.append(source)
+            }
+            sources = hydrated
+            if enriched != decoded || migratedLegacyCookie { saveSources() }
         }
         progress = CatalogStore.loadProgress()
         if let data = CatalogStore.data(forKey: Self.favoritesKey),
@@ -1517,22 +2295,61 @@ final class CatalogBrowserModel {
         CatalogTrust.sync(sources: sources)
     }
 
-    /// 爱壹帆换成了 kubb.tv 同一套接口：旧源就地换域名，保留启用状态与排序。
+    /// 量子资源的接口顺序和站点导航不一致，需要按固定导航对齐分类。
+    private static func isLzzyBookmark(_ source: CatalogSource) -> Bool {
+        guard source.kind == .maccms else { return false }
+        let host = (URL(string: source.baseURL)?.host ?? "").lowercased()
+        return host.contains("lzzy.tv")
+    }
+
+    /// 站点换域名时就地迁移，保留启用状态与排序：
+    /// - 爱壹帆换成了 kubb.tv（同一套接口）。
+    /// - 量子资源旧的 cj.lziapi.com 接口已不可达，换成站点自己的 www.lzzy.tv 接口，
+    ///   并补齐固定的两级分类骨架（该站 type_id 长期稳定）。
     private static func migratedEndpoint(_ source: CatalogSource) -> CatalogSource {
-        guard source.kind == .iyf,
-              (URL(string: source.baseURL)?.host ?? "").lowercased().hasSuffix("iyf.tv") else {
-            return source
+        let host = (URL(string: source.baseURL)?.host ?? "").lowercased()
+
+        if source.kind == .iyf, host.hasSuffix("iyf.tv") {
+            var updated = source
+            updated.baseURL = "https://www.kubb.tv"
+            updated.referer = "https://www.kubb.tv/"
+            updated.configURL = "https://www.kubb.tv/"
+            if updated.name.contains("爱壹帆") { updated.name = "Kubb" }
+            return updated
         }
-        var updated = source
-        updated.baseURL = "https://www.kubb.tv"
-        updated.referer = "https://www.kubb.tv/"
-        updated.configURL = "https://www.kubb.tv/"
-        if updated.name.contains("爱壹帆") { updated.name = "Kubb" }
-        return updated
+
+        if source.kind == .maccms,
+           host.contains("lziapi.com") || host.contains("lzzy.tv") {
+            var updated = source
+            if host.contains("lziapi.com") {
+                updated.baseURL = "https://www.lzzy.tv"
+                updated.referer = "https://www.lzzy.tv/"
+                updated.configURL = "https://www.lzzy.tv"
+                updated.apiBase = "https://www.lzzy.tv/api.php/provide/vod/"
+            }
+            // 旧源没有分类、顺序和站点导航不一致、或只有一级：按量子资源真实导航重排并补齐。
+            updated.categories = MacCMSCatalogProvider.alignedWithLzzyNavigation(updated.categories)
+            return updated
+        }
+
+        return source
     }
 
     private func saveSources() {
-        guard let data = try? JSONEncoder().encode(sources) else { return }
+        // 登录态 Cookie 只写钥匙串；落盘前从 JSON 副本里抹掉，避免明文进图库数据库。
+        for source in sources {
+            let current = source.cookie?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let stored = CatalogCookieVault.cookie(for: source.id) ?? ""
+            if current != stored {
+                CatalogCookieVault.save(source.cookie, for: source.id)
+            }
+        }
+        let sanitized = sources.map { source -> CatalogSource in
+            var copy = source
+            copy.cookie = nil
+            return copy
+        }
+        guard let data = try? JSONEncoder().encode(sanitized) else { return }
         CatalogStore.set(data, forKey: Self.sourcesKey)
     }
 

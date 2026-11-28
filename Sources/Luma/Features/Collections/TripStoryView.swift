@@ -5,8 +5,14 @@ import AppKit
 struct TripStoryView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    /// AI 起名状态：只影响这一条旅行。
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
 
     let trip: TripStory
+
+    private var aiTitle: AIAssistCenter.StoryTitle? {
+        store.aiStoryTitle(for: trip)
+    }
 
     var body: some View {
         ZStack {
@@ -20,6 +26,13 @@ struct TripStoryView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 26) {
                         hero
+                        if let narration = aiTitle?.narration, !narration.isEmpty {
+                            Text(narration)
+                                .font(.system(size: 12.5))
+                                .lineSpacing(4)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 2)
+                        }
                         ForEach(trip.days) { day in
                             daySection(day)
                         }
@@ -38,6 +51,7 @@ struct TripStoryView: View {
             .padding(.vertical, 32)
         }
         .onExitCommand { store.activeTrip = nil }
+        .task { store.restoreAIStoryTitles() }
     }
 
     private var header: some View {
@@ -49,7 +63,7 @@ struct TripStoryView: View {
                 .background(Color.accentColor.opacity(0.14), in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(trip.title)
+                Text(aiTitle?.title ?? trip.title)
                     .font(.system(size: 22, weight: .bold))
                 Text(trip.subtitle)
                     .font(.system(size: 11.5))
@@ -57,6 +71,21 @@ struct TripStoryView: View {
             }
 
             Spacer()
+
+            Button {
+                Task { await store.generateAIStoryTitle(for: trip) }
+            } label: {
+                if aiAssist.storyLoadingID == trip.id {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label(aiTitle == nil ? "AI 起名" : "重新起名", systemImage: "sparkles")
+                        .font(.system(size: 12, weight: .medium))
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(aiAssist.isBusy)
+            .help("让模型给这次旅行起一个标题并写一句旁白（只读地点、日期与场景标签）")
 
             Button {
                 store.playTripMemory(trip)
@@ -148,7 +177,6 @@ struct TripStoryView: View {
                             }
                     }
                     .buttonStyle(.plain)
-                    .help(photo.displayTitle)
                 }
             }
         }

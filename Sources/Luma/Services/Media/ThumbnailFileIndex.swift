@@ -1,5 +1,28 @@
 import Foundation
 
+/// 缩略图缓存文件的串行写入器。
+///
+/// 网格滚动一屏会命中上千张缩略图，每张都要落一份 64px / 192px 小文件。
+/// 如果每张解码完就各自开一个后台 Task 写盘，外接盘上会同时堆出上千个写操作，
+/// 和正在进行的读取互相抢队列，反而让「下一屏出图」更慢。
+/// 这里统一串行、低优先级地写：写不完的顺延，不阻塞任何一次出图。
+final class ThumbnailCacheWriter: @unchecked Sendable {
+    static let shared = ThumbnailCacheWriter()
+
+    private let queue = DispatchQueue(label: "luma.thumbnail.cache-writer", qos: .utility)
+
+    private init() {}
+
+    func enqueue(_ data: Data, to url: URL) {
+        queue.async {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try? data.write(to: url, options: .atomic)
+            ThumbnailFileIndex.shared.recordWrite(url: url)
+        }
+    }
+}
+
 /// 缩略图文件的轻量索引（路径 → 修改时间）。
 ///
 /// 网格滚动时每个格子原本要做 2～4 次 `fileExists / attributesOfItem`。

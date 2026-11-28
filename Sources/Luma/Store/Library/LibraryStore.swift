@@ -69,14 +69,14 @@ final class LibraryStore {
     /// 十万张的库上 `first(where:)` 是 O(n)，而 `anyPhoto(id:)` 有几十处调用；
     /// 但「删一张照片 / 打一个标签」同样会推进内容版本，所以累计扫描到阈值才建索引，
     /// 避免小改动立刻重建十万项字典。
-    var localPhotoIndex: [UUID: PhotoItem]?
-    var localPhotoScanCount = 0
+    @ObservationIgnored var localPhotoIndex: [UUID: PhotoItem]?
+    @ObservationIgnored var localPhotoScanCount = 0
     /// 建索引前的线性扫描次数上限：UI 一次交互通常只查几张，达到阈值才认为进入了批量场景。
     static let localPhotoIndexThreshold = 8
     /// 网盘目录通常只有几百到几千项，超过这个数才值得建索引。
     static let cloudPhotoIndexThreshold = 512
     /// 网盘照片查询索引：按 `cloudModel.revision` 失效（目录刷新、切换收藏都会推进它）。
-    var cloudPhotoIndexCache: (revision: Int, index: [UUID: PhotoItem])?
+    @ObservationIgnored var cloudPhotoIndexCache: (revision: Int, index: [UUID: PhotoItem])?
     var albums: [Album] = [] {
         didSet { contentRevision &+= 1 }
     }
@@ -119,6 +119,12 @@ final class LibraryStore {
             loadSystemLibraryIfNeeded(sidebarItem)
         }
     }
+    /// 截图工具（TestKitHarness）请求把侧边栏各层级一次性展开：自增即触发一次。
+    /// 正常启动不会改变它，展开结果与用户手动逐层点开完全一致。
+    var sidebarExpandRequest = 0
+    /// 展开时聚焦的分区：`all` / `library` / `albums` / `scenes` / `cloud` / `catalog` / `tv`，
+    /// 让被拍摄的那一段落在可视区域内。
+    var sidebarExpandTarget = "all"
     var grouping: GridGrouping = .all {
         didSet { persistViewPreference(SettingsKeys.grouping, grouping.rawValue) }
     }
@@ -135,11 +141,17 @@ final class LibraryStore {
     /// 堆叠展开状态版本：`sections` 的缓存键包含它，展开 / 收起立即生效。
     var stackRevision = 0
     /// 堆叠分组计划缓存：键为可见集合指纹 + 模式，滚动 / 选中时直接命中。
-    var stackPlanCacheKey: StackPlanCacheKey?
-    var stackPlanCache: StackPlan?
+    @ObservationIgnored var stackPlanCacheKey: StackPlanCacheKey?
+    @ObservationIgnored var stackPlanCache: StackPlan?
     /// 堆叠角标表缓存：与 `stackPlan` 同键，网格 body 反复读取时不再重建字典。
-    var stackBadgesCacheKey: StackPlanCacheKey?
-    var stackBadgesCache: [UUID: StackBadge] = [:]
+    @ObservationIgnored var stackBadgesCacheKey: StackPlanCacheKey?
+    @ObservationIgnored var stackBadgesCache: [UUID: StackBadge] = [:]
+    /// 直连模式：按月缓存的逐天分组（键 = 查询 + 月份），供月总览拼贴使用。
+    @ObservationIgnored var directMonthDaysCache: [String: [PhotoDayBucket]] = [:]
+    /// 逐天分组的写入顺序（先进先出淘汰，避免整表清空后可见月份全部重查）。
+    @ObservationIgnored var directMonthDaysOrder: [String] = []
+    /// 逐天分组到达的版本号：缓存不参与观察，靠它驱动月总览刷新。
+    var directMonthDaysRevision = 0
     /// 「个人收藏」的浏览方式（全部 / 年 / 类型 / 地点 / 相机 / 人物），随当前图库保存；默认先看年份。
     var favoritesViewMode: FavoritesViewMode = .years {
         didSet {
@@ -184,9 +196,18 @@ final class LibraryStore {
     var videoHubFullToken = ""
     var videoHubLoadingToken = ""
     var isVideoHubLoading = false
+    /// 首屏派生数据是否已经生成：完整汇总完成前用它区分「还在准备」与「确实没有视频」。
+    var hasVideoHubSnapshot = false
+    /// 重新派生（筛选项变化）的任务代号：只让最后一次结果落地。
+    @ObservationIgnored var videoHubRebuildToken = 0
 
     /// 缩略图 / 卡片尺寸范围（pt）：滑杆、按钮、⌘+ / ⌘-、捏合都按这个范围夹紧。
-    static let thumbSizeRange: ClosedRange<Double> = 56...360
+    /// 下限放到 28：小到可以铺成像系统「照片」那样的马赛克墙（单元格不再画元数据与悬停光效）。
+    static let thumbSizeRange: ClosedRange<Double> = 28...360
+
+    /// 缩放按钮 / 快捷键的档位：小尺寸用更细的步长，放大后步长变大，
+    /// 每按一次都跨一个「看起来明显」的档，而不是从 28 一路 +16 走十几下。
+    static let thumbSizeLadder: [Double] = [28, 36, 48, 64, 84, 110, 144, 188, 246, 320, 360]
 
     /// 正方形照片网格的格子间距（与 SquarePhotoGrid 一致）。
     static let gridSpacing: CGFloat = 2
@@ -235,14 +256,28 @@ final class LibraryStore {
                 thumbSize = clamped
                 return
             }
-            persistViewPreference(SettingsKeys.thumbSize, String(thumbSize))
-            // 记住当前侧边栏页面自己的滑杆位置。
+            // 记住当前侧边栏页面自己的滑杆位置（只在内存里）。
             let key = thumbSizeScopeKey(for: sidebarItem)
             if thumbSizes[key] != thumbSize {
                 thumbSizes[key] = thumbSize
-                persistThumbSizes()
             }
+            // 捏合 / 拖滑杆时这个值每帧都会变；落盘必须延迟，否则每一帧都写一次 SQLite，
+            // 缩放就会明显发滞。停手 0.35 秒后只写最终值。
+            scheduleThumbSizePersistence()
         }
+    }
+
+    private func scheduleThumbSizePersistence() {
+        let size = thumbSize
+        let key = thumbSizeScopeKey(for: sidebarItem)
+        tasks.adopt(.viewPreference, Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.persistViewPreference(SettingsKeys.thumbSize, String(size))
+            if self.thumbSizes[key] == size {
+                self.persistThumbSizes()
+            }
+        })
     }
 
     /// 每个侧边栏页面的缩略图尺寸（「放大 / 缩小」滑杆位置），随当前图库保存。
@@ -326,15 +361,17 @@ final class LibraryStore {
         }
     }
 
-    /// 工具栏放大 / 缩小：卡片墙改列数，照片网格改缩略图尺寸。
+    /// 工具栏放大 / 缩小：卡片墙改列数，照片网格按档位跳。
     func zoomStep(_ delta: Int) {
         if isCardWallScope {
             cardColumns = min(Self.cardColumnsRange.upperBound,
                               max(Self.cardColumnsRange.lowerBound, cardColumns + delta))
-        } else {
-            thumbSize = min(Self.thumbSizeRange.upperBound,
-                            max(Self.thumbSizeRange.lowerBound,
-                                thumbSize + Double(delta) * 16))
+        } else if delta > 0 {
+            thumbSize = Self.thumbSizeLadder.first { $0 > thumbSize + 0.5 }
+                ?? Self.thumbSizeRange.upperBound
+        } else if delta < 0 {
+            thumbSize = Self.thumbSizeLadder.last { $0 < thumbSize - 0.5 }
+                ?? Self.thumbSizeRange.lowerBound
         }
     }
 
@@ -475,8 +512,6 @@ final class LibraryStore {
     var scrollTargetMinimal = false
     /// 月总览里请求滚动到指定月份分段。
     var scrollTargetSection: String?
-    /// 顶栏副标题：网格当前可见区域的日期范围，随滚动动态更新。
-    var visibleDateSpanText = ""
     var selectionAnchorID: UUID?
 
     /// 查看器 / 编辑器状态独立成模型。
@@ -504,18 +539,128 @@ final class LibraryStore {
     var showLibraryInfo = false
     var showKeywordManager = false
     var showShortcutHelp = false
-    var showSlideshow = false
-    /// 智能助手面板（只读问答 + 检索建议）。
-    var showAIAssistant = false
+    var showSlideshow = false {
+        didSet {
+            // 图集 / 地图这类外部上下文只在一次放映里有效，退出后清掉，避免下一次
+            // 从图库直接开幻灯片时还在放上一次的列表。
+            guard !showSlideshow else { return }
+            finishCatalogGalleryViewer()
+            viewerContextPhotos = []
+        }
+    }
+    /// 智能助手统一的呈现形态：收起 / 并排 / 叠放 / 浮窗 / 工作台。
+    /// 旧代码里的 `showAIAssistant` / `showAIInspector` 都映射到这里，避免两套状态打架。
+    var aiSurfaceMode: AISurfaceMode = .hidden
+    /// 进入工作台前停留的页面：离开工作台时回到这里，中途不清理选择与搜索。
+    @ObservationIgnored var aiWorkspaceOriginItem: SidebarItem?
+    /// 进入工作台前的页面名：工作台整页里，上下文胶囊仍显示用户原本所在的页面。
+    @ObservationIgnored var aiWorkspaceOriginTitle = "图库"
     var aiMessages: [AIChatMessage] = []
     var aiInput = ""
     var aiConfig = AIConfig()
+    /// 计划模式：多步任务先出步骤、确认后执行；存 UserDefaults，随用户而不是图库。
+    var aiForcePlan: Bool = UserDefaults.standard.bool(forKey: "ai.plan.force") {
+        didSet { UserDefaults.standard.set(aiForcePlan, forKey: "ai.plan.force") }
+    }
     var aiIsResponding = false
     /// 正在执行的步骤（如「读取影院目录」「写回匹配结果」），用于对话里的运行状态。
     var aiActivity: String?
     var aiError: String?
     /// 影院「一键智能整理」期间跳过逐轮确认：入口本身就是用户授权，且只放行影院写工具。
     var aiAutoMatchCinema = false
+
+    /// 兼容旧调用点：侧栏。
+    var showAIInspector: Bool {
+        get { aiSurfaceMode == .docked }
+        set {
+            if newValue {
+                aiSurfaceMode = .docked
+            } else if aiSurfaceMode == .docked {
+                aiSurfaceMode = .hidden
+            }
+        }
+    }
+
+    /// 兼容旧调用点：浮窗。
+    var showAIAssistant: Bool {
+        get { aiSurfaceMode == .floating }
+        set {
+            if newValue {
+                aiSurfaceMode = .floating
+            } else if aiSurfaceMode == .floating {
+                aiSurfaceMode = .hidden
+            }
+        }
+    }
+
+    var aiInspectorWidth = 380.0
+    /// 请求输入框聚焦（⌘J / 从其它界面带入问题）。
+    var aiFocusRequest = 0
+    /// 流式文本：回答逐字出现，完成后再落成一条正式消息。
+    var aiStreamingText = ""
+    /// 流式思考摘要：部分端点返回 reasoning_content，运行中折叠展示。
+    var aiStreamingReasoning = ""
+    /// 本轮实时工具时间线：运行中逐步追加。
+    var aiToolSteps: [AIToolStep] = []
+    /// 等待用户批准的计划。
+    var aiPendingPlan: AIPlan?
+    /// 等待用户批准的写操作。
+    var aiPendingApproval: AIApprovalRequest?
+    /// 助手主动追问：等待用户回答的问题卡。
+    var aiPendingQuestion: AIQuestionRequest?
+    @ObservationIgnored var aiQuestionContinuation: CheckedContinuation<String?, Never>?
+    /// 输入框上方的上下文胶囊。
+    var aiContextCapsules: [AIContextCapsule] = []
+    /// 用户主动关掉的上下文类型。
+    var aiMutedContextKinds: Set<String> = []
+    /// 本次会话产出的成果物（相簿 / 清单 / 报告 / 回忆影片）。
+    var aiArtifacts: [AIArtifact] = []
+    /// 跨对话保留的成果物库（按图库存独立 JSON）。
+    var aiArtifactLibrary: [AIArtifact] = []
+    /// 成果物库面板：列表、打开与删除。
+    var showAIArtifactSheet = false
+    /// 跨对话保留的长期偏好（按图库存独立 JSON）。
+    var aiMemories: [AIMemoryNote] = []
+    var showAIMemorySheet = false
+    var aiMemoryDraft = ""
+    /// 技能与连接器面板。
+    var showAISkillsSheet = false
+    /// 助手控制台：模型、角色、审批、记忆、技能、定时与连接器的统一入口。
+    var showAIControlCenter = false
+    /// 定时任务：到点自动跑一轮只读任务。
+    var aiSchedules: [AIScheduledTask] = []
+    var showAIScheduleSheet = false
+    /// 当前是否由定时任务发起：后台只读、写操作跳过。
+    var aiBackgroundRun = false
+    @ObservationIgnored var aiScheduleTicker: Task<Void, Never>?
+    /// 当前任务是否已授权「本次都允许」。
+    var aiTaskAutoApproveWrites = false
+    /// 当前任务 ID：撤销与审计按任务归组。
+    var aiCurrentTaskID: UUID?
+    /// 最近任务：关闭助手后仍能在任务中心看到运行中与刚结束的任务。
+    var aiTaskRecords: [AITaskRecord] = []
+    var showAITaskCenter = false
+    /// 本轮实际暴露给模型的工具数量（调试与界面提示）。
+    var aiLastToolCount = 0
+    /// 最近一轮的 token 用量：端点返回 usage 时才有，控制台与页脚展示。
+    var aiLastPromptTokens = 0
+    var aiLastCompletionTokens = 0
+    /// 用户用 @ 明确指认的照片 / 视频：优先进入候选，并在提示词里单独列出。
+    var aiMentionedPhotoIDs: [UUID] = []
+    /// 用户指认的视频时间点（秒）。
+    var aiMentionedTimecode: Double?
+    /// 用户请求接管：下一个安全点暂停 AI，把控制权交给人。
+    var aiTakeoverRequested = false
+    /// AI 已暂停、正在等人处理。
+    var aiTakeoverPaused = false
+    @ObservationIgnored var aiTakeoverContinuation: CheckedContinuation<Bool, Never>?
+    @ObservationIgnored var aiPlanContinuation: CheckedContinuation<AIPlanStatus, Never>?
+    @ObservationIgnored var aiApprovalContinuation: CheckedContinuation<AIApprovalDecision, Never>?
+    @ObservationIgnored var aiUndoLog: [AIUndoEntry] = []
+    /// 撤销栈版本号：撤销栈本身不参与观察，用这个计数器驱动界面刷新。
+    var aiUndoRevision = 0
+    /// 同一任务里同一影院作用域只建一次快照，避免每次写操作都复制整份索引。
+    @ObservationIgnored var aiCinemaUndoKeys: Set<String> = []
     /// 最近一次 search_cinema_candidates 的候选：apply_cinema_match 按 candidate_id 取回完整元数据。
     var aiCinemaCandidateCache: [String: CinemaMatch] = [:]
     /// 目录 NFO 缓存：同一目录只解析一次；没有 NFO 的目录也记住。
@@ -613,21 +758,31 @@ final class LibraryStore {
     var systemAlbumIndex: [Int64: SystemAlbumInfo] = [:]
     /// 侧边栏相簿项目数缓存：索引模式下每次取数都是一条 SQL COUNT，
     /// 上千个相簿滚动时按结构版本缓存，避免每帧每个可见行都查一次库。
-    var systemAlbumCountCache: [Int64: Int] = [:]
-    var systemAlbumCountCacheRevision = -1
+    @ObservationIgnored var systemAlbumCountCache: [Int64: Int] = [:]
+    @ObservationIgnored var systemAlbumCountCacheRevision = -1
     /// 侧边栏计数（有效 / 隐藏 / 删除 / 重复等）的合并缓存，按内容版本失效。
-    var systemCountsCache: SystemSidebarCounts?
-    var systemCountsCacheRevision = -1
+    @ObservationIgnored var systemCountsCache: SystemSidebarCounts?
+    @ObservationIgnored var systemCountsCacheRevision = -1
     var systemPeople: [SystemPersonInfo] = []
     var selectedPerson: SystemPersonInfo?
     /// 本地图库的端侧人物聚类结果。
     var localPeople: [LocalPerson] = []
+    /// 可见人物缓存：排除照片已删除 / 隐藏的人物要扫全库，按内容版本缓存，
+    /// 否则人物页每次重绘都会重建一次全库 ID 集合。
+    @ObservationIgnored var visibleLocalPeopleCacheKey = ""
+    @ObservationIgnored var visibleLocalPeopleCacheValue: [LocalPerson] = []
+    /// 人物摘要缓存：同一个人重复进入时直接命中，不必再算一遍。
+    @ObservationIgnored var personInsightCacheKey = ""
+    @ObservationIgnored var personInsightCacheValue: PersonInsight?
+    /// 地点摘要缓存：与人物同理，热门地点重进时直接命中。
+    @ObservationIgnored var placeInsightCacheKey = ""
+    @ObservationIgnored var placeInsightCacheValue: PlaceInsight?
     var selectedLocalPersonID: UUID?
     var isClusteringFaces = false
     var faceClusterProgress: FaceClusterProgress?
     /// 照片 → 已命名人物的反向索引：查看器在画面上打名字时用，避免每次重绘都扫全部聚类。
-    var photoPersonNamesIndex: [UUID: [PhotoPersonName]] = [:]
-    var photoPersonNamesIndexKey = ""
+    @ObservationIgnored var photoPersonNamesIndex: [UUID: [PhotoPersonName]] = [:]
+    @ObservationIgnored var photoPersonNamesIndexKey = ""
     /// 端侧智能分析索引（场景标签 + OCR 文字），仅本地图库。
     var analysisIndex: [UUID: PhotoAnalysis] = [:]
     var isAnalyzingIntelligence = false
@@ -669,6 +824,14 @@ final class LibraryStore {
     /// 系统图库中的项目总数。
     var systemTotalAssetCount = 0
     var systemLibraryError: String?
+    /// 系统图库全文搜索索引正在后台建立（界面据此提示，避免用户以为搜索坏了）。
+    var isBuildingSystemSearchIndex = false
+    /// 建索引进度 0…1；nil 表示没有在建立。
+    var systemSearchIndexProgress: Double?
+    /// 全文搜索索引就绪版本：索引建好后 +1，让带搜索词的分页重新取一次。
+    var systemSearchIndexRevision = 0
+    /// 建索引进度轮询任务；切换图库时取消。
+    @ObservationIgnored var searchIndexWarmupTask: Task<Void, Never>?
 
     // MARK: 影院刮削
     /// 各作用域（本地图库 / 每个网盘）的刮削结果，按视频 photoID 索引。
@@ -799,6 +962,9 @@ final class LibraryStore {
     /// 从网络资源 / 全局搜索跳进影院时带过来的关键词：面板打开后用一次就清空。
     var cinemaSearchSeed: String?
     var cinemaHistoryVisible = false
+    /// 观影计划 / 缺集报告：由顶栏控制台触发，根视图统一呈现。
+    var cinemaWatchPlanVisible = false
+    var cinemaGapReportVisible = false
     /// 影院详情是否正以页面内铺满的方式打开：顶栏控制台据此切到「返回」形态。
     var cinemaDetailOpen = false
     /// 顶栏「返回」的自增信号；影院页收到后收起详情。
@@ -939,6 +1105,21 @@ final class LibraryStore {
     /// 网络资源播放：每集一个虚拟视频，交给查看器翻页与播放。
     var catalogPlaybackPhotos: [PhotoItem] = []
     var catalogPlaybackContexts: [UUID: CatalogPlaybackContext] = [:]
+    /// 图集看图：整套图片映射成虚拟照片，图库查看器与幻灯片共用。
+    var catalogGalleryPhotos: [PhotoItem] = []
+    var catalogGalleryContexts: [UUID: CatalogGalleryContext] = [:]
+    /// 图集查看器最近看过的原图：左右翻页直接复用，不再重复读盘解码。
+    /// 只放很少几张（原图很大），按最近使用淘汰。
+    @ObservationIgnored let catalogGalleryViewerCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 4
+        return cache
+    }()
+    /// 正在补全元信息的图集虚拟照片：避免信息面板重复探测同一张。
+    @ObservationIgnored var catalogGalleryMetricsLoading: Set<UUID> = []
+    /// 关闭图集查看器后，详情页要滚到的那张图。
+    var catalogGalleryReturnRequest: CatalogGalleryReturnRequest?
+    var catalogGalleryReturnToken = 0
     /// 网络电视播放：一个频道映射成一个虚拟视频，直播不写续播进度。
     var tvPlaybackPhotos: [PhotoItem] = []
     var tvPlaybackChannels: [UUID: TVChannel] = [:]
@@ -1039,28 +1220,31 @@ final class LibraryStore {
     var aiCatalogCandidates: [String: (sourceID: UUID, item: CatalogItem)] = [:]
     /// 体检任务标识：取消或重新开始后，旧任务不再写回进度与结果。
     var healthScanToken = UUID()
-    var sceneCountsCacheKey: String?
-    var sceneCountsCache: [String: Int] = [:]
+    // 以下派生缓存都只在 getter 里惰性写入，全部排除在 Observation 之外：
+    // 视图求值期间写被观察属性会触发 SwiftUI 事务重入，直接 AttributeGraph 崩溃。
+    // 刷新依赖由 key / signature 里读取的源状态（contentRevision 等）保证。
+    @ObservationIgnored var sceneCountsCacheKey: String?
+    @ObservationIgnored var sceneCountsCache: [String: Int] = [:]
     /// 系统图库待识别数量：随照片窗口与已识别数量缓存，避免侧边栏悬停时反复遍历整库。
-    var systemPendingAnalysisCacheKey: String?
-    var systemPendingAnalysisCache = 0
+    @ObservationIgnored var systemPendingAnalysisCacheKey: String?
+    @ObservationIgnored var systemPendingAnalysisCache = 0
     /// 场景总览（数量 + 封面）一次遍历缓存。
-    var sceneSummaryCacheKey: String?
-    var sceneSummaryCache = SceneSummary()
+    @ObservationIgnored var sceneSummaryCacheKey: String?
+    @ObservationIgnored var sceneSummaryCache = SceneSummary()
     /// 媒体类型总览（数量 + 封面）一次遍历缓存。
-    var mediaTypeSummaryCacheKey: String?
-    var mediaTypeSummaryCacheValue = MediaTypeSummary()
+    @ObservationIgnored var mediaTypeSummaryCacheKey: String?
+    @ObservationIgnored var mediaTypeSummaryCacheValue = MediaTypeSummary()
     /// 「更多项目」总览卡片封面（按入口缓存，内容版本变化时失效）。
-    var moreItemsCoverToken: String?
-    var moreItemsCoverCache: [SidebarItem: PhotoItem] = [:]
-    var moreItemsCoverMissing: Set<SidebarItem> = []
+    @ObservationIgnored var moreItemsCoverToken: String?
+    @ObservationIgnored var moreItemsCoverCache: [SidebarItem: PhotoItem] = [:]
+    @ObservationIgnored var moreItemsCoverMissing: Set<SidebarItem> = []
     /// 关键词卡片墙的封面（按关键词缓存，内容版本变化时失效）。
-    var keywordCoverToken: KeywordCoverToken?
-    var keywordCoverCache: [String: PhotoItem] = [:]
-    var keywordCoverMissing: Set<String> = []
+    @ObservationIgnored var keywordCoverToken: KeywordCoverToken?
+    @ObservationIgnored var keywordCoverCache: [String: PhotoItem] = [:]
+    @ObservationIgnored var keywordCoverMissing: Set<String> = []
     /// 重复项目分组一次遍历缓存（按内容版本失效）。
-    var duplicateGroupsCacheKey: String?
-    var duplicateGroupsCache: [DuplicateGroup] = []
+    @ObservationIgnored var duplicateGroupsCacheKey: String?
+    @ObservationIgnored var duplicateGroupsCache: [DuplicateGroup] = []
     /// 查重 2.0：相似照片组与哈希扫描状态。
     var similarPhotoGroups: [SimilarPhotoGroup] = []
     var isScanningHashes = false
@@ -1072,7 +1256,7 @@ final class LibraryStore {
     /// 重复分组失效计数：界面用 `.task(id:)` 监听，变化后重新触发后台计算。
     var systemDuplicateGroupsToken = 0
     var isLoadingSystemDuplicates = false
-    var systemDuplicateGroupsCacheKey: String?
+    @ObservationIgnored var systemDuplicateGroupsCacheKey: String?
     var metadataStore: MetadataStore?
     var systemPhotoIndex: [UUID: PhotoItem] = [:]
     /// 最近在系统图库窗口 / 查看器里出现过的照片。
@@ -1096,16 +1280,16 @@ final class LibraryStore {
     var cloudKeywords: [String: [String]] = [:]
     /// 云照片的本地评分 / 旗标 / 色标（"mountID|path" → 标记），只记录在拾光本地，不写回网盘。
     var cloudMarks: [String: CloudMark] = [:]
-    var cloudVisibleCacheKey: String?
-    var cloudVisibleCacheValue: [PhotoItem] = []
+    @ObservationIgnored var cloudVisibleCacheKey: String?
+    @ObservationIgnored var cloudVisibleCacheValue: [PhotoItem] = []
     /// 网盘分类计数与场景计数缓存（键含目录版本与识别进度）。
-    var cloudScopeCountsCacheKey: String?
-    var cloudScopeCountsCache = CloudScopeCounts()
+    @ObservationIgnored var cloudScopeCountsCacheKey: String?
+    @ObservationIgnored var cloudScopeCountsCache = CloudScopeCounts()
     /// 网盘「相簿」文件夹树与选中目录的子目录集合缓存。
-    var cloudFolderTreeCacheKey: String?
-    var cloudFolderTreeCacheValue: [CloudFolderNode] = []
-    var cloudFolderDescendantCacheKey: String?
-    var cloudFolderDescendantCacheValue: Set<String> = []
+    @ObservationIgnored var cloudFolderTreeCacheKey: String?
+    @ObservationIgnored var cloudFolderTreeCacheValue: [CloudFolderNode] = []
+    @ObservationIgnored var cloudFolderDescendantCacheKey: String?
+    @ObservationIgnored var cloudFolderDescendantCacheValue: Set<String> = []
 
     var placeCache: [String: PlaceInfo] = [:]
     var placeCacheLoaded = false
@@ -1113,12 +1297,17 @@ final class LibraryStore {
     var placeResolveFailedKeys: Set<String> = []
     /// 地图页的派生数据：带定位的照片与地点聚类按内容版本缓存，
     /// 避免一次打开地图时在每次 body 求值里重扫整库。
-    var geoPhotosCacheKey = -1
-    var geoPhotosCacheValue: [PhotoItem] = []
-    var placeClustersCacheKey = ""
-    var placeClustersCacheValue: [PlaceCluster] = []
-    var placeGroupsCacheKey = ""
-    var placeGroupsCacheValue: [(title: String, clusters: [PlaceCluster])] = []
+    @ObservationIgnored var geoPhotosCacheKey = -1
+    @ObservationIgnored var geoPhotosCacheValue: [PhotoItem] = []
+    @ObservationIgnored var placeClustersCacheKey = ""
+    @ObservationIgnored var placeClustersCacheValue: [PlaceCluster] = []
+    /// 后台重聚类的进行中版本与任务代号：避免同一版本反复排队、过期结果覆盖新结果。
+    @ObservationIgnored var pendingPlaceClustersKey = ""
+    @ObservationIgnored var placeClustersBuildToken = 0
+    /// 聚类在后台完成一次就自增：地图 / 地点页据此刷新，而不用整库内容版本触发全量重算。
+    var placeClustersRevision = 0
+    @ObservationIgnored var placeGroupsCacheKey = ""
+    @ObservationIgnored var placeGroupsCacheValue: [(title: String, clusters: [PlaceCluster])] = []
     /// 地点聚类 / 分组的缓存令牌：内容版本变化即失效（换成字符串便于和云盘等外部键比较）。
     var placeCacheToken: String { String(contentRevision) }
 
@@ -1132,34 +1321,34 @@ final class LibraryStore {
     /// 聚合签名只拼两个整数，不再每次 body 都 join 十几个条件数组。
     var cinemaFilterRevision = 0
     /// 影院派生数据快照（条目 / 电影 / 剧集 / 统计 / 字母索引）。
-    var cinemaAggregateCacheKey: String?
-    var cinemaAggregateCacheValue: CinemaAggregate?
+    @ObservationIgnored var cinemaAggregateCacheKey: String?
+    @ObservationIgnored var cinemaAggregateCacheValue: CinemaAggregate?
     /// 剧集聚合按作用域缓存：搜索、统计与详情页会反复取同一份结果。
     struct CinemaSeriesCacheEntry {
         let revision: Int
         let matched: [CinemaSeries]
         let unmatched: [CinemaSeries]
     }
-    var cinemaSeriesCache: [CinemaScope: CinemaSeriesCacheEntry] = [:]
+    @ObservationIgnored var cinemaSeriesCache: [CinemaScope: CinemaSeriesCacheEntry] = [:]
     /// 菜单标题用的最近一步操作名（随撤销 / 重做更新）。
     var undoActionName: String?
     var redoActionName: String?
 
     /// 图库内容版本号：数组变更时自增，用于缓存筛选/排序结果。
     var contentRevision = 0
-    var visibleCacheKey: VisibleStateKey?
-    var visibleCacheValue: [PhotoItem] = []
-    var sectionsCacheKey: SectionsCacheKey?
-    var sectionsCacheValue: [PhotoSection] = []
+    @ObservationIgnored var visibleCacheKey: VisibleStateKey?
+    @ObservationIgnored var visibleCacheValue: [PhotoItem] = []
+    @ObservationIgnored var sectionsCacheKey: SectionsCacheKey?
+    @ObservationIgnored var sectionsCacheValue: [PhotoSection] = []
     /// 网格滚动时按 id 查拍摄时间；随可见集合指纹缓存，避免每帧遍历全库。
-    var dateLookupCacheKey: VisibleStateKey?
-    var dateLookupCache: [UUID: Date] = [:]
+    @ObservationIgnored var dateLookupCacheKey: VisibleStateKey?
+    @ObservationIgnored var dateLookupCache: [UUID: Date] = [:]
     /// 系统图库侧边栏子项（文件夹 + 相簿混排），按结构版本一次性分组。
-    var systemChildrenCacheRevision = -1
-    var systemChildrenBuckets: [Int64: [SystemSidebarEntry]] = [:]
+    @ObservationIgnored var systemChildrenCacheRevision = -1
+    @ObservationIgnored var systemChildrenBuckets: [Int64: [SystemSidebarEntry]] = [:]
     /// 侧边栏系统树拍平后的行缓存：键 = 结构版本 + 展开版本，悬停等无关状态不会触发重算。
-    var systemFlatRowsCacheKey = ""
-    var systemFlatRowsCache: [SystemFlatRow] = []
+    @ObservationIgnored var systemFlatRowsCacheKey = ""
+    @ObservationIgnored var systemFlatRowsCache: [SystemFlatRow] = []
 
     // MARK: - 大图库分页窗口
     //
@@ -1189,10 +1378,16 @@ final class LibraryStore {
     var isOverviewLoading = false
     var overviewKeyValue = ""
     var pendingMonthScrollYear: Int?
+    /// 年 / 月总览的结果缓存（键 = 查询 + 内容版本）：
+    /// 切换「年 ↔ 月」时直接复用，不再对整库做一次聚合查询。
+    @ObservationIgnored var yearBucketCache: [String: [PhotoPeriodBucket]] = [:]
+    @ObservationIgnored var monthGroupCache: [String: [PhotoMonthGroup]] = [:]
 
     static let windowPageSize = 600
     /// 超过这个数量才启用窗口化：小图库继续走内存路径，行为完全不变。
     static let windowThreshold = 5_000
+    /// 滚动预取当前在跑的那一批：新批次先取消旧的，避免多批同时抢外接盘。
+    @ObservationIgnored var timelinePrefetchTask: Task<Void, Never>?
 
     // MARK: - 系统图库索引窗口
     //
@@ -1206,9 +1401,12 @@ final class LibraryStore {
     var systemNativeKeywordIndex: [String: [UUID]]?
     /// 上一条的反查表（资产 ID → 关键词），用于图片信息面板与关键词筛选。
     var systemNativeKeywordIDMap: [UUID: [String]] = [:]
-    /// 长曝光 / 电影效果只能由 PhotoKit 智能相簿给出 ID；nil 表示尚未读取或没有照片权限。
+    /// 长曝光 / 电影效果 / RAW / 录屏只能由 PhotoKit 智能相簿给出 ID；nil 表示尚未读取或没有照片权限。
+    /// RAW 与录屏在 Photos.sqlite 里缺少可直接分页的索引，用智能相簿的集合下推快得多。
     var photoKitLongExposureIDs: Set<UUID>?
     var photoKitCinematicIDs: Set<UUID>?
+    var photoKitRAWIDs: Set<UUID>?
+    var photoKitScreenRecordingIDs: Set<UUID>?
     var isPhotoKitMediaTypeLoaded = false
     var systemIndexReady = false
     var systemWindowPhotos: [PhotoItem] = []
@@ -1226,24 +1424,38 @@ final class LibraryStore {
     /// 窗口内容变化计数，参与 `visibleStateKey` 让分段缓存失效。
     var systemWindowRevision = 0
     /// 地图 / 足迹回放用的带位置照片缓存（索引模式下取全量）。
-    var systemGeoCacheKey: String?
-    var systemGeoCache: [PhotoItem] = []
+    @ObservationIgnored var systemGeoCacheKey: String?
+    @ObservationIgnored var systemGeoCache: [PhotoItem] = []
     /// 系统索引查询按范围和输入条件缓存：SwiftUI body 会频繁读取
     /// `systemQuery` / `pagedKey` / `visibleCount`，每次重算会让主线程持续满载。
-    var systemQueryCacheSignature: String?
-    var systemQueryCache: [String: SystemQuery] = [:]
+    @ObservationIgnored var systemQueryCacheSignature: String?
+    @ObservationIgnored var systemQueryCache: [String: SystemQuery] = [:]
     /// `SystemQuery.key` 在收藏 / 隐藏叠加很多时会拼出很长的字符串，
     /// 而 `pagedKey` 又在 SwiftUI body 里被反复读取：构建一次后按范围复用。
-    var systemQueryKeyCache: [String: String] = [:]
+    @ObservationIgnored var systemQueryKeyCache: [String: String] = [:]
+    /// 系统图库首页缓存：相簿 / 文件夹 / 人物这些目录树来回切换时，
+    /// 先把上次的这一页铺上（含缩略图磁盘缓存），再在后台静默刷新，
+    /// 不再每次点击都从「正在读取图库…」开始等 SQL。
+    struct SystemWindowPageCache {
+        var photos: [PhotoItem]
+        var total: Int
+        var videos: Int
+        var savedAt: Date
+    }
+    @ObservationIgnored var systemWindowPageCache: [String: SystemWindowPageCache] = [:]
+    @ObservationIgnored var systemWindowPageCacheOrder: [String] = []
+    static let systemWindowPageCacheLimit = 8
+    /// 缓存多久之内直接复用、不触发后台刷新（避免来回切换时两次重排）。
+    static let systemWindowPageCacheFreshAge: TimeInterval = 8
     /// 侧边栏相簿封面：异步查询结果按相簿缓存，body 不再逐行同步查库。
     var systemAlbumCoverCache: [Int64: PhotoItem] = [:]
     var systemAlbumCoverMisses: Set<Int64> = []
     var systemAlbumCoverLoading: Set<Int64> = []
 
-    var viewerPhotoCache: ViewerPhotoCache?
-    var viewerIndexCache: ViewerIndexCache?
+    @ObservationIgnored var viewerPhotoCache: ViewerPhotoCache?
+    @ObservationIgnored var viewerIndexCache: ViewerIndexCache?
     /// 查看器「当前 / 总数」的兜底结果缓存：任何入口打开都要能立即给出数字。
-    var viewerPositionCache: ViewerPositionCache?
+    @ObservationIgnored var viewerPositionCache: ViewerPositionCache?
 
     struct ViewerPhotoCache {
         let id: UUID
@@ -1299,10 +1511,10 @@ final class LibraryStore {
     var hasPendingConfirmation: Bool {
         pendingDeletion != nil || pendingDisconnect != nil
     }
-    var memoryCacheKey = -1
-    var memoryCacheValue: [PhotoMemory] = []
-    var tripCacheKey = -1
-    var tripCacheValue: [TripStory] = []
+    @ObservationIgnored var memoryCacheKey = -1
+    @ObservationIgnored var memoryCacheValue: [PhotoMemory] = []
+    @ObservationIgnored var tripCacheKey = -1
+    @ObservationIgnored var tripCacheValue: [TripStory] = []
     /// 外接盘卸载监听：卷被拔掉时把界面从失效的图库上撤下来。
     var volumeRemovalObservers: [NSObjectProtocol] = []
     /// 启动分片大小：一片几千条，够填满首屏，又不会把启动主线程卡住。
@@ -1316,8 +1528,8 @@ final class LibraryStore {
     /// 人脸聚类的运行标识：重新识别时换新标识，旧任务的收尾写回会被丢弃。
     var faceClusterToken = UUID()
     /// 尚未识别的照片数（增量识别入口显示剩余量），按内容版本缓存，避免反复遍历整库。
-    var facePendingCacheKey = ""
-    var facePendingCacheValue = 0
+    @ObservationIgnored var facePendingCacheKey = ""
+    @ObservationIgnored var facePendingCacheValue = 0
 
     init() {
         LibraryPaths.configure()
@@ -1704,7 +1916,7 @@ final class LibraryStore {
     /// 带 id 的页面要确认对象还在；回收站之类的临时页面不作为启动页。
     private func isRestorableSidebarItem(_ item: SidebarItem) -> Bool {
         switch item {
-        case .trash, .systemTrash:
+        case .trash, .systemTrash, .assistant:
             return false
         case .album(let id):
             return albums.contains { $0.id == id }
@@ -1729,6 +1941,9 @@ final class LibraryStore {
         case .iptv:
             // 设置里关掉「网络电视」模块后，不再恢复到频道页。
             return AppModules.isEnabled(AppModule.television)
+        case .atlas:
+            // 星图没有模块开关：资料库是否已加载决定这个页面能不能恢复。
+            return AtlasCatalogPaths.isLoaded
         default:
             return true
         }

@@ -73,67 +73,17 @@ struct CloudStoragesHubView: View {
 struct CloudStoragesHubTabs: View {
     @Environment(LibraryStore.self) private var store
     @Environment(CloudBrowserModel.self) private var cloud
-    @Namespace private var tabNamespace
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(CloudStoragesHubTab.allCases) { tab in
-                tabButton(tab)
-            }
-        }
-        .padding(2)
-        .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    func tabButton(_ tab: CloudStoragesHubTab) -> some View {
-        let active = cloud.storagesTab == tab
-        return Button {
+        HubTabBar(items: CloudStoragesHubTab.allCases,
+                  active: cloud.storagesTab,
+                  title: \.title,
+                  symbol: \.symbol,
+                  badge: badge(for:)) { tab in
             withAnimation(.easeOut(duration: 0.18)) {
                 cloud.setStoragesTab(tab)
             }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .fixedSize()
-                Text(tab.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                if let badge = badge(for: tab), badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
-                        .padding(.horizontal, 4.5)
-                        .padding(.vertical, 1)
-                        .background(active ? Color.white.opacity(0.92)
-                                           : Color.primary.opacity(0.08),
-                                    in: Capsule(style: .continuous))
-                }
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(active ? Color.white : Color.secondary)
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background {
-                if active {
-                    Capsule(style: .continuous)
-                        .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "cloud-storage-tab", in: tabNamespace)
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
         }
-        .buttonStyle(.plain)
-        .help(tab.title)
     }
 
     func badge(for tab: CloudStoragesHubTab) -> Int? {

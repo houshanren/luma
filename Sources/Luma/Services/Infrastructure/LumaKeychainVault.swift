@@ -36,6 +36,17 @@ enum LumaKeychainVault {
 
     // MARK: - 读写
 
+    /// 启动预热：把统一凭据的第一次读取提前到启动阶段完成。
+    ///
+    /// 系统授权框（「Luma 想要使用您存储在钥匙串中的机密信息」）因此只会在启动时出现
+    /// 一次；之后保存登录 Cookie、网盘凭据、AI Key 都命中同一份内存缓存与同一个条目授权，
+    /// 不会在「完成并保存」登录态时再单独弹一次。
+    static func warmUp() {
+        DispatchQueue.global(qos: .utility).async {
+            _ = data(for: "__meta.warmup")
+        }
+    }
+
     static func data(for key: String) -> Data? {
         lock.lock()
         defer { lock.unlock() }
@@ -85,6 +96,8 @@ enum LumaKeychainVault {
     /// - 屏幕锁定等临时不可交互不记录，等用户解锁后再试一次；
     /// - 依次尝试 `services`，第一个有数据的条目生效。
     static func migrateLegacy(vaultKey: String, services: [String], account: String) -> LegacyReadResult {
+        // 截图 / 测试集运行完全不碰钥匙串：不读旧条目，也就不会弹出跨签名的授权框。
+        if isTestKitRun { return .missing }
         lock.lock()
         defer { lock.unlock() }
         var map = storageLocked()
@@ -131,8 +144,19 @@ enum LumaKeychainVault {
 
     // MARK: - 内部
 
+    /// 测试集 / 产品截图运行：只读环境变量，完全不碰钥匙串。
+    /// 这条路径由 `LUMA_TESTKIT_DATASET` 显式开启，正常启动不受影响；
+    /// 截图与演示库不应依赖用户凭据，也不该被系统授权框打断。
+    private static var isTestKitRun: Bool {
+        ProcessInfo.processInfo.environment["LUMA_TESTKIT_DATASET"] != nil
+    }
+
     /// 调用方必须持有锁。
     private static func storageLocked() -> [String: Data] {
+        if isTestKitRun {
+            cache = [:]
+            return [:]
+        }
         if let cache { return cache }
 
         var map: [String: Data]
@@ -167,6 +191,10 @@ enum LumaKeychainVault {
     /// 调用方必须持有锁。返回是否成功写入钥匙串。
     @discardableResult
     private static func persistLocked(_ incoming: [String: Data]) -> Bool {
+        if isTestKitRun {
+            cache = incoming
+            return false
+        }
         guard !loadFailed else {
             Diagnostics.record("统一凭据不可读，已跳过写入")
             return false

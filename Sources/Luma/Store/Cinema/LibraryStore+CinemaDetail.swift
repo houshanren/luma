@@ -224,7 +224,8 @@ extension LibraryStore {
                                                  title: "TMDB",
                                                  items: Array(items.prefix(12)))
             }
-            if let collectionID = current.collectionID {
+            // 负数合集 ID 是本地 AI 归组生成的，没有 TMDB 条目可查。
+            if let collectionID = current.collectionID, collectionID > 0 {
                 jobs.append {
                     guard let items = try? await tmdb.collectionRecommendations(id: collectionID,
                                                                                 excluding: tmdbID),

@@ -102,26 +102,29 @@ extension SidebarView {
                 }
                 .buttonStyle(.plain)
             } else {
-                // 不再保留「全部资源」这个聚合入口：分区本身就是资源总览，
-                // 展开后直接列各个源，和「图库 / 网络存储 / 网络电视」保持一致。
-                ForEach(catalogSourceDescriptors) { descriptor in
-                    if let sourceID = descriptor.id.uuidValue,
-                       let source = catalog.sources.first(where: { $0.id == sourceID }) {
-                        CatalogSidebarRow(source: source,
-                                          isDropTarget: catalogDropTargetID == source.id)
-                            .onDrop(of: [catalogSourceDragType],
-                                    delegate: CatalogSourceReorderDropDelegate(
-                                        target: source.id,
-                                        catalog: catalog,
-                                        onTargeted: { targeted in
-                                            if targeted {
-                                                catalogDropTargetID = source.id
-                                            } else if catalogDropTargetID == source.id {
-                                                catalogDropTargetID = nil
-                                            }
-                                        }))
+                // 网络资源按站点类型分三组：视频站 / 图集站 / 综合站。
+                // 综合站同一份列表里既有视频也有图集，按条目展示；三组标题都可以点开收起。
+                // 三组的标题、行容器、行距、圆角与光条完全一致，只用颜色区分类型。
+                let descriptors = catalogSourceDescriptors
+                ForEach(CatalogSiteCategory.displayOrder, id: \.self) { category in
+                    let group = descriptors.filter { catalogDescriptorCategory($0) == category }
+                    if !group.isEmpty {
+                        let key = catalogSiteGroupKey(category)
+                        catalogSourceGroupLabel(category.title,
+                                                symbol: Self.catalogSiteSymbol(category),
+                                                tint: Self.catalogSiteTint(category),
+                                                count: group.count,
+                                                hint: Self.catalogSiteHint(category),
+                                                collapsed: isCollapsed(key)) {
+                            withAnimation(settings.motion.layout) { toggleSection(key) }
+                        }
+                        if !isCollapsed(key) {
+                            catalogSiteGroupRows(group, category: category)
+                                .padding(.top, 1)
+                        }
                     }
                 }
+
                 // 拖到列表末尾 → 排到最后，顺序同样作用于跨源搜索与聚合。
                 Color.clear
                     .frame(height: 6)
@@ -129,6 +132,99 @@ extension SidebarView {
                             delegate: CatalogSourceEndDropDelegate(catalog: catalog))
             }
         }
+    }
+
+    /// 资源描述对应的站点类型（侧边栏分组用）。
+    func catalogDescriptorCategory(_ descriptor: SourceDescriptor) -> CatalogSiteCategory {
+        guard let id = descriptor.id.uuidValue,
+              let source = catalog.sources.first(where: { $0.id == id }) else { return .video }
+        return source.kind.siteCategory
+    }
+
+    private func catalogSiteGroupKey(_ category: CatalogSiteCategory) -> String {
+        "catalog.site.\(category.rawValue)"
+    }
+
+    private static func catalogSiteSymbol(_ category: CatalogSiteCategory) -> String {
+        switch category {
+        case .video: return "play.rectangle.fill"
+        case .gallery: return "photo.stack.fill"
+        case .comprehensive: return "square.grid.2x2.fill"
+        }
+    }
+
+    private static func catalogSiteTint(_ category: CatalogSiteCategory) -> Color {
+        switch category {
+        case .video: return LumaBrand.amber
+        case .gallery: return LumaBrand.violet
+        case .comprehensive: return LumaBrand.mint
+        }
+    }
+
+    private static func catalogSiteHint(_ category: CatalogSiteCategory) -> String {
+        switch category {
+        case .video: return "视频站：点开是剧集与播放"
+        case .gallery: return "图集站：点开是整套图片，可一键保存到本地图库"
+        case .comprehensive: return "综合站：视频与图集混排，按条目播放或看图"
+        }
+    }
+
+    /// 一组源行：三组共用同一套容器 —— 同样的圆角、内边距与左侧光条，只按类型换色。
+    /// 之前只有图集 / 综合站带底色、视频站是裸行，整段看起来一半有一半没有。
+    @ViewBuilder
+    private func catalogSiteGroupRows(_ group: [SourceDescriptor],
+                                      category: CatalogSiteCategory) -> some View {
+        let tint = Self.catalogSiteTint(category)
+        VStack(spacing: 0) {
+            ForEach(group) { descriptor in
+                catalogSourceRow(descriptor)
+            }
+        }
+        .padding(.vertical, 2)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(LinearGradient(colors: [tint.opacity(0.07), tint.opacity(0.025)],
+                                     startPoint: .top, endPoint: .bottom))
+        }
+        .overlay(alignment: .leading) {
+            Capsule(style: .continuous)
+                .fill(tint.opacity(0.45))
+                .frame(width: 2)
+                .padding(.vertical, 6)
+                .padding(.leading, 2)
+        }
+        .padding(.horizontal, 2)
+    }
+
+    /// 网络资源里的一行源：视频站与图集站共用同一套拖拽排序。
+    @ViewBuilder
+    func catalogSourceRow(_ descriptor: SourceDescriptor) -> some View {
+        if let sourceID = descriptor.id.uuidValue,
+           let source = catalog.sources.first(where: { $0.id == sourceID }) {
+            CatalogSidebarRow(source: source,
+                              isDropTarget: catalogDropTargetID == source.id)
+                .onDrop(of: [catalogSourceDragType],
+                        delegate: CatalogSourceReorderDropDelegate(
+                            target: source.id,
+                            catalog: catalog,
+                            onTargeted: { targeted in
+                                if targeted {
+                                    catalogDropTargetID = source.id
+                                } else if catalogDropTargetID == source.id {
+                                    catalogDropTargetID = nil
+                                }
+                            }))
+        }
+    }
+
+    /// 资源分组小标题：三组共用同一套排版与交互（悬停变亮、点击整行收起 / 展开）。
+    /// 类型只体现在图标与颜色上，位置、字号、行高完全一致。
+    func catalogSourceGroupLabel(_ title: String, symbol: String,
+                                 tint: Color, count: Int, hint: String,
+                                 collapsed: Bool,
+                                 onToggle: @escaping () -> Void) -> some View {
+        CatalogSiteGroupLabel(title: title, symbol: symbol, tint: tint, count: count,
+                              hint: hint, collapsed: collapsed, onToggle: onToggle)
     }
 
     // MARK: - 网络影院
@@ -139,6 +235,9 @@ extension SidebarView {
     var networkCinemaSection: some View {
         sectionHeader("网络影院", key: "netcinema", topPadding: 8, isModule: true,
                       navigateTo: .networkCinema,
+                      // 聚焦了某个影视源时高亮让给源行，标题只代表「聚合」这一层。
+                      active: store.sidebarItem == .networkCinema
+                          && store.networkCinemaSourceID == nil,
                       beforeNavigate: {
                           store.networkCinemaSourceID = nil
                       }) {
@@ -209,6 +308,8 @@ extension SidebarView {
         // 否则会像点开 APTV 一样停在单个源上。
         sectionHeader("网络电视", key: "tv", topPadding: 8, isModule: true,
                       navigateTo: .iptv,
+                      // 聚焦了某个电视源 / 分类时高亮让给源行，标题只代表「全频聚合」。
+                      active: store.sidebarItem == .iptv && tv.focusedPlaylistID == nil,
                       beforeNavigate: {
                           tv.focusAllSources()
                           tv.setHubTab(.channels)
@@ -656,5 +757,47 @@ extension SidebarView {
             }
         }
     }
+    }
+
+    // MARK: - 拾光星图
+
+    /// 星图是独立模块：关闭后整段入口（标题与五个看法）一起消失。
+    @ViewBuilder
+    var atlasSection: some View {
+        sectionHeader("拾光星图", key: "atlas", topPadding: 8, isModule: true,
+                      navigateTo: .atlas)
+
+        if !isCollapsed("atlas") {
+            ForEach(AtlasMode.allCases) { mode in
+                atlasRow(mode)
+            }
+        }
+    }
+
+    private func atlasRow(_ mode: AtlasMode) -> some View {
+        let active = store.sidebarItem == .atlas && AtlasStore.shared.mode == mode
+        // 悬停高亮收进行内，父视图不参与鼠标移动的重算。
+        return HoverRowHighlight(active: active) {
+            Button {
+                AtlasStore.shared.mode = mode
+                store.navigate(to: .atlas)
+            } label: {
+                HStack(spacing: LumaMetrics.sidebarRowSpacing) {
+                    Image(systemName: mode.symbol)
+                        .font(.system(size: LumaMetrics.sidebarIconSize))
+                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
+                        .frame(width: LumaMetrics.sidebarIconColumn)
+                    Text(mode.title)
+                        .font(.system(size: LumaMetrics.sidebarTextSize))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, LumaMetrics.sidebarRowVerticalPadding)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .help(mode.subtitle)
     }
 }

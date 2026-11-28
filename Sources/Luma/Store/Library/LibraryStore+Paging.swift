@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import LumaCore
 
 /// 大图库的分页窗口：筛选、排序、总量都由 SQLite 完成，Store 只保留已加载的若干页。
 extension LibraryStore {
@@ -178,13 +179,55 @@ extension LibraryStore {
     }
 
     /// 视图用 `.task(id:)` 监听：范围、筛选、排序或内容版本变化时刷新窗口。
+    /// 故意不带缩放档位：缩放不该触发取页与整表替换（捏合过程中重取一页会卡顿并弹加载提示）。
+    /// 缩小后一屏要更多张时由视图停手后调用 `ensureWindowCoverageForZoom` 追加补齐。
     var pagedKey: String {
         if let query = systemPagedQuery {
             let key = systemQueryKeyCache[query.scope.rawKey] ?? query.key
-            return "sys#\(key)#\(systemIndexSignature)"
+            // 全文索引建好后，同样的搜索词要重新取一次（此前返回的是空集）。
+            let search = query.tokens.isEmpty ? "" : "#s\(systemSearchIndexRevision)"
+            return "sys#\(key)#\(systemIndexSignature)\(search)"
         }
         guard let query = pagedQuery else { return "" }
         return "\(query.key)#\(contentRevision)"
+    }
+
+    /// 当前缩放下的一页窗口大小。格子越小，一屏能放下的张数越多：
+    /// 固定 600 在马赛克档只够铺半屏，剩下全是虚拟占位（看起来就是上下大片空白）。
+    /// 只有 <76pt 才需要超过 600：更大格子时 600 张已经远超一屏。
+    var windowPageSizeForCurrentZoom: Int {
+        switch thumbSize {
+        case ..<48: return 2_400
+        case ..<76: return 1_200
+        default: return Self.windowPageSize
+        }
+    }
+
+    /// 缩放变小后补齐已加载窗口：只追加缺的那部分，不重取已有照片。
+    /// 由网格在捏合停手后调用；捏合过程中调用会退化成「每帧取一页」，所以视图侧做了防抖。
+    func ensureWindowCoverageForZoom() {
+        let pageSize = windowPageSizeForCurrentZoom
+        if isSystemPagedScope {
+            guard let query = systemPagedQuery, hasLoadedSystemWindow, !isSystemWindowLoading,
+                  !systemWindowPhotos.isEmpty,
+                  systemWindowPhotos.count < pageSize,
+                  systemWindowPhotos.count < systemWindowTotal else { return }
+            loadSystemWindow(query: systemWindowQuery ?? query,
+                             key: systemWindowKey,
+                             start: systemWindowStart + systemWindowPhotos.count,
+                             limit: pageSize - systemWindowPhotos.count,
+                             replace: false)
+            return
+        }
+        guard let query = pagedQuery, hasLoadedWindow, !isWindowLoading,
+              !windowPhotos.isEmpty,
+              windowPhotos.count < pageSize,
+              windowPhotos.count < windowTotal else { return }
+        loadWindow(query: query,
+                   key: windowKeyValue.isEmpty ? "\(query.key)#\(contentRevision)" : windowKeyValue,
+                   start: windowStartOffset + windowPhotos.count,
+                   limit: pageSize - windowPhotos.count,
+                   replace: false)
     }
 
     var visibleCount: Int {
@@ -235,6 +278,8 @@ extension LibraryStore {
             return
         }
         guard let query = pagedQuery else { return }
+        // 第二次打开图库：先铺上次的首屏快照，真实查询在后台完成后整体替换。
+        hydrateWindowSnapshotIfNeeded(query: query)
         let key = "\(query.key)#\(contentRevision)"
         if let target = scrollTargetID,
            key != windowKeyValue || !windowPhotos.contains(where: { $0.id == target }) {
@@ -252,20 +297,22 @@ extension LibraryStore {
             windowVideos = 0
             hasLoadedWindow = false
         }
-        let limit = sameQuery ? max(Self.windowPageSize, windowPhotos.count) : Self.windowPageSize
-        loadWindow(query: query, key: key, start: 0, limit: limit, replace: true)
+        loadWindow(query: query, key: key, start: 0,
+                   limit: windowPageSizeForCurrentZoom, replace: true)
     }
 
     /// 时间轴跳转：把分页窗口整体重定位到第 `rank` 张（0 = 最新一张）。
     /// 换页完成后会把视野落到新窗口中间那张，避免虚拟占位与真实窗口高度不成比例时
     /// 停在窗口外面（表现就是一整屏空白）。
     func jumpTimelineWindow(toRank rank: Int) {
+        // 旧视野的预取已经作废：先停掉，把磁盘让给即将上屏的新一页。
+        cancelTimelinePrefetch()
         // 本地图库：按偏移重新取一页，虚拟占位随 `windowStartOffset` 自动重新配平。
         if !isSystemPagedScope {
             guard isPagedScope, let query = pagedQuery else { return }
             let total = windowTotal
             guard total > 0 else { return }
-            let pageSize = Self.windowPageSize
+            let pageSize = windowPageSizeForCurrentZoom
             let start = min(max(0, rank), max(0, total - pageSize))
             // 窗口为空时即使排名没变也要重取：否则一次失败的取页会让网格永久空白。
             guard start != windowStartOffset || windowPhotos.isEmpty else { return }
@@ -277,7 +324,7 @@ extension LibraryStore {
         guard let index = systemIndex, let query = systemPagedQuery else { return }
         let total = systemWindowTotal
         guard total > 0 else { return }
-        let pageSize = Self.windowPageSize
+        let pageSize = windowPageSizeForCurrentZoom
         let start = min(max(0, rank), max(0, total - pageSize))
         // 索引模式：本地索引可以直接按偏移取一页，排名即偏移。
         if index.direct == nil {
@@ -361,7 +408,7 @@ extension LibraryStore {
             loadSystemWindow(query: systemWindowQuery ?? query,
                              key: systemWindowKey,
                              start: systemWindowStart + systemWindowPhotos.count,
-                             limit: Self.windowPageSize,
+                             limit: windowPageSizeForCurrentZoom,
                              replace: false)
             return
         }
@@ -369,7 +416,7 @@ extension LibraryStore {
         let key = windowKeyValue.isEmpty ? "\(query.key)#\(contentRevision)" : windowKeyValue
         loadWindow(query: query, key: key,
                    start: windowStartOffset + windowPhotos.count,
-                   limit: Self.windowPageSize,
+                   limit: windowPageSizeForCurrentZoom,
                    replace: false)
     }
 
@@ -489,12 +536,15 @@ extension LibraryStore {
             return
         }
         guard usesSQLOverview, let query = timelineQuery, let store = metadataStore else { return }
-        let key = "\(query.key)#\(contentRevision)#\(grouping.rawValue)"
+        let baseKey = "\(query.key)#\(contentRevision)"
+        let grouping = self.grouping
+        // 切「年 ↔ 月」时直接吃缓存：总览聚合要扫整库，重复查询就是切页转圈的根源。
+        if applyCachedOverview(baseKey: baseKey, grouping: grouping) { return }
+        let key = "\(baseKey)#\(grouping.rawValue)"
         guard key != overviewKeyValue else { return }
         tasks.cancel(.overview)
         overviewKeyValue = key
         isOverviewLoading = true
-        let grouping = self.grouping
         tasks.adopt(.overview, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 () -> (buckets: [PhotoPeriodBucket], months: [PhotoMonthGroup]) in
@@ -511,10 +561,53 @@ extension LibraryStore {
             self.isOverviewLoading = false
             if grouping == .years {
                 self.yearBuckets = result.buckets
+                self.storeYearBuckets(result.buckets, baseKey: baseKey)
+                // 顺手把「月」也取好：下次切到月总览直接出图，不再等整库聚合。
+                self.prefetchMonthsIfNeeded(baseKey: baseKey, query: query, store: store)
             } else {
                 self.monthGroups = result.months
+                self.storeMonthGroups(result.months, baseKey: baseKey)
             }
             self.resolvePendingMonthScroll()
+        })
+    }
+
+    /// 命中总览缓存时直接应用并返回 true（不转圈、不查库）。
+    private func applyCachedOverview(baseKey: String, grouping: GridGrouping) -> Bool {
+        switch grouping {
+        case .years:
+            guard let buckets = yearBucketCache[baseKey] else { return false }
+            yearBuckets = buckets
+        case .months:
+            guard let months = monthGroupCache[baseKey] else { return false }
+            monthGroups = months
+        case .all:
+            return false
+        }
+        isOverviewLoading = false
+        overviewKeyValue = "\(baseKey)#\(grouping.rawValue)"
+        resolvePendingMonthScroll()
+        return true
+    }
+
+    private func storeYearBuckets(_ buckets: [PhotoPeriodBucket], baseKey: String) {
+        if yearBucketCache[baseKey] == nil, yearBucketCache.count >= 2 { yearBucketCache.removeAll() }
+        yearBucketCache[baseKey] = buckets
+    }
+
+    private func storeMonthGroups(_ months: [PhotoMonthGroup], baseKey: String) {
+        if monthGroupCache[baseKey] == nil, monthGroupCache.count >= 2 { monthGroupCache.removeAll() }
+        monthGroupCache[baseKey] = months
+    }
+
+    private func prefetchMonthsIfNeeded(baseKey: String, query: PhotoQuery, store: MetadataStore) {
+        guard monthGroupCache[baseKey] == nil else { return }
+        tasks.attach(.overviewPrefetch, Task { [weak self] in
+            let months = await Task.detached(priority: .utility) {
+                store.monthGroups(query)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            self.storeMonthGroups(months, baseKey: baseKey)
         })
     }
 
@@ -537,10 +630,9 @@ extension LibraryStore {
         windowQuery = query
         isWindowLoading = true
         tasks.adopt(.window, Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, [PhotoItem]) in
-                let summary = store.summary(query)
-                let page = store.page(query, offset: start, limit: limit)
-                return (summary, page)
+            // 与系统图库一致：先把照片页取回来上屏，总数（COUNT）随后再补。
+            let page = await Task.detached(priority: .userInitiated) {
+                store.page(query, offset: start, limit: limit)
             }.value
             guard let self else { return }
             // 被新查询接管时由新查询负责收尾；只是被取消则必须自己复位标记，
@@ -550,10 +642,16 @@ extension LibraryStore {
                 return
             }
             self.isWindowLoading = false
-            self.windowTotal = result.0.total
-            self.windowVideos = result.0.videos
+            if replace {
+                // 本页数量作为总数下界：首屏立即可见，精确值随后补齐。
+                // 时间轴跳转（start > 0）本来就知道总数，不能拿这一页的数量覆盖它。
+                if start == 0 {
+                    self.windowTotal = page.count
+                    self.windowVideos = page.lazy.filter(\.isVideo).count
+                }
+            }
             self.windowStartOffset = start
-            self.windowPhotos = replace ? result.1 : self.windowPhotos + result.1
+            self.windowPhotos = replace ? page : self.windowPhotos + page
             self.windowRevision &+= 1
             self.hasLoadedWindow = true
             self.prefetchGridThumbnails(self.windowPhotos, newest: replace)
@@ -562,6 +660,14 @@ extension LibraryStore {
                 // 只靠排名换算会把视野留在窗口外，这里显式落到新窗口中间。
                 self.timelineJumpLandingID = self.windowPhotos[self.windowPhotos.count / 2].id
             }
+            guard replace else { return }
+            let summary = await Task.detached(priority: .utility) {
+                store.summary(query)
+            }.value
+            guard !Task.isCancelled, self.windowKeyValue == key else { return }
+            self.windowTotal = summary.total
+            self.windowVideos = summary.videos
+            self.saveWindowSnapshotIfNeeded(query: query, start: start, replace: replace)
         })
     }
 
@@ -572,7 +678,7 @@ extension LibraryStore {
         windowQueryKey = query.key
         windowQuery = query
         isWindowLoading = true
-        let pageSize = Self.windowPageSize
+        let pageSize = windowPageSizeForCurrentZoom
         tasks.adopt(.window, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, Int, [PhotoItem]) in
                 let summary = store.summary(query)
@@ -716,14 +822,22 @@ extension LibraryStore {
         query.favoriteRemoves = favoriteRemoves
         query.hiddenAdds = hiddenAdds
         query.hiddenRemoves = hiddenRemoves
-        // 长曝光仍由 PhotoKit 智能相簿给出 ID；电影效果 / 空间媒体由 Photos.sqlite 直接判定，
-        // 不再依赖照片权限，也不会因为 PhotoKit 未就绪而被过滤成空集合。
+        // 长曝光 / 电影效果只能由 PhotoKit 智能相簿给出 ID；RAW / 录屏在库里缺少可直接
+        // 分页的索引，同样用智能相簿的集合下推（集合还没读到时为 nil，退回 SQL 条件）。
         switch scope {
         case .longExposures:
             query.includeIDs = (photoKitLongExposureIDs ?? Set<UUID>()).map(\.uuidString)
         case .cinematics:
             // 电影效果没有稳定的 Photos.sqlite 字段，集合来自 PhotoKit 智能相簿。
             query.includeIDs = (photoKitCinematicIDs ?? Set<UUID>()).map(\.uuidString)
+        case .raws:
+            if let ids = photoKitRAWIDs, !ids.isEmpty {
+                query.includeIDs = ids.map(\.uuidString)
+            }
+        case .screenRecordings:
+            if let ids = photoKitScreenRecordingIDs, !ids.isEmpty {
+                query.includeIDs = ids.map(\.uuidString)
+            }
         default:
             break
         }
@@ -738,7 +852,28 @@ extension LibraryStore {
             focusSystemWindow(on: target, query: query)
             return
         }
+        let pageSize = windowPageSizeForCurrentZoom
         if key == systemWindowKey, hasLoadedSystemWindow, !systemWindowPhotos.isEmpty { return }
+        // 目录树回访（相簿 / 文件夹 / 人物 / 分类）：先把上次这一页铺上，首帧就有内容；
+        // 缓存不新鲜时再在后台静默刷新，不再每次都从「正在读取图库…」开始等 SQL。
+        if key != systemWindowKey, let cached = takeCachedSystemWindowPage(for: key) {
+            systemWindowKey = key
+            systemWindowQuery = query
+            systemWindowStart = 0
+            systemWindowStartRank = 0
+            systemWindowTotal = cached.total
+            systemWindowVideos = cached.videos
+            // 缓存里存的是上次的叠加结果，这里重新叠加一次拾光的评分 / 收藏覆盖。
+            systemWindowPhotos = cached.photos.map { applySystemOverlay($0) }
+            systemWindowRevision &+= 1
+            hasLoadedSystemWindow = true
+            isSystemWindowLoading = false
+            prefetchGridThumbnails(systemWindowPhotos, newest: true)
+            if Date().timeIntervalSince(cached.savedAt) < Self.systemWindowPageCacheFreshAge { return }
+            loadSystemWindow(query: query, key: key, start: 0, limit: pageSize,
+                             replace: true, silent: true)
+            return
+        }
         if !sameQuery {
             systemWindowPhotos = []
             systemWindowTotal = 0
@@ -746,22 +881,50 @@ extension LibraryStore {
             systemWindowStartRank = 0
             hasLoadedSystemWindow = false
         }
-        let limit = sameQuery ? max(Self.windowPageSize, systemWindowPhotos.count) : Self.windowPageSize
-        loadSystemWindow(query: query, key: key, start: 0, limit: limit, replace: true)
+        loadSystemWindow(query: query, key: key, start: 0, limit: pageSize, replace: true)
     }
 
-    private func loadSystemWindow(query: SystemQuery, key: String, start: Int, limit: Int, replace: Bool) {
+    /// 取首页缓存并挪到最近使用位置；超过保留期直接丢弃，避免展示很旧的相簿内容。
+    private func takeCachedSystemWindowPage(for key: String) -> SystemWindowPageCache? {
+        guard let cached = systemWindowPageCache[key] else { return nil }
+        guard Date().timeIntervalSince(cached.savedAt) < 600 else {
+            systemWindowPageCache[key] = nil
+            systemWindowPageCacheOrder.removeAll { $0 == key }
+            return nil
+        }
+        systemWindowPageCacheOrder.removeAll { $0 == key }
+        systemWindowPageCacheOrder.append(key)
+        return cached
+    }
+
+    /// 首页落地后写入缓存（LRU 上限 8 条）。总数补齐时会再写一次，拿到的就是精确值。
+    private func storeSystemWindowPage(key: String, start: Int, replace: Bool) {
+        guard replace, start == 0, !systemWindowPhotos.isEmpty,
+              systemWindowKey == key else { return }
+        systemWindowPageCache[key] = SystemWindowPageCache(photos: systemWindowPhotos,
+                                                          total: systemWindowTotal,
+                                                          videos: systemWindowVideos,
+                                                          savedAt: Date())
+        systemWindowPageCacheOrder.removeAll { $0 == key }
+        systemWindowPageCacheOrder.append(key)
+        while systemWindowPageCacheOrder.count > Self.systemWindowPageCacheLimit {
+            let dropped = systemWindowPageCacheOrder.removeFirst()
+            systemWindowPageCache[dropped] = nil
+        }
+    }
+
+    private func loadSystemWindow(query: SystemQuery, key: String, start: Int, limit: Int, replace: Bool,
+                                  silent: Bool = false) {
         guard let index = systemIndex else { return }
         tasks.cancel(.systemWindow)
         systemWindowKey = key
         systemWindowQuery = query
-        isSystemWindowLoading = true
+        if !silent { isSystemWindowLoading = true }
         tasks.adopt(.systemWindow, Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, [PhotoItem]) in
-                // 接续加载时页查询带着日期上界，`summary` 会变成「上界以内」的数量：
-                // 总数只由首屏（整条查询）决定，追加时不再重算。
-                let summary = replace ? index.summary(query) : PhotoQuerySummary(total: 0, videos: 0)
-                return (summary, index.page(query, offset: start, limit: limit))
+            // 先取照片页：总数只服务于底部计数与虚拟占位，百万级图库的 COUNT
+            // 往往比取一页慢一个数量级，不能让它挡住首屏出图。
+            let page = await Task.detached(priority: .userInitiated) {
+                index.page(query, offset: start, limit: limit)
             }.value
             guard let self else { return }
             // 被新查询接管时由新查询负责收尾；只是被取消则必须自己复位标记。
@@ -771,34 +934,74 @@ extension LibraryStore {
             }
             self.isSystemWindowLoading = false
             if replace {
-                self.systemWindowTotal = result.0.total
-                self.systemWindowVideos = result.0.videos
+                // 先用本页数量作为总数的下界：虚拟占位与计数胶囊立刻有值，
+                // 精确总数（summary）随后补上。时间轴跳转（start > 0）不改总数。
+                if start == 0 {
+                    self.systemWindowTotal = page.count
+                    self.systemWindowVideos = page.lazy.filter(\.isVideo).count
+                }
             }
             self.systemWindowStart = start
             self.systemWindowStartRank = replace ? 0 : self.systemWindowStartRank
-            let mapped = result.1.map { self.applySystemOverlay($0) }
+            let mapped = page.map { self.applySystemOverlay($0) }
             self.systemWindowPhotos = replace ? mapped : self.systemWindowPhotos + mapped
             self.rememberSystemPhotos(mapped)
             self.systemWindowRevision &+= 1
             self.hasLoadedSystemWindow = true
             self.prefetchGridThumbnails(self.systemWindowPhotos, newest: replace)
+            self.storeSystemWindowPage(key: key, start: start, replace: replace)
+            guard replace else { return }
+            // 照片已经上屏，再补精确总数；接续加载时页查询带着日期上界，
+            // `summary` 会变成「上界以内」的数量，所以只由首屏（整条查询）计算。
+            let summary = await Task.detached(priority: .utility) {
+                index.summary(query)
+            }.value
+            guard !Task.isCancelled, self.systemWindowKey == key else { return }
+            self.systemWindowTotal = summary.total
+            self.systemWindowVideos = summary.videos
+            self.storeSystemWindowPage(key: key, start: 0, replace: true)
         })
     }
 
+    /// 滚动预取：按视野中心在已加载窗口里的下标，提前取「马上要滚到」的一批缩略图。
+    /// 只补快速层，时序略超前于可见格子，滚到下一屏时不会再先看到一片灰。
+    func prefetchTimelineThumbnails(centerIndex: Int, ahead: Int = 90, behind: Int = 36) {
+        let photos = loadedWindowPhotos
+        guard photos.count > 1, !isCloudScope, thumbSize >= 48 else { return }
+        let lower = max(0, centerIndex - behind)
+        let upper = min(photos.count, centerIndex + ahead)
+        guard upper > lower else { return }
+        prefetchGridThumbnails(Array(photos[lower..<upper]), newest: true, replaceTask: true)
+    }
+
+    /// 取消在跑的滚动预取。换页 / 拖动条重定位后旧视野已经作废，
+    /// 继续读旧窗口只会和新的可见格子抢外接盘。
+    func cancelTimelinePrefetch() {
+        timelinePrefetchTask?.cancel()
+        timelinePrefetchTask = nil
+    }
+
     /// 窗口落位后预取头部格子的缩略图：首屏立即可见，继续滚动时也已命中缓存。
-    private func prefetchGridThumbnails(_ photos: [PhotoItem], newest: Bool) {
+    private func prefetchGridThumbnails(_ photos: [PhotoItem], newest: Bool,
+                                        replaceTask: Bool = true) {
         guard !photos.isEmpty else { return }
+        // 马赛克墙一屏上千格，可见格子本身已经排队解码；再叠加一批预取只会抢 IO，
+        // 让首屏更晚出图（要的就是「出来一些显示一些」）。
+        guard thumbSize >= 48 else { return }
+        // 档位要和格子实际请求的一致：小格子只要 128px，按固定 192px 预取会全部错开缓存。
+        let bucket = ThumbnailSizing.bucket(for: CGFloat(thumbSize) * 2)
         if usesPhotoKitThumbnails {
             // 系统「照片」自己会按窗口预热缩略图，比逐个解 derivative 更接近官方体验。
             let slice = Array(newest ? photos.prefix(160) : photos.suffix(160))
-            PhotoKitThumbnailProvider.shared.prefetch(photos: slice,
-                                                      maxPixel: ImageLoader.gridQuickPixel)
-        } else {
-            // 本地 / 外接图库：单批张数按实测磁盘与解码耗时自适应，慢盘上不会一次排太多。
-            let cap = min(ImageLoader.prefetchBatchLimit, photos.count)
-            let slice = Array(newest ? photos.prefix(cap) : photos.suffix(cap))
-            ImageLoader.prefetchGridQuick(for: slice)
+            PhotoKitThumbnailProvider.shared.prefetch(photos: slice, maxPixel: bucket)
+            return
         }
+        // 本地 / 外接图库：单批张数按实测磁盘与解码耗时自适应，慢盘上不会一次排太多。
+        let cap = min(ImageLoader.prefetchBatchLimit, photos.count)
+        let slice = Array(newest ? photos.prefix(cap) : photos.suffix(cap))
+        // 同一时刻只保留一批：新的预取直接接管旧的，滚动时不会堆出几十个批次。
+        if replaceTask { timelinePrefetchTask?.cancel() }
+        timelinePrefetchTask = ImageLoader.prefetchGridQuick(for: slice, maxPixel: CGFloat(bucket))
     }
 
     private func focusSystemWindow(on photoID: UUID, query: SystemQuery) {
@@ -808,7 +1011,7 @@ extension LibraryStore {
         systemWindowKey = key
         systemWindowQuery = query
         isSystemWindowLoading = true
-        let pageSize = Self.windowPageSize
+        let pageSize = windowPageSizeForCurrentZoom
         tasks.adopt(.systemWindow, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> (PhotoQuerySummary, Int, [PhotoItem]) in
                 let summary = index.summary(query)
@@ -845,12 +1048,14 @@ extension LibraryStore {
 
     private func reloadSystemOverviewIfNeeded() {
         guard usesSQLOverview, let query = systemTimelineQuery, let index = systemIndex else { return }
-        let key = "sys#\(query.key)#\(systemIndexSignature)#\(grouping.rawValue)#\(contentRevision)"
+        let baseKey = "sys#\(query.key)#\(systemIndexSignature)#\(contentRevision)"
+        let grouping = self.grouping
+        if applyCachedOverview(baseKey: baseKey, grouping: grouping) { return }
+        let key = "\(baseKey)#\(grouping.rawValue)"
         guard key != overviewKeyValue else { return }
         tasks.cancel(.overview)
         overviewKeyValue = key
         isOverviewLoading = true
-        let grouping = self.grouping
         tasks.adopt(.overview, Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 () -> (buckets: [PhotoPeriodBucket], months: [PhotoMonthGroup]) in
@@ -867,10 +1072,75 @@ extension LibraryStore {
             self.isOverviewLoading = false
             if grouping == .years {
                 self.yearBuckets = result.buckets
+                self.storeYearBuckets(result.buckets, baseKey: baseKey)
+                self.prefetchSystemMonthsIfNeeded(baseKey: baseKey, query: query, index: index)
             } else {
                 self.monthGroups = result.months
+                self.storeMonthGroups(result.months, baseKey: baseKey)
             }
             self.resolvePendingMonthScroll()
         })
+    }
+
+    private func prefetchSystemMonthsIfNeeded(baseKey: String, query: SystemQuery, index: SystemIndex) {
+        guard monthGroupCache[baseKey] == nil else { return }
+        tasks.attach(.overviewPrefetch, Task { [weak self] in
+            let months = await Task.detached(priority: .utility) {
+                index.monthGroups(query)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            self.storeMonthGroups(months, baseKey: baseKey)
+        })
+    }
+
+    // MARK: - 直连模式的逐天分组（月总览拼贴用）
+
+    /// 读取某个月的逐天分组；返回 nil 表示还没取到（视图先显示该月大卡）。
+    func directMonthDays(monthID: String) -> [PhotoDayBucket]? {
+        guard isDirectSystemIndex, let query = systemTimelineQuery else { return nil }
+        _ = directMonthDaysRevision
+        return directMonthDaysCache["\(query.key)|\(monthID)"]
+    }
+
+    /// 直连模式：月总览的某个 Section 出现时才拉这一个月的逐天数据。
+    /// 只查该月时间区间，结果按「查询 + 月份」缓存；翻回同一个月不再查库。
+    func ensureDirectMonthDays(monthID: String) {
+        guard isDirectSystemIndex, let index = systemIndex,
+              let query = systemTimelineQuery else { return }
+        let key = "\(query.key)|\(monthID)"
+        guard directMonthDaysCache[key] == nil else { return }
+        let slot = StoreTaskCenter.Slot.monthDays(key)
+        guard !tasks.isRunning(slot) else { return }
+        let parts = monthID.split(separator: "-")
+        guard parts.count == 2, let year = Int(parts[0]), let month = Int(parts[1]) else { return }
+        let prefix = "\(query.key)|"
+        tasks.adopt(slot, Task { [weak self] in
+            let buckets = await Task.detached(priority: .userInitiated) {
+                // 月拼贴每天只展示一张代表照片，样本只要 1 张：窗口里保留的行数越少，SQL 越快。
+                index.directDayBuckets(query, year: year, month: month, sampleLimit: 1)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            self.storeDirectMonthDays(buckets, key: key, prefix: prefix)
+            self.tasks.finish(slot)
+        })
+    }
+
+    /// 写入逐天分组缓存：按先进先出淘汰旧月份。
+    /// 以前是一超过 48 个月就整体清空，滚动时可见的每个月份又全部回到占位卡重查一遍，
+    /// 连续往下翻会一直在「清空 → 重查」之间打转。
+    private func storeDirectMonthDays(_ buckets: [PhotoDayBucket], key: String, prefix: String) {
+        // 换了筛选条件 / 查询：旧前缀的缓存整体作废。
+        if directMonthDaysOrder.contains(where: { !$0.hasPrefix(prefix) }) {
+            directMonthDaysCache.removeAll()
+            directMonthDaysOrder.removeAll()
+        }
+        directMonthDaysCache[key] = buckets
+        directMonthDaysOrder.removeAll { $0 == key }
+        directMonthDaysOrder.append(key)
+        while directMonthDaysOrder.count > 48 {
+            let evicted = directMonthDaysOrder.removeFirst()
+            directMonthDaysCache.removeValue(forKey: evicted)
+        }
+        directMonthDaysRevision &+= 1
     }
 }

@@ -374,8 +374,31 @@ extension LibraryStore {
     /// 不少 IPTV 线路是 `live.php?id=…` 这类无扩展名地址，实际返回 HLS；
     /// 只按扩展名判定会把它交给 ffmpeg，报「Invalid data」。这里先探一次内容再决定播放器。
     func resolveTVStream(for photoID: UUID) async -> ResolvedStream? {
-        guard let channel = tvPlaybackChannel(for: photoID),
-              let url = URL(string: channel.streamURL) else { return nil }
+        guard var channel = tvPlaybackChannel(for: photoID),
+              URL(string: channel.streamURL) != nil else { return nil }
+        // 直播首播：候选线路的镜像质量差别很大（本机实测凤凰中文：225.9 的 m3u8 返回 502、
+        // 它的 FLV 也几乎不响应，而 227.97 的 FLV 正常）。按列表顺序 / 上次锁定的线路固定播，
+        // 就会一直卡在一台坏主机上。这里每次起播前并发抓一次首字节：
+        // HLS 优先（能原生秒开），没有可用的 HLS 再比 FLV；选中的线路记成偏好。
+        if !channel.isCatchUp,
+           let fastest = await fastestTVLiveLine(for: channel),
+           fastest != channel.streamURL {
+            channel.streamURL = fastest
+            if let meta = tvLineMetadata[fastest] {
+                channel.headers = meta.headers
+                channel.isHLS = meta.isHLS
+            } else {
+                channel.isHLS = TVLineMetadata.inferredHLS(for: fastest)
+            }
+            tvPlaybackChannels[photoID] = channel
+            if let index = tvPlaybackPhotos.firstIndex(where: { $0.id == photoID }) {
+                tvPlaybackPhotos[index].cloudPath = fastest
+            }
+            resetTVLiveRetry(for: photoID)
+            tvModel.setPreferredLine(fastest, for: channel)
+            Diagnostics.record("电视最快线路 \(channel.name) → \(tvLineLabel(for: photoID, url: fastest))")
+        }
+        guard let url = URL(string: channel.streamURL) else { return nil }
         var isHLS = channel.isHLS
         if !isHLS, await Self.probeIsHLS(url: url, headers: channel.headers) {
             isHLS = true
@@ -386,6 +409,75 @@ extension LibraryStore {
                               headers: channel.headers,
                               isHLS: isHLS,
                               mode: tvCatchupPhotoIDs.contains(photoID) ? .vod : .live)
+    }
+
+    /// 在候选线路里挑最好的一条：HLS 优先（AVPlayer 原生播放，起播最快），
+    /// 没有可用的 HLS 再退到响应最快的 FLV / TS（要 ffmpeg 转封装，慢但能播）。
+    /// 两边都没有响应时返回 nil，沿用当前线路。
+    private func fastestTVLiveLine(for channel: TVChannel) async -> String? {
+        let lines = Array(channel.streamLines.prefix(5))
+        guard lines.count > 1 else { return nil }
+        var hlsBest: (url: String, ms: Int)?
+        var otherBest: (url: String, ms: Int)?
+        await withTaskGroup(of: (String, Bool, Int?).self) { group in
+            for url in lines {
+                let isHLS = tvLineMetadata[url]?.isHLS ?? TVLineMetadata.inferredHLS(for: url)
+                let headers = channel.headers
+                group.addTask { (url, isHLS, await Self.tvLineLatency(url: url, headers: headers)) }
+            }
+            for await (url, isHLS, ms) in group {
+                guard let ms else { continue }
+                if isHLS {
+                    if hlsBest == nil || ms < hlsBest!.ms { hlsBest = (url, ms) }
+                    // 已经够快就不等其它镜像：再快也就差几十毫秒，用户感知不到。
+                    if ms <= 400 { break }
+                } else if otherBest == nil || ms < otherBest!.ms {
+                    otherBest = (url, ms)
+                }
+            }
+            group.cancelAll()
+        }
+        return hlsBest?.url ?? otherBest?.url
+    }
+
+    /// 抓一次线路首字节的耗时。
+    ///
+    /// HLS 必须拿到 `#EXTM3U` 才算可用（避免把 502 / 403 页面当线路）；
+    /// FLV / TS 只要连上并返回了数据即可（魔术字里没有可依赖的文本，
+    /// 但要排除 HTML 错误页）。0.8 秒内没响应就当不可用。
+    private nonisolated static func tvLineLatency(url: String, headers: [String: String]) async -> Int? {
+        guard let target = URL(string: url) else { return nil }
+        let expectsHLS = TVLineMetadata.inferredHLS(for: url)
+        var request = URLRequest(url: target)
+        request.timeoutInterval = 0.8
+        // 直播播放列表禁止缓存：否则第二次测速会直接命中本地缓存，测出「0 毫秒」的假象。
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("bytes=0-2047", forHTTPHeaderField: "Range")
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        let started = Date()
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<400).contains(http.statusCode) else { return nil }
+            var collected = Data()
+            var iterator = bytes.makeAsyncIterator()
+            while let byte = try await iterator.next() {
+                collected.append(byte)
+                if collected.count >= 64 { break }
+            }
+            guard !collected.isEmpty else { return nil }
+            let head = String(decoding: collected, as: UTF8.self)
+            if expectsHLS || head.contains("#EXTM3U") {
+                guard head.contains("#EXTM3U") else { return nil }
+            } else {
+                // FLV / TS：HTML 说明拿到的是错误页，不是流。
+                let lower = head.lowercased()
+                guard !lower.contains("<html"), !lower.contains("<!doctype") else { return nil }
+            }
+            return Int(Date().timeIntervalSince(started) * 1000)
+        } catch {
+            return nil
+        }
     }
 
     /// 用一次小范围 GET 判断地址是否返回 HLS 播放列表：先看 Content-Type，再看首行 `#EXTM3U`。

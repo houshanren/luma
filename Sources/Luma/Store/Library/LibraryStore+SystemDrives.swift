@@ -184,7 +184,7 @@ extension LibraryStore {
             showToast(favorite ? "已收藏（仅记录在拾光：此图库只读）" : "已取消收藏（仅记录在拾光）")
             return
         }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else {
                 for id in ids { self.saveSystemOverlay(id) { $0.isFavorite = favorite } }
                 return
@@ -215,7 +215,7 @@ extension LibraryStore {
             }
         }
         guard writeBack else { return }
-        Task {
+        runSystemStructureWrite { [self] in
             guard await prepareSystemLibraryWrite() else {
                 for id in ids { self.saveSystemOverlay(id) { $0.isHidden = hidden } }
                 return
@@ -353,6 +353,8 @@ extension LibraryStore {
         systemTotalAssetCount = 0
         systemIndex = nil
         systemIndexSignature = ""
+        systemWindowPageCache.removeAll()
+        systemWindowPageCacheOrder.removeAll()
         // 关键词属于这个图库，换库 / 重扫时一并重新读取。
         systemNativeKeywordIndex = nil
         systemNativeKeywordIDMap = [:]
@@ -661,10 +663,57 @@ extension LibraryStore {
         clearSystemWindow()
         hydrateSystemCacheIfNeeded()
         loadPhotoKitMediaTypesIfNeeded()
+        // 全文搜索索引：后台低优先级建立，成功后搜索从「全表 LIKE 两分钟」变成「0.3 秒」。
+        startSystemSearchIndexWarmup(index)
         // 载入完成后再判定一次：挂载的其它照片图库在这里被标成只读。
         refreshSystemWriteTargetState()
         // 跨图库搜索点开的条目：目标系统图库的索引到这一刻才真正可用。
         consumePendingLibraryOpenIfReady()
+    }
+
+    /// 后台建立系统图库的全文搜索索引，并把进度同步到界面。
+    ///
+    /// 索引未就绪时搜索会退回全表 `LIKE '%词%'`（137 万行要两分钟），
+    /// 所以这里在打开图库时就低优先级开始建，建完再通知网格刷新（此前搜索显示 0 条）。
+    func startSystemSearchIndexWarmup(_ index: SystemIndex) {
+        searchIndexWarmupTask?.cancel()
+        searchIndexWarmupTask = nil
+        guard let search = index.searchIndex else {
+            isBuildingSystemSearchIndex = false
+            systemSearchIndexProgress = nil
+            return
+        }
+        if search.isReady {
+            isBuildingSystemSearchIndex = false
+            systemSearchIndexProgress = nil
+            return
+        }
+        isBuildingSystemSearchIndex = true
+        systemSearchIndexProgress = search.buildProgress
+        index.startSearchIndexWarmup()
+        searchIndexWarmupTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                if search.isReady {
+                    self.isBuildingSystemSearchIndex = false
+                    self.systemSearchIndexProgress = nil
+                    // 索引就绪：之前在建立期间搜索显示为空，这里让带搜索词的分页重取一次。
+                    self.systemSearchIndexRevision &+= 1
+                    return
+                }
+                self.isBuildingSystemSearchIndex = search.isBuilding
+                self.systemSearchIndexProgress = search.isBuilding ? search.buildProgress : nil
+            }
+        }
+    }
+
+    /// 系统图库当前搜索是否因索引未就绪而暂时无法给出结果。
+    /// 界面据此显示「正在建立搜索索引」而不是「没有找到照片」。
+    var isSystemSearchIndexPending: Bool {
+        isBuildingSystemSearchIndex
+            && isSystemScope
+            && !(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     /// 长曝光 / 电影效果只能通过 PhotoKit 智能相簿取 ID；仅对当前官方图库有效。
@@ -685,6 +734,8 @@ extension LibraryStore {
             }
             self.photoKitLongExposureIDs = ids.longExposure
             self.photoKitCinematicIDs = ids.cinematic
+            self.photoKitRAWIDs = ids.raw
+            self.photoKitScreenRecordingIDs = ids.screenRecording
             self.mediaTypeSummaryCacheKey = nil
             self.contentRevision &+= 1
         }
@@ -889,6 +940,87 @@ extension LibraryStore {
             if let photo = systemPhoto(id: id), photo.deletedAt == nil, !photo.isHidden {
                 result.append(photo)
             }
+        }
+        return result
+    }
+
+    /// 批量相簿封面：相簿墙一次取当前层全部相簿（含文件夹子树）的封面。
+    /// 196 本相簿逐个查询实测要好几秒，这里每 400 本一批、边取边回传。
+    func systemAlbumPreviewPhotosBatch(_ albumIDs: [Int64], limit: Int,
+                                       onPartial: (([Int64: [PhotoItem]]) -> Void)? = nil) async
+        -> [Int64: [PhotoItem]] {
+        guard limit > 0, !albumIDs.isEmpty else { return [:] }
+        var result: [Int64: [PhotoItem]] = [:]
+        var missing: [Int64] = []
+        if let index = systemIndex {
+            for id in albumIDs {
+                if let cached = index.cachedAlbumPreviewPhotos(id, limit: limit) {
+                    result[id] = cached.map { applySystemOverlay($0) }
+                } else {
+                    missing.append(id)
+                }
+            }
+        } else {
+            missing = albumIDs
+        }
+        guard let index = systemIndex else {
+            // 索引还没就绪：走内存快照路径（数量很小）。
+            for id in missing {
+                result[id] = systemAlbumPreviewPhotos(id, limit: limit)
+            }
+            if !result.isEmpty { onPartial?(result) }
+            return result
+        }
+        guard !missing.isEmpty else { return result }
+        let overlays = systemOverlays
+        let nativeKeywords = systemNativeKeywordIDMap
+        let native = isNativeContainer
+        var start = 0
+        while start < missing.count {
+            let end = min(start + 400, missing.count)
+            let chunk = Array(missing[start..<end])
+            let part = await Task.detached(priority: .userInitiated) {
+                index.albumPreviewPhotosBatch(chunk, limit: limit)
+            }.value
+            guard !Task.isCancelled else { return result }
+            var chunkResult: [Int64: [PhotoItem]] = [:]
+            for (id, photos) in part {
+                chunkResult[id] = photos.map {
+                    Self.applyingOverlays($0, overlays: overlays, nativeKeywords: nativeKeywords, isNative: native)
+                }
+            }
+            result.merge(chunkResult) { _, new in new }
+            onPartial?(chunkResult)
+            start = end
+        }
+        return result
+    }
+
+    /// 一组文件夹各自子树里的相簿 ID（一次构建父子表，避免逐个文件夹重复递归）。
+    func systemAlbumIDsByFolder(_ folderIDs: [Int64]) -> [Int64: [Int64]] {
+        guard !folderIDs.isEmpty else { return [:] }
+        var childrenByParent: [Int64: [Int64]] = [:]
+        for folder in systemFolders {
+            guard let parent = folder.parent else { continue }
+            childrenByParent[parent, default: []].append(folder.id)
+        }
+        var albumsByFolder: [Int64: [Int64]] = [:]
+        for album in systemAlbums {
+            guard let parent = album.parentFolder else { continue }
+            albumsByFolder[parent, default: []].append(album.id)
+        }
+        var result: [Int64: [Int64]] = [:]
+        for folderID in folderIDs {
+            var seen: Set<Int64> = [folderID]
+            var queue: [Int64] = [folderID]
+            var albums: [Int64] = []
+            while let current = queue.popLast() {
+                albums.append(contentsOf: albumsByFolder[current] ?? [])
+                for child in childrenByParent[current] ?? [] where seen.insert(child).inserted {
+                    queue.append(child)
+                }
+            }
+            result[folderID] = albums
         }
         return result
     }

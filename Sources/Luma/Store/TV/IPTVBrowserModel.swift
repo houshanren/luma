@@ -141,37 +141,42 @@ final class IPTVBrowserModel {
     // 悬停、拖动时高频重算。这些缓存把「遍历 + 合并 + 排序」压到每次数据变化只做一次。
     /// `channels` 重建次数：频道派生缓存据此失效。
     var channelRevision = 0
-    var aggregatedCache: [TVChannel]?
-    var focusedChannelsCache: (id: UUID?, revision: Int, list: [TVChannel])?
+    // 以下都是派生缓存：只在 getter 里惰性写入，绝不能参与 Observation 通知。
+    // 否则 SwiftUI 求值 body / 工具栏时写缓存会触发 willSet -> GraphHost 事务，
+    // 直接在 AttributeGraph 里 precondition 失败（SIGABRT）。
+    // 视图的刷新依赖仍然来自被观察的源数据（channels、channelRevision、epgRevision 等）。
+    @ObservationIgnored var aggregatedCache: [TVChannel]?
+    @ObservationIgnored var focusedChannelsCache: (id: UUID?, revision: Int, list: [TVChannel])?
     /// 侧边栏每个源的分组：源数量 × 上千频道的分组结果按「频道 revision」缓存，
     /// 探测状态每变一次不再把所有源重新分组一遍。
-    var categoryGroupsCache: [UUID: (revision: Int, groups: [TVCategory])] = [:]
-    var visibleCacheKey = ""
-    var groupedCacheKey = ""
-    var channelNumberIndexKey = ""
-    var visibleCache: [TVChannel] = []
-    var groupedCache: [(group: String, channels: [TVChannel])] = []
-    var channelNumberIndex: [String: Int] = [:]
+    @ObservationIgnored var categoryGroupsCache: [UUID: (revision: Int, groups: [TVCategory])] = [:]
+    @ObservationIgnored var visibleCacheKey = ""
+    @ObservationIgnored var groupedCacheKey = ""
+    @ObservationIgnored var channelNumberIndexKey = ""
+    @ObservationIgnored var visibleCache: [TVChannel] = []
+    @ObservationIgnored var groupedCache: [(group: String, channels: [TVChannel])] = []
+    @ObservationIgnored var channelNumberIndex: [String: Int] = [:]
     /// 频道 id -> 这条频道可用的全部线路（含其它源的同名频道）：
     /// 探测自动换线与播放线路校验共用这一份索引。
-    var knownLinesCache: [String: Set<String>] = [:]
-    var knownLinesRevision = -1
+    @ObservationIgnored var knownLinesCache: [String: Set<String>] = [:]
+    /// 缓存对应的频道版本：本身不参与通知，刷新依赖走 `channelRevision`。
+    @ObservationIgnored var knownLinesRevision = -1
     /// EPG 数据版本：节目单刷新后清空按频道 / 按天的节目缓存。
     var epgRevision = 0
     /// 频道 id -> 命中的 EPG 频道 id 列表。
-    var epgKeyCache: [String: [String]] = [:]
+    @ObservationIgnored var epgKeyCache: [String: [String]] = [:]
     /// 频道 id -> 合并后的节目。
-    var epgProgramCache: [String: [TVEPGProgram]] = [:]
+    @ObservationIgnored var epgProgramCache: [String: [TVEPGProgram]] = [:]
     /// 节目 id -> 归一化后的「节目名 + 副标题」：搜索节目单时不再逐次折叠中文。
-    var epgSearchText: [String: String] = [:]
+    @ObservationIgnored var epgSearchText: [String: String] = [:]
     /// `epgSearchText` 对应的 EPG 版本。
-    var epgSearchTextRevision = -1
+    @ObservationIgnored var epgSearchTextRevision = -1
     /// "频道 id#当天 0 点" -> 当天节目。
-    var epgDayCache: [String: [TVEPGProgram]] = [:]
+    @ObservationIgnored var epgDayCache: [String: [TVEPGProgram]] = [:]
     /// "可见频道签名#当天 0 点" -> 当天有节目的频道。
-    var channelsWithProgramsCache: [String: [TVChannel]] = [:]
+    @ObservationIgnored var channelsWithProgramsCache: [String: [TVChannel]] = [:]
     /// 台名前缀桶：按归一化台名前 2 个字符分组，前缀匹配只扫同桶的键。
-    var epgPrefixBuckets: [String: [(name: String, ids: [String])]] = [:]
+    @ObservationIgnored var epgPrefixBuckets: [String: [(name: String, ids: [String])]] = [:]
 
     /// 已预约节目的开播时间：节目 id -> 开始时间。用于按钮状态与过期清理。
     var reminderStarts: [String: Date]

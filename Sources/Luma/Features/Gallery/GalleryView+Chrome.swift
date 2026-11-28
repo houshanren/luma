@@ -699,6 +699,24 @@ extension GalleryView {
                 .buttonStyle(.plain)
                 .help("清除搜索")
                 .accessibilityLabel("清除搜索")
+
+                // 自然语言 → 检索词：把「帮我找去年海边拍的」改写成去年 海边。
+                // 模型不可用时改走规则简化，所以按钮始终可用。
+                Button {
+                    Task { await store.aiRewriteSearchText() }
+                } label: {
+                    if aiAssist.searchRewriteLoading {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(aiAssist.searchRewriteLoading)
+                .help(store.aiAssistAvailability.hint ?? "用 AI 把这句话改写成可筛选的检索词")
+                .accessibilityLabel("改写搜索")
             }
 
             searchScopeMenu {

@@ -294,6 +294,41 @@ package extension SystemIndex {
         return rows?.compactMap { photo(from: $0) } ?? []
     }
 
+    /// 批量相簿封面：相簿墙一次取多本相簿的前若干张，避免每张卡片各查一次
+    /// （196 本相簿逐个查询实测要好几秒）。
+    func albumPreviewPhotosBatch(_ albumIDs: [Int64], limit: Int) -> [Int64: [PhotoItem]] {
+        guard limit > 0, !albumIDs.isEmpty else { return [:] }
+        if direct != nil { return directAlbumPreviewPhotosBatch(albumIDs, limit: limit) }
+        let ids = Array(albumIDs.prefix(400))
+        let list = inList(ids.map(String.init))
+        // 先只从关联表取成员（走 idx_sys_album），再按 UUID 回表：避免窗口查询里 JOIN assets 被规划成全表扫。
+        guard let rows = try? database.query("""
+            SELECT album, asset FROM (
+                SELECT aa.album AS album, aa.asset AS asset,
+                       ROW_NUMBER() OVER (PARTITION BY aa.album ORDER BY aa.position) AS rn
+                FROM album_assets aa WHERE aa.album IN (\(list))
+            ) WHERE rn <= \(limit + 4)
+            """) else { return [:] }
+        var members: [Int64: [UUID]] = [:]
+        var allIDs: [UUID] = []
+        for row in rows {
+            guard let album = row["album"]?.int64,
+                  let asset = row["asset"]?.string.flatMap(UUID.init(uuidString:)) else { continue }
+            members[album, default: []].append(asset)
+            allIDs.append(asset)
+        }
+        var byID: [UUID: PhotoItem] = [:]
+        for photo in photos(ids: allIDs) {
+            guard photo.deletedAt == nil, !photo.isHidden else { continue }
+            byID[photo.id] = photo
+        }
+        var result: [Int64: [PhotoItem]] = [:]
+        for (album, uuids) in members {
+            result[album] = Array(uuids.compactMap { byID[$0] }.prefix(limit))
+        }
+        return result
+    }
+
     /// 文件夹子树下所有相簿里的项目 ID（去重）；用于「拷贝到拾光」。
     func folderAssetIDs(_ folderID: Int64) -> [UUID] {
         if direct != nil { return directFolderAssetIDs(folderID) }

@@ -110,6 +110,8 @@ struct CinemaPosterCard: View {
     let versionCount: Int
     /// 海报墙里跟随网格列宽；书架里固定 156×234。
     var fillWidth: Bool = false
+    /// 键盘游标停在这一张：画一圈琥珀色外框。
+    var isCursor: Bool = false
     let onOpen: () -> Void
     var onPlay: (() -> Void)? = nil
     var onDetail: (() -> Void)? = nil
@@ -210,9 +212,11 @@ struct CinemaPosterCard: View {
             .clipShape(RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous)
-                    .strokeBorder(hovered ? LumaBrand.amber.opacity(0.55) : Color.white.opacity(0.08),
-                                  lineWidth: hovered ? LumaPosterMetrics.hoverBorderWidth
-                                                    : LumaPosterMetrics.borderWidth)
+                    .strokeBorder(isCursor ? LumaBrand.amber
+                                  : (hovered ? LumaBrand.amber.opacity(0.55) : Color.white.opacity(0.08)),
+                                  lineWidth: isCursor ? 2.2
+                                            : (hovered ? LumaPosterMetrics.hoverBorderWidth
+                                                       : LumaPosterMetrics.borderWidth))
             }
             // 悬停只加深描边与投影，不放大：放大后描边溢出格子，外框和海报内容对不齐。
             .shadow(color: .black.opacity(hovered ? 0.26 : 0.14),

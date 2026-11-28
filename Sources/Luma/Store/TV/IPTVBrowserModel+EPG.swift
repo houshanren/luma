@@ -292,6 +292,8 @@ extension IPTVBrowserModel {
     /// 否则时间轴上会出现两段几乎叠在一起的节目块。
     /// 结果按频道缓存，时间轴 / 传送门 / 时间环高频刷新时不再重复合并排序。
     func programs(for channel: TVChannel) -> [TVEPGProgram] {
+        // 节目缓存不参与 Observation 通知，视图靠这次读取保持对 EPG 刷新的依赖。
+        _ = epgRevision
         if let cached = epgProgramCache[channel.id] { return cached }
         let keys = epgChannelKeys(for: channel)
         var result: [TVEPGProgram] = []
@@ -418,6 +420,7 @@ extension IPTVBrowserModel {
 
     /// 某一天内某个频道的全部节目：节目单时间轴与回看双栏共用。按天缓存。
     func programs(on date: Date, for channel: TVChannel) -> [TVEPGProgram] {
+        _ = epgRevision
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: date)
         let key = "\(channel.id)#\(Int(start.timeIntervalSince1970))"
@@ -432,6 +435,7 @@ extension IPTVBrowserModel {
     /// 某个日期有节目单的频道：节目单页的左侧频道栏与「可回看频道」都用它，
     /// 结果按「可见频道集合 + 日期」缓存，切换视图 / 悬停时不再重算。
     func channelsWithPrograms(on date: Date) -> [TVChannel] {
+        _ = epgRevision
         let list = visibleChannels
         let day = Int(Calendar.current.startOfDay(for: date).timeIntervalSince1970)
         let key = "\(visibleCacheKey)|\(day)"
@@ -476,6 +480,7 @@ extension IPTVBrowserModel {
     /// 频道在 EPG 里的所有可能 id，按优先级排列：tvg-id → 完全同名 → 前缀同名。
     /// 每个频道只算一次，结果缓存到下一份 EPG。
     func epgChannelKeys(for channel: TVChannel) -> [String] {
+        _ = epgRevision
         if let cached = epgKeyCache[channel.id] { return cached }
         let keys = computeEPGChannelKeys(for: channel)
         epgKeyCache[channel.id] = keys

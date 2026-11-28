@@ -80,6 +80,9 @@ enum LibrarySearchCrossLibrary {
                                                keyword: String) -> [SearchHit] {
         let url = URL(fileURLWithPath: target.path)
         guard let index = SystemIndex.openDirect(libraryURL: url) else { return [] }
+        // 跨图库搜索是一次性的离线动作，宁可慢也不漏结果：索引没建好时退回全表 LIKE，
+        // 而不是像主界面那样直接返回空。
+        index.searchIndexStrict = false
         var hits: [SearchHit] = []
         var seen = Set<String>()
 

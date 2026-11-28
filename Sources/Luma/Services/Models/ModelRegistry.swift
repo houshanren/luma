@@ -48,17 +48,17 @@ enum ModelRegistry {
                 "tokenizer_merges.bin"
             ],
             installable: true,
-            note: "模型来自 hf-mirror（Apache-2.0），安装时在本机编译为 Core ML；需要 macOS 15 以上。未安装时自动回退到 Apple Vision 分类器。"
+            note: "模型来自国内镜像 hf-mirror.net / hf-mirror.com（Apache-2.0），分片并发下载、支持断点续传；安装时在本机编译为 Core ML。需要 macOS 15 以上，未安装时自动回退到 Apple Vision 分类器。"
         ),
         ModelComponentDescriptor(
             id: .localLLM,
             directoryName: "LocalLLM",
             title: "本地语言模型",
             detail: "自然语言检索 · 智能相簿生成",
-            approxSize: "约 2.5–3 GB",
-            requiredEntries: ["model.gguf"],
+            approxSize: "运行时约 180 MB + 模型 1–6 GB",
+            requiredEntries: [],
             installable: false,
-            note: "内置 GGUF 运行时尚未接入；当前请在下方「本地运行时」连接 Ollama / LM Studio。"
+            note: "点开关会自动下载 Ollama 运行时与 Qwen 模型并启动本机服务；Qwen2.5-VL 3B 与 Qwen3-VL 档能看图，可用于照片与事件理解。全程不联网推理，也可在下方连接已安装的 Ollama / LM Studio。"
         )
     ]
 
@@ -102,23 +102,75 @@ enum ModelRegistry {
 
     /// 随 App 内置的清单：模型源地址变化时只需要更新清单文件，不需要重新下载几百 MB。
     static func bundledManifestData() -> Data? {
+        bundledResourceURL("manifest.json").flatMap { try? Data(contentsOf: $0) }
+    }
+
+    /// 读取随包分发的 `Resources/Models` 资源（清单、本地模型源配置等）：
+    /// 先找 App 包内副本，开发期 `swift run` 再回退仓库目录。
+    static func bundledResourceURL(_ name: String) -> URL? {
         var candidates: [URL] = []
         if let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("Models/manifest.json", isDirectory: false) {
+            .appendingPathComponent("Models/\(name)", isDirectory: false) {
             candidates.append(bundled)
         }
         if Bundle.main.bundleURL.pathExtension.lowercased() != "app" {
-            candidates.append(sourceModelsRoot.appendingPathComponent("manifest.json"))
+            candidates.append(sourceModelsRoot.appendingPathComponent(name))
         }
-        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
-            if let data = try? Data(contentsOf: url) { return data }
-        }
-        return nil
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     /// 词表、标签向量与分词器随 App 内置（约 9MB），下载的只有两个编码器。
     static var bundledAssetsDirectory: URL? {
         resolve("SigLIP2Assets")
+    }
+
+    /// 已安装模型目录里的「轻资产」需要随 App 升级刷新：
+    /// 用户下载过 SigLIP2 后，模型目录优先于 App 包，旧版 tags.json 会把新标签永远挡在外面。
+    /// 只同步词表 / 标签 / 分词器，不碰两个编码器；按 tags.json 的 version 判断，版本不涨就不复制。
+    static func syncBundledTagAssetsIfNeeded() {
+        let fileManager = FileManager.default
+        guard let bundled = bundledAssetsDirectory else { return }
+        let installed = modelsRoot.appendingPathComponent("SigLIP2", isDirectory: true)
+        guard fileManager.fileExists(atPath: installed.appendingPathComponent("ImageEncoder.mlmodelc").path) else {
+            return
+        }
+        let bundledTags = bundled.appendingPathComponent("tags.json")
+        let installedTags = installed.appendingPathComponent("tags.json")
+        guard tagAssetVersion(bundledTags) > tagAssetVersion(installedTags) else { return }
+
+        let names = [
+            "tags.json",
+            "tag_embeddings.bin",
+            "tokenizer_meta.json",
+            "tokenizer_vocab.bin",
+            "tokenizer_merges.bin"
+        ]
+        for name in names {
+            let source = bundled.appendingPathComponent(name)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let destination = installed.appendingPathComponent(name)
+            let temporary = installed.appendingPathComponent(".\(name).sync")
+            do {
+                try? fileManager.removeItem(at: temporary)
+                try fileManager.copyItem(at: source, to: temporary)
+                if fileManager.fileExists(atPath: destination.path) {
+                    _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
+                } else {
+                    try fileManager.moveItem(at: temporary, to: destination)
+                }
+            } catch {
+                Diagnostics.record("SigLIP2 资产升级失败：\(name) \(error.localizedDescription)")
+                try? fileManager.removeItem(at: temporary)
+            }
+        }
+    }
+
+    private static func tagAssetVersion(_ url: URL) -> Int {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return 0
+        }
+        return object["version"] as? Int ?? 1
     }
 
     static func descriptor(_ id: ModelComponentID) -> ModelComponentDescriptor? {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// 统一搜索的来源：图库 / 网盘 / 影院 / 网络影院 / 电视 / 资源。
+/// 统一搜索的来源：图库 / 网盘 / 影院 / 网络影院 / 电视 / 资源 / 星图。
 /// 独立成模块后，页面只声明自己需要哪些来源，组件就只检索、只展示这些来源。
 enum SearchSourceKind: String, CaseIterable, Identifiable, Hashable {
     case library
@@ -10,6 +10,8 @@ enum SearchSourceKind: String, CaseIterable, Identifiable, Hashable {
     case networkCinema
     case television
     case catalog
+    /// 拾光星图：内置资料库里的人物与作品。
+    case atlas
 
     var id: String { rawValue }
 
@@ -21,6 +23,7 @@ enum SearchSourceKind: String, CaseIterable, Identifiable, Hashable {
         case .networkCinema: return "网络影院"
         case .television: return "电视"
         case .catalog: return "资源"
+        case .atlas: return "星图"
         }
     }
 
@@ -32,6 +35,7 @@ enum SearchSourceKind: String, CaseIterable, Identifiable, Hashable {
         case .networkCinema: return "play.tv.fill"
         case .television: return "tv"
         case .catalog: return "safari"
+        case .atlas: return "sparkles"
         }
     }
 }
@@ -54,7 +58,13 @@ enum SearchHitKind: String, Hashable {
     case channel
     /// 节目单里的一档节目：点开按直播 / 回看处理。
     case program
-    case catalogItem
+    /// 网络资源里的图集条目（写真 / 套图站）：打开是整套图片，不是视频。
+    case catalogGallery
+    /// 网络资源里的视频条目：打开直接起播。
+    case catalogVideo
+    /// 星图里的人物 / 作品。
+    case atlasPerson
+    case atlasWork
 
     var title: String {
         switch self {
@@ -73,7 +83,10 @@ enum SearchHitKind: String, Hashable {
         case .series: return "电视剧"
         case .channel: return "直播"
         case .program: return "节目"
-        case .catalogItem: return "条目"
+        case .catalogGallery: return "图集"
+        case .catalogVideo: return "视频"
+        case .atlasPerson: return "人物"
+        case .atlasWork: return "作品"
         }
     }
 
@@ -93,7 +106,10 @@ enum SearchHitKind: String, Hashable {
         case .series: return "tv"
         case .channel: return "antenna.radiowaves.left.and.right"
         case .program: return "list.bullet.rectangle"
-        case .catalogItem: return "safari"
+        case .catalogGallery: return "photo.stack.fill"
+        case .catalogVideo: return "play.rectangle.fill"
+        case .atlasPerson: return "person.crop.circle"
+        case .atlasWork: return "film"
         }
     }
 }
@@ -110,6 +126,9 @@ enum SearchVisual {
     case cinemaPoster(String?, CinemaMediaKind)
     case channelLogo(String?)
     case catalogCover(sourceID: UUID, url: String)
+    /// 星图：内置资料库的人物头像 / 作品封面。
+    case atlasPerson(id: Int64, name: String)
+    case atlasCover(url: String?)
 }
 
 /// 点击后的动作数据：不携带闭包，保证可测试、可跨页面复用。
@@ -132,6 +151,9 @@ enum SearchPayload {
     case catalogItem(sourceID: UUID, item: CatalogItem)
     /// 网络影院条目：点击后进入网络影院并停在这部作品的详情页。
     case networkCinemaItem(sourceID: UUID, item: CatalogItem, isTV: Bool)
+    /// 星图：跳到人物档案 / 打开作品详情。
+    case atlasPerson(Int64)
+    case atlasWork(Int64)
 }
 
 /// 一条统一命中。
@@ -167,19 +189,44 @@ struct SearchSection: Identifiable {
     var orderedKinds: [SearchHitKind] {
         let order: [SearchHitKind] = [.photo, .video, .album, .folder, .person, .scene, .place,
                                       .cloudPhoto, .cloudVideo, .cloudFile, .cloudFolder,
-                                      .movie, .series, .channel, .program, .catalogItem]
+                                      .movie, .series, .channel, .program,
+                                      .catalogGallery, .catalogVideo,
+                                      .atlasPerson, .atlasWork]
         return order.filter { (kindCounts[$0] ?? 0) > 0 }
     }
 
     /// 本轮命中涉及的「源」（去重，按命中数排序）；用于结果页的源筛选条。
     var origins: [(title: String, count: Int)] {
+        origins(under: nil)
+    }
+
+    /// 指定类型下的来源分布：切换「图集 / 视频」时，来源条只保留该类型真正有命中的站点。
+    func origins(under kind: SearchHitKind?) -> [(title: String, count: Int)] {
         var counts: [String: Int] = [:]
         for hit in hits {
+            if let kind, hit.kind != kind { continue }
             guard let origin = hit.origin, !origin.isEmpty else { continue }
             counts[origin, default: 0] += 1
         }
         return counts.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
             .map { (title: $0.key, count: $0.value) }
+    }
+
+    /// 指定来源下的类型分布：选中某个站点后，类型条只显示该站点的分布。
+    func kindCounts(under origin: String?) -> [SearchHitKind: Int] {
+        guard let origin else { return kindCounts }
+        var counts: [SearchHitKind: Int] = [:]
+        for hit in hits where hit.origin == origin {
+            counts[hit.kind, default: 0] += 1
+        }
+        return counts
+    }
+
+    /// 按固定顺序列出某来源下有命中的类型。
+    func kinds(under origin: String?) -> [SearchHitKind] {
+        guard origin != nil else { return orderedKinds }
+        let counts = kindCounts(under: origin)
+        return orderedKinds.filter { (counts[$0] ?? 0) > 0 }
     }
 
     /// 指定源下面的分类（去重，按命中数排序）；未指定源时统计全部。
@@ -200,6 +247,21 @@ struct SearchSection: Identifiable {
 protocol SearchProviding: AnyObject {
     var source: SearchSourceKind { get }
     func search(query: String, limit: Int) async -> SearchSection
+    /// 增量检索：这一来源内部每完成一部分就回调一次，供结果页逐步上屏。
+    /// 默认实现等价于「全部跑完回调一次」，只有内部可拆分的来源（如网络资源的多站点）才需要覆写。
+    func search(query: String,
+                limit: Int,
+                onPartial: @escaping @MainActor (SearchSection) -> Void) async -> SearchSection
+}
+
+extension SearchProviding {
+    func search(query: String,
+                limit: Int,
+                onPartial: @escaping @MainActor (SearchSection) -> Void) async -> SearchSection {
+        let section = await search(query: query, limit: limit)
+        onPartial(section)
+        return section
+    }
 }
 
 /// 统一搜索的轻量模糊匹配。
@@ -226,5 +288,28 @@ enum SearchFuzzyText {
 
     static func matchesAny(_ values: [String?], keyword: String) -> Bool {
         values.contains { matches($0, keyword: keyword) }
+    }
+
+    /// 两条文本的相似度（0…1）：归一化后的字符二元组 Dice 系数。
+    /// 对中文与英文都稳定，用于相册名 / 文件夹名这类短文本的查重。
+    static func similarity(_ a: String, _ b: String) -> Double {
+        let left = bigrams(normalize(a))
+        let right = bigrams(normalize(b))
+        guard !left.isEmpty, !right.isEmpty else { return 0 }
+        var pool = right
+        var intersection = 0
+        for gram in left {
+            if let index = pool.firstIndex(of: gram) {
+                pool.remove(at: index)
+                intersection += 1
+            }
+        }
+        return 2 * Double(intersection) / Double(left.count + right.count)
+    }
+
+    static func bigrams(_ text: String) -> [String] {
+        let chars = Array(text)
+        guard chars.count > 1 else { return text.isEmpty ? [] : [text] }
+        return (0..<(chars.count - 1)).map { String(chars[$0...($0 + 1)]) }
     }
 }

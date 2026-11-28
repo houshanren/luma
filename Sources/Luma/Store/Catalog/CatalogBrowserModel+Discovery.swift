@@ -121,7 +121,13 @@ extension CatalogBrowserModel {
     /// 进入源就把红点清掉。
     func markSourceViewed(_ sourceID: UUID) {
         guard newSourceIDs.remove(sourceID) != nil else { return }
-        saveNewFlags()
+        // 红点落盘同样不占点击路径：合并 400ms 内的多次切换只写一次。
+        newFlagsSaveTask?.cancel()
+        newFlagsSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.saveNewFlags()
+        }
     }
 
     // MARK: - 健康度
@@ -162,7 +168,13 @@ extension CatalogBrowserModel {
                         self.onJobChange?()
                     }
                     let started = Date()
-                    let state = await Self.probe(source: source)
+                    var state = await Self.probe(source: source)
+                    // 需要登录的站点：Cookie 缺失 / 过期，或探测被 403 拦下，都归到「需登录」，
+                    // 让侧边栏与总览徽章直接给出登录入口，而不是笼统的「需验证」。
+                    if source.kind.mayRequireLogin, state != .offline,
+                       source.cookieState.needsAttention || state == .limited {
+                        state = .needsLogin
+                    }
                     self.health[source.id] = state
                     self.healthLatency[source.id] = Int(Date().timeIntervalSince(started) * 1000)
                     self.healthCheckedAt[source.id] = Date()
@@ -194,6 +206,9 @@ extension CatalogBrowserModel {
         switch result {
         case .online:
             return SourceHealth(state: .healthy, checkedAt: Date(), latencyMilliseconds: latency)
+        case .needsLogin:
+            return SourceHealth(state: .authRequired, checkedAt: Date(),
+                                latencyMilliseconds: latency, message: "需要登录后才能浏览完整内容")
         case .limited:
             return SourceHealth(state: .degraded, checkedAt: Date(),
                                 latencyMilliseconds: latency, message: "站点要求先完成验证")
@@ -268,9 +283,23 @@ extension CatalogBrowserModel {
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: Date())
         let todayEnd = calendar.date(byAdding: .day, value: 1, to: todayStart) ?? todayStart
-        todaySpotlight = calendarItems
+        let todayEntries = calendarItems
             .filter { $0.firstSeen >= todayStart && $0.firstSeen < todayEnd }
             .sorted { $0.firstSeen > $1.firstSeen }
+        todaySpotlight = todayEntries
+            .prefix(24)
+            .compactMap { entry in
+                guard let source = sourcesByID[entry.sourceID] else { return nil }
+                return CatalogSpotlightItem(sourceID: entry.sourceID,
+                                            sourceName: source.name,
+                                            item: entry.item)
+            }
+        // 图集分页的「今日精选」用同一批日历记录：综合站只留其中的图集条目。
+        todayGallerySpotlight = todayEntries
+            .filter { entry in
+                guard let source = sourcesByID[entry.sourceID] else { return false }
+                return entry.item.isGallery(in: source)
+            }
             .prefix(24)
             .compactMap { entry in
                 guard let source = sourcesByID[entry.sourceID] else { return nil }
@@ -381,15 +410,15 @@ extension CatalogBrowserModel {
     }
 
     /// 各源轮流取一条，避免总榜前三都被同一个源占满。
-    private static func interleave(_ groups: [[CatalogSpotlightItem]]) -> [CatalogSpotlightItem] {
+    static func interleave(_ groups: [[CatalogSpotlightItem]], limit: Int = 24) -> [CatalogSpotlightItem] {
         var result: [CatalogSpotlightItem] = []
         var index = 0
-        while result.count < 24 {
+        while result.count < limit {
             var appended = false
             for group in groups where index < group.count {
                 result.append(group[index])
                 appended = true
-                if result.count >= 24 { break }
+                if result.count >= limit { break }
             }
             if !appended { break }
             index += 1
@@ -413,19 +442,41 @@ extension CatalogBrowserModel {
         recordRecentSearch(keyword)
         // 只输入了「中文字幕」「90 年代」这类条件时，仍拿原词去搜。
         let siteKeyword = plan.keyword.isEmpty ? keyword : plan.keyword
-        // 即时命中：先把本地快照里的结果铺出来，网络结果回来再替换。
+        // 即时命中：先把本地快照里的结果铺出来，网络结果回来一个来源就替换一个来源。
         let local = localSearchHits(siteKeyword)
         globalResults = local
         globalResultsKeyword = keyword
         isGlobalSearching = true
         tasks.adopt(.catalogGlobalSearch, Task { [weak self] in
-            let results = await self?.crossSourceSearch(keyword: siteKeyword, plan: plan) ?? []
-            guard let self, !Task.isCancelled else { return }
+            guard let self else { return }
+            var streamed: [UUID: CatalogGlobalResult] = [:]
+            var didReceiveNetworkGroup = false
+            let results = await self.crossSourceSearch(keyword: siteKeyword, plan: plan) { [weak self] group in
+                guard let self, !Task.isCancelled,
+                      self.globalResultsKeyword == keyword else { return }
+                if !didReceiveNetworkGroup {
+                    // 第一个网络结果到达：本地占位退场，之后按来源到达顺序逐组上屏。
+                    didReceiveNetworkGroup = true
+                    self.globalResults = []
+                }
+                streamed[group.sourceID] = group
+                self.globalResults = self.orderedGlobalResults(streamed)
+            }
+            guard !Task.isCancelled, self.globalResultsKeyword == keyword else { return }
             // 站点全部失败时保留本地命中，不要退回空态。
             self.globalResults = results.isEmpty ? local : results
             self.globalResultsKeyword = keyword
             self.isGlobalSearching = false
         })
+    }
+
+    /// 增量上屏时保持「侧边栏来源顺序」，不按请求完成顺序抖动。
+    private func orderedGlobalResults(_ groups: [UUID: CatalogGlobalResult]) -> [CatalogGlobalResult] {
+        let order = Dictionary(uniqueKeysWithValues:
+            enabledResourceSources.enumerated().map { ($1.id, $0) })
+        return groups.values.sorted {
+            (order[$0.sourceID] ?? Int.max) < (order[$1.sourceID] ?? Int.max)
+        }
     }
 
     /// 记住最近搜索词：搜索框聚焦且为空时以胶囊展示，最多 8 条。
@@ -476,7 +527,12 @@ extension CatalogBrowserModel {
     /// 统一搜索入口：一次调用完成「本地快照 + 跨站检索」，并把结果同步进频道页的搜索状态。
     /// 与 `searchAllSources()` 的区别是不自己起后台任务，方便上层（如 SearchCenter）等待结果。
     /// - Parameter updatesUI: 全局搜索只借用这轮检索，不写网络资源页的搜索框、结果与最近搜索。
-    func searchUnified(keyword: String, updatesUI: Bool = true) async -> [CatalogGlobalResult] {
+    /// - Parameter includeLocal: 是否先把本地快照命中作为增量结果发出去（统一搜索用于首屏秒出）。
+    /// - Parameter onGroup: 每完成一个来源就回调一次，供上层增量上屏；返回值仍是最终全量结果。
+    func searchUnified(keyword: String,
+                       updatesUI: Bool = true,
+                       includeLocal: Bool = false,
+                       onGroup: (@MainActor (CatalogGlobalResult) -> Void)? = nil) async -> [CatalogGlobalResult] {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         let plan = CatalogQueryPlan.parse(trimmed)
@@ -493,8 +549,12 @@ extension CatalogBrowserModel {
             globalResultsKeyword = trimmed
             isGlobalSearching = true
         }
+        if includeLocal {
+            for group in local { onGroup?(group) }
+        }
         tasks.cancel(.catalogGlobalSearch)
-        let results = await crossSourceSearch(keyword: siteKeyword, plan: plan, perSourceLimit: 0)
+        let results = await crossSourceSearch(keyword: siteKeyword, plan: plan,
+                                              perSourceLimit: 0, onGroup: onGroup)
         guard !Task.isCancelled else { return local }
         if updatesUI {
             globalResults = results.isEmpty ? local : results
@@ -506,13 +566,16 @@ extension CatalogBrowserModel {
     /// 跨源检索：并发问所有启用的源，单个源超时 / 失败直接跳过，
     /// 再按自然语言条件排序和过滤。
     /// - Parameter perSourceLimit: 每个源最多保留多少条；`0` 表示不限制（统一搜索用）。
+    /// - Parameter onGroup: 每个来源完成时立刻回调（已排序、已过滤、已截断），用于增量上屏。
     func crossSourceSearch(keyword: String,
                            plan: CatalogQueryPlan,
-                           perSourceLimit: Int = 12) async -> [CatalogGlobalResult] {
+                           perSourceLimit: Int = 12,
+                           onGroup: (@MainActor (CatalogGlobalResult) -> Void)? = nil) async -> [CatalogGlobalResult] {
         // 网络资源的跨源检索只问网页资源站，影视源由「网络影院」自己检索。
         let targets = enabledResourceSources
         guard !targets.isEmpty else { return [] }
-        var collected: [(index: Int, source: CatalogSource, items: [CatalogItem])] = []
+        var collected: [(index: Int, group: CatalogGlobalResult)] = []
+        var seenSources = Set<UUID>()
         await withTaskGroup(of: (Int, [CatalogItem]).self) { group in
             for (index, source) in targets.enumerated() {
                 group.addTask {
@@ -525,27 +588,42 @@ extension CatalogBrowserModel {
                     group.cancelAll()
                     return
                 }
-                guard !items.isEmpty else { continue }
-                collected.append((index, targets[index], items))
+                guard !items.isEmpty,
+                      let result = Self.makeGlobalResult(source: targets[index],
+                                                         items: items,
+                                                         plan: plan,
+                                                         perSourceLimit: perSourceLimit),
+                      seenSources.insert(result.sourceID).inserted else { continue }
+                collected.append((index, result))
+                // 单源结果一到就上屏，不再等所有站点跑完。
+                onGroup?(result)
             }
         }
         guard !Task.isCancelled else { return [] }
         // 结果按侧边栏里源的顺序输出，排序不随请求完成顺序变化。
-        return collected.sorted { $0.index < $1.index }.compactMap { entry in
-            let ranked = entry.items
-                .map { (item: $0, score: plan.score($0)) }
-                .sorted { $0.score > $1.score }
-                .map(\.item)
-            let filtered = plan.chineseOnly || plan.yearFrom != nil
-                ? ranked.filter { plan.score($0) >= 0 }
-                : ranked
-            let ordered = filtered.isEmpty ? ranked : filtered
-            let items = perSourceLimit > 0 ? Array(ordered.prefix(perSourceLimit)) : ordered
-            guard !items.isEmpty else { return nil }
-            return CatalogGlobalResult(sourceID: entry.source.id,
-                                       sourceName: entry.source.name,
-                                       items: items)
-        }
+        return collected.sorted { $0.index < $1.index }.map(\.group)
+    }
+
+    /// 单源结果收敛成最终形态：按条件打分排序 → 过滤 → 去重 → 截断。
+    private static func makeGlobalResult(source: CatalogSource,
+                                         items: [CatalogItem],
+                                         plan: CatalogQueryPlan,
+                                         perSourceLimit: Int) -> CatalogGlobalResult? {
+        let ranked = items
+            .map { (item: $0, score: plan.score($0)) }
+            .sorted { $0.score > $1.score }
+            .map(\.item)
+        let filtered = plan.chineseOnly || plan.yearFrom != nil
+            ? ranked.filter { plan.score($0) >= 0 }
+            : ranked
+        let ordered = filtered.isEmpty ? ranked : filtered
+        var seen = Set<String>()
+        let unique = ordered.filter { seen.insert($0.id).inserted }
+        let limited = perSourceLimit > 0 ? Array(unique.prefix(perSourceLimit)) : unique
+        guard !limited.isEmpty else { return nil }
+        return CatalogGlobalResult(sourceID: source.id,
+                                   sourceName: source.name,
+                                   items: limited)
     }
 
     func clearGlobalSearch() {
@@ -698,6 +776,7 @@ extension CatalogBrowserModel {
     // MARK: - 筛选记忆
 
     /// 记住当前源停在哪一页、用什么排序：下次启动直接还原。
+    /// 点击源时只改内存副本，落盘延迟合并，避免同步 SQLite 写入拖慢侧边栏响应。
     func rememberView() {
         guard let sourceID = selectedSourceID else { return }
         let marker: String
@@ -707,24 +786,17 @@ extension CatalogBrowserModel {
         case .category(let id): marker = "cat-\(id)"
         default: return
         }
-        var all: [String: [String: String]] = [:]
-        if let data = CatalogStore.data(forKey: Self.lastViewKey),
-           let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
-            all = decoded
-        }
+        var all = storedLastViews()
         all[sourceID.uuidString] = ["section": marker, "sort": sort.rawValue,
                                     "localSort": localSort?.rawValue ?? ""]
-        if let data = try? JSONEncoder().encode(all) {
-            CatalogStore.set(data, forKey: Self.lastViewKey)
-        }
+        lastViewMemo = all
+        scheduleLastViewSave()
     }
 
     /// 启动时还原上次浏览的分类与排序；找不到就保持首页。
     func restoreLastView() {
         guard let sourceID = selectedSourceID,
-              let data = CatalogStore.data(forKey: Self.lastViewKey),
-              let all = try? JSONDecoder().decode([String: [String: String]].self, from: data),
-              let entry = all[sourceID.uuidString] else { return }
+              let entry = storedLastViews()[sourceID.uuidString] else { return }
         if let raw = entry["sort"], let value = CatalogSort(rawValue: raw),
            supportedSorts.contains(value) {
             sort = value
@@ -747,6 +819,30 @@ extension CatalogBrowserModel {
                 || (top.children?.contains(where: { $0.id == categoryID }) ?? false)
         }?.id
         reload()
+    }
+
+    /// 浏览位置的唯一读取入口：第一次从数据库读入内存，之后都直接用内存副本。
+    private func storedLastViews() -> [String: [String: String]] {
+        if let lastViewMemo { return lastViewMemo }
+        var loaded: [String: [String: String]] = [:]
+        if let data = CatalogStore.data(forKey: Self.lastViewKey),
+           let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            loaded = decoded
+        }
+        lastViewMemo = loaded
+        return loaded
+    }
+
+    /// 合并 500ms 内的多次改动，只写一次库；写入发生在点击之后，不在点击路径上。
+    private func scheduleLastViewSave() {
+        lastViewSaveTask?.cancel()
+        lastViewSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let self, let memo = self.lastViewMemo else { return }
+            if let data = try? JSONEncoder().encode(memo) {
+                CatalogStore.set(data, forKey: Self.lastViewKey)
+            }
+        }
     }
 
     // MARK: - 更新日历

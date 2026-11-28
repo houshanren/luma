@@ -27,6 +27,8 @@ final class NetworkCinemaModel {
     /// 下滑翻页：当前分页还有没有下一页、以及正在补页的状态。
     private(set) var canLoadMore = false
     private(set) var isLoadingMore = false
+    /// 已加载到第几页：底部翻页提示用（聚合列表按「补了几轮」计）。
+    private(set) var loadedPage = 1
     /// 本次刷新新出现的条目：与上次同一列表比对，卡片上打「刚上架 / 更新中」。
     private(set) var freshItemKeys: Set<String> = []
 
@@ -78,6 +80,8 @@ final class NetworkCinemaModel {
     /// 进入搜索前的分类列表：清空搜索后原样恢复，不重复打接口。
     private var savedFocusedItems: [NetworkCinemaItem] = []
     private var savedFocusedCanLoadMore = false
+    /// 进入源内搜索前的页数：清空搜索后恢复，底部提示不会跳回第 1 页。
+    private var savedFocusedPage = 1
     private var savedFocusedStream: FeedStream?
     private var loadMoreToken = 0
     private var detailLoading = Set<String>()
@@ -221,6 +225,7 @@ final class NetworkCinemaModel {
         guard force || !snapshotIsFresh else {
             error = nil
             isLoading = false
+            loadedPage = 1
             // 列表直接来自快照，翻页游标仍要就位：下滑到底能接着从第 2 页拉。
             preparePagination(sources: usable, tab: tab)
             return
@@ -252,6 +257,7 @@ final class NetworkCinemaModel {
             items = []
             canLoadMore = false
             isLoading = false
+            loadedPage = 1
             freshItemKeys = []
             return
         }
@@ -350,6 +356,7 @@ final class NetworkCinemaModel {
         items = list
         variants.removeAll()
         indexVariants(list)
+        loadedPage = 1
         // 同一源同一分类的上次结果：这次新出现的条目打「刚上架 / 更新中」。
         let previousIDs = focusedSeenIDs[key] ?? []
         freshItemKeys = previousIDs.isEmpty
@@ -410,6 +417,7 @@ final class NetworkCinemaModel {
             self.items = Self.mergeNew(list, into: self.items)
             self.indexVariants(list)
             self.loadedAt = Date()
+            self.loadedPage += 1
             self.focusedStream?.nextPage = pageNumber + 1
             self.focusedStream?.exhausted = !page.hasMore
             self.canLoadMore = page.hasMore
@@ -440,6 +448,7 @@ final class NetworkCinemaModel {
         if sourceSearchKeyword == nil {
             savedFocusedItems = items
             savedFocusedCanLoadMore = canLoadMore
+            savedFocusedPage = loadedPage
             savedFocusedStream = focusedStream
         }
         tasks.cancel(.networkCinemaSourceSearch)
@@ -476,11 +485,13 @@ final class NetworkCinemaModel {
         indexVariants(items)
         focusedStream = savedFocusedStream
         canLoadMore = savedFocusedCanLoadMore
+        loadedPage = savedFocusedPage
         isLoadingMore = false
         freshItemKeys = []
         savedFocusedItems = []
         savedFocusedStream = nil
         savedFocusedCanLoadMore = false
+        savedFocusedPage = 1
     }
 
     /// 退出搜索但保留即将重新加载的列表（换分类 / 刷新时用）。
@@ -497,6 +508,7 @@ final class NetworkCinemaModel {
         savedFocusedItems = []
         savedFocusedStream = nil
         savedFocusedCanLoadMore = false
+        savedFocusedPage = 1
         isLoadingMore = false
     }
 
@@ -569,6 +581,7 @@ final class NetworkCinemaModel {
         }
         indexVariants(list)
         sourceSearchPage = result.page
+        loadedPage = result.page
         sourceSearchHasMore = result.hasMore
         canLoadMore = result.hasMore
         isSourceSearching = false
@@ -648,6 +661,7 @@ final class NetworkCinemaModel {
         items = merged
         variants.removeAll()
         indexVariants(lists.flatMap { $0 })
+        loadedPage = 1
         // 与上次同一分页的快照比对：新出现的条目打「刚上架 / 更新中」。
         let previousIDs = Set((snapshots[tab]?.items ?? []).map(\.item.id))
         freshItemKeys = previousIDs.isEmpty
@@ -779,6 +793,7 @@ final class NetworkCinemaModel {
             let merged = Self.mergeNew(added, into: self.items)
             self.items = merged
             self.indexVariants(added)
+            self.loadedPage += 1
             let savedAt = Date()
             self.loadedAt = savedAt
             let usable = sources.filter { $0.isEnabled && $0.kind.supportsNetworkCinema }
@@ -1121,10 +1136,17 @@ final class NetworkCinemaModel {
         return Array((strong + weak).prefix(3))
     }
 
-    /// 列表里没有统一类型字段：按标题 / 备注里的「集 / 更新 / 季」等字样猜电影还是剧集。
+    /// 列表里没有统一类型字段：先看源站给的专区 / 分类（tv / movie），
+    /// 再按标题 / 备注里的「集 / 更新 / 季」等字样猜电影还是剧集。
     static func guessIsTV(_ item: CatalogItem) -> Bool {
+        // 明确写了 tv / movie 的源（如爱看片片）直接采信，避免备注缺失时全部判成电影。
+        switch item.categoryID?.lowercased() {
+        case "tv", "series", "show": return true
+        case "movie", "film": return false
+        default: break
+        }
         let text = item.title + " " + item.remark
-        let marks = ["集", "更新", "连载", "季", "更至", "全"]
+        let marks = ["集", "更新", "连载", "更至", "季"]
         return marks.contains { text.contains($0) }
     }
 

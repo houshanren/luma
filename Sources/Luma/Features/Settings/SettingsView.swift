@@ -5,6 +5,8 @@ struct SettingsView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(CloudBrowserModel.self) private var cloud
     @Environment(AppSettings.self) private var settings
+    /// 本地模型下载 / 切档位的进度：装好后无论用户停在哪一页都自动接上助手配置。
+    @ObservedObject private var localLLM = LocalLLMRuntime.shared
 
     @State private var videoCacheSize: Int64 = 0
     @State private var aiKeyInput = ""
@@ -12,6 +14,13 @@ struct SettingsView: View {
     @State private var aiTestOK = false
     @State private var aiTestMessage: String?
     @State private var confirmClearAIConversation = false
+    @State private var mcpBusy = false
+    /// AI 工作台呈现偏好：与 RootView 共用同一组 key。
+    @AppStorage("ai.surface.default") private var aiDefaultSurface = "docked"
+    @AppStorage("ai.surface.autoHide") private var aiAutoHide = true
+    @AppStorage("ai.peek.enabled") private var aiPeekEnabled = true
+
+    private var mcp: MCPService { MCPService.shared }
 
     /// 与幻灯片窗口共用同一组偏好。
     @AppStorage("slideshowInterval") private var slideshowInterval: Double = 3
@@ -28,22 +37,26 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             generalTab
+                .scrollIndicators(.never)
                 .tabItem { Label("通用", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             appearanceTab
+                .scrollIndicators(.never)
                 .tabItem { Label("外观", systemImage: "paintpalette") }
                 .tag(SettingsTab.appearance)
             browsingTab
+                .scrollIndicators(.never)
                 .tabItem { Label("浏览", systemImage: "photo.on.rectangle") }
                 .tag(SettingsTab.browsing)
             cinemaTab
                 .tabItem { Label("影院", systemImage: "film.stack") }
                 .tag(SettingsTab.cinema)
             modelTab
-                .tabItem { Label("模型", systemImage: "cpu") }
+                .scrollIndicators(.never)
+                .tabItem { Label("本地模型", systemImage: "cpu") }
                 .tag(SettingsTab.models)
             assistantTab
-                .tabItem { Label("助手", systemImage: "sparkles") }
+                .tabItem { Label("AI助手", systemImage: "sparkles") }
                 .tag(SettingsTab.assistant)
             shortcutsTab
                 .tabItem { Label("快捷键", systemImage: "command") }
@@ -57,6 +70,13 @@ struct SettingsView: View {
         .tint(settings.accentColor)
         .accentColor(settings.accentColor)
         .onAppear(perform: refreshCacheSize)
+        .onChange(of: localLLM.stage) { _, _ in
+            // 下载完成 / 切换档位完成：把地址与模型名接到助手配置上，不需要用户手填。
+            store.applyLocalModelConfigIfReady()
+        }
+        .onChange(of: localLLM.selectedOptionID) { _, _ in
+            store.applyLocalModelConfigIfReady()
+        }
         .onChange(of: settings.videoCacheLimitGB) { _, _ in
             VideoCache.luma.trimIfNeeded()
             videoCacheSize = VideoCache.luma.totalSize()
@@ -675,13 +695,21 @@ struct SettingsView: View {
     // MARK: 模型（端侧能力）
 
     private var modelTab: some View {
-        Form {
-            LocalModelsSettingsSection()
-        }
-        .formStyle(.grouped)
+        LocalModelsSettingsSection()
     }
 
     // MARK: 助手（智能助手自身的配置）
+
+    private func revealMCPConfig() {
+        let url = MCPService.shared.configURL
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
+    }
 
     /// 助手是否可用：模型接入完整，且当前提供商的 Key 已就绪（本地运行不需要 Key）。
     private var assistantReady: Bool {
@@ -690,7 +718,7 @@ struct SettingsView: View {
 
     private var assistantHeaderHint: String {
         if !store.aiConfig.provider.requiresAPIKey {
-            return "本地运行，无需 API Key。"
+            return "使用本地模型，无需 API Key。"
         }
         return assistantReady
             ? "已就绪，可在任意页面用 ✨ 提问或操作图库。"
@@ -702,7 +730,71 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 assistantHeaderCard
 
-                settingsGroup(icon: "cpu", title: "云端模型", subtitle: "") {
+                settingsGroup(icon: "macwindow.on.rectangle",
+                              title: "AI 工作台",
+                              subtitle: "一套对话，四种呈现") {
+                    settingsCard {
+                        settingsRow(icon: "rectangle.righthalf.inset.filled",
+                                    tint: .secondary,
+                                    title: "默认呈现",
+                                    subtitle: "⌘J 首次打开时的形态") {
+                            Picker("", selection: $aiDefaultSurface) {
+                                Text("并排").tag("docked")
+                                Text("叠放").tag("overlay")
+                                Text("浮窗").tag("floating")
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 130)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "rectangle.trailinghalf.inset.filled",
+                                    tint: .secondary,
+                                    title: "沉浸内容时自动让位",
+                                    subtitle: "看图 / 播放时收起侧栏，避免遮挡画面") {
+                            Toggle("", isOn: $aiAutoHide)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "sidebar.right",
+                                    tint: .secondary,
+                                    title: "半隐藏入口",
+                                    subtitle: "查看器右边缘显示竖标签，点开浮窗") {
+                            Toggle("", isOn: $aiPeekEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                                .disabled(!aiAutoHide)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "sparkles",
+                                    tint: .secondary,
+                                    title: "现在打开",
+                                    subtitle: "同一段对话，随时换形态") {
+                            HStack(spacing: 8) {
+                                ForEach(AISurfaceMode.presentations) { mode in
+                                    Button(mode.title) {
+                                        store.selectAISurface(mode)
+                                    }
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                    Text("并排让内容让位；叠放盖在页面上、布局不动；浮窗适合看图 / 播放时不打断画面；工作台是左侧菜单里的独立一页。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
+
+                settingsGroup(icon: "cpu", title: "对话模型", subtitle: "") {
                     settingsCard {
                         settingsRow(icon: "building.2",
                                     tint: .secondary,
@@ -715,7 +807,7 @@ struct SettingsView: View {
                             }
                             .labelsHidden()
                             .pickerStyle(.menu)
-                            .frame(width: 170)
+                            .frame(width: 200)
                         }
 
                         settingsDivider
@@ -789,10 +881,35 @@ struct SettingsView: View {
                             .font(.system(size: 10.5))
                             .foregroundStyle(.tertiary)
                     }
-                    if store.aiConfig.provider == .custom {
-                        Text("任意 OpenAI 兼容服务：SiliconFlow、OpenRouter、Ollama、自建网关。")
+                    if store.aiConfig.provider == .openRouter {
+                        Text("模型名使用「提供方/模型」，如 anthropic/claude-sonnet-4、openai/o4-mini。")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.tertiary)
+                    }
+                    if store.aiConfig.provider == .anthropic {
+                        Text("通过 Anthropic 的 OpenAI 兼容接口调用，模型名如 claude-sonnet-4-6。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    if store.aiConfig.provider == .custom {
+                        Text("任意 OpenAI 兼容服务：自建网关、LiteLLM、One API / New API 或其它云厂商。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    if store.aiConfig.provider == .local {
+                        Text("本地模型需要先在「本地模型」页检测运行时或填写模型名；数据不出本机。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        HStack(spacing: 8) {
+                            Text("也可以完全本地运行：在「本地模型」页配置 Ollama / LM Studio，再在这里选择提供商「本地模型」。")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                            Button("去配置") { selectedTab = .models }
+                                .controlSize(.small)
+                        }
                     }
                 }
 
@@ -858,6 +975,112 @@ struct SettingsView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 12)
                     }
+                }
+
+                settingsGroup(icon: "puzzlepiece.extension",
+                              title: "连接器（MCP）",
+                              subtitle: "可选 · 默认关闭") {
+                    settingsCard {
+                        settingsRow(icon: "point.3.connected.trianglepath.dotted",
+                                    tint: .secondary,
+                                    title: "MCP 服务器",
+                                    subtitle: "stdio 方式启动，工具接入智能助手") {
+                            HStack(spacing: 8) {
+                                Text(mcp.status)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(mcp.serverCount > 0 ? Color.green : Color.secondary)
+                                    .lineLimit(1)
+                                Button(mcpBusy ? "加载中…" : "重新加载") {
+                                    Task {
+                                        mcpBusy = true
+                                        await store.refreshMCPTools()
+                                        mcpBusy = false
+                                    }
+                                }
+                                .controlSize(.small)
+                                .disabled(mcpBusy)
+                            }
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "doc.badge.gearshape",
+                                    tint: .secondary,
+                                    title: "配置文件",
+                                    subtitle: "ai/mcp.json") {
+                            Button("打开") { revealMCPConfig() }
+                                .controlSize(.small)
+                        }
+                    }
+                    Text("连接器工具每次调用都会请求确认；返回内容只作为数据，不进入系统提示词的指令区。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
+
+                settingsGroup(icon: "person.2",
+                              title: "多 Agent 与自动化",
+                              subtitle: "按领域收窄，写操作仍走审批") {
+                    settingsCard {
+                        settingsRow(icon: "person.crop.circle",
+                                    tint: .secondary,
+                                    title: "助手角色",
+                                    subtitle: "馆员 / 策展 / 影院管理员只会看到本领域工具") {
+                            Picker("", selection: aiBinding(\.agentRole)) {
+                                ForEach(AIAgentRole.allCases) { role in
+                                    Text(role.title).tag(role)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 130)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "arrow.triangle.branch",
+                                    tint: .secondary,
+                                    title: "委派子任务",
+                                    subtitle: "自动角色可把只读任务交给专门角色") {
+                            Toggle("", isOn: aiBinding(\.delegateToSubAgents))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "wand.and.stars",
+                                    tint: .secondary,
+                                    title: "技能与连接器",
+                                    subtitle: "内置任务模板与 MCP 预设") {
+                            Button("打开") {
+                                store.expandAISurface()
+                                store.showAISkillsSheet = true
+                            }
+                            .controlSize(.small)
+                        }
+
+                        settingsDivider
+
+                        settingsRow(icon: "clock.arrow.circlepath",
+                                    tint: .secondary,
+                                    title: "定时任务",
+                                    subtitle: "到点自动跑只读任务") {
+                            HStack(spacing: 8) {
+                                Text("\(store.aiSchedules.count) 条")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                Button("管理") {
+                                    store.expandAISurface()
+                                    store.showAIScheduleSheet = true
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                    Text("定时任务与子 Agent 都不会自动执行写操作；写操作始终回到主循环按审批执行。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
                 }
 
                 settingsGroup(icon: "bubble.left.and.bubble.right", title: "对话", subtitle: "") {
@@ -953,6 +1176,7 @@ struct SettingsView: View {
             .padding(.vertical, 22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .scrollIndicators(.never)
         .onAppear { syncAIKeyInput() }
         .onChange(of: store.aiConfig.provider) { _, _ in syncAIKeyInput() }
         .confirmationDialog("清空当前图库的对话记录？",
@@ -1073,6 +1297,7 @@ struct SettingsView: View {
             .padding(.vertical, 22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .scrollIndicators(.never)
     }
 
     // MARK: - 设置分组

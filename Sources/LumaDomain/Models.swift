@@ -673,8 +673,12 @@ package struct FolderOption: Identifiable {
 
 package enum SidebarItem: Hashable, Codable {
     case library
+    /// 智能助手工作台：左侧菜单里的独立一页，与图库 / 影院等页面平级。
+    case assistant
     /// 影院：刮削后的电影 / 电视剧库。
     case cinema
+    /// 拾光星图：内置资料库的人物 / 作品浏览（独立可开关模块）。
+    case atlas
     case collections
     case favorites
     case recentlySaved

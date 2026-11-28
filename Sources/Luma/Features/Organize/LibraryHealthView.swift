@@ -4,6 +4,8 @@ import SwiftUI
 struct LibraryHealthView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    /// AI 解读状态：只影响这张卡片，不影响体检本身。
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
     @State private var confirmDeleteDuplicates = false
     @State private var confirmDeleteSystemDuplicates = false
 
@@ -23,6 +25,7 @@ struct LibraryHealthView: View {
                     if let report {
                         // 扫描过程中就展示已产出的结果，完成后自动补齐相似连拍。
                         summary(report)
+                        aiDigestCard(report)
                         if store.isSystemScope {
                             systemCards(report)
                         } else {
@@ -113,6 +116,72 @@ struct LibraryHealthView: View {
         }
     }
 
+    // MARK: - AI 解读
+
+    /// 体检解读：手动触发，只发送统计数字；扫描未完成时先不可用。
+    private func aiDigestCard(_ report: LibraryHealthReport) -> some View {
+        let availability = store.aiAssistAvailability
+        let key = store.aiHealthDigestKey(report)
+        let digest = aiAssist.cachedHealthDigest(for: key)
+        let scanned = !store.isScanningHealth && !store.isFinalizingHealth
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.accentColor)
+                Text("AI 解读")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if aiAssist.healthDigestLoading {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text("解读中…")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !scanned {
+                    Text("扫描完成后可用")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                } else if availability.isReady {
+                    Button(digest == nil ? "生成解读" : "重新解读") {
+                        Task { await store.generateHealthAIDigest() }
+                    }
+                    .controlSize(.small)
+                    .disabled(aiAssist.isBusy)
+                    .help("把统计数字交给当前模型，写成三条可执行建议")
+                } else {
+                    Text(availability.hint ?? "")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let digest {
+                Text(digest)
+                    .font(.system(size: 11.5))
+                    .lineSpacing(3.5)
+                    .textSelection(.enabled)
+            } else if let error = aiAssist.healthDigestError {
+                Text(error)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.red)
+            } else {
+                Text("让模型把这些统计写成三条可执行的建议；只发送数量与体积，不发送照片。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: settings.cardRadius, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.16), lineWidth: 0.8)
+        }
+    }
+
     private func metric(title: String, value: String, icon: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -178,8 +247,8 @@ struct LibraryHealthView: View {
                        title: "待分析内容",
                        count: store.pendingAnalysisCount,
                        subtitle: store.pendingAnalysisCount == 0
-                           ? "全部照片都已识别场景与文字"
-                           : "分析后可按场景浏览、搜索图内文字",
+                           ? "全部照片与视频都已识别场景与文字"
+                           : "分析后可按场景浏览、搜索图内文字；视频按关键帧聚合",
                        icon: "sparkles",
                        samples: [],
                        action: store.pendingAnalysisCount == 0 ? nil : { store.analyzeIntelligence() })

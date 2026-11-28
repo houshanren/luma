@@ -141,7 +141,20 @@ extension PhotoViewerView {
             placeholder = ImageLoader.cachedPreview(for: photo)
 
             let target = photo
-            if target.isCloud {
+            if store.catalogGalleryContext(for: target.id) != nil {
+                // 网络图集：整套图片不在图库里，按看图上下文走站点取图缓存。
+                // 首帧先用已落盘的缩略图占位，同时立刻预热前后两张原图；
+                // 不等当前这张下完再预取，否则连续翻页每一张都要从零开始等网络。
+                placeholder = store.catalogGalleryCachedThumbnail(for: target.id)
+                store.prefetchCatalogGalleryNeighbors(around: target.id)
+                if placeholder == nil {
+                    placeholder = await store.catalogGalleryThumbnail(for: target.id)
+                    guard !Task.isCancelled, viewer.viewerID == target.id else { return }
+                }
+                let loaded = await store.catalogGalleryDisplayImage(for: target.id)
+                guard !Task.isCancelled, viewer.viewerID == target.id else { return }
+                if placeholder == nil { image = loaded } else { show(loaded) }
+            } else if target.isCloud {
                 let loaded = await store.cloudDisplayImage(for: target)
                 guard !Task.isCancelled, viewer.viewerID == target.id else { return }
                 let result = fullHDR ? loaded : loaded.map(ImageLoader.sdrImage)
@@ -181,6 +194,7 @@ extension PhotoViewerView {
                 animatedImage = animated
             }
         }
+        // 图集的相邻原图已在开图时开始预取，这里只补普通照片的邻居。
         prefetchNeighbors(of: photo, fullHDR: fullHDR)
     }
 

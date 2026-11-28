@@ -122,7 +122,15 @@ struct NetworkCinemaDetailView: View {
     }
 
     private var isTV: Bool {
-        enrichment?.isTV ?? entry.isTV
+        // 详情已经拿回源站类型与分集：标了 tv 或有多条分集就是剧集。
+        // 列表备注缺失时（例如刚搜索出来的条目）也能纠正，不会一律显示成电影。
+        if let kind = detail?.item.categoryID?.lowercased() {
+            if kind == "tv" || kind == "series" || kind == "show" { return true }
+            if kind == "movie" || kind == "film" { return false }
+        }
+        if let detail, !detail.isCollection, detail.episodes.count > 1 { return true }
+        if let enrichment { return enrichment.isTV }
+        return entry.isTV
     }
 
     private var overviewText: String? {
@@ -676,6 +684,7 @@ struct NetworkCinemaDetailView: View {
     private func healthColor(_ sourceID: UUID) -> Color {
         switch store.catalog.health[sourceID] {
         case .offline: return LumaBrand.coral
+        case .needsLogin: return LumaBrand.violet
         case .limited: return LumaBrand.amber
         case .online, .checking, .unknown, .none: return LumaBrand.mint
         }

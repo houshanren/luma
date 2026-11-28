@@ -1,0 +1,676 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "Tools/testkit",
+  "notes": [
+    "截图由应用内 TestKitHarness 在真实界面里逐页渲染，不含设计稿或占位图。",
+    "页面清单、动作与图注都在这份 JSON 里；TestKitHarness 只按 action 执行，新增页面不用改应用代码。",
+    "action.kind 支持：gallery / navigate / viewer / search / select / sheet / overlay / editor / wizard / menu / window。",
+    "文件默认输出到 ~/Movies/LumaTestKit/screenshots/<id>.png；可用 testkit.py screens --out 指定目录。",
+    "写官网 / 手册时优先引用文件，不要重绘界面；图注使用 suggestedCaption。"
+  ],
+  "screens": [
+    {
+      "id": "gallery.timeline",
+      "title": "图库 · 时间轴",
+      "module": "图库",
+      "description": "年视图下的照片网格，展示时间轴、缩略图与侧边栏。",
+      "docSection": "浏览与整理 / 时间轴",
+      "suggestedCaption": "年视图把照片按年份铺开，滚动即加载。",
+      "action": {
+        "kind": "gallery",
+        "grouping": "years",
+        "aspect": "square"
+      }
+    },
+    {
+      "id": "gallery.months",
+      "title": "图库 · 月视图",
+      "module": "图库",
+      "description": "按月分组的拼贴总览。",
+      "docSection": "浏览与整理 / 时间轴",
+      "suggestedCaption": "月视图用拼贴保留每个月的节奏。",
+      "action": {
+        "kind": "gallery",
+        "grouping": "months",
+        "aspect": "square"
+      }
+    },
+    {
+      "id": "gallery.all",
+      "title": "图库 · 所有照片",
+      "module": "图库",
+      "description": "完整宽高比网格。",
+      "docSection": "浏览与整理 / 网格",
+      "suggestedCaption": "所有照片按原始宽高比排列。",
+      "action": {
+        "kind": "gallery",
+        "grouping": "all",
+        "aspect": "actual"
+      }
+    },
+    {
+      "id": "gallery.masonry",
+      "title": "图库 · 瀑布流",
+      "module": "图库",
+      "description": "瀑布流网格，适合高矮不一的照片。",
+      "docSection": "浏览与整理 / 网格",
+      "suggestedCaption": "瀑布流让纵向构图不再被裁切。",
+      "action": {
+        "kind": "gallery",
+        "grouping": "all",
+        "aspect": "masonry"
+      }
+    },
+    {
+      "id": "gallery.list",
+      "title": "图库 · 列表",
+      "module": "图库",
+      "description": "列表视图，展示文件名、日期与元数据。",
+      "docSection": "浏览与整理 / 网格",
+      "suggestedCaption": "列表视图把元数据放在同一行里。",
+      "action": {
+        "kind": "gallery",
+        "grouping": "all",
+        "aspect": "list"
+      }
+    },
+    {
+      "id": "gallery.albums",
+      "title": "图库 · 相簿",
+      "module": "图库",
+      "description": "相簿与文件夹总览。",
+      "docSection": "浏览与整理 / 相簿",
+      "suggestedCaption": "相簿、文件夹与智能相簿在同一处管理。",
+      "action": {
+        "kind": "navigate",
+        "to": "allAlbums"
+      }
+    },
+    {
+      "id": "gallery.people",
+      "title": "图库 · 人物",
+      "module": "图库",
+      "description": "本机人脸聚类与人物页。",
+      "docSection": "智能 / 人物",
+      "suggestedCaption": "人物聚类在本机完成，命名与合并都在这里。",
+      "action": {
+        "kind": "navigate",
+        "to": "people"
+      }
+    },
+    {
+      "id": "gallery.places",
+      "title": "图库 · 地点",
+      "module": "图库",
+      "description": "按地点聚合的照片总览。",
+      "docSection": "浏览与整理 / 地点",
+      "suggestedCaption": "地点页把同一座城市的照片收在一起。",
+      "action": {
+        "kind": "navigate",
+        "to": "places"
+      }
+    },
+    {
+      "id": "gallery.map",
+      "title": "图库 · 地图",
+      "module": "图库",
+      "description": "照片地图与足迹。",
+      "docSection": "浏览与整理 / 地图",
+      "suggestedCaption": "地图上的每个点都能回到那一次快门。",
+      "action": {
+        "kind": "navigate",
+        "to": "map"
+      }
+    },
+    {
+      "id": "gallery.keywords",
+      "title": "图库 · 关键词",
+      "module": "图库",
+      "description": "关键词库与关键词总览。",
+      "docSection": "浏览与整理 / 关键词",
+      "suggestedCaption": "关键词可以批量添加，也能直接筛选。",
+      "action": {
+        "kind": "navigate",
+        "to": "keywords"
+      }
+    },
+    {
+      "id": "gallery.favorites",
+      "title": "图库 · 个人收藏",
+      "module": "图库",
+      "description": "收藏汇总与分类浏览。",
+      "docSection": "浏览与整理 / 收藏",
+      "suggestedCaption": "收藏按年份、类型、地点与人物重新组织。",
+      "action": {
+        "kind": "navigate",
+        "to": "favorites"
+      }
+    },
+    {
+      "id": "gallery.videos",
+      "title": "图库 · 视频",
+      "module": "图库",
+      "description": "视频页海报墙与筛选。",
+      "docSection": "视频 / 视频页",
+      "suggestedCaption": "视频页把片段按年份与时长重新组织。",
+      "action": {
+        "kind": "navigate",
+        "to": "videos"
+      }
+    },
+    {
+      "id": "gallery.screenshots",
+      "title": "图库 · 截屏",
+      "module": "图库",
+      "description": "截屏媒体类型。",
+      "docSection": "浏览与整理 / 媒体类型",
+      "suggestedCaption": "截屏会被自动识别成独立媒体类型。",
+      "action": {
+        "kind": "navigate",
+        "to": "screenshots"
+      }
+    },
+    {
+      "id": "gallery.health",
+      "title": "图库 · 体检",
+      "module": "图库",
+      "description": "模糊、大视频、相似组与重复项。",
+      "docSection": "整理 / 图库体检",
+      "suggestedCaption": "体检先列出问题，再让你决定保留哪一张。",
+      "action": {
+        "kind": "navigate",
+        "to": "health"
+      }
+    },
+    {
+      "id": "gallery.revisit",
+      "title": "图库 · 值得重看",
+      "module": "图库",
+      "description": "按人物 / 地点 / 场景 / 年份拆分。",
+      "docSection": "浏览与整理 / 值得重看",
+      "suggestedCaption": "值得重看把很久没打开的照片重新推回来。",
+      "action": {
+        "kind": "navigate",
+        "to": "revisit"
+      }
+    },
+    {
+      "id": "gallery.trash",
+      "title": "图库 · 最近删除",
+      "module": "图库",
+      "description": "回收站与恢复。",
+      "docSection": "浏览与整理 / 删除",
+      "suggestedCaption": "删除先进入最近删除，随时可以恢复。",
+      "action": {
+        "kind": "navigate",
+        "to": "trash"
+      }
+    },
+    {
+      "id": "viewer.photo",
+      "title": "查看器 · 照片",
+      "module": "查看器",
+      "description": "窗口内查看器与胶片条。",
+      "docSection": "观看 / 查看器",
+      "suggestedCaption": "查看器、缩放、胶片条与元数据面板共用一套交互。",
+      "action": {
+        "kind": "viewer",
+        "target": "photo",
+        "info": false
+      }
+    },
+    {
+      "id": "viewer.info",
+      "title": "查看器 · 信息面板",
+      "module": "查看器",
+      "description": "查看器右侧元数据面板。",
+      "docSection": "观看 / 元数据",
+      "suggestedCaption": "信息面板把拍摄时间、相机、地点与关键词放在一起。",
+      "action": {
+        "kind": "viewer",
+        "target": "photo",
+        "info": true
+      }
+    },
+    {
+      "id": "viewer.video",
+      "title": "查看器 · 视频",
+      "module": "播放",
+      "description": "播放内核、时间轴与音轨字幕入口。",
+      "docSection": "观看 / 播放",
+      "suggestedCaption": "同一个播放器覆盖本地、网盘、影视源与直播。",
+      "action": {
+        "kind": "viewer",
+        "target": "video"
+      }
+    },
+    {
+      "id": "search.global",
+      "title": "统一搜索",
+      "module": "搜索",
+      "description": "全局搜索的结果分组与来源胶囊。",
+      "docSection": "搜索 / 全局",
+      "suggestedCaption": "全局搜索把图库、网盘、影院、电视与资源放在同一页。",
+      "action": {
+        "kind": "search",
+        "scope": "global",
+        "text": "海边"
+      }
+    },
+    {
+      "id": "catalog.sources",
+      "title": "网络资源 · 源总览",
+      "module": "网络资源",
+      "description": "资源站接入、健康度与内容入口。",
+      "docSection": "网络资源 / 源管理",
+      "suggestedCaption": "所有资源站集中在源总览里启停与检查。",
+      "action": {
+        "kind": "navigate",
+        "to": "catalogSources"
+      }
+    },
+    {
+      "id": "catalog.channel",
+      "title": "网络资源 · 频道",
+      "module": "网络资源",
+      "description": "单个资源站的海报墙与分类入口。",
+      "docSection": "网络资源 / 频道",
+      "suggestedCaption": "资源站的图集按分类铺成海报墙，点开即可浏览。",
+      "action": {
+        "kind": "navigate",
+        "to": "firstCatalogSource"
+      }
+    },
+    {
+      "id": "networkCinema",
+      "title": "网络影院",
+      "module": "网络影院",
+      "description": "影视源聚合后的电影 / 电视剧海报墙。",
+      "docSection": "网络影院 / 海报墙",
+      "suggestedCaption": "同名条目按标题归并，详情页可以切换来源。",
+      "action": {
+        "kind": "navigate",
+        "to": "networkCinema"
+      }
+    },
+    {
+      "id": "television",
+      "title": "网络电视",
+      "module": "网络电视",
+      "description": "直播频道墙、分组与节目单入口。",
+      "docSection": "网络电视 / 直播",
+      "suggestedCaption": "频道墙支持分组、省份、收藏与最近观看。",
+      "action": {
+        "kind": "navigate",
+        "to": "iptv"
+      }
+    },
+    {
+      "id": "cloud.storages",
+      "title": "网络存储 · 总览",
+      "module": "网络存储",
+      "description": "网盘 / NAS 接入总览。",
+      "docSection": "网络存储 / 接入",
+      "suggestedCaption": "SMB、WebDAV 与各家网盘在同一个入口接入。",
+      "action": {
+        "kind": "navigate",
+        "to": "cloudStorages"
+      }
+    },
+    {
+      "id": "cloud.browse",
+      "title": "网络存储 · 浏览",
+      "module": "网络存储",
+      "description": "网盘目录树、缩略图与媒体视图。",
+      "docSection": "网络存储 / 浏览",
+      "suggestedCaption": "网盘目录与本地图库共用缩略图、搜索与查看器。",
+      "action": {
+        "kind": "navigate",
+        "to": "firstCloudMount"
+      }
+    },
+    {
+      "id": "album.new",
+      "title": "新建相簿",
+      "module": "图库",
+      "description": "相簿总览里点「新建相簿」弹出的表单。",
+      "docSection": "浏览与整理 / 相簿",
+      "suggestedCaption": "新建相簿只需要一个名字，创建后立即选中。",
+      "action": {
+        "kind": "sheet",
+        "target": "newAlbum"
+      }
+    },
+    {
+      "id": "album.name",
+      "title": "相簿命名",
+      "module": "图库",
+      "description": "侧边栏右键触发的新建 / 重命名弹窗。",
+      "docSection": "浏览与整理 / 相簿",
+      "suggestedCaption": "命名弹窗与 ⌘⇧N 走同一个入口，侧边栏收起时也能弹。",
+      "action": {
+        "kind": "sheet",
+        "target": "namePrompt"
+      }
+    },
+    {
+      "id": "selection.batch",
+      "title": "多选 · 批量操作栏",
+      "module": "图库",
+      "description": "选中多张照片后出现的批量操作栏。",
+      "docSection": "浏览与整理 / 选择",
+      "suggestedCaption": "选中多张后，底部操作栏统一处理收藏、相簿与导出。",
+      "action": {
+        "kind": "select",
+        "count": 6
+      }
+    },
+    {
+      "id": "sheet.batch-change",
+      "title": "批量修改",
+      "module": "图库",
+      "description": "批量修改拍摄日期、评分、关键词等元数据。",
+      "docSection": "整理 / 批量编辑",
+      "suggestedCaption": "批量修改一次覆盖多张，改动可以整体撤销。",
+      "action": {
+        "kind": "sheet",
+        "target": "batchChange"
+      }
+    },
+    {
+      "id": "sheet.export",
+      "title": "导出选项",
+      "module": "图库",
+      "description": "批量导出文件与命名规则。",
+      "docSection": "整理 / 导出",
+      "suggestedCaption": "导出支持原图、转换格式与按相簿分目录。",
+      "action": {
+        "kind": "sheet",
+        "target": "export"
+      }
+    },
+    {
+      "id": "sheet.compression",
+      "title": "压缩导出",
+      "module": "图库",
+      "description": "按尺寸与质量压缩后导出。",
+      "docSection": "整理 / 导出",
+      "suggestedCaption": "压缩导出在保留元数据的前提下减小体积。",
+      "action": {
+        "kind": "sheet",
+        "target": "compression"
+      }
+    },
+    {
+      "id": "sheet.keywords",
+      "title": "关键词管理",
+      "module": "图库",
+      "description": "给所选照片批量添加关键词。",
+      "docSection": "浏览与整理 / 关键词",
+      "suggestedCaption": "关键词管理支持批量添加与已有词复用。",
+      "action": {
+        "kind": "sheet",
+        "target": "keywords"
+      }
+    },
+    {
+      "id": "sheet.shortcuts",
+      "title": "快捷键",
+      "module": "图库",
+      "description": "应用内快捷键总表。",
+      "docSection": "使用 / 快捷键",
+      "suggestedCaption": "常用操作都能用键盘完成，快捷键表随时可查。",
+      "action": {
+        "kind": "sheet",
+        "target": "shortcuts"
+      }
+    },
+    {
+      "id": "confirm.delete",
+      "title": "删除确认",
+      "module": "图库",
+      "description": "移入最近删除前的确认卡片。",
+      "docSection": "浏览与整理 / 删除",
+      "suggestedCaption": "删除先确认再进最近删除，随时可以恢复。",
+      "action": {
+        "kind": "overlay",
+        "target": "deleteConfirm",
+        "count": 6
+      }
+    },
+    {
+      "id": "editor.photo",
+      "title": "照片编辑器",
+      "module": "编辑",
+      "description": "裁剪、调色与标记。",
+      "docSection": "编辑 / 编辑器",
+      "suggestedCaption": "编辑器覆盖在查看器之上，退出后回到原来的位置。",
+      "action": {
+        "kind": "editor"
+      }
+    },
+    {
+      "id": "slideshow",
+      "title": "幻灯片",
+      "module": "观看",
+      "description": "全窗口幻灯片播放。",
+      "docSection": "观看 / 幻灯片",
+      "suggestedCaption": "幻灯片按当前筛选结果播放，支持键盘翻页。",
+      "action": {
+        "kind": "overlay",
+        "target": "slideshow"
+      }
+    },
+    {
+      "id": "gallery.sorted",
+      "title": "图库 · 按地点排序",
+      "module": "图库",
+      "description": "顶栏切换排序后的网格结果。",
+      "docSection": "浏览与整理 / 排序",
+      "suggestedCaption": "排序方式随时切换，网格立即重排。",
+      "action": {
+        "kind": "gallery",
+        "grouping": "all",
+        "aspect": "square",
+        "sortKey": "place",
+        "sortAscending": true
+      }
+    },
+    {
+      "id": "menu.photo",
+      "title": "照片右键菜单",
+      "module": "图库",
+      "description": "网格里对照片点右键弹出的操作菜单。",
+      "docSection": "浏览与整理 / 右键",
+      "suggestedCaption": "右键菜单按当前选区作用于整组照片。",
+      "action": {
+        "kind": "menu",
+        "target": "photo",
+        "x": 0.42,
+        "y": 0.52
+      }
+    },
+    {
+      "id": "menu.sidebar",
+      "title": "侧边栏右键菜单",
+      "module": "图库",
+      "description": "相簿 / 模块的右键操作。",
+      "docSection": "浏览与整理 / 右键",
+      "suggestedCaption": "侧边栏右键可以新建、重命名、移入文件夹。",
+      "action": {
+        "kind": "menu",
+        "target": "sidebar",
+        "x": 0.075,
+        "y": 0.62
+      }
+    },
+    {
+      "id": "import.panel",
+      "title": "导入面板",
+      "module": "图库",
+      "description": "拖拽之外的导入入口。",
+      "docSection": "导入 / 面板",
+      "suggestedCaption": "导入面板保留来源、去重与相簿选项。",
+      "action": {
+        "kind": "window",
+        "target": "import"
+      }
+    },
+    {
+      "id": "wizard.catalog",
+      "title": "接入网络资源",
+      "module": "网络资源",
+      "description": "资源站接入向导。",
+      "docSection": "网络资源 / 接入",
+      "suggestedCaption": "粘贴站点地址即可探测类型并导入。",
+      "action": {
+        "kind": "wizard",
+        "target": "catalog"
+      }
+    },
+    {
+      "id": "wizard.cloud",
+      "title": "接入网络存储",
+      "module": "网络存储",
+      "description": "网盘 / WebDAV / NAS 接入表单。",
+      "docSection": "网络存储 / 接入",
+      "suggestedCaption": "凭据只进钥匙串，接入后目录直接出现在侧边栏。",
+      "action": {
+        "kind": "wizard",
+        "target": "cloud"
+      }
+    },
+    {
+      "id": "wizard.tv",
+      "title": "接入电视源",
+      "module": "网络电视",
+      "description": "M3U / EPG 接入向导。",
+      "docSection": "网络电视 / 接入",
+      "suggestedCaption": "播放列表与节目单可以一起导入。",
+      "action": {
+        "kind": "wizard",
+        "target": "tv"
+      }
+    },
+    {
+      "id": "sidebar.basics",
+      "title": "侧边栏 · 逐项点击",
+      "module": "侧边栏",
+      "description": "图库 / 精选集 / 媒体类型 / 更多项目 / 相簿总览，逐项点开。",
+      "docSection": "浏览与整理 / 侧边栏",
+      "suggestedCaption": "侧边栏每一项都有独立页面，逐项点开即可直达。",
+      "action": {
+        "kind": "sidebar",
+        "target": "basics"
+      }
+    },
+    {
+      "id": "sidebar.albums",
+      "title": "侧边栏 · 相簿逐项",
+      "module": "侧边栏",
+      "description": "展开「图库 › 相簿」，逐个打开每个相簿与智能相簿。",
+      "docSection": "浏览与整理 / 侧边栏",
+      "suggestedCaption": "相簿逐项打开，选中行在侧边栏保持高亮。",
+      "action": {
+        "kind": "sidebar",
+        "target": "albums"
+      }
+    },
+    {
+      "id": "sidebar.folders",
+      "title": "侧边栏 · 文件夹逐项",
+      "module": "侧边栏",
+      "description": "展开文件夹层级，逐个打开每个文件夹。",
+      "docSection": "浏览与整理 / 侧边栏",
+      "suggestedCaption": "文件夹展开后按层级缩进，逐层点开即可。",
+      "action": {
+        "kind": "sidebar",
+        "target": "folders"
+      }
+    },
+    {
+      "id": "sidebar.cloud",
+      "title": "侧边栏 · 网络存储逐层",
+      "module": "网络存储",
+      "description": "展开网盘，依次打开网盘、网盘影院与根目录。",
+      "docSection": "网络存储 / 侧边栏",
+      "suggestedCaption": "网盘展开后先看到影院与分类，再往下是目录相簿。",
+      "action": {
+        "kind": "sidebar",
+        "target": "cloud"
+      }
+    },
+    {
+      "id": "sidebar.catalog",
+      "title": "侧边栏 · 网络资源逐项",
+      "module": "网络资源",
+      "description": "接入的每个资源站与影视源逐项点开。",
+      "docSection": "网络资源 / 侧边栏",
+      "suggestedCaption": "资源站按类型分组，点任一行即切到该源首页。",
+      "action": {
+        "kind": "sidebar",
+        "target": "catalog"
+      }
+    },
+    {
+      "id": "sidebar.tv",
+      "title": "侧边栏 · 电视源逐层",
+      "module": "网络电视",
+      "description": "展开电视源，逐个点开源与它的频道分类。",
+      "docSection": "网络电视 / 侧边栏",
+      "suggestedCaption": "电视源展开后按分类逐层进入频道墙。",
+      "action": {
+        "kind": "sidebar",
+        "target": "tv"
+      }
+    },
+    {
+      "id": "sidebar.scenes",
+      "title": "侧边栏 · 场景逐项",
+      "module": "侧边栏",
+      "description": "识别出的每个场景逐项点开。",
+      "docSection": "浏览与整理 / 侧边栏",
+      "suggestedCaption": "场景按识别结果自动出现在侧边栏，点开即筛选。",
+      "action": {
+        "kind": "sidebar",
+        "target": "scenes"
+      }
+    },
+    {
+      "id": "ai.welcome",
+      "title": "AI 智能助手 · 能力首页",
+      "module": "智能助手",
+      "description": "没有对话时的能力总览与示例问题。",
+      "docSection": "智能助手 / 首页",
+      "suggestedCaption": "助手按能力领域给出示例，点一下就能开始。",
+      "action": {
+        "kind": "ai",
+        "target": "welcome"
+      }
+    },
+    {
+      "id": "ai.chat",
+      "title": "AI 智能助手 · 对话与操作回执",
+      "module": "智能助手",
+      "description": "提问、工具执行回执与最终回答。",
+      "docSection": "智能助手 / 对话",
+      "suggestedCaption": "助手把工具执行过程与结果一起写进对话。",
+      "action": {
+        "kind": "ai",
+        "target": "chat"
+      }
+    },
+    {
+      "id": "ai.approval",
+      "title": "AI 智能助手 · 写操作确认",
+      "module": "智能助手",
+      "description": "新建相簿、加入照片、写入关键词前的确认卡。",
+      "docSection": "智能助手 / 确认",
+      "suggestedCaption": "写操作逐项列出，可选仅本次、本任务或始终允许。",
+      "action": {
+        "kind": "ai",
+        "target": "approval"
+      }
+    }
+  ]
+}

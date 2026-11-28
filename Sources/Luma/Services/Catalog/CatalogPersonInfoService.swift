@@ -3,14 +3,14 @@ import Foundation
 // MARK: - 模型
 
 /// 人物资料里的一条字段（出生、身高、事务所…）。
-struct CatalogPersonFact: Codable, Hashable, Identifiable {
+struct CatalogPersonFact: Codable, Hashable, Identifiable, Sendable {
     var label: String
     var value: String
     var id: String { "\(label)|\(value)" }
 }
 
 /// 内置资料库里的一个人物 / 片商档案。
-struct CatalogPersonInfo: Codable, Hashable {
+struct CatalogPersonInfo: Codable, Hashable, Sendable {
     var name: String
     var role: String
     var summary: String
@@ -30,7 +30,9 @@ struct CatalogPersonInfo: Codable, Hashable {
 
 /// 人物 / 片商档案：全部来自内置的 `Resources/Catalog/catalog.sqlite`，不再联网检索。
 /// 打开档案时只做一次内存索引查找，字段一次给全。
-@MainActor
+///
+/// 不绑定主线程：详情页的人物识别会把它放到后台线程执行，
+/// 避免首次读库 / 建索引时把整窗卡住。
 final class CatalogPersonInfoService {
     static let shared = CatalogPersonInfoService()
 

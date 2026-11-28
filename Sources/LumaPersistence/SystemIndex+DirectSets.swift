@@ -511,6 +511,160 @@ package extension SystemIndex {
         return photos
     }
 
+    /// 批量相簿封面：相簿墙有上百个相簿时逐个查询要串行好几秒，
+    /// 这里改成「自定义封面 / 官方关键照片 / 成员顺序」三次批量查询 + 一次按主键回表。
+    ///
+    /// 注意不能在这些查询里直接 JOIN ZASSET：SQLite 会掉头扫整张主表（实测 400 本相簿 52 秒）。
+    /// 先只从关联表拿资产主键，最后用 `Z_PK IN (...)` 回表，1.5 万级候选也只要几十毫秒。
+    func directAlbumPreviewPhotosBatch(_ albumIDs: [Int64], limit: Int) -> [Int64: [PhotoItem]] {
+        guard limit > 0, !albumIDs.isEmpty,
+              let albumTable = direct?.albumTable,
+              let albumColumn = direct?.albumColumn else { return [:] }
+        let ids = Array(albumIDs.prefix(400))
+        let list = ids.map(String.init).joined(separator: ",")
+        let assetColumn = direct?.assetColumn ?? "_none"
+        let order = direct?.albumOrderColumn ?? assetColumn
+
+        // 1) 用户在「照片」里单独设定的相簿封面：主键查询，不做联接。
+        var customCovers: [Int64: Int64] = [:]
+        if direct?.albumColumns.contains("ZCUSTOMKEYASSET") == true,
+           let rows = try? database.query("""
+               SELECT Z_PK AS album, ZCUSTOMKEYASSET AS asset FROM ZGENERICALBUM
+               WHERE Z_PK IN (\(list)) AND ZCUSTOMKEYASSET IS NOT NULL
+               """) {
+            for row in rows {
+                guard let album = row["album"]?.int64, let asset = row["asset"]?.int64,
+                      asset != 0 else { continue }
+                customCovers[album] = asset
+            }
+        }
+
+        // 2) 官方为相簿维护的关键照片（每本最多 limit 张）。
+        var keyAssets: [Int64: [Int64]] = [:]
+        if let join = direct?.keyAssetJoin {
+            let keyOrder = join.orderColumn ?? join.assetColumn
+            if let rows = try? database.query("""
+                SELECT album, asset FROM (
+                    SELECT k.\(join.albumColumn) AS album, k.\(join.assetColumn) AS asset,
+                           ROW_NUMBER() OVER (PARTITION BY k.\(join.albumColumn)
+                                              ORDER BY k.\(keyOrder)) AS rn
+                    FROM \(join.table) k WHERE k.\(join.albumColumn) IN (\(list))
+                ) WHERE rn <= \(limit)
+                """) {
+                for row in rows {
+                    guard let album = row["album"]?.int64, let asset = row["asset"]?.int64 else { continue }
+                    keyAssets[album, default: []].append(asset)
+                }
+            }
+        }
+
+        // 3) 成员顺序：多取几张，回表时再跳过已删除 / 隐藏的项目。
+        var members: [Int64: [Int64]] = [:]
+        if let rows = try? database.query("""
+            SELECT album, member FROM (
+                SELECT j.\(albumColumn) AS album, j.\(assetColumn) AS member,
+                       ROW_NUMBER() OVER (PARTITION BY j.\(albumColumn)
+                                          ORDER BY j.\(order)) AS rn
+                FROM \(albumTable) j WHERE j.\(albumColumn) IN (\(list))
+            ) WHERE rn <= \(limit + 4)
+            """) {
+            for row in rows {
+                guard let album = row["album"]?.int64, let member = row["member"]?.int64 else { continue }
+                members[album, default: []].append(member)
+            }
+        }
+
+        // 4) 组装每本相簿的候选顺序（自定义 → 关键照片 → 成员顺序），一次按主键回表。
+        var wants: [Int64: [Int64]] = [:]
+        var allKeys: [Int64] = []
+        for album in ids {
+            var candidates: [Int64] = []
+            if let custom = customCovers[album] { candidates.append(custom) }
+            candidates.append(contentsOf: keyAssets[album] ?? [])
+            candidates.append(contentsOf: members[album] ?? [])
+            var seen: Set<Int64> = []
+            let unique = Array(candidates.filter { seen.insert($0).inserted }.prefix(limit + 6))
+            wants[album] = unique
+            allKeys.append(contentsOf: unique)
+        }
+        var photosByPK: [Int64: PhotoItem] = [:]
+        var start = 0
+        while start < allKeys.count {
+            let end = min(start + 500, allKeys.count)
+            let chunk = allKeys[start..<end].map(String.init).joined(separator: ",")
+            if let rows = try? database.query("""
+                SELECT \(directSelect), a.Z_PK AS pk_key \(directFrom)
+                WHERE a.Z_PK IN (\(chunk)) AND a.ZTRASHEDSTATE = 0 AND a.ZHIDDEN = 0
+                """) {
+                for row in rows {
+                    guard let pk = row["pk_key"]?.int64, let item = directPhoto(from: row) else { continue }
+                    photosByPK[pk] = item
+                }
+            }
+            start = end
+        }
+
+        var result: [Int64: [PhotoItem]] = [:]
+        for (album, keys) in wants {
+            let photos = keys.compactMap { photosByPK[$0] }
+                .filter { $0.deletedAt == nil && !$0.isHidden }
+                .prefix(limit)
+            result[album] = Array(photos)
+        }
+        directAlbumCacheLock.lock()
+        if directAlbumPreviewCache.count > 4_000 { directAlbumPreviewCache.removeAll(keepingCapacity: true) }
+        for (album, photos) in result {
+            directAlbumPreviewCache["\(album)#\(limit)"] = photos
+        }
+        directAlbumCacheLock.unlock()
+        return result
+    }
+
+    /// 相簿成员顺序是否就是拍摄时间顺序。
+    ///
+    /// Apple 把相簿的展示顺序存在联接表的 `Z_FOK_*` 列上，并建了
+    /// `(相簿, Z_FOK, 资产)` 的覆盖索引。顺序等于拍摄时间时可以直接沿这条索引分页：
+    /// 每页只回主表取一页（2.2 万张的相簿实测 1.2 秒 → 50 毫秒），
+    /// 否则「按日期排全部成员」要把两万多个成员逐个回主表读一遍。
+    ///
+    /// 只取 8 个等距位置的日期判断是否单调：用户手动拖拽过的相簿基本立刻露馅，
+    /// 结论按（相簿，成员数）缓存，成员变化后重新判断。
+    func directAlbumOrderIsByDate(_ albumID: Int64, count: Int) -> Bool {
+        guard count > 1, let albumTable = direct?.albumTable,
+              let albumColumn = direct?.albumColumn,
+              let order = direct?.albumOrderColumn else { return false }
+        directAlbumCacheLock.lock()
+        if let cached = directAlbumDateOrderCache[albumID], cached.count == count {
+            directAlbumCacheLock.unlock()
+            return cached.isDateOrder
+        }
+        directAlbumCacheLock.unlock()
+        let asset = direct?.assetColumn ?? "_none"
+        // 位置在 0…count-1 之间等距取 8 个，逐点回主表取日期。
+        var dates: [Double] = []
+        dates.reserveCapacity(8)
+        for step in 0..<8 {
+            let position = step * (count - 1) / 7
+            let sql = """
+                SELECT (a.ZDATECREATED + 978307200) AS d FROM \(albumTable) j
+                JOIN ZASSET a ON a.Z_PK = j.\(asset)
+                WHERE j.\(albumColumn) = ?
+                ORDER BY j.\(order) ASC
+                LIMIT 1 OFFSET \(position)
+                """
+            guard let value = (try? database.query(sql, [albumID]).first?["d"]?.double) else {
+                return false
+            }
+            dates.append(value)
+        }
+        let isDateOrder = zip(dates, dates.dropFirst()).allSatisfy { $0 <= $1 }
+        directAlbumCacheLock.lock()
+        if directAlbumDateOrderCache.count > 4_000 { directAlbumDateOrderCache.removeAll(keepingCapacity: true) }
+        directAlbumDateOrderCache[albumID] = (count, isDateOrder)
+        directAlbumCacheLock.unlock()
+        return isDateOrder
+    }
+
     /// 某一年的收藏封面：沿收藏部分索引按日期范围取前几张，
     /// 用于收藏汇总还没算完时先把年份卡片填上真实照片。
     func favoriteCovers(year: Int, limit: Int) -> [PhotoItem] {

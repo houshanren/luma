@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import AppKit
 import UniformTypeIdentifiers
 import PlaybackCore
@@ -15,48 +16,49 @@ struct CinemaSubtitleQuery: Equatable {
 /// 顶栏与画面内控制条共享的播放 UI 状态：音轨列表、外挂字幕与偏移。
 /// 播放页（VideoPlayerStage）负责真正重建流 / 切换 AV 音轨，这里只保存展示状态。
 @MainActor
-final class VideoPlaybackUI: ObservableObject {
+@Observable
+final class VideoPlaybackUI {
     struct AudioChoice: Identifiable, Equatable {
         let index: Int
         let title: String
         var id: Int { index }
     }
 
-    @Published private(set) var audioChoices: [AudioChoice] = []
-    @Published private(set) var selectedAudioIndex = 0
-    @Published private(set) var subtitleCues: [SubtitleCue] = []
-    @Published private(set) var subtitleName: String?
+    private(set) var audioChoices: [AudioChoice] = []
+    private(set) var selectedAudioIndex = 0
+    private(set) var subtitleCues: [SubtitleCue] = []
+    private(set) var subtitleName: String?
     /// 本次播放里用户是否亲手选过字幕：恢复记忆时不能覆盖当次的新选择。
-    private(set) var hasManualSubtitleChoice = false
+    @ObservationIgnored private(set) var hasManualSubtitleChoice = false
     /// 源文件里的内嵌字幕轨（ffprobe 拿到）；文本轨可提取成 cue。
-    @Published private(set) var embeddedTracks: [SubtitleTrackInfo] = []
-    @Published private(set) var embeddedTrackOrdinal: Int?
-    @Published private(set) var embeddedLoading = false
+    private(set) var embeddedTracks: [SubtitleTrackInfo] = []
+    private(set) var embeddedTrackOrdinal: Int?
+    private(set) var embeddedLoading = false
     /// 外挂字幕时间轴偏移（秒），正值表示字幕延后出现。
-    @Published var subtitleOffset: Double = 0
+    var subtitleOffset: Double = 0
     /// 正在烧录的图形字幕文件名；nil 表示未开启烧录。
-    @Published private(set) var burnSubtitleName: String?
+    private(set) var burnSubtitleName: String?
     /// 已复制到临时目录的烧录字幕路径（交给 ffmpeg 的 subtitles 滤镜）。
     private(set) var burnSubtitleURL: URL?
     /// 正在烧录的内嵌图形字幕轨（PGS / VobSub）；与 burnSubtitleURL 二选一。
-    @Published private(set) var burnSubtitleStream: Int?
+    private(set) var burnSubtitleStream: Int?
     /// 当前片源章节：章节菜单与进度条刻度共用（蓝光播放列表 / Matroska）。
-    @Published private(set) var chapters: [VideoChapter] = []
+    private(set) var chapters: [VideoChapter] = []
     /// 蓝光盘内元数据标题：章节菜单的标题行（标准里没有逐章文本名）。
-    @Published private(set) var discTitle: String?
+    private(set) var discTitle: String?
     /// 蓝光多角度：可用视角数（1 = 普通影片）与当前选择。
-    @Published private(set) var angleCount = 1
-    @Published private(set) var selectedAngle = 1
+    private(set) var angleCount = 1
+    private(set) var selectedAngle = 1
     /// 片源是 HDR / 杜比视界且本机可映射：播放器内才会出现色调映射开关。
-    @Published private(set) var hdrToneMapAvailable = false
+    private(set) var hdrToneMapAvailable = false
     /// 本次播放是否已开启 HDR → SDR 色调映射。
-    @Published private(set) var hdrToneMapEnabled = false
+    private(set) var hdrToneMapEnabled = false
 
     /// 从影院进入播放时写入；在线字幕搜索据此拿到片名与季集号。
     var subtitleQuery: CinemaSubtitleQuery?
-    @Published private(set) var onlineSubtitles: [CinemaSubtitleMatch] = []
-    @Published private(set) var onlineSubtitleLoading = false
-    @Published private(set) var onlineSubtitleHint: String?
+    private(set) var onlineSubtitles: [CinemaSubtitleMatch] = []
+    private(set) var onlineSubtitleLoading = false
+    private(set) var onlineSubtitleHint: String?
 
     /// HLS 模式切换音轨需要重建流，由播放页注册。
     var onSelectStreamAudio: ((Int) -> Void)?
@@ -77,11 +79,11 @@ final class VideoPlaybackUI: ObservableObject {
     /// 解析失败等提示，由播放页转成 toast。
     var onMessage: ((String) -> Void)?
 
-    private var loadToken = 0
+    @ObservationIgnored private var loadToken = 0
     /// 当前片源地址：手动选中的外挂字幕只有位于同目录时才值得记住文件名。
-    private var currentSourceURL: URL?
+    @ObservationIgnored private var currentSourceURL: URL?
     /// 自动在线匹配每次播放只尝试一次，失败也不反复请求。
-    private var autoOnlineTried = false
+    @ObservationIgnored private var autoOnlineTried = false
 
     var hasSubtitle: Bool { subtitleName != nil }
     /// 是否正在烧录字幕（外挂文件或内嵌图形轨）：两种都必须转码，不能走原生直连 / 缓存。

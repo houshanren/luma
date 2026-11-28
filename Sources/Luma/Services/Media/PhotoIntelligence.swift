@@ -32,6 +32,12 @@ enum PhotoIntelligence {
         var extra: [String] = []
         if photo.kind == .screenshot { extra.append("截图") }
         if photo.kind == .selfie { extra.append("自拍") }
+        // Photos 导入的截图常常 kind 仍是 photo；用「屏幕比例 + 大量文字 + 无相机信息」兜底。
+        if !extra.contains("截图"),
+           !result.labels.contains("截图"),
+           looksLikeScreenshot(photo: photo, text: result.text) {
+            extra.append("截图")
+        }
         if !extra.isEmpty {
             var pieces = result.labels.split(separator: " ").map(String.init)
             let sentinel = PhotoTagCatalog.sentinel
@@ -61,10 +67,12 @@ enum PhotoIntelligence {
         let pose = VNDetectHumanBodyPoseRequest()
         // 证件 / 票据的翻拍：先把文档区域裁出来，再对裁切图做 OCR，小字命中率明显更高。
         let segmentation = VNDetectDocumentSegmentationRequest()
+        // 系统分类器：作为 SigLIP 的第二信号，专门补场景 / 文档 / 服饰这些欠触发概念。
+        let classify = VNClassifyImageRequest()
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         do {
-            try handler.perform([barcodes, faces, pose, segmentation])
+            try handler.perform([barcodes, faces, pose, segmentation, classify])
         } catch {
             return nil
         }
@@ -79,20 +87,16 @@ enum PhotoIntelligence {
         var feature: Data?
         var legacy: [String] = []
         var usedSigLIP = false
+        var siglipTagCount = 0
 
         // 主识别：SigLIP 2 图文模型（中文标准标签 + 语义向量）。
         if let siglip = SigLIPEngine.shared.imageResult(cgImage: cgImage) {
             usedSigLIP = true
             tags.append(contentsOf: siglip.tags)
+            siglipTagCount = siglip.tags.count
             feature = siglip.embedding
-            // 物体检测补充明确主体（猫 / 狗 / 汽车 / 披萨等），与模型标签去重。
-            for title in ObjectDetector.shared.detect(cgImage: cgImage) where !tags.contains(title) {
-                tags.append(title)
-            }
         } else {
             // 模型不可用（例如旧系统）时回退到 Apple Vision 分类器与特征指纹。
-            let classify = VNClassifyImageRequest()
-            try? handler.perform([classify])
             legacy = (classify.results ?? [])
                 .filter { $0.confidence >= 0.12 }
                 .prefix(20)
@@ -101,6 +105,25 @@ enum PhotoIntelligence {
             if (try? handler.perform([featureRequest])) != nil,
                let observation = featureRequest.results?.first {
                 feature = normalizedVectorData(observation)
+            }
+        }
+
+        // 物体检测按同一套门控：只在 SigLIP 标签 < 2 时补主体（猫 / 狗 / 汽车 / 披萨等）。
+        // 39 张人工标注上，YOLO 命中的 22 个标签全部已被 SigLIP 覆盖，却新引入 12 个错误标签，
+        // 把接受率从 0.840 拉到 0.769；门控后为 0.827。
+        if siglipTagCount < 2 {
+            for title in ObjectDetector.shared.detect(cgImage: cgImage) where !tags.contains(title) {
+                tags.append(title)
+            }
+        }
+
+        // 第二信号门控：只有 SigLIP 给出不足 2 个标签时才用系统分类器补。
+        // 1,200 张回放：全量合入把 0 标签从 178 降到 25，但 39 张人工标注的接受率
+        // 也从 0.753 掉到 0.579；门控后 0 标签仍是 25，接受率回到 0.705。
+        if siglipTagCount < 2 {
+            for title in AppleVisionTagMapper.titles(from: classify.results ?? [])
+            where !tags.contains(title) {
+                tags.append(title)
             }
         }
 
@@ -223,6 +246,18 @@ enum PhotoIntelligence {
         let width = (xs.max() ?? 0) - (xs.min() ?? 0)
         let height = (ys.max() ?? 0) - (ys.min() ?? 0)
         return width * height
+    }
+
+    /// 截图启发式：常见屏幕比例 + 足够多的文字 + 没有相机信息。
+    /// 只用于 Photos 导入后 kind 丢失的截图；手机相机照片通常带 make / model，不会命中。
+    private static func looksLikeScreenshot(photo: PhotoItem, text: String) -> Bool {
+        guard text.count >= 24,
+              photo.pixelWidth > 0, photo.pixelHeight > 0 else { return false }
+        let ratio = Double(photo.pixelWidth) / Double(photo.pixelHeight)
+        let screenRatios: [Double] = [0.46, 0.5625, 0.6667, 0.75, 1.3333, 1.7778]
+        guard screenRatios.contains(where: { abs(ratio - $0) < 0.02 }) else { return false }
+        let hasCamera = !(photo.make ?? "").isEmpty || !(photo.model ?? "").isEmpty
+        return !hasCamera
     }
 
     /// 证件照启发式：单人脸、脸占比足够大、竖幅或方幅，且人脸大致居中。

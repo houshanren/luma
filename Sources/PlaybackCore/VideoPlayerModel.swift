@@ -1,4 +1,5 @@
 import AVFoundation
+import Observation
 import AVKit
 import Combine
 import QuartzCore
@@ -57,50 +58,51 @@ public struct PlaybackFailure: Equatable, Sendable {
 
 /// AVPlayer 播放引擎：只负责「装片 → 播放 → 跳转 → 轨道选择 → 状态发布」。
 /// 片源解析、ffmpeg 会话、进度落盘、UI 布局都不在这里。
-public final class VideoPlayerModel: ObservableObject {
+@Observable
+public final class VideoPlayerModel {
     public let player = AVPlayer()
 
-    @Published public private(set) var currentTime: Double = 0
-    @Published public private(set) var duration: Double = 0
-    @Published public private(set) var bufferedTime: Double = 0
+    public private(set) var currentTime: Double = 0
+    public private(set) var duration: Double = 0
+    public private(set) var bufferedTime: Double = 0
     /// ffmpeg 已生成 / 已缓存到的末尾：HLS 边转边播时播放器只缓冲几秒，
     /// 进度条要画的是「已经写好、可以立即跳转」的区间。
-    @Published public private(set) var generatedEndTime: Double = 0
-    @Published public private(set) var isPlaying = false
-    @Published public private(set) var isBuffering = false
+    public private(set) var generatedEndTime: Double = 0
+    public private(set) var isPlaying = false
+    public private(set) var isBuffering = false
     /// 当前 AVPlayerItem 是否已经 readyToPlay。装上片子到出第一帧之间还有一段空窗，
     /// 这段时间界面必须显示等待动画，否则看起来就像「暂停了」。
-    @Published public private(set) var isItemReady = false
+    public private(set) var isItemReady = false
     /// 跳转请求还没有落地：大文件 / 网络流拖进度条时要等一会儿。
-    @Published public private(set) var isSeeking = false
+    public private(set) var isSeeking = false
     /// 用户意图是「要播放」：暂停时为 false。
     /// 缓冲等待也算播放中，否则中央会冒出播放按钮、控制条也会突然弹出来。
-    @Published public private(set) var wantsPlayback = false
-    @Published public private(set) var errorMessage: String?
+    public private(set) var wantsPlayback = false
+    public private(set) var errorMessage: String?
     /// 最近一次装片失败的结构化原因：播放页据此判断能否自动转码兜底。
-    @Published public private(set) var playbackFailure: PlaybackFailure?
+    public private(set) var playbackFailure: PlaybackFailure?
     /// 正在重建底层流（重新起 ffmpeg）：旧 item 还挂着，但本地 HLS 服务已停，
     /// 这期间必须显示等待转圈，也不能把旧 item 的瞬时网络错误当成致命错误。
-    @Published public private(set) var isReloading = false
-    @Published public private(set) var isPipAvailable = false
-    @Published public private(set) var isPipActive = false
+    public private(set) var isReloading = false
+    public private(set) var isPipAvailable = false
+    public private(set) var isPipActive = false
     /// 可选音轨 / 内嵌字幕（AVFoundation 原生容器与 HLS 音轨组）。
-    @Published public private(set) var audioOptions: [AVMediaSelectionOption] = []
-    @Published public private(set) var selectedAudio: AVMediaSelectionOption?
+    public private(set) var audioOptions: [AVMediaSelectionOption] = []
+    public private(set) var selectedAudio: AVMediaSelectionOption?
     /// 播放项实际装上的轨道数（含视频）与音轨数：HLS 单音轨也可用。
-    @Published public private(set) var itemTrackCount = 0
-    @Published public private(set) var itemAudioTrackCount = 0
-    @Published public private(set) var legibleOptions: [AVMediaSelectionOption] = []
-    @Published public private(set) var selectedLegible: AVMediaSelectionOption?
+    public private(set) var itemTrackCount = 0
+    public private(set) var itemAudioTrackCount = 0
+    public private(set) var legibleOptions: [AVMediaSelectionOption] = []
+    public private(set) var selectedLegible: AVMediaSelectionOption?
 
-    @Published public var speed: Double = 1
-    @Published public var volume: Double = 1 {
+    public var speed: Double = 1
+    public var volume: Double = 1 {
         didSet { player.volume = Float(volume) }
     }
-    @Published public var isMuted = false {
+    public var isMuted = false {
         didSet { player.isMuted = isMuted }
     }
-    @Published public var isLooping = false
+    public var isLooping = false
     /// 变速播放是否保持音调（频谱算法）。由播放页按设置注入，装片时生效。
     public var preservesPitch = true
     /// 媒体选项读取完成：参数是可选音轨数量。
@@ -284,19 +286,23 @@ public final class VideoPlayerModel: ObservableObject {
     public func load(url: URL, options: [String: Any] = [:], probe: VideoProbe,
                      autoplay: Bool = true, loop: Bool = false, muted: Bool = false,
                      timelineOffset: Double = 0, startAt: Double? = nil,
-                     forwardBufferDuration: Double = BufferProfile.defaultProfile.forwardBufferDuration) {
+                     forwardBufferDuration: Double = BufferProfile.defaultProfile.forwardBufferDuration,
+                     startsImmediately: Bool = false) {
         load(asset: AVURLAsset(url: url, options: options), probe: probe,
              autoplay: autoplay, loop: loop, muted: muted,
              timelineOffset: timelineOffset, startAt: startAt,
-             forwardBufferDuration: forwardBufferDuration)
+             forwardBufferDuration: forwardBufferDuration,
+             startsImmediately: startsImmediately)
     }
 
     /// 直接装载 AVAsset：PhotoKit 返回的云端 / 共享相簿素材没有本地文件 URL。
     /// `startAt` 是完整时间轴上的起播秒数：装片后先定位再开播，不会先闪一下 0 秒。
+    /// `startsImmediately` 给直播用：不等「攒够缓冲再开播」，拿到首段就出画面。
     public func load(asset: AVAsset, probe: VideoProbe,
                      autoplay: Bool = true, loop: Bool = false, muted: Bool = false,
                      timelineOffset: Double = 0, startAt: Double? = nil,
-                     forwardBufferDuration: Double = BufferProfile.defaultProfile.forwardBufferDuration) {
+                     forwardBufferDuration: Double = BufferProfile.defaultProfile.forwardBufferDuration,
+                     startsImmediately: Bool = false) {
         resetForNewItem()
         timeline = PlaybackTimeline(sessionStart: timelineOffset)
         duration = probe.duration
@@ -309,9 +315,13 @@ public final class VideoPlayerModel: ObservableObject {
             currentTime = startAt
         }
 
+        // 直播默认会先攒够「不卡顿」所需的缓冲才出画面，4 秒分片的源就要白等 4 秒以上。
+        // 直播改成立即起播：先出画面，缓冲不足时再进 buffering。
+        player.automaticallyWaitsToMinimizeStalling = !startsImmediately
         let item = AVPlayerItem(asset: asset)
         // 前向缓冲由网络缓冲档位决定：流畅档 16 秒，弱网 / 省流档更短。
-        item.preferredForwardBufferDuration = forwardBufferDuration
+        // 直播交给系统自己决定（0 = 自动），不要再额外攒一段。
+        item.preferredForwardBufferDuration = startsImmediately ? 0 : forwardBufferDuration
         observe(item)
         player.replaceCurrentItem(with: item)
         // 可能在订阅之后就已经 ready：补一次同步，避免等待动画一直不消失。

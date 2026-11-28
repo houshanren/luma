@@ -9,6 +9,8 @@ struct CatalogSourcesOverviewView: View {
     @State private var hoveringSource: UUID?
     /// 跨源搜索的结果二次筛选：点来源胶囊只看那个源，空 = 全部。
     @State private var resultSourceFilter: UUID?
+    /// 跨源搜索的媒体类型筛选：视频站与图集站混在一起时分开看。
+    @State private var resultMediaFilter: CatalogMediaFilter = .all
     /// 正在编辑的资源：卡片右键「编辑…」打开。
     @State private var editingSource: CatalogSource?
 
@@ -96,6 +98,11 @@ struct CatalogSourcesOverviewView: View {
                     .font(.system(size: 14, weight: .semibold))
                 if catalog.isGlobalSearching {
                     ProgressView().controlSize(.mini)
+                    if !catalog.globalResults.isEmpty {
+                        Text("已找到 \(catalog.globalResults.reduce(0) { $0 + $1.items.count }) 条 · \(catalog.globalResults.count) 个源")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("\(catalog.globalResults.reduce(0) { $0 + $1.items.count }) 条 · \(catalog.globalResults.count) 个源")
                         .font(.system(size: 11))
@@ -145,6 +152,15 @@ struct CatalogSourcesOverviewView: View {
                             in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             if !catalog.globalResults.isEmpty {
+                if hasGalleryResults {
+                    HStack(spacing: 8) {
+                        CatalogMediaFilterChips(selection: $resultMediaFilter)
+                        Text(resultMediaSummary)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                    }
+                }
                 resultFilterBar
             }
             ForEach(visibleResultGroups) { group in
@@ -165,7 +181,8 @@ struct CatalogSourcesOverviewView: View {
                         ForEach(group.items) { item in
                             if let source = source(group.sourceID) {
                                 CatalogSearchCell(source: source, item: item) {
-                                    catalog.playRemote(sourceID: group.sourceID, item: item)
+                                    // 图集进频道页内联详情看图，视频直接起播。
+                                    store.openCatalogItem(sourceID: group.sourceID, item: item)
                                 }
                             }
                         }
@@ -220,11 +237,51 @@ struct CatalogSourcesOverviewView: View {
 
     private var visibleResultGroups: [CatalogGlobalResult] {
         // 换关键词后旧筛选自然失效：结果里没有这个源就退回全部。
-        guard let filter = resultSourceFilter,
-              catalog.globalResults.contains(where: { $0.sourceID == filter }) else {
-            return catalog.globalResults
+        var groups = catalog.globalResults
+        if let filter = resultSourceFilter,
+           groups.contains(where: { $0.sourceID == filter }) {
+            groups = groups.filter { $0.sourceID == filter }
         }
-        return catalog.globalResults.filter { $0.sourceID == filter }
+        switch resultMediaFilter {
+        case .all:
+            return groups
+        case .video, .gallery:
+            // 综合站同一份结果里视频与图集混排：按条目筛选，而不是整组保留或丢弃。
+            let wantGallery = resultMediaFilter == .gallery
+            return groups.compactMap { group in
+                guard let source = catalog.sources.first(where: { $0.id == group.sourceID })
+                else { return group }
+                let items = group.items.filter { $0.isGallery(in: source) == wantGallery }
+                guard !items.isEmpty else { return nil }
+                return CatalogGlobalResult(sourceID: group.sourceID,
+                                           sourceName: group.sourceName,
+                                           items: items)
+            }
+        }
+    }
+
+    /// 结果里有没有图集：有才显示「视频 / 图集」筛选，纯视频站时不额外添控件。
+    private var hasGalleryResults: Bool {
+        catalog.globalResults.contains { group in
+            guard let source = catalog.sources.first(where: { $0.id == group.sourceID })
+            else { return false }
+            return group.items.contains { $0.isGallery(in: source) }
+        }
+    }
+
+    private var resultMediaSummary: String {
+        var video = 0
+        var gallery = 0
+        for group in catalog.globalResults {
+            guard let source = catalog.sources.first(where: { $0.id == group.sourceID }) else {
+                video += group.items.count
+                continue
+            }
+            for item in group.items {
+                if item.isGallery(in: source) { gallery += 1 } else { video += 1 }
+            }
+        }
+        return "视频 \(video) · 图集 \(gallery)"
     }
 
     // MARK: - 源卡片墙
@@ -347,6 +404,11 @@ struct CatalogSourcesOverviewView: View {
                 catalog.togglePin(sourceID: source.id)
             }
             Button("编辑…") { editingSource = source }
+            if source.kind.mayRequireLogin {
+                Button(source.cookieState == .valid ? "更新 Cookie…" : "粘贴 Cookie…") {
+                    catalog.presentCookiePrompt(for: source)
+                }
+            }
             Button("检测状态") { catalog.checkHealth(force: true) }
             Button(source.isEnabled ? "停用" : "启用") {
                 catalog.setEnabled(source.id, enabled: !source.isEnabled)
@@ -420,6 +482,9 @@ struct CatalogSourcesOverviewView: View {
             case .online:
                 color = .green
                 text = "在线"
+            case .needsLogin:
+                color = .orange
+                text = "需登录"
             case .limited:
                 color = .yellow
                 text = "需验证"
@@ -790,6 +855,25 @@ private struct CatalogSearchCell: View {
                                        startPoint: .center, endPoint: .bottom)
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
+                    .overlay(alignment: .topTrailing) {
+                        if item.isGallery(in: source) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "photo.stack.fill")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                Text("图集")
+                                    .font(.system(size: 8.5, weight: .bold))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.45), in: Capsule(style: .continuous))
+                            .overlay {
+                                Capsule(style: .continuous)
+                                    .strokeBorder(.white.opacity(0.22), lineWidth: 0.5)
+                            }
+                            .padding(6)
+                        }
+                    }
                     .overlay(alignment: .bottomLeading) {
                         if !item.remark.isEmpty {
                             Text(item.remark)
@@ -802,7 +886,8 @@ private struct CatalogSearchCell: View {
                     }
                     .overlay {
                         if hovering {
-                            Image(systemName: "play.fill")
+                            Image(systemName: item.isGallery(in: source)
+                                  ? "photo.stack.fill" : "play.fill")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.black.opacity(0.82))
                                 .frame(width: 26, height: 26)

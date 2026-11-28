@@ -52,73 +52,19 @@ struct TVHubView: View {
 /// 工具栏中区的分页胶囊：频道 / 电视源 / 状态。
 struct TVHubTabs: View {
     @Environment(IPTVBrowserModel.self) private var tv
-    @Namespace private var tabNamespace
 
     var body: some View {
-        tabsCapsule
-    }
-
-    private var tabsCapsule: some View {
-        HStack(spacing: 2) {
-            ForEach(TVHubTab.allCases) { tab in
-                tabButton(tab)
-            }
-        }
-        .padding(2)
-        .background(Color.primary.opacity(0.06), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-        .disabled(!tv.enabled)
-        .opacity(tv.enabled ? 1 : 0.5)
-    }
-
-    private func tabButton(_ tab: TVHubTab) -> some View {
-        let active = tv.hubTab == tab
-        return Button {
+        HubTabBar(items: TVHubTab.allCases,
+                  active: tv.hubTab,
+                  title: \.title,
+                  symbol: \.symbol,
+                  badge: badge(for:)) { tab in
             withAnimation(.easeOut(duration: 0.18)) {
                 tv.setHubTab(tab)
             }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .fixedSize()
-                Text(tab.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                if let badge = badge(for: tab), badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(active ? Color.accentColor : Color.secondary)
-                        .padding(.horizontal, 4.5)
-                        .padding(.vertical, 1)
-                        .background(active ? Color.white.opacity(0.92)
-                                           : Color.primary.opacity(0.08),
-                                    in: Capsule(style: .continuous))
-                }
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(active ? Color.white : Color.secondary)
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background {
-                if active {
-                    Capsule(style: .continuous)
-                        .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "tv-hub-tab", in: tabNamespace)
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
         }
-        .buttonStyle(.plain)
-        .help(tab.title)
+        .disabled(!tv.enabled)
+        .opacity(tv.enabled ? 1 : 0.5)
     }
 
     private func badge(for tab: TVHubTab) -> Int? {

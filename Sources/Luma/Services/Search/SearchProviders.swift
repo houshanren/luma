@@ -14,7 +14,8 @@ enum SearchProviders {
             CinemaSearchProvider(store: store),
             NetworkCinemaSearchProvider(catalog: catalog),
             TelevisionSearchProvider(tv: tv),
-            CatalogSearchProvider(catalog: catalog)
+            CatalogSearchProvider(catalog: catalog),
+            AtlasSearchProvider()
         ]
     }
 }
@@ -29,63 +30,94 @@ private final class LibrarySearchProvider: SearchProviding {
     init(store: LibraryStore) { self.store = store }
 
     func search(query: String, limit: Int) async -> SearchSection {
+        await search(query: query, limit: limit, onPartial: { _ in })
+    }
+
+    /// 图库检索按「分类」增量返回：相簿 / 文件夹 / 人物 / 场景 / 位置先算先发，
+    /// 图片视频先发准确数量、再补一页命中行；百万级图库不再等全量扫描后才出结果。
+    func search(query: String,
+                limit: Int,
+                onPartial: @escaping @MainActor (SearchSection) -> Void) async -> SearchSection {
         let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let store, !keyword.isEmpty else { return empty }
 
         let targets = LibrarySearchCrossLibrary.targets(store: store)
         let currentTarget = targets.first(where: \.isCurrent)
-        // 浏览网络影院 / 网络电视 / 网络资源这些模块时，store 里没有图库内容
-        // （`sidebarItem` 不在系统图库范围、photos 为空）。这时不能拿 store 当「当前图库」，
-        // 否则图库来源永远 0；当前图库也改走只读直连。
         let storeServesLibrary = store.isSystemScope || !store.isNativeContainer
 
         var hits: [SearchHit] = []
         var kindCounts: [SearchHitKind: Int] = [:]
         var total = 0
 
+        func publish() {
+            guard !Task.isCancelled else { return }
+            onPartial(SearchSection(source: source, hits: hits, total: total, kindCounts: kindCounts))
+        }
+        func tagCurrent(_ mapped: [MappedHit]) -> [SearchHit] {
+            guard let currentTarget else { return mapped.map(\.hit) }
+            return mapped.map { entry in
+                var hit = entry.hit
+                hit.origin = hit.origin ?? currentTarget.name
+                hit.libraryPath = currentTarget.path
+                return hit
+            }
+        }
+        func merge(_ mapped: [MappedHit], kind: SearchHitKind, updatesCount: Bool = true) {
+            let tagged = tagCurrent(mapped)
+            if updatesCount { kindCounts[kind] = tagged.count }
+            // 按固定优先级插到对应分组的位置：谁先返回都不会打乱最终顺序
+            // （人物 → 位置 → 文件夹 → 相簿 → 视频 → 图片 → 场景）。
+            let priority = Self.kindOrder(of: kind)
+            if let index = hits.firstIndex(where: { Self.kindOrder(of: $0.kind) > priority }) {
+                hits.insert(contentsOf: tagged, at: index)
+            } else {
+                hits += tagged
+            }
+            total = kindCounts.values.reduce(0, +)
+            publish()
+        }
+
         if storeServesLibrary {
-            // 系统图库的分页窗口是异步装填的：搜索词一变，窗口先清空再跑 SQL。
-            // 不等它落地就统计，大库上会瞬间得到「图库 0」并被搜索会话缓存住。
-            await waitForSystemWindow(store: store)
-
-            let media = mediaHits(store: store, keyword: keyword)
-            hits = media.hits
-            if media.imageTotal > 0 { kindCounts[.photo] = media.imageTotal }
-            if media.videoTotal > 0 { kindCounts[.video] = media.videoTotal }
-
-            let albums = albumHits(store: store, keyword: keyword)
-            hits += albums.map(\.hit)
-            kindCounts[.album] = albums.count
-
-            let folders = folderHits(store: store, keyword: keyword)
-            hits += folders.map(\.hit)
-            kindCounts[.folder] = folders.count
-
-            let people = personHits(store: store, keyword: keyword)
-            hits += people.map(\.hit)
-            kindCounts[.person] = people.count
-
-            // 场景是「分类数据」：按场景标题与识别标签匹配（搜「猫」能找到动物 / 宠物场景）。
-            let scenes = sceneHits(store: store, keyword: keyword)
-            hits += scenes.map(\.hit)
-            kindCounts[.scene] = scenes.count
-
-            let places = placeHits(store: store, keyword: keyword)
-            hits += places.map(\.hit)
-            kindCounts[.place] = places.count
-
-            total = media.imageTotal + media.videoTotal + albums.count + folders.count
-                + people.count + scenes.count + places.count
-
-            // 当前图库的命中补上来源名：跨库结果会按图库名出现「源」筛选。
-            if let currentTarget {
-                hits = hits.map { hit in
-                    var copy = hit
-                    copy.origin = hit.origin ?? currentTarget.name
-                    copy.libraryPath = currentTarget.path
-                    return copy
+            // 图片 / 视频最慢（百万级图库要扫索引）：先并发跑起来，
+            // 人物 / 场景 / 位置 / 文件夹 / 相簿这些元数据查完一个就先上屏一个。
+            let mediaTask = Task {
+                await self.mediaPayload(store: store, keyword: keyword) { videos, photos in
+                    // 数量分批发：视频先、图片后，各自独立刷新。
+                    kindCounts[.video] = videos
+                    total = kindCounts.values.reduce(0, +)
+                    publish()
+                    kindCounts[.photo] = photos
+                    total = kindCounts.values.reduce(0, +)
+                    publish()
                 }
             }
+
+            // 场景要逐条比对识别结果，放到后台算；它排在最后，不挡其它类别先上屏。
+            let sceneTask = Task {
+                _ = await store.loadSceneSummary()
+                return self.sceneHits(store: store, keyword: keyword)
+            }
+
+            merge(personHits(store: store, keyword: keyword), kind: .person)
+            merge(placeHits(store: store, keyword: keyword), kind: .place)
+            merge(folderHits(store: store, keyword: keyword), kind: .folder)
+            merge(await albumHits(store: store, keyword: keyword), kind: .album)
+
+            // 命中行按类型分开返回：视频先、图片后；数量已由上面的汇总给出，不再覆盖。
+            let media = await withTaskCancellationHandler {
+                await mediaTask.value
+            } onCancel: {
+                mediaTask.cancel()
+            }
+            merge(media.videoHits, kind: .video, updatesCount: false)
+            merge(media.photoHits, kind: .photo, updatesCount: false)
+
+            let scene = await withTaskCancellationHandler {
+                await sceneTask.value
+            } onCancel: {
+                sceneTask.cancel()
+            }
+            merge(scene, kind: .scene)
         }
 
         // 其它已接入的图库（以及不在图库页面时的当前图库）：并发只读直连。
@@ -111,18 +143,19 @@ private final class LibrarySearchProvider: SearchProviding {
                 }
             }
             for entry in extras.sorted(by: { $0.index < $1.index }) {
-                total += entry.hits.count
-                for hit in entry.hits { kindCounts[hit.kind, default: 0] += 1 }
                 hits += entry.hits
+                for hit in entry.hits { kindCounts[hit.kind, default: 0] += 1 }
             }
+            total = kindCounts.values.reduce(0, +)
+            publish()
         }
 
-        // 不再整段截断：每类已各自 prefix(limit)、其它图库也已按 12 条配额取过。
-        // 再按固定上限截断会把排在后面的类型砍掉，出现「胶囊有 16、列表却是空」。
-        return SearchSection(source: source,
-                             hits: hits,
-                             total: total,
-                             kindCounts: kindCounts)
+        return currentSection(hits: hits, total: total, kindCounts: kindCounts)
+    }
+
+    private func currentSection(hits: [SearchHit], total: Int,
+                                kindCounts: [SearchHitKind: Int]) -> SearchSection {
+        SearchSection(source: source, hits: hits, total: total, kindCounts: kindCounts)
     }
 
     private var empty: SearchSection {
@@ -138,24 +171,18 @@ private final class LibrarySearchProvider: SearchProviding {
         }
     }
 
-    /// 图库里的图片与视频分开计数：结果页可以按「图片 / 视频」筛选。
-    /// 不做条数限制：系统图库直接从索引取「整库命中」，本地图库用内存全集。
-    private func mediaHits(store: LibraryStore, keyword: String)
-        -> (hits: [SearchHit], imageTotal: Int, videoTotal: Int) {
+    /// 本地图库（无索引）的图片视频命中：来自当前可见集合。
+    private func mediaItems(store: LibraryStore, keyword: String) -> [PhotoItem] {
         // 全局 / 模块内搜索时 store 已经按关键词算好全库结果；窗口内搜索只过滤当前可见集合。
         let isWholeLibrary = store.searchScope != .currentView
             && store.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == keyword
-        let items: [PhotoItem]
-        if isWholeLibrary, let index = store.systemIndex, let query = store.systemQuery {
-            // 分页窗口只装前 600 张，搜索不能被窗口截断：
-            // 用同一套查询条件把整库命中的 ID 全部取出。
-            items = index.photos(ids: index.allIDs(query))
-                .sorted { $0.capturedAt > $1.capturedAt }
-        } else if isWholeLibrary {
-            items = store.visiblePhotos
-        } else {
-            items = store.visiblePhotos.filter { matches($0, keyword: keyword) }
-        }
+        if isWholeLibrary { return store.visiblePhotos }
+        return store.visiblePhotos.filter { matches($0, keyword: keyword) }
+    }
+
+    /// 把一批照片转成命中：图片在前、视频在后。
+    private func mediaHits(items: [PhotoItem])
+        -> (hits: [SearchHit], imageTotal: Int, videoTotal: Int) {
         let images = items.filter { !$0.isVideo }
         let videos = items.filter { $0.isVideo }
         func hit(_ photo: PhotoItem, kind: SearchHitKind) -> SearchHit {
@@ -195,22 +222,85 @@ private final class LibrarySearchProvider: SearchProviding {
         var hit: SearchHit
     }
 
-    private func albumHits(store: LibraryStore, keyword: String) -> [MappedHit] {
+    /// 图片 / 视频的独立查询结果：两类各自成批返回。
+    private struct MediaPayload {
+        var videoHits: [MappedHit] = []
+        var photoHits: [MappedHit] = []
+    }
+
+    /// 结果列表的固定顺序：人物 → 位置 → 文件夹 → 相簿 → 视频 → 图片 → 场景。
+    private static let kindOrderList: [SearchHitKind] = [.person, .place, .folder,
+                                                         .album, .video, .photo, .scene]
+
+    private static func kindOrder(of kind: SearchHitKind) -> Int {
+        kindOrderList.firstIndex(of: kind) ?? kindOrderList.count
+    }
+
+    /// 图片 / 视频独立查询：汇总只扫一次，同时给出两类数量；
+    /// 命中行按类型各查一页，视频先返回、图片后返回，两类互不阻塞。
+    private func mediaPayload(store: LibraryStore, keyword: String,
+                              onCounts: @MainActor (Int, Int) -> Void) async -> MediaPayload {
+        await waitForSystemWindow(store: store)
+        guard !Task.isCancelled else { return MediaPayload() }
+
+        guard let index = store.systemIndex else {
+            let items = mediaItems(store: store, keyword: keyword)
+            let split = mediaHits(items: Array(items.prefix(600)))
+            await onCounts(split.videoTotal, split.imageTotal)
+            return MediaPayload(videoHits: split.hits.filter { $0.kind == .video }.map(MappedHit.init),
+                                photoHits: split.hits.filter { $0.kind == .photo }.map(MappedHit.init))
+        }
+
+        var query = store.buildSystemQuery(scope: .all, searchTextOverride: keyword)
+        query.sortKey = .capturedAt
+        query.ascending = false
+        var videoQuery = query
+        videoQuery.onlyVideos = true
+        var photoQuery = query
+        photoQuery.onlyPhotos = true
+
+        let limit = 300
+        // 视频 / 图片各查一页：两个类型互不等待，谁先查完先上屏。
+        let videosTask = Task.detached(priority: .userInitiated) {
+            index.page(videoQuery, offset: 0, limit: limit)
+        }
+        let photosTask = Task.detached(priority: .userInitiated) {
+            index.page(photoQuery, offset: 0, limit: limit)
+        }
+        let summary = await Task.detached(priority: .userInitiated) {
+            index.summary(query)
+        }.value
+        guard !Task.isCancelled else { return MediaPayload() }
+        await onCounts(summary.videos, max(0, summary.total - summary.videos))
+
+        let videoItems = (await videosTask.value).map { store.applySystemOverlay($0) }
+        let photoItems = (await photosTask.value).map { store.applySystemOverlay($0) }
+        return MediaPayload(videoHits: mediaHits(items: videoItems).hits.map(MappedHit.init),
+                            photoHits: mediaHits(items: photoItems).hits.map(MappedHit.init))
+    }
+
+    private func albumHits(store: LibraryStore, keyword: String) async -> [MappedHit] {
         if store.isSystemScope {
-            return store.systemAlbums
-                .filter { SearchFuzzyText.matches($0.name, keyword: keyword) }
-                .map { album in
-                    MappedHit(hit: SearchHit(id: "library|system-album|\(album.id)",
-                                             source: .library,
-                                             kind: .album,
-                                             title: album.name,
-                                             subtitle: "相簿 · \(store.systemAlbumPhotoCount(album.id)) 张",
-                                             badge: nil,
-                                             visual: .albumCover(store.systemAlbumPreviewPhotos(album.id,
-                                                                                               limit: 1).first,
-                                                                 .album),
-                                             payload: .systemAlbum(album.id)))
-                }
+            var result: [MappedHit] = []
+            let matched = store.systemAlbums.filter {
+                SearchFuzzyText.matches($0.name, keyword: keyword)
+            }
+            // 只给前 40 个相簿取封面：命中几百个时逐个查 Photos.sqlite 会把首屏拖到几秒。
+            for (index, album) in matched.enumerated() {
+                let cover = index < 40
+                    ? await store.systemAlbumPreviewPhotosAsync(album.id, limit: 1).first
+                    : nil
+                result.append(MappedHit(hit: SearchHit(id: "library|system-album|\(album.id)",
+                                                       source: .library,
+                                                       kind: .album,
+                                                       title: album.name,
+                                                       subtitle: "相簿 · \(store.systemAlbumPhotoCount(album.id)) 张",
+                                                       badge: nil,
+                                                       visual: .albumCover(cover, .album),
+                                                       payload: .systemAlbum(album.id))))
+                if Task.isCancelled { break }
+            }
+            return result
         }
         return store.albums
             .filter { SearchFuzzyText.matches($0.name, keyword: keyword) }
@@ -232,29 +322,71 @@ private final class LibrarySearchProvider: SearchProviding {
         if store.isSystemScope {
             return store.systemFolders
                 .filter { SearchFuzzyText.matches($0.name, keyword: keyword) }
-                .map { folder in
-                    MappedHit(hit: SearchHit(id: "library|system-folder|\(folder.id)",
-                                             source: .library,
-                                             kind: .folder,
-                                             title: folder.name,
-                                             subtitle: "文件夹",
-                                             badge: nil,
-                                             visual: .albumCover(nil, .folder),
-                                             payload: .systemFolder(folder.id)))
+                .enumerated()
+                .map { index, folder in
+                    // 只给前 40 个文件夹取缩略图：命中很多时逐个查索引会拖慢首屏。
+                    let cover = index < 40
+                        ? systemFolderCover(store: store, folderID: folder.id)
+                        : nil
+                    return MappedHit(hit: SearchHit(id: "library|system-folder|\(folder.id)",
+                                                    source: .library,
+                                                    kind: .folder,
+                                                    title: folder.name,
+                                                    subtitle: "文件夹",
+                                                    badge: nil,
+                                                    visual: .albumCover(cover, .folder),
+                                                    payload: .systemFolder(folder.id)))
                 }
         }
         return store.folders
             .filter { SearchFuzzyText.matches($0.name, keyword: keyword) }
-            .map { folder in
-                MappedHit(hit: SearchHit(id: "library|folder|\(folder.id.uuidString)",
-                                         source: .library,
-                                         kind: .folder,
-                                         title: folder.name,
-                                         subtitle: "文件夹",
-                                         badge: nil,
-                                         visual: .albumCover(nil, .folder),
-                                         payload: .localFolder(folder.id)))
+            .enumerated()
+            .map { index, folder in
+                let cover = index < 40
+                    ? localFolderCover(store: store, folderID: folder.id)
+                    : nil
+                return MappedHit(hit: SearchHit(id: "library|folder|\(folder.id.uuidString)",
+                                                source: .library,
+                                                kind: .folder,
+                                                title: folder.name,
+                                                subtitle: "文件夹",
+                                                badge: nil,
+                                                visual: .albumCover(cover, .folder),
+                                                payload: .localFolder(folder.id)))
             }
+    }
+
+    /// 文件夹缩略图：取子树里第一个可见项目，找不到就退回占位图。
+    private func systemFolderCover(store: LibraryStore, folderID: Int64) -> PhotoItem? {
+        guard let id = store.systemFolderPreviewAssetIDs(folderID, limit: 1).first else {
+            return nil
+        }
+        if let photo = store.systemIndex?.photo(id: id) {
+            return store.applySystemOverlay(photo)
+        }
+        return store.systemPhoto(id: id)
+    }
+
+    /// 本地文件夹：用子相簿封面或首张照片兜底，深度有限，避免大目录反复遍历。
+    private func localFolderCover(store: LibraryStore, folderID: UUID) -> PhotoItem? {
+        var pending: [UUID] = [folderID]
+        var visited = Set<UUID>()
+        var budget = 64
+        while let id = pending.first, budget > 0 {
+            pending.removeFirst()
+            budget -= 1
+            guard visited.insert(id).inserted else { continue }
+            if let album = store.albums.first(where: { $0.folderID == id }) {
+                if let coverID = album.coverPhotoID, let photo = store.anyPhoto(id: coverID) {
+                    return photo
+                }
+                if let firstID = album.photoIDs.first, let photo = store.anyPhoto(id: firstID) {
+                    return photo
+                }
+            }
+            pending.append(contentsOf: store.folders.filter { $0.parentID == id }.map(\.id))
+        }
+        return nil
     }
 
     private func personHits(store: LibraryStore, keyword: String) -> [MappedHit] {
@@ -697,30 +829,62 @@ private final class CatalogSearchProvider: SearchProviding {
     init(catalog: CatalogBrowserModel) { self.catalog = catalog }
 
     func search(query: String, limit: Int) async -> SearchSection {
+        await search(query: query, limit: limit, onPartial: { _ in })
+    }
+
+    /// 资源分区内部按站点增量发布：每完成一个站点就把「已到达的站点」重新拼成一个分区，
+    /// 结果页据此逐站上屏、计数实时变化，而不是等所有站点跑完一次性出现。
+    func search(query: String,
+                limit: Int,
+                onPartial: @escaping @MainActor (SearchSection) -> Void) async -> SearchSection {
         let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let catalog, AppModules.isEnabled(AppModule.catalog),
               !keyword.isEmpty else {
             return SearchSection(source: source, hits: [], total: 0, kindCounts: [:])
         }
-        let groups = await catalog.searchUnified(keyword: keyword, updatesUI: false)
+        var groups: [UUID: CatalogGlobalResult] = [:]
+        let final = await catalog.searchUnified(keyword: keyword,
+                                                updatesUI: false,
+                                                includeLocal: true) { group in
+            groups[group.sourceID] = group
+            onPartial(Self.makeSection(groups: groups, catalog: catalog))
+        }
         guard !Task.isCancelled else {
             return SearchSection(source: source, hits: [], total: 0, kindCounts: [:])
         }
+        let finalGroups = Dictionary(uniqueKeysWithValues: final.map { ($0.sourceID, $0) })
+        return Self.makeSection(groups: finalGroups, catalog: catalog)
+    }
 
+    /// 把「已到达的站点分组」按侧边栏来源顺序拼成统一搜索分区。
+    private static func makeSection(groups: [UUID: CatalogGlobalResult],
+                                    catalog: CatalogBrowserModel) -> SearchSection {
+        let order = Dictionary(uniqueKeysWithValues:
+            catalog.enabledResourceSources.enumerated().map { ($1.id, $0) })
+        let ordered = groups.values.sorted {
+            (order[$0.sourceID] ?? Int.max) < (order[$1.sourceID] ?? Int.max)
+        }
         var hits: [SearchHit] = []
         var total = 0
-        for group in groups {
-            total += group.items.count
+        var kindCounts: [SearchHitKind: Int] = [:]
+        for group in ordered {
+            // 图集与视频在结果里分成两种类型：筛选条、徽标与打开方式都据此区分。
+            // 综合站必须按条目判断，同一站点里可能两种都有。
+            let source = catalog.sources.first(where: { $0.id == group.sourceID })
             for item in group.items {
+                let isGallery = source.map { item.isGallery(in: $0) } ?? false
+                let kind: SearchHitKind = isGallery ? .catalogGallery : .catalogVideo
+                total += 1
+                kindCounts[kind, default: 0] += 1
                 let subtitle = item.remark.isEmpty
                     ? group.sourceName
                     : "\(group.sourceName) · \(item.remark)"
                 hits.append(SearchHit(id: "catalog|\(group.sourceID.uuidString)|\(item.id)",
-                                      source: source,
-                                      kind: .catalogItem,
+                                      source: .catalog,
+                                      kind: kind,
                                       title: item.title,
                                       subtitle: subtitle,
-                                      badge: nil,
+                                      badge: isGallery ? "图集" : nil,
                                       visual: .catalogCover(sourceID: group.sourceID,
                                                             url: item.coverURL),
                                       payload: .catalogItem(sourceID: group.sourceID,
@@ -731,9 +895,62 @@ private final class CatalogSearchProvider: SearchProviding {
                                       }))
             }
         }
+        return SearchSection(source: .catalog, hits: hits, total: total, kindCounts: kindCounts)
+    }
+}
+
+// MARK: - 拾光星图
+
+/// 星图：只检索内置资料库（catalog.sqlite）里的人物与作品。
+/// 与「网络资源」的来源互不依赖；模块开关关闭后整段结果消失。
+@MainActor
+private final class AtlasSearchProvider: SearchProviding {
+    let source: SearchSourceKind = .atlas
+
+    func search(query: String, limit: Int) async -> SearchSection {
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard AtlasCatalogPaths.isLoaded, keyword.count >= 2 else {
+            return SearchSection(source: source, hits: [], total: 0, kindCounts: [:])
+        }
+        let atlas = AtlasStore.shared
+        async let peopleTask = atlas.searchPeople(keyword, limit: 10)
+        async let worksTask = atlas.searchWorks(keyword, limit: 10)
+        let people = await peopleTask
+        let works = await worksTask
+        guard !Task.isCancelled else {
+            return SearchSection(source: source, hits: [], total: 0, kindCounts: [:])
+        }
+
+        let personHits = people.map { person in
+            SearchHit(id: "atlas|person|\(person.id)",
+                      source: source,
+                      kind: .atlasPerson,
+                      title: person.name,
+                      subtitle: "\(person.regionTitle) · \(person.workCount) 部作品",
+                      badge: "人物",
+                      visual: .atlasPerson(id: person.id, name: person.name),
+                      payload: .atlasPerson(person.id),
+                      origin: "拾光星图")
+        }
+        let workHits = works.map { work in
+            var subtitle = work.dvdID
+            if let date = work.releaseDate { subtitle += " · \(AtlasLook.shortDate(date))" }
+            return SearchHit(id: "atlas|work|\(work.id)",
+                             source: source,
+                             kind: .atlasWork,
+                             title: work.displayTitle,
+                             subtitle: subtitle,
+                             badge: "作品",
+                             visual: .atlasCover(url: work.coverURL ?? work.thumbURL),
+                             payload: .atlasWork(work.id),
+                             origin: "拾光星图")
+        }
+        var kindCounts: [SearchHitKind: Int] = [:]
+        if !personHits.isEmpty { kindCounts[.atlasPerson] = personHits.count }
+        if !workHits.isEmpty { kindCounts[.atlasWork] = workHits.count }
         return SearchSection(source: source,
-                             hits: hits,
-                             total: total,
-                             kindCounts: [.catalogItem: total])
+                             hits: personHits + workHits,
+                             total: personHits.count + workHits.count,
+                             kindCounts: kindCounts)
     }
 }

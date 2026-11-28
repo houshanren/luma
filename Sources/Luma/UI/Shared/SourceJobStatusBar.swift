@@ -140,7 +140,7 @@ struct SourceJobStatusBar: View {
                 Image(systemName: "checklist")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(secondaryInk)
-                Text("任务记录")
+                Text("任务")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(secondaryInk)
                 Text(idleDetail(lastFinished: lastFinished, recentCheck: recentCheck))
@@ -155,7 +155,7 @@ struct SourceJobStatusBar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("查看任务记录")
+        .help("查看任务")
         .popover(isPresented: $showDetail, arrowEdge: .bottom) {
             SourceJobDetailPopover(isPresented: $showDetail)
                 .environment(store)
@@ -227,7 +227,7 @@ struct SourceJobStatusBar: View {
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .help("展开任务栏并查看任务记录")
+            .help("展开任务栏并查看任务")
 
             Button {
                 collapsed = false
@@ -319,14 +319,15 @@ private struct JobKindStyle {
         case .assistant: return "bubble.left.and.text.bubble.right"
         case .record: return "record.circle"
         case .organize: return "folder.badge.gearshape"
+        case .parse: return "text.magnifyingglass"
         }
     }
 
     /// 按任务性质分组配色：读库、刮削、计划、传输、体检、美化各一色。
     private static func tint(for kind: SourceJobKind) -> Color {
         switch kind {
-        case .scan, .index, .metadata, .organize:
-            return Color(red: 0.29, green: 0.60, blue: 1.00)   // 蓝：读库 / 索引 / 整理
+        case .scan, .index, .metadata, .organize, .parse:
+            return Color(red: 0.29, green: 0.60, blue: 1.00)   // 蓝：读库 / 索引 / 整理 / 解析
         case .scrape, .analyze, .cluster, .dedupe, .artwork, .places:
             return Color(red: 0.63, green: 0.48, blue: 1.00)   // 紫：刮削 / 分析 / 归类
         case .epg, .sync, .probe, .search, .connectivity:
@@ -506,14 +507,17 @@ private struct SourceJobDetailPopover: View {
                 .padding(14)
             }
         }
-        .frame(width: 420)
-        .confirmationDialog("清理任务记录？", isPresented: $pendingClear) {
+        // 按内容高度收缩：浮层由 AppKit 托管，内容变少时窗口不一定会自动变矮，
+        // 若不固定尺寸，弹性行（如「进行中」卡片的色带）会被撑满剩余高度，留下一大片空白。
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 380)
+        .confirmationDialog("清理任务？", isPresented: $pendingClear) {
             Button("全部清理", role: .destructive) {
                 store.clearSourceJobHistory()
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只删除任务记录，不影响刮削结果、影片文件与当前连接状态。")
+            Text("只删除历史任务，不影响刮削结果、影片文件与当前连接状态。")
         }
     }
 
@@ -563,7 +567,7 @@ private struct SourceJobDetailPopover: View {
     }
 
     private func recordRows(_ records: [JobProgress], emptyText: String) -> [JobFeedRow] {
-        var rows: [JobFeedRow] = [.section("任务记录", nil)]
+        var rows: [JobFeedRow] = [.section("任务", nil)]
         guard !records.isEmpty else {
             rows.append(.note("tray", emptyText))
             return rows
@@ -652,11 +656,11 @@ private struct SourceJobDetailPopover: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return HStack(alignment: .top, spacing: 10) {
-            // 左侧种类色带：整列卡片里一眼分出任务性质。
-            Capsule()
-                .fill(style.tint)
-                .frame(width: 3)
-                .padding(.vertical, 2)
+            // 左侧种类色带只留 3pt 占位；真正绘制放在 overlay 里。
+            // 竖向 Capsule 是弹性视图，留在 HStack 里会把整张卡片撑满容器剩余高度，
+            // 「进行中」只有一个任务时下面就是一大片空白。
+            Color.clear
+                .frame(width: 3, height: 0)
 
             JobKindBadge(style: style, size: 28)
 
@@ -715,7 +719,16 @@ private struct SourceJobDetailPopover: View {
             }
         }
         .padding(11)
+        .fixedSize(horizontal: false, vertical: true)
         .lumaCardSurface(tint: style.tint)
+        .overlay(alignment: .leading) {
+            // 色带画在 overlay 里，不参与布局：卡片永远按内容高度收缩。
+            Capsule()
+                .fill(style.tint)
+                .frame(width: 3)
+                .padding(.vertical, 13)
+                .padding(.leading, 11)
+        }
     }
 
     @ViewBuilder
@@ -802,7 +815,7 @@ private struct SourceJobDetailPopover: View {
         let tint: Color = ok ? .green : LumaBrand.coral
         let symbol = ok ? "checkmark.circle.fill"
             : (cancelled ? "minus.circle.fill" : "exclamationmark.triangle.fill")
-        let statusText = ok ? "已完成" : (cancelled ? "已取消" : "失败")
+        let statusText: String? = ok ? nil : (cancelled ? "已取消" : "失败")
         let title = (job.title ?? job.kind.title)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let message = job.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -823,11 +836,13 @@ private struct SourceJobDetailPopover: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .help(title)
-                    pill(statusText, tint: tint)
+                    // 成功不用再写「已完成」：左侧绿色对勾已经说明；只给失败 / 取消补文字。
+                    if let statusText {
+                        pill(statusText, tint: tint)
+                    }
                     if let skipped, skipped > 0 {
                         pill("跳过 \(skipped)", tint: .secondary)
                     }
-                    Spacer(minLength: 0)
                 }
                 sourceMeta(job)
                 if !message.isEmpty {
@@ -839,8 +854,8 @@ private struct SourceJobDetailPopover: View {
                         .help(message)
                 }
             }
-
-            Spacer(minLength: 4)
+            // 标题占满剩余宽度：只有真的放不下才截断，不再被右侧空白挤成省略号。
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .trailing, spacing: 5) {
                 Text(timeText(job.updatedAt, showDay: showDay))
@@ -932,7 +947,7 @@ private struct SourceJobDetailPopover: View {
                 Spacer(minLength: 0)
                 Button("清理…") { pendingClear = true }
                     .controlSize(.mini)
-                    .help("清理全部任务记录")
+                    .help("清理全部任务")
             }
 
             // 概览统计：先给「现在有几个在跑 / 有几个失败」，再往下才是明细。

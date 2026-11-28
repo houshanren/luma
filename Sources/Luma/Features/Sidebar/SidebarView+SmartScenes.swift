@@ -61,16 +61,12 @@ extension SidebarView {
                                   title: category.title,
                                   count: count,
                                   isActive: store.sidebarItem == item,
-                                  isHovered: hoveredItem == item,
                                   helpText: "查看「\(category.title)」照片",
                                   action: { store.navigate(to: item) })
             .contextMenu {
                 Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
                     store.togglePin(.system("scene:\(category.id)"))
                 }
-            }
-            .onHover { hovering in
-                hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
             }
     }
 
@@ -133,16 +129,12 @@ extension SidebarView {
                                   title: category.title,
                                   count: count,
                                   isActive: store.sidebarItem == item,
-                                  isHovered: hoveredItem == item,
                                   helpText: "查看「\(category.title)」照片",
                                   action: { store.navigate(to: item) })
             .contextMenu {
                 Button(store.isPinned(.system("scene:\(category.id)")) ? "取消固定" : "固定到侧边栏") {
                     store.togglePin(.system("scene:\(category.id)"))
                 }
-            }
-            .onHover { hovering in
-                hoveredItem = hovering ? item : (hoveredItem == item ? nil : hoveredItem)
             }
     }
 }

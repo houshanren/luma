@@ -191,6 +191,8 @@ enum VideoScrubThumbnails {
     }
 
     /// 从原始片源抽帧：HLS 会话只覆盖已生成区间，拖到未生成位置时用 ffmpeg 补一帧。
+    /// 抽帧放在独立 Task 里：鼠标扫过进度条时旧请求被取消，取消信号会直接终止正在跑的
+    /// ffmpeg，不会留下一串后台进程抢带宽。
     static func sourceImage(source: URL,
                             headers: [String: String],
                             seconds: Double,
@@ -199,9 +201,14 @@ enum VideoScrubThumbnails {
         let target = sampleSeconds(for: seconds, duration: duration)
         let key = "src-\(source.path)-\(Int((target * 1000).rounded()))" as NSString
         if let cached = images.object(forKey: key) { return cached }
-        let image = await Task.detached(priority: .utility) {
+        let work = Task<NSImage?, Never>(priority: .utility) {
             ffmpegFrame(source: source, headers: headers, seconds: target)
-        }.value
+        }
+        let image = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
         if let image { images.setObject(image, forKey: key) }
         return image
     }
@@ -228,24 +235,31 @@ enum VideoScrubThumbnails {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
             return nil
         }
-        // SMB / 网盘定位可能要一两秒：最多等 8 秒，超时就放弃这一帧。
-        if finished.wait(timeout: .now() + 8) == .timedOut {
-            process.terminate()
-            if finished.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
+
+        // 必须边跑边读 stdout：一帧 PNG 常有几十 KB，超过管道缓冲后写端会阻塞，
+        // 等进程退出再读就会一直等到超时（表现为进度条预览永远不出图）。
+        let reader = ScrubPipeReader(handle: pipe.fileHandleForReading)
+        reader.start()
+
+        // SMB / 网盘定位可能要一两秒：最多等 8 秒，超时或被取消就收掉进程。
+        let deadline = Date().addingTimeInterval(8)
+        while process.isRunning {
+            if Task.isCancelled || Date() >= deadline {
+                process.terminate()
+                let grace = Date().addingTimeInterval(1)
+                while process.isRunning, Date() < grace { usleep(20_000) }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                reader.close()
+                return nil
             }
-            process.terminationHandler = nil
-            return nil
+            usleep(20_000)
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let data = reader.wait(timeout: 1)
         guard !data.isEmpty else { return nil }
         return NSImage(data: data)
     }
@@ -263,6 +277,47 @@ enum VideoScrubThumbnails {
 }
 
 // MARK: - 工具栏进度条的悬停预览
+
+/// 边跑边收 ffmpeg 的 stdout：一帧 PNG 常有几十 KB，超过管道缓冲后写端会阻塞，
+/// 必须和进程同时读，否则只能等到超时拿到半截数据。
+private final class ScrubPipeReader: @unchecked Sendable {
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private var payload = Data()
+    private var isDone = false
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func start() {
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let data = handle.readDataToEndOfFile()
+            lock.lock()
+            payload = data
+            isDone = true
+            lock.unlock()
+        }
+    }
+
+    func wait(timeout: TimeInterval) -> Data {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            lock.lock()
+            let done = isDone
+            lock.unlock()
+            if done { break }
+            usleep(10_000)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return payload
+    }
+
+    func close() {
+        try? handle.close()
+    }
+}
 
 /// 保证回调只恢复一次：ImageGenerator 的回调与超时计时器可能先后到达。
 private final class SingleResume: @unchecked Sendable {
@@ -384,11 +439,15 @@ final class VideoScrubPreviewCenter: ObservableObject {
     @Published private(set) var duration: Double = 0
     /// 鼠标在窗口坐标里的横坐标（左下原点）：播放页据此把气泡对准光标。
     @Published private(set) var windowX: CGFloat?
+    /// 当前位置正在取帧：气泡先用完整尺寸占位，帧到了原位淡入，不会“先小后大”跳一下。
+    @Published private(set) var isLoading = false
 
     /// 由播放页注册：HLS 会话取不到帧（拖到未生成区间）时，用原始源补一帧。
     var fallbackProvider: ((Double, Double) async -> NSImage?)?
 
     private var task: Task<Void, Never>?
+    /// 取帧代次：旧任务被取消后即使晚到，也不能把新位置的状态改回去。
+    private var requestToken = 0
 
     func hover(fraction: Double, duration: Double, player: AVPlayer, window: NSWindow?) {
         self.fraction = fraction
@@ -403,22 +462,30 @@ final class VideoScrubPreviewCenter: ObservableObject {
         fraction = nil
         image = nil
         windowX = nil
+        isLoading = false
         task?.cancel()
         task = nil
     }
 
     private func requestFrame(player: AVPlayer) {
         task?.cancel()
-        guard let requested = fraction else { return }
+        requestToken &+= 1
+        let token = requestToken
+        guard let requested = fraction else {
+            isLoading = false
+            return
+        }
         let total = duration
+        isLoading = true
         task = Task { @MainActor in
             // 快速划过时先不取帧：停住 55ms 再取，既不闪也不抢解码。
             try? await Task.sleep(nanoseconds: 55_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, token == requestToken else { return }
             if let cached = VideoScrubThumbnails.cachedImage(player: player,
                                                              fraction: requested,
                                                              duration: total) {
                 if self.fraction != nil { image = cached }
+                isLoading = false
                 return
             }
             var frame = await VideoScrubThumbnails.image(player: player,
@@ -428,8 +495,10 @@ final class VideoScrubPreviewCenter: ObservableObject {
                 // 拖到未生成区间：HLS 里没有这一帧，改从原始片源抽一帧。
                 frame = await provider(requested, total)
             }
-            guard !Task.isCancelled, let frame else { return }
-            if self.fraction != nil { image = frame }
+            // 已经移到别的位置：让最新那次请求接管占位与图片，旧结果直接丢弃。
+            guard !Task.isCancelled, token == requestToken else { return }
+            if let frame, self.fraction != nil { image = frame }
+            isLoading = false
         }
     }
 }
@@ -468,6 +537,8 @@ struct VideoScrubPreviewOverlay: View {
         }
         .allowsHitTesting(false)
         .animation(.easeOut(duration: 0.12), value: center.fraction != nil)
+        // 占位框与真帧是同一块区域：帧到达时只做透明度过渡，位置与尺寸不跳。
+        .animation(.easeOut(duration: 0.16), value: center.image != nil)
     }
 
     @ViewBuilder
@@ -491,8 +562,32 @@ struct VideoScrubPreviewOverlay: View {
                 timeBadge
             }
             .shadow(color: .black.opacity(0.50), radius: 16, y: 6)
+        } else if center.isLoading, center.fraction != nil, center.duration > 0 {
+            // 先占位：缩略图区域一开始就按最终尺寸留好，帧到了原位淡入，
+            // 不会出现“先弹一个时间小胶囊、再撑成缩略图”的跳动。
+            ZStack {
+                Color.black.opacity(0.55)
+                VStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .colorScheme(.dark)
+                    Text("取帧中…")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .frame(width: bubbleWidth, height: bubbleHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.white.opacity(0.22), lineWidth: 0.8)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                timeBadge
+            }
+            .shadow(color: .black.opacity(0.42), radius: 14, y: 5)
         } else if let fraction = center.fraction, center.duration > 0 {
-            // 还没取到帧（或该位置不可预览）：只显示时间胶囊，不画空黑框。
+            // 取不到帧（该位置不可预览）：只显示时间胶囊，不画空黑框。
             Text(formatScrubTime(center.duration * fraction))
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white)

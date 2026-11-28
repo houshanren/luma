@@ -47,7 +47,8 @@ package enum DuplicateDetector {
     /// 按「像素尺寸 + 原文件名」补成额外分组，覆盖元数据不同导致体积不一致的副本。
     package static func groups(from photos: [PhotoItem],
                        albumMembership: [UUID: Int] = [:],
-                       mergeFlagged: Bool = false) -> [DuplicateGroup] {
+                       mergeFlagged: Bool = false,
+                       blurryIDs: Set<UUID> = []) -> [DuplicateGroup] {
         var buckets: [String: [PhotoItem]] = [:]
         for photo in photos where photo.deletedAt == nil && !photo.isHidden {
             guard photo.fileSize > 0, photo.pixelWidth > 0, photo.pixelHeight > 0 else { continue }
@@ -62,7 +63,7 @@ package enum DuplicateDetector {
         }
         var groups = buckets.values
             .filter { $0.count > 1 }
-            .compactMap { makeGroup($0, albumMembership: albumMembership) }
+            .compactMap { makeGroup($0, albumMembership: albumMembership, blurryIDs: blurryIDs) }
 
         if mergeFlagged {
             let covered = Set(groups.flatMap { $0.photos.map(\.id) })
@@ -76,7 +77,7 @@ package enum DuplicateDetector {
             }
             groups.append(contentsOf: flagged.values
                 .filter { $0.count > 1 }
-                .compactMap { makeGroup($0, albumMembership: albumMembership) })
+                .compactMap { makeGroup($0, albumMembership: albumMembership, blurryIDs: blurryIDs) })
         }
 
         return groups.sorted { lhs, rhs in
@@ -88,23 +89,31 @@ package enum DuplicateDetector {
     }
 
     private static func makeGroup(_ members: [PhotoItem],
-                                  albumMembership: [UUID: Int]) -> DuplicateGroup? {
-        guard let pick = pickBest(in: members, albumMembership: albumMembership) else { return nil }
+                                  albumMembership: [UUID: Int],
+                                  blurryIDs: Set<UUID>) -> DuplicateGroup? {
+        guard let pick = pickBest(in: members,
+                                  albumMembership: albumMembership,
+                                  blurryIDs: blurryIDs) else { return nil }
         let ordered = [pick.photo] + members
             .filter { $0.id != pick.photo.id }
             .sorted { $0.addedAt > $1.addedAt }
         return DuplicateGroup(photos: ordered, pick: pick)
     }
 
-    /// 推荐保留顺序：已收藏 > 含编辑 > 已加入相簿 > 有标题 / 关键词 > 分辨率 > 文件大小 > 更早导入。
+    /// 推荐保留顺序：已收藏 > 含编辑 > 已加入相簿 > 有标题 / 关键词 > 非模糊 > 分辨率 > 文件大小 > 更早导入。
     private static func pickBest(in members: [PhotoItem],
-                                 albumMembership: [UUID: Int]) -> DuplicatePick? {
+                                 albumMembership: [UUID: Int],
+                                 blurryIDs: Set<UUID>) -> DuplicatePick? {
         let maxPixels = members.map { $0.pixelWidth * $0.pixelHeight }.max() ?? 0
         let maxBytes = members.map(\.fileSize).max() ?? 0
+        // 体检标记为模糊的副本不参与「保留」竞争；全都模糊时退回原逻辑。
+        let sharpMembers = members.filter { !blurryIDs.contains($0.id) }
+        let pool = sharpMembers.isEmpty ? members : sharpMembers
+        let skippedBlurry = !sharpMembers.isEmpty && sharpMembers.count < members.count
 
         var best: (photo: PhotoItem, score: Double, reasons: [String])?
 
-        for photo in members {
+        for photo in pool {
             var score = Double(photo.pixelWidth) * Double(photo.pixelHeight)
             score += Double(photo.fileSize) * 0.001
             var reasons: [String] = []
@@ -147,7 +156,11 @@ package enum DuplicateDetector {
         }
 
         guard let best else { return nil }
-        return DuplicatePick(photo: best.photo, reasons: Array(best.reasons.prefix(3)))
+        var reasons = best.reasons
+        if skippedBlurry {
+            reasons.insert("避开可能模糊的副本", at: 0)
+        }
+        return DuplicatePick(photo: best.photo, reasons: Array(reasons.prefix(3)))
     }
 }
 

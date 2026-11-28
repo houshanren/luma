@@ -266,7 +266,7 @@ def normalize_name(value):
 
 def library_names():
     """读现有 catalog.sqlite 的 name/aliases → {归一化名: 主名}，供近重复归并。"""
-    path = os.path.join(ROOT, "Resources", "Catalog", "catalog.sqlite")
+    path = os.environ.get("LUMA_CATALOG_DB") or os.path.expanduser("~/Downloads/catalog.sqlite")
     if not os.path.exists(path):
         return {}
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)

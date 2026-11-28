@@ -9,6 +9,9 @@ struct PlaceStatisticsView: View {
     @State private var pinchBase: Double?
     /// 点分组标题收起 / 展开；默认全部展开。
     @State private var collapsedGroups: Set<String> = []
+    /// 聚类在后台算：非直连索引模式要把整库带定位照片回表，不能落在首帧。
+    @State private var clusters: [PlaceCluster] = []
+    @State private var isLoadingClusters = false
 
     var body: some View {
         if let place = store.selectedPlace {
@@ -22,11 +25,10 @@ struct PlaceStatisticsView: View {
 
     private var overview: some View {
         VStack(spacing: 0) {
-            if store.isResolvingPlaces {
-                resolveProgress
-            }
             ScrollView {
-                if store.placeClusters.isEmpty {
+                if isLoadingClusters, clusters.isEmpty {
+                    loadingState
+                } else if clusters.isEmpty {
                     emptyState
                 } else {
                     VStack(alignment: .leading, spacing: 30) {
@@ -45,10 +47,32 @@ struct PlaceStatisticsView: View {
             // 换层级就是换一批分组，收起状态跟着重置。
             collapsedGroups = []
         }
-        .task {
+        .task(id: store.placeClusterToken) {
             await store.awaitDirectGeoIfNeeded()
+            if let cached = store.cachedPlaceClusters {
+                clusters = cached
+                isLoadingClusters = false
+            } else {
+                isLoadingClusters = true
+                let loaded = await store.loadPlaceClusters()
+                guard !Task.isCancelled else { return }
+                clusters = loaded
+                isLoadingClusters = false
+            }
             store.resolveMissingPlacesIfNeeded()
         }
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+            Text("正在整理带位置的照片…")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 120)
     }
 
     @ViewBuilder
@@ -114,21 +138,6 @@ struct PlaceStatisticsView: View {
             .onEnded { _ in pinchBase = nil }
     }
 
-    private var resolveProgress: some View {
-        HStack(spacing: 10) {
-            ProgressView(value: Double(store.placeResolveDone),
-                         total: Double(max(1, store.placeResolveTotal)))
-                .progressViewStyle(.linear)
-                .frame(width: 160)
-            Text("正在解析地点 \(store.placeResolveDone) / \(store.placeResolveTotal)")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 26)
-        .padding(.bottom, 10)
-    }
-
     private var emptyState: some View {
         LumaEmptyState(symbol: "mappin.slash",
                        title: "没有带位置信息的照片",
@@ -142,8 +151,9 @@ struct PlaceStatisticsView: View {
 
     private var groups: [(title: String, clusters: [PlaceCluster])] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !trimmed.isEmpty else { return store.placeGroups }
-        return store.placeGroups.compactMap { group in
+        let all = store.placeGroups(of: clusters)
+        guard !trimmed.isEmpty else { return all }
+        return all.compactMap { group in
             let matches = group.clusters.filter {
                 $0.title.lowercased().contains(trimmed)
                     || ($0.subtitle?.lowercased().contains(trimmed) ?? false)

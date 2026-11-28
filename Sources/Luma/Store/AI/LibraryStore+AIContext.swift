@@ -4,7 +4,7 @@ import Foundation
 /// 只做「取数据 + 组装 DTO」，不发送请求、不做工具执行。
 extension LibraryStore {
     /// 单次请求最多带多少张候选照片（固定上限，避免把整个图库塞进提示词）。
-    static let aiCandidateLimit = 40
+    nonisolated static let aiCandidateLimit = 40
 
     // MARK: - 上下文
 

@@ -35,8 +35,8 @@
 | 系统 | macOS 27.0.1 arm64 |
 | ffmpeg | 仓库 `Vendor/ffmpeg-dv/bin/ffmpeg` 9.0.2（libplacebo + VideoToolbox + libx265） |
 | AVPlayer 探测 | 仓库 `Tools/dev/avplayer_probe.swift`：AVURLAsset + AVPlayerItem 起播 1.5 秒 |
-| 素材 | 21 个 6–8 秒合成片，视频 `testsrc2`、音频 1 kHz 正弦；落在 `~/Movies/LumaTestMedia/media` |
-| HLS 输出 | `~/Movies/LumaTestMedia/hls/<组合>_{remux,transcode,tonemap}` |
+| 素材 | 21 个 6–8 秒合成片，视频 `testsrc2`、音频 1 kHz 正弦；落在 `<测试素材目录>/media` |
+| HLS 输出 | `<测试素材目录>/hls/<组合>_{remux,transcode,tonemap}` |
 
 素材覆盖：
 
@@ -432,7 +432,7 @@ ffmpeg -y -v error -i input \
 ## 9. 复现
 
 ```bash
-# 1) 生成 21 个样片（约 35 MB，落在 ~/Movies/LumaTestMedia）
+# 1) 生成 21 个样片（约 35 MB，落在 <测试素材目录>）
 python3 Tools/dev/media_matrix.py generate
 
 # 2) ffprobe 事实
@@ -456,9 +456,9 @@ python3 Tools/dev/media_matrix.py all
 
 输出：
 
-- 样片：`~/Movies/LumaTestMedia/media`
-- HLS：`~/Movies/LumaTestMedia/hls`
-- 报告：`~/Movies/LumaTestMedia/reports/{facts,hls,transport}.json` + `summary.md`
+- 样片：`<测试素材目录>/media`
+- HLS：`<测试素材目录>/hls`
+- 报告：`<测试素材目录>/reports/{facts,hls,transport}.json` + `summary.md`
 
 ---
 

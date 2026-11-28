@@ -86,7 +86,9 @@ struct MissavCatalogProvider: CatalogProvider {
     private static func markAllFailed(_ source: CatalogSource) {
         mirrorLock.lock()
         workingRoot[source.id] = nil
-        failedUntil[source.id] = Date().addingTimeInterval(30)
+        // 冷却只用于抑制短时间内的连续重试；给 5 秒即可，
+        // 否则一次网络抖动会让用户在接下来半分钟里一直看到「镜像暂时不可用」。
+        failedUntil[source.id] = Date().addingTimeInterval(5)
         mirrorLock.unlock()
     }
 
@@ -118,14 +120,17 @@ struct MissavCatalogProvider: CatalogProvider {
         mirrorLock.lock()
         let until = failedUntil[source.id]
         mirrorLock.unlock()
-        if let until, until > Date() {
-            throw CatalogError.parse("镜像暂时不可用，请稍后重试")
-        }
 
+        // 冷却期内仍然先试一次上次成功的镜像：它是真实可用的证据，
+        // 不该被一次全失败后的短暂冷却一起挡掉。
         if let cached = rememberedRoot(source),
            let html = try? await fetchOne(path: path, root: cached, source: source),
            !isChallenge(html) {
             return (html, cached)
+        }
+
+        if let until, until > Date() {
+            throw CatalogError.parse("镜像暂时不可用，请稍后重试")
         }
 
         // 镜像竞速只能被「真正拿到内容的镜像」结束：任何一个镜像 403 / 超时 /

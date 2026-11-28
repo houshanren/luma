@@ -8,6 +8,15 @@ extension PhotoViewerView {
     /// 查看器放大上限：500% 看不清截图里的文字与焦点，放宽到 1600%。
     /// 圆环、加减按钮、捏合与滚轮共用这一个上限。
     static let maxZoom: CGFloat = 16
+    /// 缩小下限：允许缩到适应窗口的 25%，
+    /// 这样竖长图 / 大图在小窗口里也能整张收进去看，而不是卡在 100%。
+    static let minZoom: CGFloat = 0.25
+
+    /// 视频的「适应」本身就是 100%：再缩小只会让画面在舞台上更小、四周空出来，
+    /// 所以视频不允许缩到 100% 以下（照片仍可按需收进小窗口）。
+    var minZoomForCurrentPhoto: CGFloat {
+        photo?.isVideo == true ? 1 : Self.minZoom
+    }
 
     // MARK: - Zoom math
 
@@ -46,7 +55,8 @@ extension PhotoViewerView {
                     pinchStartOffset = offset
                 }
                 guard let startZoom = pinchStartZoom else { return }
-                let newZoom = min(Self.maxZoom, max(1, startZoom * value.magnification))
+                let newZoom = min(Self.maxZoom, max(minZoomForCurrentPhoto,
+                                                    startZoom * value.magnification))
                 let proposed = zoomedOffset(around: value.startLocation, stage: stage,
                                             oldZoom: startZoom, oldOffset: pinchStartOffset,
                                             newZoom: newZoom)
@@ -56,7 +66,8 @@ extension PhotoViewerView {
             .onEnded { _ in
                 pinchStartZoom = nil
                 baseOffset = offset
-                if zoom <= 1.01 {
+                // 只吸附「接近适应窗口」的手感，允许停在 100% 以下继续缩小。
+                if abs(zoom - 1) < 0.02 {
                     withAnimation(.easeOut(duration: 0.22)) {
                         zoom = 1
                         offset = .zero
@@ -99,7 +110,7 @@ extension PhotoViewerView {
 
     func adjustZoom(by factor: CGFloat) {
         let oldZoom = zoom
-        let target = min(Self.maxZoom, max(1, zoom * factor))
+        let target = min(Self.maxZoom, max(minZoomForCurrentPhoto, zoom * factor))
         let ratio = target / max(oldZoom, 0.0001)
         withAnimation(.easeInOut(duration: 0.2)) {
             zoom = target
@@ -120,10 +131,13 @@ extension PhotoViewerView {
         }
         baseOffset = .zero
         pinchStartZoom = nil
+        // 打开 / 换图时网格那边可能还带着滚动惯性，先挡一会儿，别把「适应」缩掉。
+        zoomScrollBlockedUntil = Date().addingTimeInterval(0.35)
     }
 
     func chrome(_ photo: PhotoItem) -> some View {
-        VStack(spacing: 0) {
+        let isGalleryPhoto = store.catalogGalleryContext(for: photo.id) != nil
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 circleButton("xmark") { store.closeViewer() }
                     .keyboardShortcut(.cancelAction)
@@ -136,7 +150,7 @@ extension PhotoViewerView {
                         .lineLimit(1)
                 }
                 Spacer()
-                if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                if !isGalleryPhoto, !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
                     circleButton(photo.isFavorite ? "heart.fill" : "heart") {
                         store.toggleFavorite(photo.id)
                     }
@@ -173,12 +187,12 @@ extension PhotoViewerView {
 
                 moreMenu(photo)
 
-                if photo.isCloud, store.isCurrentCloudWritable {
+                if !isGalleryPhoto, photo.isCloud, store.isCurrentCloudWritable {
                     circleButton("trash") {
                         store.confirmDeleteCloud([photo.id])
                     }
                     .help("从云端删除")
-                } else if !photo.isReadOnly {
+                } else if !isGalleryPhoto, !photo.isReadOnly {
                     circleButton("trash") {
                         store.confirmDelete([photo.id])
                     }
@@ -264,75 +278,108 @@ extension PhotoViewerView {
 
     func moreMenu(_ photo: PhotoItem) -> some View {
         Menu {
-            Button("导出…") { store.export(photo.id) }
-            Button("打印…") { store.printCommand() }
-            // 窗口内浏览时，幻灯片 / 胶片条 / 信息 / 收藏 / 共享都在工具栏右侧有独立按钮，
-            // 菜单里不再重复；全屏查看器的顶部只有一排圆钮，这些入口继续保留在这里。
-            if !embedded {
+            if let gallery = store.catalogGalleryContext(for: photo.id) {
+                // 网络图集：只有看图与保存，不提供复制 / 旋转 / 删除这些图库写操作。
+                Button("保存这张到图库") {
+                    store.saveCatalogGalleryPhotoToLibrary(id: photo.id)
+                }
                 Button("幻灯片播放") { store.presentSlideshow() }
                 Button(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图") {
                     settings.viewerFilmstrip.toggle()
                 }
-                Button(viewer.showInfoPanel ? "隐藏信息面板" : "显示信息面板") {
-                    viewer.showInfoPanel.toggle()
-                }
-                if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
-                    Button(photo.isFavorite ? "取消收藏" : "收藏") {
-                        store.toggleFavorite(photo.id)
+                Button("在浏览器中打开原图") {
+                    if let url = URL(string: gallery.urlString) {
+                        NSWorkspace.shared.open(url)
                     }
                 }
-                ShareLink(items: store.shareURLs) {
-                    Text("共享…")
+            } else {
+                Button("导出…") { store.export(photo.id) }
+                Button("打印…") { store.printCommand() }
+                // 一次性 AI 辅助：只发文本素材，生成结果先在面板里确认再复制 / 写回。
+                // 分享文案在模型不可用时退回标签模板，所以入口始终可用。
+                Button("AI 写分享文案") {
+                    let ids = store.selection.contains(photo.id) ? store.selection : Set([photo.id])
+                    Task { await store.generateShareCopy(for: ids) }
                 }
-                .disabled(store.shareURLs.isEmpty)
-            }
-            if !photo.isCloud || store.isCurrentCloudSMB {
-                Button("在访达中显示") { store.revealInFinder(photo.id) }
-            }
-            if photo.isCloud, store.isCurrentCloudWritable {
-                Button("重命名…") { store.requestCloudRename(photo.id) }
-                Divider()
-                Button("从云端删除…", role: .destructive) {
-                    store.confirmDeleteCloud([photo.id])
-                }
-            }
-            if !photo.isReadOnly {
-                Button("复制照片") { store.duplicateCommand() }
-                if !photo.isVideo {
-                    Menu("旋转") {
-                        Button("向右旋转") { store.rotateCommand(clockwise: true) }
-                        Button("向左旋转") { store.rotateCommand(clockwise: false) }
+                if !store.isReadOnlyScope {
+                    Button("AI 补全关键词与标题") {
+                        let ids = store.selection.contains(photo.id) ? store.selection : Set([photo.id])
+                        Task { await store.generateAIKeywordSuggestions(for: ids) }
                     }
-                }
-                if !photo.isVideo, !photo.isCloud {
-                    Button("压缩…") {
-                        store.presentCompression(for: [photo.id])
+                    .disabled(!store.aiAssistAvailability.isReady)
+                    Button("AI 补全地点") {
+                        Task { await store.generatePlaceSuggestions() }
                     }
-                    if PhotoCompressor.hasBackup(for: photo) {
-                        Button("还原压缩前的原图") {
-                            store.revertCompression(photo.id)
+                    .disabled(!store.aiAssistAvailability.isReady)
+                }
+                // 窗口内浏览时，幻灯片 / 胶片条 / 信息 / 收藏 / 共享都在工具栏右侧有独立按钮，
+                // 菜单里不再重复；全屏查看器的顶部只有一排圆钮，这些入口继续保留在这里。
+                if !embedded {
+                    Button("幻灯片播放") { store.presentSlideshow() }
+                    Button(settings.viewerFilmstrip ? "隐藏底部缩略图" : "显示底部缩略图") {
+                        settings.viewerFilmstrip.toggle()
+                    }
+                    Button(viewer.showInfoPanel ? "隐藏信息面板" : "显示信息面板") {
+                        viewer.showInfoPanel.toggle()
+                    }
+                    if !photo.isReadOnly || photo.isCloud || store.canEditNativeOverlay {
+                        Button(photo.isFavorite ? "取消收藏" : "收藏") {
+                            store.toggleFavorite(photo.id)
                         }
                     }
-                }
-                Button(photo.isHidden ? "取消隐藏" : "隐藏") {
-                    store.setHidden([photo.id], hidden: !photo.isHidden)
-                }
-                if photo.hasEdits {
-                    Button("复制编辑点") {
-                        store.copyEdits(photo.id)
+                    ShareLink(items: store.shareURLs) {
+                        Text("共享…")
                     }
-                    Button("还原为原始照片") {
-                        store.revertEdits(photo.id)
-                    }
+                    .disabled(store.shareURLs.isEmpty)
                 }
-                if store.copiedEditRecipe != nil {
-                    Button("粘贴编辑点") {
-                        store.pasteEdits(photo.id)
+                if !photo.isCloud || store.isCurrentCloudSMB {
+                    Button("在访达中显示") { store.revealInFinder(photo.id) }
+                }
+                if photo.isCloud, store.isCurrentCloudWritable {
+                    Button("重命名…") { store.requestCloudRename(photo.id) }
+                    Divider()
+                    Button("从云端删除…", role: .destructive) {
+                        store.confirmDeleteCloud([photo.id])
                     }
                 }
-                Divider()
-                Button("删除", role: .destructive) {
-                    store.confirmDelete([photo.id])
+                if !photo.isReadOnly {
+                    Button("复制照片") { store.duplicateCommand() }
+                    if !photo.isVideo {
+                        Menu("旋转") {
+                            Button("向右旋转") { store.rotateCommand(clockwise: true) }
+                            Button("向左旋转") { store.rotateCommand(clockwise: false) }
+                        }
+                    }
+                    if !photo.isVideo, !photo.isCloud {
+                        Button("压缩…") {
+                            store.presentCompression(for: [photo.id])
+                        }
+                        if PhotoCompressor.hasBackup(for: photo) {
+                            Button("还原压缩前的原图") {
+                                store.revertCompression(photo.id)
+                            }
+                        }
+                    }
+                    Button(photo.isHidden ? "取消隐藏" : "隐藏") {
+                        store.setHidden([photo.id], hidden: !photo.isHidden)
+                    }
+                    if photo.hasEdits {
+                        Button("复制编辑点") {
+                            store.copyEdits(photo.id)
+                        }
+                        Button("还原为原始照片") {
+                            store.revertEdits(photo.id)
+                        }
+                    }
+                    if store.copiedEditRecipe != nil {
+                        Button("粘贴编辑点") {
+                            store.pasteEdits(photo.id)
+                        }
+                    }
+                    Divider()
+                    Button("删除", role: .destructive) {
+                        store.confirmDelete([photo.id])
+                    }
                 }
             }
         } label: {
@@ -369,7 +416,7 @@ extension PhotoViewerView {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(zoom <= 1.001)
+            .disabled(zoom <= minZoomForCurrentPhoto + 0.001)
 
             Text("\(Int((zoom * 100).rounded()))%")
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
@@ -436,6 +483,7 @@ extension PhotoViewerView {
         guard let window = hostWindow ?? event.window, event.window === window else { return false }
         guard window.attachedSheet == nil else { return false }
         guard abs(event.scrollingDeltaY) > 0.01 || abs(event.scrollingDeltaX) > 0.01 else { return false }
+        guard Date() >= zoomScrollBlockedUntil else { return false }
 
         // 在胶片条、信息面板、顶部工具栏上滚动时不缩放，避免抢走滚动操作。
         if let content = window.contentView {
@@ -456,11 +504,11 @@ extension PhotoViewerView {
             return true
         }
 
-        // 未放大：窗口内查看不拦截滚动；全屏时双指滚动仍用于放大。
-        guard !embedded else { return false }
+        // 未放大（或已缩到 100% 以下）：滚轮/双指继续缩放；
+        // 窗口内看图和全屏用同一套手感，缩小时不会突然卡住。
         let delta = event.scrollingDeltaY
         let factor = min(1.3, max(0.72, 1 + delta * 0.02))
-        let target = min(Self.maxZoom, max(1, zoom * factor))
+        let target = min(Self.maxZoom, max(minZoomForCurrentPhoto, zoom * factor))
         guard abs(target - zoom) > 0.0005 else { return false }
         zoom = target
         if target <= 1.01 {
@@ -506,6 +554,8 @@ extension PhotoViewerView {
         // 照片与视频通用的命令。
         if flags.contains(.command) {
             if event.keyCode == 51 {
+                // 图集虚拟照片不在任何图库里，删除没有意义。
+                if store.catalogGalleryContext(for: photo.id) != nil { return true }
                 if photo.isCloud {
                     store.confirmDeleteCloud([photo.id])
                 } else if !photo.isSystem {

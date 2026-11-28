@@ -532,6 +532,7 @@ struct CatalogSmartPlaylistDetailView: View {
     var onClose: (() -> Void)? = nil
 
     @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     private var isEmbedded: Bool { onClose != nil }
@@ -796,7 +797,7 @@ struct CatalogSmartPlaylistDetailView: View {
     private func cell(_ item: CatalogItem, source: CatalogSource,
                       isNew: Bool = false) -> some View {
         Button {
-            catalog.playRemote(sourceID: source.id, item: item)
+            store.openCatalogItem(sourceID: source.id, item: item)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear
@@ -804,6 +805,25 @@ struct CatalogSmartPlaylistDetailView: View {
                     .overlay {
                         CatalogArtworkImage(source: source, urlString: item.coverURL,
                                             cornerRadius: 9)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if source.kind.isGallerySite {
+                            HStack(spacing: 3) {
+                                Image(systemName: "photo.stack.fill")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                Text("图集")
+                                    .font(.system(size: 8.5, weight: .bold))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.45), in: Capsule(style: .continuous))
+                            .overlay {
+                                Capsule(style: .continuous)
+                                    .strokeBorder(.white.opacity(0.22), lineWidth: 0.5)
+                            }
+                            .padding(6)
+                        }
                     }
                     .overlay(alignment: .topLeading) {
                         if isNew {

@@ -136,8 +136,7 @@
 
 ## 性能基线
 
-`python3 Tools/dev/ui_perf.py --scenes grid-square --seconds 3`，图库
-`/Volumes/后山人/李佳龙图库.photoslibrary`，可见照片 **112,003** 张（索引完成后）：
+`python3 Tools/dev/ui_perf.py --scenes grid-square --seconds 3`，在一个十万级本地图库上实测（索引完成后）：
 
 | 场景 | 轮次 | FPS | p50 | p95 | p99 | 每轮解码缩略图 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -290,6 +289,298 @@
 - `swift build` 通过；`LumaCoreChecks` / `LumaDataChecks` / `LumaContentChecks` 全部通过。
 - `./build.sh` 重新打包 `Luma.app`（release + 本地签名）。
 
+### J. 播放链路 / 网格宿主收尾与场景拆分（2026-11-26）
+
+**问题**
+
+- `VideoPlayerModel`(24) / `VideoPlaybackUI`(19) / `PlaybackSession`(4) 仍是 ObservableObject：
+  `currentTime` 每 250ms 推进一次，整条 `VideoPlayerStage`（画面层 + OSD + 控制条）跟着重算。
+- LumaUI 的 `PhotoGridHost` 与 `ChromeModel` 还在用 `objectWillChange.send()` 手工广播；
+  `LibraryPhotoGridBridge` 每次刷新都把它们整体失效。
+- `LumaApp.body` 728 行（Window + 全部菜单命令）集中在一次类型检查里。
+- 系统图库的结构写（新建 / 重命名 / 删除相簿与文件夹）是裸 `Task { }`，换库 / 退出时收不干净。
+
+**改法**
+
+- 播放链路：
+  - 三个模型改 `@Observable`（`PlaybackCore` / `Viewer`），`PlaybackSession` 的
+    `engine.$duration` + `$currentTime` 合并订阅换成 `withObservationTracking` 重新挂载，
+    节流语义不变。
+  - 视图 `@ObservedObject` → `let`；`controls()` 里唯一需要 Binding 的音量滑杆用局部 `@Bindable`。
+  - `VideoToolbarOptions` 的 5 个 `onReceive(model.$x)` → `onChange(of: model.x)`：
+    菜单只在倍速 / 循环 / 静音等离散值变化时重建，不会被时间轴带动。
+  - `NowPlayingCenter` 的 Combine 订阅换成 Observation：状态变化立即刷新，
+    播放时间仍按 1 秒节流写系统「正在播放」。
+- 网格宿主：
+  - `PhotoGridHost` / `LibraryPhotoGridBridge` / `ChromeModel` 改 `@Observable`，
+    删除 `objectWillChange.send()`；LumaUI 7 处 `@EnvironmentObject host` → `@Environment(PhotoGridHost.self)`。
+  - 堆叠数据依赖闭包属性：桥接只在 `stackRevision` 变化时重装 `stackBadges` / `isStackExpanded` 等闭包，
+    其它参数（缩略图档位 / 圆角 / 强调色 / 选中）各自失效各自那部分视图。
+- 场景拆分：`LumaApp.body` 内的命令按「应用 / 照片 / 视频 / 视图」拆成 4 个
+  `@CommandsBuilder` 计算属性，body 只保留 4 个 Window 与 4 行命令引用。
+- 任务收口：新增 `StoreTaskCenter.Slot.systemStructureWrite(UUID)` 与 `attach`（不取消同槽位旧任务），
+  21 处系统图库结构写改走 `runSystemStructureWrite`，并发发起互不打断，换库 / 退出统一取消。
+
+**仍待收口**
+
+- 其余 `Task { }`（约 320 处）多为缩略图加载、UI 延时与一次性请求；任务中心已覆盖
+  系统写、导入、扫描、AI、影院 / 电视 / 资源加载等长任务。后续按「可取消且跨页面存活」筛选后再纳入。
+
+**验证**
+
+- `swift build` 通过；三套 checks 全部通过；`Luma.app` 启动无崩溃。
+
+### K. 图库观感对齐系统「照片」：马赛克缩放、年 / 月秒切、暖启动快照（2026-11-26）
+
+**问题**
+
+- 缩略图最小只到 56pt，铺不出系统「照片」那种马赛克墙；小格子仍画元数据、悬停光效与阴影。
+- 缩放时每帧都在写 SQLite：`thumbSize.didSet` 里直接 `persistViewPreference` + `persistThumbSizes`，
+  捏合 / 拖滑杆时一帧一次写盘，缩放明显发滞。
+- 缩放跨越缩略图档位时，格子会用低清快速层覆盖已有大图，视觉上像「重新加载」。
+- 年 / 月总览每次切换都要对整库重新聚合，期间显示转圈。
+- 二次启动虽然命中文件缓存，但首屏仍要等分页查询返回才铺图。
+
+**改法**
+
+- 缩放范围 `56...360` → `28...360`；按钮 / ⌘+ / ⌘- 改走 `thumbSizeLadder`
+  （28 / 36 / 48 / 64 / 84 / 110 / 144 / 188 / 246 / 320 / 360），小尺寸细步、大尺寸粗步。
+- `PhotoCell` 增加马赛克档位（格子 < 56pt）：不画元数据、悬停光效、堆叠 / 收藏 / 评分角标与阴影，
+  视频只留一枚小图标，加载中也不显示转圈——只画照片本身，和系统「照片」最小档观感一致。
+- `thumbSize` 落盘改为停手 0.35 秒后写一次（`StoreTaskCenter.viewPreference` 槽位），
+  缩放过程只改内存值。
+- 缩略图加载：记录当前解码档位 `loadedPixel`；缩小不重新解码、已有图不被低清层覆盖，
+  只有放大到更高档位才重新取图。
+- 年 / 月总览：新增 `yearBucketCache` / `monthGroupCache`（键 = 查询 + 内容版本）；
+  切换分组先命中缓存立即出图，首次加载年后后台预取月份（`overviewPrefetch` 槽位）。
+- 首屏快照：分页图库第一页落地后，把最多 600 张照片异步写入图库设置表
+  （`window.snapshot.meta.v1` / `window.snapshot.payload.v1`）；下次启动先铺快照再被真实查询替换，
+  快照 ≤ 30 天且查询键必须匹配。
+- 分页窗口随缩放变大：`windowPageSizeForCurrentZoom` 在 <48 / <76pt 时取 2400 / 1200，其余 600。
+  固定 600 张在马赛克档只够铺半屏，剩下全是虚拟占位（表现为上下大片空白）。
+  现在不再参与 `pagedKey`：缩放不触发取页，停手后由 `ensureWindowCoverageForZoom` 追加补齐（见 §L）。
+- 官方资源复用（`.photoslibrary`）：网格缩略图已直接读 `derivatives/<首字符>/<UUID>_1_105_c.jpeg`，
+  视频封面读 `_1_102_o.jpeg`，路径由 `Photos.sqlite` 的 `ZASSET.ZUUID / ZDIRECTORY` 在索引阶段算好；
+  本次新增编辑成品复用：`ZADJUSTMENTTIMESTAMP` 非空的项目，查看器 / 大图优先读
+  `resources/renders/<首字符>/<UUID>_1_201_a.heic|jpeg`（视频 `_2_100_a.mov`）。
+- 暂不采用：`derivatives/thumbs/*.ithmb`（旧版打包缩略图，解析成本高）、
+  `<UUID>.THM`（32px，只够最小档，清晰度不足）、`cvt/`（视频多帧，留作胶片条 / 悬停预览的后续素材）、
+  `caches/analytics`（与图片无关）。
+
+**验证**
+
+- `swift build` 通过；三套 checks 全部通过；`Luma.app` 重新打包并启动。
+
+### L. 滚动 / 缩放热路径收口：去掉逐帧重算与缩放取页（2026-11-26）
+
+**问题**
+
+- 上下拖动发卡：`updateVisibleDateSpan` 每滚动 8pt 就遍历 `frameCache.frames`（马赛克档可达 2400 条）
+  求日期范围，并写 `store.visibleDateSpanText`（`@Observable`）→ 顶栏副标题变化 →
+  `GalleryView.body` 连同整棵网格每帧重算。
+- 缩放更卡并弹提示：`pagedKey` 带 `#w<pageSize>`，捏合每跨一档就让 `.task(id:)` 重新取一页，
+  `replace: true` 整表替换 600 / 1200 / 2400 张照片，期间顶部弹加载转圈、格子全部重建。
+- 缩略图中间的「正在定位到这一段照片…」胶囊是 `.overlay` 默认居中，滚动进虚拟占位时挡在画面中央。
+
+**改法**
+
+- 删除 `updateVisibleDateSpan` 与 `visibleDateSpanText`：顶栏副标题改为只读已加载窗口首尾两张
+  （O(1)，仅换页时更新），不再有逐帧遍历与逐帧 `@Observable` 写入。
+- 删除两处居中的「正在定位…」胶囊与顶部 `isPagedWindowLoading` 转圈浮层：滚动 / 缩放过程不再弹提示。
+- `pagedKey` 去掉 `#w`：缩放不触发取页与整表替换。新增 `ensureWindowCoverageForZoom()`，
+  在缩放停手 0.26 秒后（`scheduleZoomWindowFill`）按缺口 `replace: false` 追加，
+  已有 PhotoItem 与单元格身份保持不变；取页途中被跳过时由 `loadedWindowPhotos.count` 变化补做。
+- 预取档位跟随当前网格缩放（`prefetchGridQuick(maxPixel:)` / PhotoKit 预取同档），
+  马赛克墙预取 128px，不再预热 192px 造成缓存错位。
+- 新增 `ThumbnailDecodeGate`（actor 闸门，2～8 并发）：一屏上千个格子不再同时读盘解码，
+  按格子出现顺序稳定出图，首屏几百毫秒内开始逐块填充（「出来一些显示一些」）；
+  排队期间被滚走 / 缩放取消的格子直接放弃，不浪费读盘。马赛克档不再叠加预取，避免抢 IO。
+- 缩略图分层：马赛克档（格子 ≤ 36pt）先取微缩略图层——本地 `_t.jpg`（64px，约 3KB）
+  或官方图库自带的 `<UUID>.THM`（32px，约 1KB）；缺失时才读 100～300KB 的 derivative，
+  解完顺带把 64px 小图写进本地缓存，下次整墙几乎瞬间铺满。微缩略图层走独立闸门（24 并发）。
+  小图带新鲜度校验（比主缩略图旧就不用），避免编辑后显示旧画面。
+- `PhotoCell` 马赛克档不再生成 `help` / `accessibilityValue` 文案（日期格式化在捏合每一帧都会对全墙求值），
+  悬停也不逐点记录指针位置。
+
+**验证**
+
+- `swift build` 通过；三套 checks 全部通过；`Luma.app` 重新打包。
+
+### M. 月视图拼贴排版（2026-11-26）
+
+**问题**
+
+- 月视图此前只有「首 4 天一张大卡 + 其余等宽网格」，整月看起来仍是两段式网格，不是系统「照片」
+  那种每天大小不一、组合各异的拼贴。
+
+**改法**
+
+- 每张「某日」卡片只展示当天的一张代表照片（不再把 4 张塞进一张卡），大小与组合由拼贴决定；
+  卡片封面解码档位跟随卡片尺寸，大卡不再把 220pt 小图放大到糊。
+- 每天按当天照片数取权重（≥12 张 3 格、≥4 张 2 格、其余 1 格），把连续几天按权重凑成一行
+  （`unitsPerRow` 随窗口宽度 4～6 格），行内宽度按权重分配。
+- 首日照片多、后两天各一张时走「大卡 62% + 右侧两张堆叠」的经典组合；其余行为 1/2/3/4 张的
+  等宽或比例组合，行高按组合变化（单张大卡通栏更高、四张并排更矮），拼起来就是拼贴。
+- 直连模式（索引直连）同样支持：`directDayBuckets` 按「查询 + 月份」只查该月的时间区间，
+  月总览的 Section 出现时才加载（`StoreTaskCenter.monthDays` 槽位 + `directMonthDaysCache`），
+  数据到达前先显示该月大卡占位，到达后替换成逐天拼贴，不会整页等待。
+- 卡片高度继续跟随缩略图缩放档位（`mosaicZoom`）；窄窗口（< 560pt）仍退回等宽网格。
+
+### N. 百万级图库的性能实测与收口（2026-11-26）
+
+**测量环境**：一个百万级本地系统图库，`Photos.sqlite` 约 27GB，外接 USB SSD。以下都是 `sqlite3` 直接对库实测（冷缓存第一次最慢）。
+
+**实测结论（优化前）**
+
+| 场景 | 实测 | 根因 |
+| --- | --- | --- |
+| 首次打开图库 | **2 分 16 秒** | `computeDirectCounts` 对 26GB 主表做一次全列聚合（二十多个 CASE + `COUNT(DISTINCT)` + LEFT JOIN） |
+| 月视图某个月（2022-12，5.0 万张） | **86 秒** | `directDayBuckets` 把 `directSelect`（两个 LEFT JOIN、六十多列）塞进窗口函数，且没有 `INDEXED BY`：SQLite 用 `ZTRASHEDSTATE` 索引整库扫 + 临时表排序 |
+| 年 / 月下钻、收藏按年 | **76 秒** | `directSQLSummary` 的 `COUNT(*)` 带时间区间却未指定日期索引，同样退化成整库扫 |
+| 年月总览卡片样本 | 421 个月各查一次库 | `directMonthGroups` 逐月 `directPhotos(ids:)`，421 次往返都排在同一条连接的锁后面 |
+| 网格滚动 | 每格两次读盘 + 两次解码 + 一次写盘 | 快速层（192px）在本地没有小文件时仍会先完整解码一次主图，再解一次目标档位 |
+| 月拼贴连续下翻 | 反复「整表清空 → 全部重查」 | 逐天缓存超过 48 个月就 `removeAll()` |
+
+关键背景：`SQLiteDatabase` 用一把 `NSRecursiveLock` 串行化同一个连接上的所有查询，
+所以任何一条 86 秒的查询会把翻页、侧边栏、时间轴定位全部堵住——这就是「月/年聚合慢，其它也跟着卡」。
+
+**改法**
+
+- **首屏不再扫主表**：`computeDirectCounts` 只在旧图库缺索引时兜底。首次打开改走两段只读索引：
+  - `computeDirectIndexedCounts`（约 6 秒）：已编辑（`Z_Asset_forRecentlyEdited`）、
+    最近查看（`Z_AdditionalAssetAttributes_forRecentlyViewed` 范围查询）、导入项目
+    （`..._byImportedByBundleIdentifierIndex`）、总大小（`..._byOriginalFileSize` 覆盖索引求和）、
+    值得重看（日期索引数「够老的总数」再减去最近看过的重叠部分）。
+  - `computeDirectScanCounts`（约 12 秒）：截屏 / 录屏 / 最近保存（`Z_Asset_forAllPhotosFilteredBySavedAssetType`
+    覆盖索引一次流式扫描）、带定位（`Z_Asset_forPlacesAlbum` 覆盖索引）。
+  - 两段各自完成后就落盘 + 刷新界面；只有补齐过才写指纹，中途失败下次仍会重试。
+- **月视图逐天分组两段式**：先用窄查询（只取主键 / 天键 / 当天总数）在 `Z_Asset_byDateCreatedIndex`
+  上做窗口聚合，再按主键批量补详情（`directPhotosByPK`）。同一个月 86 秒 → 0.28 秒。
+  月拼贴每天只展示一张代表照片，样本只要 1 张（`sampleLimit: 1`）。
+- **带时间区间的计数走日期索引**：`directSQLSummary` 在有 `startDate` / `endDate` 时显式
+  `INDEXED BY Z_Asset_byDateCreatedIndex`，并保留去提示重试。50k 张的月份 76 秒 → 0.05 秒。
+- **总览样本合并查询**：`directMonthGroups` / `directYearBuckets` 把所有周期的样本 UUID 汇总后
+  按 400 个一批取回（`directOverviewPhotosByID`），421 次往返 → 1～6 次。
+- **缩略图不再重复解码**：`PhotoThumbnailLoader` 只在本地已有 192px 小文件时才走快速层，
+  没有小文件就一次解到目标档位（少一次随机读 + 一次解码）。
+  缓存小文件改由 `ThumbnailCacheWriter` 串行低优先级写入，滚动时不再同时开上千个写任务抢盘。
+- **逐天缓存先进先出淘汰**：`directMonthDaysOrder` 记录写入顺序，超过 48 个月只淘汰最旧的，
+  换查询前缀才整体作废，连续下翻不再反复清空重查。
+- 至此单条查询最长的是两条覆盖索引扫描（各约 5 秒，且只在首次打开跑一次），
+  不再有 26GB 主表的全表聚合。
+
+**缩略图来源实测（同一图库）**
+
+| 项 | 实测 |
+| --- | --- |
+| `resources/derivatives/<分片>/`（`_1_105_c`，长边约 1024px） | 570,479 个，只覆盖约 42% 的资产 |
+| 缺 `_1_105_c` 的项目 | 首屏最新 200 张里约 65%；库中段约 98% 都没有 |
+| **`resources/derivatives/masters/<分片>/`（`_4_5005_c`，长边约 520px，约 36KB）** | **实测 800 个随机图片全部命中（100%）、200 个随机视频命中 199 个** |
+| 原始文件 | 1.1–1.8MB JPEG（`originals/<shard>/<UUID>.jpeg`） |
+| `ZEMBEDDEDTHUMBNAIL*` | 指向原图内部的内嵌 JPEG（160px、5–11KB），但仅约 17% 的项目有 |
+
+> 结论修正：之前把「`derivatives` 只有 42%」当成「六成项目没有官方缩略图」，
+> 是因为只统计了主分片目录，漏掉了 `masters/`。
+> 官方其实给**全库**都生成了 5005 档网格缩略图，`_1_105_c` 只是详细查看用的更大一档。
+
+也就是说，**旧实现滚动时最贵的一步是「明明有 5005 档却不用，硬从原图现场生成缩略图」**：
+旧实现固定生成 1200px / q0.9（编码 + 写盘最慢的一档），生成完还要把刚写的文件再读一遍再解码。
+
+**改法（缩略图层）**
+
+- **缺 `_1_105_c` 时回退到 `masters/` 的 `_4_5005_c`**（`LibraryPaths.systemMasterThumbnailPath`），
+  网格档位 ≤512px 直接用这一档出图；`tinyThumbnail` 也在解原图之前先试它。
+  实测 8 并发把这一档解到 192px 是 **3,035 张/秒**，而读 2MB 原图只有 **85 张/秒**（快 36 倍），
+  一屏 60 格从约 0.7 秒降到约 0.02 秒。
+- 现场生成改为 **1024px / q0.85**（网格最大档位就是 1024），并**直接返回本次解码结果**，
+  不再「生成 → 重读文件 → 再解码」。
+- 同一次解码**顺带写出 64px 小图**；`tinyThumbnail` 增加兜底：本地小图、官方 THM、5005 档都没有时，
+  才直接从原图解一张 64px 并落盘。
+
+**打开相簿仍慢的真正原因：PhotoKit 被 `isSystemScope` 挡住了**
+
+2.1.0 打开同一个相簿不卡，靠的不是本地缩略图，而是 `PhotoKitThumbnailProvider`
+（`PHCachingImageManager` + 按窗口预取 200 张）：系统自己维护全量缩略图缓存，
+连 iCloud / 共享相簿都能直接给图，一次请求通常几毫秒。
+
+实测确认这台机器完全够用：
+
+| 项 | 实测 |
+| --- | --- |
+| `PHPhotoLibrary` 打开的库 | 1,368,117 项，与 `Photos.sqlite` 完全一致（`2disk.photoslibrary` 就是系统照片图库） |
+| 授权状态 | `.authorized` |
+| `ZASSET.ZUUID` ↔ `localIdentifier`（`UUID/L0/001`） | 40 / 40 全部命中 |
+
+但 `usesPhotoKitThumbnails` 原来的条件是
+`isSystemScope && isNativeContainer && isAvailable`，而 `SidebarItem.isSystemScope`
+只包含 `.systemLibrary` / `.systemAlbum` 这类侧边栏入口，**不包含 `.album(id)` / `.folder(id)` / `.person(id)`**。
+于是打开任何一个具体相簿时条件为假，整屏退回逐格读盘解码 —— 这正是「全部照片」不卡、相簿卡的原因。
+
+改法：
+
+- `usesPhotoKitThumbnails` 改为 `isNativeContainer && isAvailable`：
+  只要当前打开的是原生 `.photoslibrary`，相簿 / 文件夹 / 人物里的项目同样是系统图库资产，就该走 PhotoKit。
+- `PhotoThumbnailLoader` 里把 PhotoKit 分支提到本地微缩略图层之前（与 2.1.0 的顺序一致）；
+  本地 64px / THM / 5005 档只在 PhotoKit 取不到时兜底。
+
+**关于「后台缩略图预热」**
+
+不需要做。全量预热 80 万张要连续读约 1.6TB 原图（本机 USB SSD 约 200MB/s，纯 IO 两小时以上）、
+再写出十几 GB 缓存，而收益只是把「首次 0.02 秒」变成「0」。既然官方 5005 档已经 100% 覆盖，
+预热等于把同一份数据从原图重算一遍，纯属重复劳动。
+
+**对标系统「照片」的取舍**
+
+- 系统「照片」网格更快，靠的是 `resources/derivatives/thumbs/*.ithmb` 里预生成的金字塔缩略图
+  （本机 3356 / 4133 / 4532 共约 27GB，`thumbnailConfiguration` 记录格式表 `[5005, 4532, 4133, 3356]`，
+  帧长固定：3356 = 1,382,756 帧 × 1052B、4133 × 4124B、4532 × 14428B，分别对应 32 / 64 / 120px）。
+  实测帧内数据不是 JPEG，也不是可用的像素流（帧内相邻字节差 ≈ 随机数据），
+  又没有公开的压缩与索引规范，暂不解析。
+- 现在 `_4_5005_c` 已覆盖全库且单格只要一次 36KB 读盘 + 一次解码，解析 ithmb 的边际收益很低。
+- `derivatives/<shard>/<UUID>.THM`（32px，约 1KB）在本库只覆盖约 8%，仍作为马赛克墙的微缩略图层使用。
+
+### O. 图库搜索改用 FTS5 全文索引（2026-11-27）
+
+**问题**：直连模式的文本搜索是四列 `LIKE '%词%'`（文件名 / 原始文件名 / 标题 / 相机），
+前后通配符用不上任何索引，等于对百万行全表扫描；带搜索词的分页与计数各跑一遍。
+
+**优化前实测（首屏 200 行）**
+
+| 查询 | 实测 |
+| --- | --- |
+| `img` | 124 秒 |
+| `dsc` | 108 秒 |
+| `上海` | 135 秒 |
+| `canon` / `iphone` / `sony` | 约 120 秒 |
+| 不存在词 | 105 秒（同样扫全表） |
+
+**做法**：在本机应用目录建一张 FTS5（`tokenize='trigram'`）索引，
+把「文件名 + 原始文件名 + 标题 + 相机厂商 / 型号 + 镜头」铺平成一行文本。
+
+- **索引放本机**：`resources/system-search/Search-<哈希>.sqlite`。
+  图库常在外置盘，边读 26GB 的 `Photos.sqlite` 边把 900MB 索引写回同一块盘会退化成随机读写。
+- **两字词（中文最常见）**：trigram 至少要 3 个连续字符，实测 `上海` 直接 MATCH 返回 0。
+  入库时把文本逐字符插空格（`上海外滩` → `上 海 外 滩`），查询同样插空格（`"上 海"`），
+  这样任意 ≥2 字的词都能走索引；单字无法构成 trigram，退回对**本地索引**的 LIKE（约 0.36 秒）。
+- **不跨库 JOIN**：实测跨库 JOIN 主表 10 万行要 13.5 秒，不可用。先由 FTS 取主键集合
+  （上限 2 万，覆盖 100 页 × 200 行），再在 `Photos.sqlite` 上做 `Z_PK IN (...)` + 日期排序。
+- **建索引不阻塞界面**：后台低优先级、每 5000 行一批、每批让出 0.15 秒 IO；
+  独立只读连接读 `Photos.sqlite`，不占用主连接那把锁。建完 `optimize` + `wal_checkpoint(TRUNCATE)`
+  回收 WAL（否则磁盘占用会翻倍）。
+- **指纹失效重建**：`v2-<Photos.sqlite 大小>-<修改时间>`，导入 / 删除照片后自动后台重建。
+- **建立期间**：主界面搜索直接返回空并显示「正在建立搜索索引… N%」，建好后自动刷新，
+  不再退回两分钟的全表 LIKE；跨图库搜索这类离线入口仍保留 LIKE（`searchIndexStrict = false`）。
+
+**优化后实测**
+
+| 项 | 实测 |
+| --- | --- |
+| 建索引 | 156 秒 / 1,368,267 行 / 主库 904MB |
+| `上海`（2 字，MATCH） | **0.004 秒** |
+| `img` / `dsc` / `canon` / `heic` | 0.06 / 0.03 / 0.08 / 0.001 秒 |
+| 单字 `海`（LIKE 本地索引） | 0.36 秒 |
+| 不存在词 | 0.000 秒 |
+
 ## 进度记录
 
 | 项 | 状态 | 备注 |
@@ -304,3 +595,9 @@
 | G | 已完成 | `LibraryStore` / `SelectionModel` / `ViewerModel` 切 `@Observable`：249 个 `@Published` 移除、162 处注入迁移 |
 | H | 已完成 | 胶囊 / 卡片 token 与组件（`LumaSurfaces`）；71 处描边收口，任务中心 / 空态 / 顶栏已迁移 |
 | I | 已完成 | 5 个子模型切 `@Observable`（248 个 `@Published` 移除、85 个文件注入迁移）；图库状态胶囊与信息面板拆块 |
+| J | 已完成 | 播放链路 / 网格宿主切 `@Observable`（`@Published` 77 → 28、`ObservableObject` 类 16 → 10、`@EnvironmentObject` 14 → 6）；`LumaApp` 命令拆分；21 处系统结构写纳入任务中心 |
+| K | 已完成 | 图库最小缩放 28pt 马赛克档、缩放落盘防抖、缩略图档位不回头、年 / 月总览缓存 + 预取、首屏暖启动快照 |
+| L | 已完成 | 去逐帧日期范围重算与居中提示浮层；缩放不再重取窗口（停手后追加补齐）；预取档位跟随缩放 |
+| M | 已完成 | 月视图拼贴：按当天照片数分配卡片权重与行高，大卡 + 堆叠 / 等宽组合混排 |
+| N | 已完成 | 百万级性能收口：首屏去掉 2 分 16 秒全表扫描；月视图 86 秒 → 0.28 秒；带日期区间计数 76 秒 → 0.05 秒；总览样本合并查询；缩略图层：现场生成 1024/q0.85 + 复用解码结果 + 顺带落 64px 小图、马赛克墙缺图从原图兜底、缓存写入串行化 |
+| O | 已完成 | 图库搜索改用 FTS5 trigram 本地索引：任意词 120～135 秒 → 0.001～0.08 秒（两字中文 0.004 秒）；索引 904MB、后台建 156 秒不阻塞界面；索引未就绪时显示「正在建立搜索索引」而非两分钟全表扫描 |

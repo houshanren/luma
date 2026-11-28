@@ -18,6 +18,17 @@ extension LibraryStore {
     // MARK: - Navigation
 
     func navigate(to item: SidebarItem) {
+        // 工作台是左侧菜单里的独立一页：进入时不清理选择与搜索，
+        // 它们正是用户带进对话的上下文，离开时再原样回到进入前的页面。
+        if item == .assistant {
+            openAIWorkspacePage()
+            return
+        }
+        // 从工作台切到别的页面：先收起助手形态，避免「工作台页」和「并排 / 叠放」叠在一起。
+        if aiSurfaceMode == .workspace {
+            aiSurfaceMode = .hidden
+            aiWorkspaceOriginItem = nil
+        }
         // 影视源只属于网络影院：任何指向它的「网络资源频道页」都改道到网络影院。
         var item = item
         if case .catalogSource(let id) = item,
@@ -44,8 +55,13 @@ extension LibraryStore {
         if case .catalogSource(let id) = item {
             catalogModel.focus(id)
         }
-        prewarmOpenedCollection(item)
-        loadPhotoKitMediaTypesIfNeeded()
+        // 缩略图预热与 PhotoKit 媒体类型加载都不是首帧必需的：挪到下一拍，
+        // 先让侧边栏的高亮和目标的页面首帧落地，来回切换才有即时反馈。
+        Task { @MainActor [weak self] in
+            guard let self, self.sidebarItem == item else { return }
+            self.prewarmOpenedCollection(item)
+            self.loadPhotoKitMediaTypesIfNeeded()
+        }
     }
 
     /// 启动恢复后纠正旧页面：上次停在影视源的「网络资源频道页」时，改停到网络影院。

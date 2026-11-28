@@ -943,6 +943,26 @@ struct CatalogWizardView: View {
             return [try await MadouCatalogProvider.importSource(from: address)]
         } else if lower.contains("javgg") {
             return [try await JavGGCatalogProvider.importSource(from: address)]
+        } else if lower.contains("jliji") {
+            return [try await JlijiCatalogProvider.importSource(from: address)]
+        } else if lower.contains("xxss") {
+            return [try await XxssCatalogProvider.importSource(from: address)]
+        } else if lower.contains("aimeir") {
+            return [try await AimeirCatalogProvider.importSource(from: address)]
+        } else if lower.contains("v2ph") {
+            return [try await V2PHCatalogProvider.importSource(from: address)]
+        } else if lower.contains("nshens") {
+            return [try await NshensCatalogProvider.importSource(from: address)]
+        } else if lower.contains("91tutu") {
+            return [try await NinetyOneTutuCatalogProvider.importSource(from: address)]
+        } else if lower.contains("wuso") {
+            return [try await WusoCatalogProvider.importSource(from: address)]
+        } else if lower.contains("tuzac") {
+            return [try await TuzacCatalogProvider.importSource(from: address)]
+        } else if lower.contains("kkc3") || lower.contains("kkc") {
+            return [try await KkcCatalogProvider.importSource(from: address)]
+        } else if lower.contains("knit.bid") || lower.contains("knit") {
+            return [try await KnitCatalogProvider.importSource(from: address)]
         } else {
             return [try await NinetyOneCatalogProvider.importSource(from: address)]
         }
@@ -969,19 +989,24 @@ struct CatalogWizardView: View {
             checks.append(ValidationCheck(text: "首页解析 \(home.items.count) 条",
                                          level: home.items.isEmpty ? .failed : .ok))
 
-            // 首页第一条可能是纯图文榜单：往后找一条真正带播放器的条目来验证详情与封面。
+            // 首页第一条可能是纯图文榜单：往后找一条真正带播放器或图集的条目来验证详情与封面。
             var checked: (item: CatalogItem, detail: CatalogDetail)?
             for candidate in home.items.prefix(5) {
                 if let detail = try? await provider.detail(source: source, itemID: candidate.id),
-                   !detail.episodes.isEmpty {
+                   !detail.episodes.isEmpty || !detail.articleImages.isEmpty {
                     checked = (candidate, detail)
                     break
                 }
             }
 
             if let checked {
-                checks.append(ValidationCheck(text: "详情页解析 \(checked.detail.episodes.count) 个视频",
-                                             level: .ok))
+                if checked.detail.episodes.isEmpty {
+                    checks.append(ValidationCheck(text: "详情页解析 \(checked.detail.articleImages.count) 张图片",
+                                                 level: .ok))
+                } else {
+                    checks.append(ValidationCheck(text: "详情页解析 \(checked.detail.episodes.count) 个视频",
+                                                 level: .ok))
+                }
                 let cover = checked.item.coverURL.isEmpty
                     ? checked.detail.item.coverURL : checked.item.coverURL
                 if cover.isEmpty {
@@ -998,12 +1023,24 @@ struct CatalogWizardView: View {
                     }
                 }
             } else if !home.items.isEmpty {
-                checks.append(ValidationCheck(text: "前几条都没有可播放的视频，可能站点结构已变化",
-                                              level: .failed))
+                if source.kind.mayRequireLogin {
+                    checks.append(ValidationCheck(text: "详情需要登录：添加后在浏览器登录站点，右键该站点选「粘贴 Cookie…」把 Cookie 粘进来即可",
+                                                  level: .warning))
+                } else {
+                    checks.append(ValidationCheck(text: "前几条都没有可播放的视频或图集，可能站点结构已变化",
+                                                  level: .failed))
+                }
             }
         } catch {
             Diagnostics.record("导入校验失败 \(source.name)[\(source.kind.rawValue)]：\(error.localizedDescription)")
-            checks.append(ValidationCheck(text: error.localizedDescription, level: .failed))
+            if source.kind.mayRequireLogin,
+               case let CatalogError.http(status) = error, status == 403 || status == 492 {
+                // Cloudflare 挑战页：放行入库，之后自动续期或手动粘贴 Cookie。
+                checks.append(ValidationCheck(text: "站点有 Cloudflare 校验：打开时会在后台自动续期，也可右键「粘贴 Cookie…」",
+                                              level: .warning))
+            } else {
+                checks.append(ValidationCheck(text: error.localizedDescription, level: .failed))
+            }
         }
         return checks
     }
@@ -1036,6 +1073,13 @@ struct CatalogWizardView: View {
                 continue
             }
             source.isEnabled = enableAfterAdd
+            // 登录态是本机凭据：分享文件里的 Cookie 不导入，需要用户自己登录。
+            source.cookie = nil
+            source.cookieExpiresAt = nil
+            // 旧文件没有永久地址：按站点类型补上内置发布页，导入后也能自动找镜像。
+            if source.addressPageURL == nil {
+                source.addressPageURL = source.kind.defaultAddressPageURL
+            }
             source.allowsInsecureTLS = imported.count == 1 ? allowInsecure : false
             catalog.addSource(source)
             if firstID == nil { firstID = source.id }

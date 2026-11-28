@@ -114,17 +114,17 @@ extension LibraryStore {
             showToast("智能分析仅支持拾光本地图库")
             return
         }
-        guard let photo = photos.first(where: { $0.id == photoID }), !photo.isVideo else {
-            showToast("智能分析仅支持拾光本地图库中的照片")
+        guard let photo = photos.first(where: { $0.id == photoID }) else {
+            showToast("智能分析仅支持拾光本地图库中的照片与视频")
             return
         }
         Task { [weak self] in
             guard let self else { return }
             let analyzed = await Task.detached(priority: .utility) {
-                PhotoIntelligence.analyze(photo)
+                await MediaIntelligence.analyze(photo)
             }.value
             guard let result = analyzed else {
-                self.showToast("无法分析这张照片")
+                self.showToast(photo.isVideo ? "无法分析这个视频" : "无法分析这张照片")
                 return
             }
             let labels = Set(result.labels.split(separator: " ").map(String.init))
@@ -145,7 +145,7 @@ extension LibraryStore {
     }
 
     var pendingAnalysisCount: Int {
-        photos.lazy.filter { $0.deletedAt == nil && !$0.isVideo && self.needsReanalysis($0.id) }.count
+        photos.lazy.filter { $0.deletedAt == nil && self.needsReanalysis($0.id) }.count
     }
 
     /// 逐张分析本地照片：场景分类 + OCR 文字 + 二维码 / 条码 + 特征向量，结果分批写入图库数据库。
@@ -157,10 +157,10 @@ extension LibraryStore {
         }
         guard !isAnalyzingIntelligence else { return }
         let targets = photos.filter {
-            $0.deletedAt == nil && !$0.isVideo && (force || self.needsReanalysis($0.id))
+            $0.deletedAt == nil && (force || self.needsReanalysis($0.id))
         }
         guard !targets.isEmpty else {
-            showToast(force ? "图库里没有可分析的照片" : "所有照片都已完成内容分析")
+            showToast(force ? "图库里没有可分析的照片或视频" : "所有照片与视频都已完成内容分析")
             return
         }
 
@@ -180,15 +180,21 @@ extension LibraryStore {
                 Task { @MainActor in self?.cancelIntelligenceAnalysis() }
             }
         )
+        // 一开始就带总数：任务卡立刻显示 0 / N 与百分比，而不是转圈等第一张结果。
+        updateSourceJob(jobID,
+                        completed: 0,
+                        total: targets.count,
+                        message: "准备分析 \(targets.count) 项")
 
         tasks.adopt(.intelligence, Task { [weak self] in
             guard let self else { return }
             var buffer: [(id: UUID, labels: String, text: String, feature: Data?)] = []
             buffer.reserveCapacity(16)
+            let startedAt = Date()
             for (index, photo) in targets.enumerated() {
                 if self.intelligenceCancelled || Task.isCancelled { break }
                 let result = await Task.detached(priority: .utility) {
-                    PhotoIntelligence.analyze(photo)
+                    await MediaIntelligence.analyze(photo)
                 }.value
                 if let result {
                     let labels = Set(result.labels.split(separator: " ").map(String.init))
@@ -206,11 +212,15 @@ extension LibraryStore {
                 self.intelligenceDone = index + 1
                 if index % 8 == 0 {
                     self.sceneCountsCacheKey = nil
-                    self.updateSourceJob(jobID,
-                                         completed: index + 1,
-                                         total: targets.count,
-                                         message: "已分析 \(index + 1) / \(targets.count)")
                 }
+                // 每张都上报：数量不多时也能马上看到 1 / N，并带上当前文件与预计剩余。
+                self.updateSourceJob(jobID,
+                                     completed: index + 1,
+                                     total: targets.count,
+                                     message: self.analysisJobMessage(done: index + 1,
+                                                                      total: targets.count,
+                                                                      filename: photo.filename,
+                                                                      startedAt: startedAt))
             }
             if !buffer.isEmpty { store.saveAnalysis(buffer) }
 
@@ -307,6 +317,22 @@ extension LibraryStore {
     /// 单批解码数量：控制每次取多少张，避免长任务占满内存。
     static let systemAnalysisPageSize = 200
 
+    /// 识别任务的进度文案：当前文件 + 预计剩余。
+    /// 样本太少时不给剩余时间，避免数字来回跳。
+    func analysisJobMessage(done: Int,
+                            total: Int,
+                            filename: String?,
+                            startedAt: Date) -> String {
+        let name = (filename ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = name.isEmpty ? "已识别 \(done) / \(total)" : "正在识别 \(name)"
+        let elapsed = Date().timeIntervalSince(startedAt)
+        if done >= 8, total > done, elapsed > 4 {
+            let remaining = elapsed / Double(done) * Double(total - done)
+            text += " · 预计还需 \(JobDurationText.format(remaining))"
+        }
+        return text
+    }
+
     /// 在后台持续识别系统图库：结果逐张出现，增量刷新侧边栏与场景总览；
     /// 识别位置按图库记录，关库 / 切库 / 重启后会从断点继续，而不是从头扫描。
     func analyzeSystemContent() {
@@ -339,6 +365,11 @@ extension LibraryStore {
                 Task { @MainActor in self?.cancelSystemContentAnalysis() }
             }
         )
+        // 一开始就带总数：任务卡立刻显示 0 / N 与百分比，而不是转圈等第一批结果。
+        updateSourceJob(jobID,
+                        completed: 0,
+                        total: max(1, systemAnalysisTotal),
+                        message: "准备识别 \(systemAnalysisTotal) 张")
 
         let index = systemIndex
         // 只取照片，和本地图库的识别范围一致（视频不参与）。
@@ -357,6 +388,7 @@ extension LibraryStore {
             var pendingRows: [(id: UUID, labels: String, text: String, feature: Data?)] = []
             var remaining = self.systemPendingAnalysisCount
             self.systemAnalysisTotal = max(1, remaining)
+            let startedAt = Date()
 
             while !Task.isCancelled && !self.systemAnalysisCancelled {
                 let pageStart = cursor
@@ -411,12 +443,16 @@ extension LibraryStore {
                         remaining = max(0, remaining - 1)
                     }
                     self.systemAnalysisDone += 1
-                    if self.systemAnalysisDone % 16 == 0 {
-                        self.updateSourceJob(jobID,
-                                             completed: self.systemAnalysisDone,
-                                             total: self.systemAnalysisTotal,
-                                             message: "已识别 \(self.systemAnalysisDone) / \(self.systemAnalysisTotal)")
-                    }
+                    // 每张都上报：照片不多时也能立刻看到 1 / N，并带上当前文件与预计剩余。
+                    let done = self.systemAnalysisDone
+                    let total = max(1, self.systemAnalysisTotal)
+                    self.updateSourceJob(jobID,
+                                         completed: done,
+                                         total: total,
+                                         message: self.analysisJobMessage(done: done,
+                                                                          total: total,
+                                                                          filename: photo.filename,
+                                                                          startedAt: startedAt))
                     // 让界面按张刷新：场景行与「包含文字」会随识别进度逐步出现。
                     await Task.yield()
                 }
@@ -508,25 +544,100 @@ extension LibraryStore {
     /// 场景总览（数量 + 封面）：各场景的照片数随照片内容与分析结果变化自动重算。
     /// 本地图库用落库的分析结果，系统图库用内存里的识别结果。
     var sceneSummary: SceneSummary {
-        let key: String
-        if isSystemScope {
-            key = "sys-\(systemPhotos.count)-\(systemAnalysisIndex.count)-\(systemIndexSignature)"
-        } else {
-            key = "\(contentRevision)-\(analysisIndex.count)"
-        }
+        let key = sceneSummaryToken
         if key == sceneSummaryCacheKey { return sceneSummaryCache }
-        var summary = SceneSummary()
+        let summary = Self.computeSceneSummary(
+            system: isSystemScope,
+            analysis: isSystemScope ? systemAnalysisIndex : analysisIndex,
+            photosByID: systemPhotoIndex,
+            windowPhotos: systemWindowPhotos,
+            photos: photos,
+            index: isSystemScope ? systemIndex : nil,
+            overlays: systemOverlays,
+            nativeKeywords: systemNativeKeywordIDMap,
+            isNative: isNativeContainer
+        )
+        storeSceneSummary(summary, key: key)
+        return summary
+    }
+
+    /// 汇总指纹：识别结果数量 / 图库内容版本 / 索引指纹变了就重算。
+    var sceneSummaryToken: String {
         if isSystemScope {
+            return "sys-\(systemPhotos.count)-\(systemAnalysisIndex.count)-\(systemIndexSignature)"
+        }
+        return "\(contentRevision)-\(analysisIndex.count)"
+    }
+
+    /// 已经算好的场景汇总；冷启动时为 nil，界面据此先显示加载态再出卡片。
+    var cachedSceneSummary: SceneSummary? {
+        sceneSummaryToken == sceneSummaryCacheKey ? sceneSummaryCache : nil
+    }
+
+    /// 异步汇总：点开「场景」时逐条比对识别结果可能上万条，
+    /// 放到后台算完再回到主线程写缓存，主线程不再被这段匹配卡住。
+    func loadSceneSummary() async -> SceneSummary {
+        let key = sceneSummaryToken
+        if key == sceneSummaryCacheKey { return sceneSummaryCache }
+        let system = isSystemScope
+        let analysis = system ? systemAnalysisIndex : analysisIndex
+        guard !analysis.isEmpty else {
+            let empty = SceneSummary()
+            storeSceneSummary(empty, key: key)
+            return empty
+        }
+        let photosByID = systemPhotoIndex
+        let windowPhotos = systemWindowPhotos
+        let snapshotPhotos = photos
+        let index = system ? systemIndex : nil
+        let overlays = systemOverlays
+        let nativeKeywords = systemNativeKeywordIDMap
+        let native = isNativeContainer
+        let summary = await Task.detached(priority: .userInitiated) {
+            Self.computeSceneSummary(system: system,
+                                     analysis: analysis,
+                                     photosByID: photosByID,
+                                     windowPhotos: windowPhotos,
+                                     photos: snapshotPhotos,
+                                     index: index,
+                                     overlays: overlays,
+                                     nativeKeywords: nativeKeywords,
+                                     isNative: native)
+        }.value
+        guard !Task.isCancelled else { return summary }
+        storeSceneSummary(summary, key: key)
+        return summary
+    }
+
+    private func storeSceneSummary(_ summary: SceneSummary, key: String) {
+        sceneSummaryCacheKey = key
+        sceneSummaryCache = summary
+        sceneCountsCacheKey = key
+        sceneCountsCache = summary.counts
+    }
+
+    /// 纯计算版本：可在后台线程跑（不读 Store 的可变状态，全部由调用方快照传入）。
+    nonisolated static func computeSceneSummary(system: Bool,
+                                                analysis: [UUID: PhotoAnalysis],
+                                                photosByID: [UUID: PhotoItem],
+                                                windowPhotos: [PhotoItem],
+                                                photos: [PhotoItem],
+                                                index: SystemIndex?,
+                                                overlays: [UUID: AssetOverlay],
+                                                nativeKeywords: [UUID: [String]],
+                                                isNative: Bool) -> SceneSummary {
+        var summary = SceneSummary()
+        if system {
             // 系统图库只遍历已识别的照片，避免扫整库。
             // 索引模式下内存里只有当前窗口，这里绝不能逐张回查索引：
-            // 十万级识别结果会变成十万次 SQL，主线程直接卡死。
+            // 十万级识别结果会变成十万次 SQL。
             var windowIndex: [UUID: PhotoItem] = [:]
-            windowIndex.reserveCapacity(systemWindowPhotos.count)
-            for item in systemWindowPhotos where windowIndex[item.id] == nil {
+            windowIndex.reserveCapacity(windowPhotos.count)
+            for item in windowPhotos where windowIndex[item.id] == nil {
                 windowIndex[item.id] = item
             }
-            for (photoID, analysis) in systemAnalysisIndex {
-                let photo = systemPhotoIndex[photoID] ?? windowIndex[photoID]
+            for (photoID, analysis) in analysis {
+                let photo = photosByID[photoID] ?? windowIndex[photoID]
                 if let photo, photo.deletedAt != nil || photo.isHidden { continue }
                 for category in SceneCatalog.categories
                 where SceneCatalog.matches(category, analysis: analysis, photo: photo) {
@@ -540,22 +651,25 @@ extension LibraryStore {
                 }
             }
             // 索引模式下内存窗口通常不含封面照片，按候选 ID 从索引批量补齐。
-            if let index = systemIndex {
+            if let index {
                 let missing = summary.coverIDs.filter { summary.covers[$0.key] == nil }
                 if !missing.isEmpty {
                     let items = index.photos(ids: Array(missing.values))
                     let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                     for (categoryID, photoID) in missing {
                         guard let item = byID[photoID] else { continue }
-                        summary.covers[categoryID] = applySystemOverlay(item)
+                        summary.covers[categoryID] = applyingOverlays(item,
+                                                                      overlays: overlays,
+                                                                      nativeKeywords: nativeKeywords,
+                                                                      isNative: isNative)
                     }
                 }
             }
-        } else if !analysisIndex.isEmpty {
+        } else if !analysis.isEmpty {
             for photo in photos where photo.deletedAt == nil && !photo.isHidden {
-                guard let analysis = analysisIndex[photo.id] else { continue }
+                guard let item = analysis[photo.id] else { continue }
                 for category in SceneCatalog.categories
-                where SceneCatalog.matches(category, analysis: analysis, photo: photo) {
+                where SceneCatalog.matches(category, analysis: item, photo: photo) {
                     summary.counts[category.id, default: 0] += 1
                     if summary.covers[category.id] == nil {
                         summary.covers[category.id] = photo
@@ -563,10 +677,6 @@ extension LibraryStore {
                 }
             }
         }
-        sceneSummaryCacheKey = key
-        sceneSummaryCache = summary
-        sceneCountsCacheKey = key
-        sceneCountsCache = summary.counts
         return summary
     }
 

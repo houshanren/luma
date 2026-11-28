@@ -110,9 +110,10 @@ if [ -n "$FETCH" ]; then
   fetch_step xiurenz $PY Tools/catalog_build/fetch/fetch_xiurenz.py
   fetch_step xsnvshen $PY Tools/catalog_build/fetch/fetch_xsnvshen.py
   fetch_step xsnvshen_covers $PY Tools/catalog_build/fetch/fetch_xsnvshen_covers.py
+  fetch_step cn_contacts $PY Tools/catalog_build/fetch/fetch_cn_contacts.py
   fetch_step wikidata $PY Tools/catalog_build/fetch/fetch_wikidata_performers.py
   fetch_step graphis $PY Tools/catalog_build/fetch/fetch_graphis.py
-  fetch_step studio_logos $PY Tools/catalog_build/fetch/fetch_studio_logos.py
+  fetch_step studio_logos $PY Tools/catalog_build/fetch/fetch_studio_logo_images.py --mousou --xiuren
 fi
 
 if [ -z "$SKIP_DERIVE" ]; then
@@ -124,9 +125,13 @@ if [ -z "$SKIP_DERIVE" ]; then
   derive_step kkkhai_tags $PY Tools/catalog_build/build/build_kkkhai_tags.py
   derive_step kkkhai_details $PY Tools/catalog_build/build/build_kkkhai_details.py
   derive_step mms_people $PY Tools/catalog_build/build/build_mms_people.py
+  derive_step mms_contacts $PY Tools/catalog_build/build/build_mms_contacts.py
   derive_step extra_names $PY Tools/catalog_build/build/build_extra_names.py
   derive_step javbus_map $PY Tools/catalog_build/build/build_javbus_map.py
   derive_step xsnvshen_region $PY Tools/catalog_build/build/fix_xsnvshen_region.py
+  # 从 App 里已接入站点的分类 / 标签反哺星图：产出 raw/site_people.json、raw/site_studios.json。
+  # 只读 App 图库的 catalog_kv，不联网；站点还没点开过时产出为空，不影响建库。
+  derive_step site_taxonomy $PY Tools/catalog_build/import/extract_site_taxonomy.py
 fi
 
 if [ -z "$SKIP_R18" ]; then
@@ -151,7 +156,8 @@ build_database() {
   return 1
 }
 
-echo "== 重建 Resources/Catalog/catalog.sqlite"
+CATALOG_DB="${LUMA_CATALOG_DB:-$HOME/Downloads/catalog.sqlite}"
+echo "== 重建 ${CATALOG_DB}"
 build_database "$LOG_DIR/.pipeline_build.log" || exit 1
 
 if [ -n "$WITH_AVATARS" ]; then

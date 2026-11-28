@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ToastView: View {
-    @EnvironmentObject private var chrome: ChromeModel
+    @Environment(ChromeModel.self) private var chrome
     @Environment(AppSettings.self) private var settings
 
     /// 轻量识别提示语义：失败类给橙色警告，其余给绿色完成。

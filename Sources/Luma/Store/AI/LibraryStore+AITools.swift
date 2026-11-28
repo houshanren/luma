@@ -5,6 +5,13 @@ import AppKit
 extension LibraryStore {
     func executeAITool(_ call: AIToolCall) async -> AIToolExecution {
         let args = AILibraryTools.arguments(call.arguments)
+        let result = await performAITool(call, args: args)
+        recordAIAudit(call, args: args, result: result)
+        return result
+    }
+
+    /// 真正的分发：按源注册的 provider 优先，中央 switch 只处理图库基础工具。
+    private func performAITool(_ call: AIToolCall, args: [String: Any]) async -> AIToolExecution {
         // 先问按源注册的 provider：影院等模块自己处理，中央 switch 保持精简。
         if let result = await aiToolRegistry.execute(call, args: args) { return result }
         switch call.name {
@@ -18,6 +25,12 @@ extension LibraryStore {
         case "list_keywords": return listKeywordsTool(args)
         case "list_people": return listPeopleTool(args)
         case "library_overview": return libraryOverviewTool()
+        case "library_insights": return libraryInsightsTool(args)
+        case "list_trips": return listTripsTool(args)
+        case "play_trip_memory": return playTripMemoryTool(args)
+        case "library_health_report": return libraryHealthReportTool(args)
+        case "resume_watching": return resumeWatchingTool(args)
+        case "today_digest": return await todayDigestTool(args)
         case "navigate": return navigateTool(args)
         case "select_photos": return selectPhotosTool(args)
         case "open_photo": return openPhotoTool(args)
@@ -43,6 +56,9 @@ extension LibraryStore {
         case "beautify_photos": return await beautifyPhotosTool(args)
         case "trash_photos": return trashPhotosTool(args)
         case "restore_photos": return restorePhotosTool(args)
+        case "generate_share_copy": return await generateShareCopyTool(args)
+        case "cleanup_tv_channels": return await cleanupTVChannelsTool(args)
+        case "make_smart_album": return await makeSmartAlbumTool(args)
         default:
             return failure("不支持的工具：\(call.name)")
         }
@@ -62,11 +78,21 @@ extension LibraryStore {
         case .automatic:
             return allIDs
         case .always:
-            return confirmAIToolActions(calls, highRisk: false) ? allIDs : []
+            let pending = callsNeedingConfirmation(calls)
+            guard !pending.isEmpty else { return allIDs }
+            return confirmAIToolActions(pending, highRisk: false) ? allIDs : []
         case .smart:
-            let risky = calls.filter { AILibraryTools.isRisky($0) }
+            let risky = callsNeedingConfirmation(calls).filter { AILibraryTools.isRisky($0) }
             guard !risky.isEmpty else { return allIDs }
             return confirmAIToolActions(risky, highRisk: true) ? allIDs : []
+        }
+    }
+
+    /// 去掉已「始终允许」的可逆写；外部连接器与高风险始终保留确认。
+    private func callsNeedingConfirmation(_ calls: [AIToolCall]) -> [AIToolCall] {
+        let always = Set(aiAlwaysAllowedTools)
+        return calls.filter { call in
+            !(Self.aiToolIsRememberable(call.name) && always.contains(call.name))
         }
     }
 
@@ -1213,7 +1239,7 @@ extension LibraryStore {
     }
 
     /// 检索范围：跟随当前范围（本地 / 系统图库 / 网盘）。
-    private func aiSearchSource() -> [PhotoItem] {
+    func aiSearchSource() -> [PhotoItem] {
         if isCloudScope { return cloudVisiblePhotos }
         if isSystemScope {
             // 索引模式不常驻整库：检索限定在当前窗口（已在界面上展示的内容）。
@@ -1272,7 +1298,7 @@ extension LibraryStore {
     }
 
     /// 只接受当前本地图库中存在且未删除的照片 id。
-    private func localPhotoIDs(_ raw: [String]) -> Set<UUID> {
+    func localPhotoIDs(_ raw: [String]) -> Set<UUID> {
         let ids = Set(resolveAIPhotoIDs(raw))
         guard !ids.isEmpty else { return [] }
         let live = Set(photos.lazy.filter { $0.deletedAt == nil }.map(\.id))

@@ -25,7 +25,7 @@ package struct PhotoTagDefinition: Decodable {
     }
 }
 
-/// 端侧标签目录（`Resources/Models/SigLIP2/tags.json`）。
+/// 端侧标签目录（源码 `Resources/Models/SigLIP2Assets/tags.json`，安装后位于模型目录的 `SigLIP2/tags.json`）。
 /// 标准名唯一，分组用于互斥去重：同一组只保留得分最高的若干个，避免「猫 / 狗 / 动物」叠在一起。
 package final class PhotoTagCatalog: Decodable {
     package let version: Int
@@ -35,7 +35,10 @@ package final class PhotoTagCatalog: Decodable {
     package let tags: [PhotoTagDefinition]
 
     /// 分析结果里的版本标记：旧分析结果没有它，会按需重扫。
-    package static let sentinel = "siglip2"
+    /// v2：轨迹标签扩充（208 → 249）后必须重扫，否则旧库拿不到亲子 / 戏水 / 古迹等标签。
+    /// v3：合入 Apple Vision 分类器补充（天空 / 文档 / 截图 / 服饰等欠触发），存量库需重扫。
+    /// v4：第二信号改成门控（仅 SigLIP 标签 < 2 时补），压回 Apple 带来的误报，存量库需重扫。
+    package static let sentinel = "siglip2-v4"
 
     private let orderIndex: [String: Int]
     private let aliasEntries: [(alias: String, title: String)]

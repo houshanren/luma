@@ -119,6 +119,7 @@ struct CinemaSettingsSection: View {
                 }
                 .padding(18)
             }
+            .scrollIndicators(.never)
         }
         // 敏感项在 AppSettings 初始化时已从统一保险库取过一次；这里只读内存。
         .task(id: tab) {
@@ -877,7 +878,7 @@ struct CinemaSettingsSection: View {
                     .frame(width: 220)
                 }
                 settingToggle("进度条悬停预览",
-                              detail: "鼠标移到进度条上显示该时间点画面；关掉后只看时间",
+                              detail: "鼠标移到进度条上显示该时间点画面；关掉后只看时间。图库视频不生成预览，避免拖动卡顿",
                               isOn: Bindable(settings).scrubPreviewEnabled,
                               divider: false)
             }

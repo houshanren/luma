@@ -13,6 +13,15 @@ Vendor/ffmpeg-dv/
 # Python 缓存与原始抓取数据（可重建，不入库）
 __pycache__/
 Tools/catalog_build/raw/
+Resources/catalog/
+Tools/catalog_build/
+
 
 # 本地导出的网络电视 / 网络影院源配置（含站点地址与凭据，属于用户数据）
 StreamSource/
+
+# 本地 AI 评测产物（含真实照片与视频帧，仅本机使用，不入库）
+docs/ai/goldset-40/
+docs/ai/goldset-200/
+docs/ai/video-gold/
+docs/ai/qwen-events/

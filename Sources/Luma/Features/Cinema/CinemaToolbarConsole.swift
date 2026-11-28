@@ -13,6 +13,8 @@ struct CinemaToolbarConsole: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.openSettings) private var openSettings
     @AppStorage(SettingsKeys.selectedTab) private var settingsTab: SettingsTab = .general
+    /// 影院兜底匹配的状态（未识别条目逐条搜索 + 模型确认）。
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
 
     @State private var hoveredTab: CinemaTab?
     @State private var hoveredTypeKey = false
@@ -821,7 +823,7 @@ struct CinemaToolbarConsole: View {
 
     private var assistantKey: some View {
         Button {
-            store.showAIAssistant = true
+            store.toggleAIWorkspace()
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -980,6 +982,15 @@ struct CinemaToolbarConsole: View {
 
             Divider()
 
+            Button { store.cinemaWatchPlanVisible = true } label: {
+                Label("观影计划…", systemImage: "popcorn")
+            }
+            Button { store.cinemaGapReportVisible = true } label: {
+                Label("缺集报告…", systemImage: "rectangle.badge.minus")
+            }
+
+            Divider()
+
             Button {
                 presentCinemaSettings()
             } label: {
@@ -1091,6 +1102,80 @@ struct CinemaToolbarConsole: View {
 
     // MARK: 状态详情
 
+    /// 未识别条目的一键 AI 兜底：逐条搜索候选，由模型确认后再写回。
+    private var aiFallbackRow: some View {
+        let availability = store.aiAssistAvailability
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                Task { await store.aiResolveUnmatchedCinema(scope: scope) }
+            } label: {
+                if aiAssist.cinemaFallbackBusy {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text(aiAssist.cinemaFallbackStatus ?? "AI 兜底中…")
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 10.5))
+                } else {
+                    Label("AI 兜底匹配未识别", systemImage: "sparkles")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(accentText)
+            .disabled(!availability.isReady || aiAssist.cinemaFallbackBusy || isScraping)
+            .help(availability.hint ?? "先搜索候选，再由模型确认写回；只处理未识别条目")
+            if let hint = availability.hint, !aiAssist.cinemaFallbackBusy {
+                Text(hint)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(accentText.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    /// 同系列电影收进合集、同剧不同季合并：只改片名与合集元数据，不动文件。
+    private var aiGroupRow: some View {
+        let availability = store.aiAssistAvailability
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                Task { await store.aiGroupCinemaSeries() }
+            } label: {
+                if aiAssist.cinemaGroupingBusy {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text(aiAssist.cinemaGroupingStatus ?? "AI 归组中…")
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 10.5))
+                } else {
+                    Label("AI 系列归组", systemImage: "rectangle.stack.badge.plus")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(accentText)
+            .disabled(!availability.isReady || aiAssist.cinemaGroupingBusy || isScraping)
+            .help("同系列电影收进合集、同剧不同季合并；只改元数据，不移动文件")
+            if let status = aiAssist.cinemaGroupingStatus, !aiAssist.cinemaGroupingBusy {
+                Text(status)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(accentText.opacity(0.05),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
     private var statusPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 7) {
@@ -1121,6 +1206,14 @@ struct CinemaToolbarConsole: View {
                 popoverRow("已识别", "\(matchedCount) 部")
                 popoverRow("未识别", "\(unmatchedCount) 部")
                 popoverRow("影片总数", "\(scopeEntries.count) 部")
+            }
+
+            if unmatchedCount > 0 {
+                aiFallbackRow
+            }
+
+            if !scopeEntries.isEmpty {
+                aiGroupRow
             }
 
             if isScraping {

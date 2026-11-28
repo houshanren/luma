@@ -5,6 +5,7 @@ struct KeywordManagerView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(SelectionModel.self) private var selectionModel
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
     @State private var newKeyword = ""
 
     private var hint: String {
@@ -20,6 +21,25 @@ struct KeywordManagerView: View {
                 Text("关键词")
                     .font(.headline)
                 Spacer()
+                Button {
+                    Task { await store.generateKeywordMerges() }
+                } label: {
+                    HStack(spacing: 4) {
+                        if aiAssist.keywordMergeLoading {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        Text("AI 整理词表")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(store.aiAssistAvailability.isReady
+                                 ? Color.accentColor : Color.secondary)
+                .disabled(aiAssist.keywordMergeLoading || !store.aiAssistAvailability.isReady)
+                .help(store.aiAssistAvailability.hint ?? "合并同义词、繁体与错别字，清理垃圾关键词")
                 Button {
                     dismiss()
                 } label: {
@@ -82,6 +102,11 @@ struct KeywordManagerView: View {
         }
         .padding(20)
         .frame(width: 430, height: 500)
+        // 合并建议挂在管理面板内：从词表点的入口就在词表里出结果。
+        .sheet(isPresented: $aiAssist.showKeywordMergeSheet) {
+            AIKeywordMergeSheet()
+                .environment(store)
+        }
     }
 
     private func keywordRow(_ option: KeywordOption) -> some View {

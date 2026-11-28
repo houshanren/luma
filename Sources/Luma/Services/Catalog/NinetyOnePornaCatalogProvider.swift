@@ -346,12 +346,13 @@ struct NinetyOnePornaCatalogProvider: CatalogProvider {
     }
 
     func coverData(source: CatalogSource, urlString: String) async throws -> Data {
-        guard let url = URL(string: CatalogHTML.fixURL(urlString, base: source.baseURL)) else {
+        guard let raw = URL(string: CatalogHTML.fixURL(urlString, base: try rootURL(source))) else {
             throw CatalogError.parse("封面地址无效")
         }
+        let url = CatalogAddressRouter.rewriteSiteURL(raw, source: source)
         let data = try await CatalogHTTP.fetchData(url: url, headers: [
             "User-Agent": source.userAgent,
-            "Referer": source.referer,
+            "Referer": CatalogAddressRouter.currentSource(source).referer,
             "Accept": "image/jpeg,image/png,image/*;q=0.8"
         ])
         guard !data.isEmpty else { throw CatalogError.parse("封面为空") }
@@ -881,7 +882,9 @@ struct NinetyOnePornaCatalogProvider: CatalogProvider {
     // MARK: - 工具
 
     private func rootURL(_ source: CatalogSource) throws -> String {
-        var text = source.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = CatalogAddressCache.base(kind: source.kind, host: source.host)
+            ?? source.baseURL
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") { text.removeLast() }
         guard !text.isEmpty, URL(string: text)?.host != nil else {
             throw CatalogError.invalidConfig("站点地址为空")
@@ -893,9 +896,21 @@ struct NinetyOnePornaCatalogProvider: CatalogProvider {
         try await CatalogHTTP.fetchPage(url: url, source: source)
     }
 
+    /// 分类 id 一律是 `类型|路径`。旧版本快照、外部导入或手输地址里可能只有裸 id，
+    /// 这里按形态推断类型，避免详情页把历史条目判成「未知的条目类型」。
     static func splitIdentifier(_ id: String) -> (kind: String, path: String) {
-        guard let separator = id.firstIndex(of: "|") else { return ("", id) }
-        return (String(id[..<separator]), String(id[id.index(after: separator)...]))
+        if let separator = id.firstIndex(of: "|") {
+            return (String(id[..<separator]), String(id[id.index(after: separator)...]))
+        }
+        if id.hasPrefix("/comic/") { return ("comic", id) }
+        if id.hasPrefix("/ai/") { return ("ai", id) }
+        if id.hasPrefix("/melonshort/") { return ("melon", id) }
+        if id.hasPrefix("/moviesets") {
+            let parts = id.split(separator: "/").filter { !$0.isEmpty }
+            return (parts.count >= 3 ? "mslist" : "set", id)
+        }
+        if !id.isEmpty, id.allSatisfy(\.isNumber) { return ("hc", id) }
+        return ("", id)
     }
 
     private static func firstText(_ patterns: [String], in text: String) -> String? {

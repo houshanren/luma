@@ -10,11 +10,43 @@ import LumaCore
 extension VideoPlayerStage {
     // MARK: 载入
 
+    /// 本地 / SMB 起播点真实帧：比缩略图清晰得多，拿到即替换等待层底图。
+    /// 云端与网络源不做远端抽帧（要额外下行、收益低），交给信息层。
+    /// 图库本机视频起播几乎瞬时，按设计不取首帧、不显示等待层。
+    func loadLocalPosterFrame() {
+        posterFrameTask?.cancel()
+        posterFrameTask = nil
+        guard !isLocalVideo else { return }
+        let url = LibraryPaths.sourceURL(for: photo)
+        guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else { return }
+        let targetID = photo.id
+        let seconds = max(0, playbackSession.resumePosition ?? 0)
+        posterFrameTask = Task { @MainActor in
+            let frame = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                let asset = AVURLAsset(url: url)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 2560, height: 2560)
+                // SMB 上放宽容差，取附近的帧即可，别为了精确时间点多读几段。
+                generator.requestedTimeToleranceBefore = CMTime(seconds: 2, preferredTimescale: 600)
+                generator.requestedTimeToleranceAfter = CMTime(seconds: 2, preferredTimescale: 600)
+                return try? generator.copyCGImage(at: CMTime(seconds: seconds, preferredTimescale: 600),
+                                                  actualTime: nil)
+            }.value
+            guard !Task.isCancelled, photo.id == targetID, let frame else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                loadingFrame = NSImage(cgImage: frame,
+                                       size: NSSize(width: frame.width, height: frame.height))
+            }
+        }
+    }
+
     func load(generation: Int) async {
         FullScreenDiagnostics.log("video load start \(photo.originalName) generation=\(generation)")
         // 不在这里恢复刷新率：连播同一帧率的剧集时，先恢复再匹配会让屏幕黑闪两次。
         // 新片的匹配在首帧出来后由 applyDisplayRate 负责，退出播放时 onDisappear 统一恢复。
         isPreparing = true
+        waitingStage = tvLiveChannel != nil ? .connecting : .resolving
         cachedSourcePending = false
         failureMessage = nil
         streamFailure = nil
@@ -62,6 +94,7 @@ extension VideoPlayerStage {
             probeAudioCount = warm.audioTracks.count
             probeAudioTracks = warm.audioTracks
             applyPlaybackProbe(probe)
+            waitingStage = .starting
             model.load(url: warm.playlistURL, probe: probe, autoplay: autoplay,
                        loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
                        startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
@@ -94,6 +127,7 @@ extension VideoPlayerStage {
 
         let source = await resolveSource()
         guard generation == loadGeneration, !Task.isCancelled else { return }
+        waitingStage = tvLiveChannel != nil ? .connecting : .probing
         var failedProbe: VideoProbe?
 
         // 电视直播的非 HLS 源（http-flv / http-ts）：系统播放器不支持，
@@ -110,6 +144,7 @@ extension VideoPlayerStage {
             if photo.pixelWidth > 0, photo.pixelHeight > 0 {
                 videoSize = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
             }
+            waitingStage = .starting
             if await startStreaming(generation: generation, autoplay: autoplay,
                                     offset: 0, resumeAt: nil, mode: .remux,
                                     audioIndex: 0, isLive: true) {
@@ -143,10 +178,12 @@ extension VideoPlayerStage {
                 probe.size = CGSize(width: photo.pixelWidth, height: photo.pixelHeight)
             }
             videoSize = probe.size
+            waitingStage = .starting
             model.load(url: source.url, options: assetOptions, probe: probe, autoplay: autoplay,
                        loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                       startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
-                       playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
+                       startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer,
+                       startsImmediately: playbackMode == .live)
+            playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
             hasLoadedVideo = true
             isPreparing = false
             probeDuration = probe.duration
@@ -184,15 +221,23 @@ extension VideoPlayerStage {
             // 复用同一份 AVAsset 做探测与播放：SMB / 外置盘少开一次文件，轨道信息也直接复用。
             let asset = playbackAsset ?? AVURLAsset(url: playbackURL, options: assetOptions)
             // 资源加载器代取的地址 ffprobe 读不了，只有普通地址才做 ffprobe 兜底。
+            waitingStage = .probing
             let probe = await VideoSupport.probe(asset: asset,
                                                  fallbackURL: playbackAsset == nil ? playbackURL : nil,
                                                  options: assetOptions)
             guard generation == loadGeneration, !Task.isCancelled else { return }
-            // AVPlayer 没有去隔行开关：隔行源跳过原生直连，交给 ffmpeg 重编码 + bwdif。
-            // 4K 50/60fps HEVC 直连会黑屏有声音，同样跳过（统一走重编码）。
-            if probe.hasVideoTrack, probe.isPlayable, !probe.isInterlaced,
-               !probe.requiresRecodeForHighFrameRate4K,
-               !needsToneMapping(probe) {
+            // 本地文件一律直连：iPhone 拍的 4K60 HDR 在 QuickTime 里都能直接播，
+            // 没必要先跑一遍 ffmpeg（隔行 / 4K 高帧率 / 自动 HDR 映射都不再拦）。
+            // 系统真解不了的码流由播放器失败回调兜底转码一次，不会黑屏卡住。
+            // 例外：用户在设置里强制「HDR 转 SDR」时按他的要求映射。
+            let localDirect = !photo.isCloud && canUseLocal
+            let directOK = localDirect
+                ? (probe.isVideoDecodable || (probe.isPlayable && !probe.isInterlaced))
+                : (probe.isPlayable && !probe.isInterlaced
+                   && !probe.requiresRecodeForHighFrameRate4K)
+            let toneMapRequired = needsToneMapping(probe)
+                && (!localDirect || effectiveHDRMode == .toneMapSDR)
+            if probe.hasVideoTrack, directOK, !toneMapRequired {
                 videoSize = probe.size
                 model.load(asset: asset, probe: probe, autoplay: autoplay,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
@@ -214,11 +259,19 @@ extension VideoPlayerStage {
                 return
             }
             failedProbe = probe
-            // HDR / 杜比视界片源按设置先做色调映射：跳过系统原生直解，交给 ffmpeg 转码。
+            // 跳过系统原生直解的原因有多种：HDR / 隔行 / 4K 高帧率。日志如实区分，
+            // 别把 4K60 也写成「HDR 片源」，否则排查时会被误导。
             if probe.hasVideoTrack, probe.isPlayable {
-                Diagnostics.record("HDR 片源改走色调映射：\(photo.originalName) "
+                let reasons = [
+                    needsToneMapping(probe) ? "色调映射" : nil,
+                    probe.isInterlaced ? "去隔行" : nil,
+                    probe.requiresRecodeForHighFrameRate4K ? "4K 高帧率" : nil
+                ].compactMap { $0 }
+                Diagnostics.record("片源跳过直连（\(reasons.isEmpty ? "转码" : reasons.joined(separator: "+"))）："
+                                   + "\(photo.originalName) "
                                    + "dv=\(probe.isDolbyVision) "
                                    + "profile=\(probe.color.dvProfile.map(String.init) ?? "-") "
+                                   + "fps=\(Int(probe.frameRate)) "
                                    + "策略=\(effectiveHDRMode.rawValue) "
                                    + "override=\(hdrToneMapOverride.map { $0 ? "on" : "off" } ?? "nil") "
                                    + displayHDRDiagnostics)
@@ -248,6 +301,7 @@ extension VideoPlayerStage {
             if cachedProbe.hasVideoTrack, cachedProbe.isPlayable {
                 sourceURL = cached
                 videoSize = cachedProbe.size
+                waitingStage = .starting
                 model.load(url: cached, probe: cachedProbe, autoplay: autoplay,
                            loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
                            startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
@@ -268,39 +322,47 @@ extension VideoPlayerStage {
             }
         }
 
-        // 系统「照片」图库：本机没有原图时交给 PhotoKit，
-        // 共享相簿与仅存 iCloud 的视频会由 Photos 自己下载后再交给播放器。
-        if photo.isSystem {
-            guard let resolved = await store.systemVideoAsset(for: photo) else {
-                guard generation == loadGeneration, !Task.isCancelled else { return }
-                failureMessage = "无法从系统「照片」图库读取该视频，可能仍在 iCloud 或共享相簿中下载。"
-                isPreparing = false
-                return
-            }
-            let probe = await VideoSupport.probe(asset: resolved.asset)
+        // 系统「照片」图库：只有本机拿不到可用原图时才交给 PhotoKit 代取。
+        // 外接 / 非当前系统图库里的项目 PhotoKit 查不到，但原文件往往就在本机，
+        // 不能因为查不到就判失败——这类视频直接走下面的 ffmpeg 转封装 / 色调映射。
+        if photo.isSystem, !canUseLocal {
+            let resolved = await store.systemVideoAsset(for: photo)
             guard generation == loadGeneration, !Task.isCancelled else { return }
-            if probe.hasVideoTrack, probe.isPlayable {
-                sourceURL = resolved.url
-                videoSize = probe.size
-                model.load(asset: resolved.asset, probe: probe, autoplay: autoplay,
-                           loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
-                           startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
-                           playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
-                hasLoadedVideo = true
+            switch resolved {
+            case .ready(let asset, let url):
+                waitingStage = .probing
+                let probe = await VideoSupport.probe(asset: asset)
+                guard generation == loadGeneration, !Task.isCancelled else { return }
+                if probe.hasVideoTrack, probe.isPlayable {
+                    sourceURL = url
+                    videoSize = probe.size
+                    model.load(asset: asset, probe: probe, autoplay: autoplay,
+                               loop: settings.loopVideoByDefault, muted: settings.muteVideoByDefault,
+                               startAt: resumeOffset, forwardBufferDuration: startupForwardBuffer)
+                               playbackSession.markResumeApplied(playbackSession.resumeIsProgress && (resumeOffset ?? 0) > 3)
+                    hasLoadedVideo = true
+                    isPreparing = false
+                    probeDuration = probe.duration
+                    probeIsHEVC = probe.isHEVC
+                    probeIsHDR = probe.isHDR
+                    probeColor = probe.color
+                    probeAudioCount = probe.audioTrackCount
+                    probeAudioTracks = probe.audioTracks
+                    applyPlaybackProbe(probe)
+                    applyDisplayRate(probe.frameRate)
+                    refreshAudioChoices()
+                    ui.loadSiblingIfAvailable(sourceURL: sourceURL)
+                    return
+                }
+                failedProbe = probe
+            case .unauthorized, .notFound, .unavailable:
+                // 失败原因如实转述：只有 PhotoKit 明确说「在云端」才提示 iCloud。
+                failureMessage = Self.systemVideoFailureMessage(resolved)
+                Diagnostics.record("系统视频取不到 \(photo.originalName)："
+                                   + Self.systemVideoFailureDiagnostics(resolved))
                 isPreparing = false
-                probeDuration = probe.duration
-                probeIsHEVC = probe.isHEVC
-                probeIsHDR = probe.isHDR
-                probeColor = probe.color
-                probeAudioCount = probe.audioTrackCount
-                probeAudioTracks = probe.audioTracks
-                applyPlaybackProbe(probe)
-                applyDisplayRate(probe.frameRate)
-                refreshAudioChoices()
-                ui.loadSiblingIfAvailable(sourceURL: sourceURL)
                 return
             }
-            failedProbe = probe
         }
 
         // 系统不支持的容器（MKV / AVI…）：ffmpeg 边下载边封装成 fMP4 HLS，
@@ -355,6 +417,7 @@ extension VideoPlayerStage {
             let streamMode: VideoStreamSession.Mode =
                 (needsToneMapping(streamProbe) || streamProbe.isInterlaced
                  || !streamProbe.isVideoDecodable || highFrameRate4K) ? .transcode : .remux
+            waitingStage = .starting
             if await startStreaming(generation: generation, autoplay: autoplay,
                                     offset: startOffset,
                                     resumeAt: startOffset > 0 ? startOffset : nil,
@@ -410,6 +473,7 @@ extension VideoPlayerStage {
 
         let start = max(0, resumeOffset ?? 0)
         cachedSourcePending = true
+        waitingStage = .starting
         let started = await startStreaming(generation: generation,
                                            autoplay: autoplay,
                                            offset: start,
@@ -460,6 +524,38 @@ extension VideoPlayerStage {
         return codec ?? "未知编码"
     }
 
+    /// 系统图库视频取不到时的提示：只有 PhotoKit 明确说「在云端」才提 iCloud，
+    /// 其余情况如实说明（无权限 / 找不到 / 暂时读取失败），不再把任何失败都归因到 iCloud。
+    static func systemVideoFailureMessage(_ result: PhotoKitBridge.SystemVideoAsset) -> String {
+        switch result {
+        case .ready:
+            return ""
+        case .unauthorized:
+            return "没有照片图库的读取权限，请在「系统设置 › 隐私与安全性 › 照片」里允许拾光访问后重试。"
+        case .notFound:
+            // 这条分支只在「本机没有原文件」时才会走到：PhotoKit 也查不到，说明当前浏览的不是
+            // 「照片」正在使用的图库（外接 / 旧图库），或项目已删除。
+            return "系统「照片」里找不到这个视频（当前图库不是「照片」正在使用的图库，或视频已被删除），本机也没有它的原文件。"
+        case .unavailable(_, let isInCloud):
+            return isInCloud
+                ? "无法从系统「照片」图库读取该视频，可能仍在 iCloud 或共享相簿中下载。"
+                : "系统「照片」暂时无法读取该视频，请稍后重试。"
+        }
+    }
+
+    static func systemVideoFailureDiagnostics(_ result: PhotoKitBridge.SystemVideoAsset) -> String {
+        switch result {
+        case .ready:
+            return "ready"
+        case .unauthorized:
+            return "unauthorized"
+        case .notFound:
+            return "notFound"
+        case .unavailable(let error, let isInCloud):
+            return "unavailable isInCloud=\(isInCloud) error=\(error ?? "-")"
+        }
+    }
+
     func resolveSource() async -> (url: URL, headers: [String: String], isHLS: Bool)? {
         do {
             let session = try await store.preparePlaybackSession(for: photo)
@@ -479,6 +575,7 @@ extension VideoPlayerStage {
     func transcodeAndPlay() {
         guard !isTranscoding, let sourceURL else { return }
         isTranscoding = true
+        waitingStage = .starting
         let generation = loadGeneration
         let isCloud = photo.isCloud
         let headers = sourceHeaders

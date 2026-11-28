@@ -39,7 +39,7 @@ import unicodedata
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 RAW = os.path.join(ROOT, "Tools", "catalog_build", "raw")
 R18_DIR = os.path.join(RAW, "r18")
-CATALOG = os.path.join(ROOT, "Resources", "Catalog", "catalog.sqlite")
+CATALOG = os.environ.get("LUMA_CATALOG_DB") or os.path.expanduser("~/Downloads/catalog.sqlite")
 CACHE_DB = os.path.join(R18_DIR, "r18.sqlite")
 OUT_ACTRESSES = os.path.join(RAW, "r18_actresses.json")
 OUT_VIDEOS = os.path.join(RAW, "r18_videos.json")

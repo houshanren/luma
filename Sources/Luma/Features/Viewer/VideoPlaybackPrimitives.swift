@@ -114,6 +114,7 @@ struct VideoScrubber: View {
     @State private var hoverFraction: Double?
     @State private var previewImage: NSImage?
     @State private var previewFraction: Double?
+    @State private var previewLoading = false
     @State private var previewTask: Task<Void, Never>?
 
     private var isExpanded: Bool { isHovering || isDragging }
@@ -215,8 +216,12 @@ struct VideoScrubber: View {
                 case .ended:
                     isHovering = false
                     hoverFraction = nil
-                    onPreviewChange?(nil)
-                    if !isDragging { clearPreview() }
+                    // 拖动时指针常常滑出 16pt 高的轨道，这里不能把预览收掉：
+                    // 拖动中的位置由 DragGesture 继续驱动，松手时才结束预览。
+                    if !isDragging {
+                        onPreviewChange?(nil)
+                        clearPreview()
+                    }
                 }
             }
             .gesture(
@@ -276,12 +281,50 @@ struct VideoScrubber: View {
                 .offset(x: x, y: -(bubbleHeight + 12))
                 .allowsHitTesting(false)
                 .transition(.opacity)
+        } else if previewLoading, let previewFraction {
+            // 先占位：帧还在路上时也按最终尺寸留好位置，图到了原位淡入，气泡不跳。
+            let bubbleWidth: CGFloat = 168
+            let bubbleHeight: CGFloat = 95
+            let x = min(max(0, width * previewFraction - bubbleWidth / 2), max(0, width - bubbleWidth))
+            ZStack {
+                Color.black.opacity(0.55)
+                VStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .colorScheme(.dark)
+                    Text("取帧中…")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .frame(width: bubbleWidth, height: bubbleHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(.white.opacity(0.22), lineWidth: 0.7)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if duration > 0 {
+                    Text(formatPreviewTime(duration * previewFraction))
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(.black.opacity(0.55), in: Capsule(style: .continuous))
+                        .padding(6)
+                }
+            }
+            .shadow(color: .black.opacity(0.40), radius: 12, y: 4)
+            .offset(x: x, y: -(bubbleHeight + 12))
+            .allowsHitTesting(false)
+            .transition(.opacity)
         }
     }
 
     private func requestPreview(_ fraction: Double) {
         guard let thumbnailPreview else { return }
         previewFraction = fraction
+        previewLoading = true
         previewTask?.cancel()
         previewTask = Task { @MainActor in
             // 轻微防抖：手指快速掠过时不取帧，停住 90ms 再取，预览跟手又不抢解码。
@@ -289,6 +332,7 @@ struct VideoScrubber: View {
             guard !Task.isCancelled else { return }
             let image = await thumbnailPreview(fraction)
             guard !Task.isCancelled else { return }
+            previewLoading = false
             withAnimation(.easeOut(duration: 0.12)) { previewImage = image }
         }
     }
@@ -296,6 +340,7 @@ struct VideoScrubber: View {
     private func clearPreview() {
         previewTask?.cancel()
         previewTask = nil
+        previewLoading = false
         previewImage = nil
         previewFraction = nil
     }
@@ -410,29 +455,6 @@ struct VideoBufferingOverlay: View {
                 pulsing = true
             }
         }
-    }
-}
-
-/// 起播垫底：直接把缩略图 / 海报铺满画面，出第一帧后淡出。
-/// 不再做「正在准备第一帧」这类整页加载文案——播放器该做的是尽快出画面，
-/// 等待反馈交给紧凑的缓冲胶囊，界面不整块闪动。
-struct VideoPosterBackdrop: View {
-    let image: NSImage?
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                LinearGradient(colors: [Color(white: 0.10), Color(white: 0.03)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .allowsHitTesting(false)
     }
 }
 

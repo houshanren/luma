@@ -8,6 +8,7 @@ import SwiftUI
 /// - 单日条目默认只铺 24 条，其余用「显示更多」分批展开，避免一次创建上千个封面视图。
 struct CatalogCalendarView: View {
     @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
 
     /// 可选的来源范围：网络影院只看影视源的更新；网络资源总览不传，等于只看资源站。
     var sourceScope: Set<UUID>? = nil
@@ -44,11 +45,17 @@ struct CatalogCalendarView: View {
     /// 最近一次补录新进来的条目：排最前并高亮。
     private var newIDs: Set<String> { Set(catalog.calendarNewIDs) }
 
-    /// 当前来源范围内的日历条目：只统计本模块的源。
+    /// 当前来源范围内的日历条目：只统计本模块的源，并按「全部 / 视频 / 图集」再筛一次。
     private var scopedItems: [CatalogCalendarItem] {
         let ids = effectiveScope
-        return catalog.calendarItems.filter { ids.contains($0.sourceID) }
+        return catalog.calendarItems.filter {
+            ids.contains($0.sourceID)
+                && (!usesMediaFilter || catalog.matchesMediaFilter(sourceID: $0.sourceID))
+        }
     }
+
+    /// 网络影院没有图集，不参与媒体类型筛选。
+    private var usesMediaFilter: Bool { domain == .networkResource }
 
     /// 聚合缓存的失效条件：任何一项变化才重新遍历日历。
     private struct SnapshotKey: Equatable {
@@ -60,6 +67,7 @@ struct CatalogCalendarView: View {
         var lastID: String?
         var newCount: Int
         var sourceCount: Int
+        var mediaFilter: CatalogMediaFilter
     }
 
     private var snapshotKey: SnapshotKey {
@@ -71,7 +79,8 @@ struct CatalogCalendarView: View {
                            firstID: items.first?.id,
                            lastID: items.last?.id,
                            newCount: catalog.calendarNewIDs.count,
-                           sourceCount: scopedSources.count)
+                           sourceCount: scopedSources.count,
+                           mediaFilter: usesMediaFilter ? catalog.mediaFilter : .all)
     }
 
     var body: some View {
@@ -193,8 +202,9 @@ struct CatalogCalendarView: View {
     @ViewBuilder
     private var header: some View {
         if compact {
-            // 网络影院：来源筛选与月份切换并成一行，统计卡片紧跟其后，不再留一整行空白。
-            HStack(alignment: .center, spacing: 12) {
+            // 网络资源：来源筛选独占一行，类型筛选 / 统计 / 月份放下一行。
+            // 挤在同一行时源胶囊会横向溢出，压到后面的「视频 / 图集」上。
+            VStack(alignment: .leading, spacing: 8) {
                 if !snapshot.activeSources.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -205,19 +215,21 @@ struct CatalogCalendarView: View {
                         }
                         .padding(.vertical, 1)
                     }
-                    .scrollClipDisabled()
                 }
-                if catalog.isCalendarRefreshing {
-                    ProgressView().controlSize(.mini)
+                HStack(alignment: .center, spacing: 12) {
+                    if catalog.isCalendarRefreshing {
+                        ProgressView().controlSize(.mini)
+                    }
+                    if usesMediaFilter { CatalogMediaFilterChips() }
+                    Spacer(minLength: 12)
+                    if let top = snapshot.activeSources.first {
+                        compactStat(symbol: "flame.fill",
+                                    text: "\(top.name) \(snapshot.sourceCounts[top.id] ?? 0) 条")
+                    }
+                    compactStat(symbol: "calendar.badge.clock",
+                                text: "连续 \(snapshot.streakDays) 天")
+                    monthSwitcher
                 }
-                Spacer(minLength: 12)
-                if let top = snapshot.activeSources.first {
-                    compactStat(symbol: "flame.fill",
-                                text: "\(top.name) \(snapshot.sourceCounts[top.id] ?? 0) 条")
-                }
-                compactStat(symbol: "calendar.badge.clock",
-                            text: "连续 \(snapshot.streakDays) 天")
-                monthSwitcher
             }
         } else {
             VStack(alignment: .leading, spacing: 12) {
@@ -237,6 +249,7 @@ struct CatalogCalendarView: View {
 
                     Spacer(minLength: 12)
 
+                    if usesMediaFilter { CatalogMediaFilterChips() }
                     monthSwitcher
                 }
 
@@ -530,7 +543,8 @@ struct CatalogCalendarView: View {
             if let onOpenItem {
                 onOpenItem(entry, source)
             } else {
-                catalog.playRemote(sourceID: entry.sourceID, item: entry.item)
+                // 图集进频道页内联详情看图，视频直接起播。
+                store.openCatalogItem(sourceID: entry.sourceID, item: entry.item)
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
@@ -539,6 +553,25 @@ struct CatalogCalendarView: View {
                     .overlay {
                         CatalogArtworkImage(source: source, urlString: entry.coverURL,
                                             cornerRadius: 9)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if source.kind.isGallerySite {
+                            HStack(spacing: 3) {
+                                Image(systemName: "photo.stack.fill")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                Text("图集")
+                                    .font(.system(size: 8.5, weight: .bold))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.45), in: Capsule(style: .continuous))
+                            .overlay {
+                                Capsule(style: .continuous)
+                                    .strokeBorder(.white.opacity(0.22), lineWidth: 0.5)
+                            }
+                            .padding(6)
+                        }
                     }
                     .overlay(alignment: .topLeading) {
                         if isNew {
@@ -592,9 +625,14 @@ struct CatalogCalendarView: View {
     }
 
     private var emptyState: some View {
-        LumaEmptyState(symbol: "calendar.badge.plus",
-                       title: "还没有更新记录",
-                       message: "浏览任意源的首页后，条目会按站点上架日期（没有日期时按首次看到）记进日历。")
+        LumaEmptyState(symbol: usesMediaFilter && catalog.mediaFilter != .all
+                            ? catalog.mediaFilter.symbol : "calendar.badge.plus",
+                       title: usesMediaFilter && catalog.mediaFilter != .all
+                            ? "还没有\(catalog.mediaFilter.title)更新记录"
+                            : "还没有更新记录",
+                       message: usesMediaFilter && catalog.mediaFilter != .all
+                            ? "切换到「全部」看看，或浏览对应类型的站点后再回来。"
+                            : "浏览任意源的首页后，条目会按站点上架日期（没有日期时按首次看到）记进日历。")
     }
 
     // MARK: 日期工具

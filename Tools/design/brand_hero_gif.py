@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """生成 README 顶部的品牌动图（拾光 Luma）。
 
+画面上不写文字，只留光：
+左侧，过去的光尘被一点点拾起，向中间汇拢；
+中间，汇成一束；
+右侧，一粒光被投递出去，划向未来。
+
 用法：python3 Tools/design/brand_hero_gif.py
 产物：docs/design/assets/brand-hero.gif（Markdown 里可直接播放）
 """
@@ -16,11 +21,6 @@ FRAMES = 64
 FRAME_MS = 50
 
 CJK = "/System/Library/Fonts/Hiragino Sans GB.ttc"
-LATIN_CANDIDATES = [
-    "/System/Library/Fonts/HelveticaNeue.ttc",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/SFNS.ttf",
-]
 
 
 def font(path, size, index=0):
@@ -30,22 +30,7 @@ def font(path, size, index=0):
         return ImageFont.truetype(path, size)
 
 
-def latin_font(size):
-    for path in LATIN_CANDIDATES:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size, index=0)
-            except OSError:
-                continue
-    return ImageFont.load_default()
-
-
 TITLE_FONT = font(CJK, 118, index=2)
-SLOGAN_FONT = font(CJK, 24, index=2)
-BODY_FONT = font(CJK, 19, index=0)
-SMALL_FONT = font(CJK, 16, index=0)
-BRAND_FONT = latin_font(20)
-LABEL_FONT = font(CJK, 17, index=2)
 
 # 品牌色
 CORAL = (255, 143, 122)
@@ -85,8 +70,49 @@ def add_glow(base, color, center, radius, strength):
     base.paste(tint, (0, 0), mask)
 
 
+def blit_orb(img, x, y, radius, color, alpha, halo=2.8, blur=1.6):
+    """一小团带柔光的光点；只处理局部小块，避免整幅高斯模糊。"""
+    if alpha <= 0 or radius <= 0:
+        return
+    pad = int(radius * halo * 2 + 6)
+    size = pad * 2
+    glow = Image.new("L", (size, size), 0)
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse([pad - radius * halo, pad - radius * halo,
+                pad + radius * halo, pad + radius * halo], fill=int(alpha * 0.5))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius * blur))
+    img.paste(Image.new("RGB", (size, size), color), (int(x) - pad, int(y) - pad), glow)
+    cd = ImageDraw.Draw(img)
+    r = radius * 0.55
+    cd.ellipse([x - r, y - r, x + r, y + r], fill=color)
+
+
+def blit_trail(img, points, color, alpha, width=2.0, blur=2.4):
+    """一条由暗到亮、末端收细的光迹；局部绘制，尾部自然融进夜色。"""
+    if alpha <= 0 or len(points) < 2:
+        return
+    pad = int(width * 3 + blur * 4 + 8)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x0 = int(min(xs)) - pad
+    y0 = int(min(ys)) - pad
+    w = int(max(xs) - min(xs)) + pad * 2
+    h = int(max(ys) - min(ys)) + pad * 2
+    if w <= 0 or h <= 0:
+        return
+    mask = Image.new("L", (w, h), 0)
+    d = ImageDraw.Draw(mask)
+    n = len(points)
+    for i in range(n - 1):
+        a = int(alpha * (i / (n - 1)) ** 1.6)
+        d.line([(points[i][0] - x0, points[i][1] - y0),
+                (points[i + 1][0] - x0, points[i + 1][1] - y0)], fill=a, width=int(width))
+    mask = mask.filter(ImageFilter.GaussianBlur(blur))
+    img.paste(Image.new("RGB", (w, h), color), (x0, y0), mask)
+
+
 def build_base():
-    """深空底：上紫下青、三团品牌色光晕、四角压暗。"""
+    """深空底：上紫下青、几团品牌色光晕、四角压暗。"""
     base = Image.new("RGB", (W, H))
     draw = ImageDraw.Draw(base)
     top = (32, 22, 52)
@@ -94,9 +120,12 @@ def build_base():
     for y in range(H):
         draw.line([(0, y), (W, y)], fill=lerp(top, bottom, (y / H) ** 0.92))
 
+    # 左下的旧日暖光，右上的未来冷光
     add_glow(base, (120, 60, 150), (W * 0.20, H * 0.24), W * 0.34, 0.30)
     add_glow(base, (140, 84, 46), (W * 0.74, H * 0.30), W * 0.30, 0.20)
     add_glow(base, (24, 96, 128), (W * 0.52, H * 0.82), W * 0.36, 0.22)
+    add_glow(base, (150, 84, 40), (W * 0.08, H * 0.78), W * 0.22, 0.16)
+    add_glow(base, (26, 120, 150), (W * 0.90, H * 0.60), W * 0.20, 0.16)
 
     # 暗角
     vignette = Image.new("L", (W, H), 0)
@@ -115,25 +144,34 @@ STARS = [
         random.choice([1.4, 1.7, 2.0, 2.4, 2.9]),
         random.choice([AMBER, PINK, VIOLET, CYAN, MINT, (230, 233, 240)]),
         random.uniform(0, math.tau),
-        random.uniform(0.7, 1.6),
+        random.choice([1.0, 2.0]),
     )
     for _ in range(96)
 ]
 
+
+def mote_color(x):
+    """左侧偏暖，右侧偏冷：过去与未来各有一侧的光。"""
+    if x < W * 0.40:
+        return random.choice([AMBER, (255, 170, 120), CORAL])
+    if x > W * 0.62:
+        return random.choice([VIOLET, CYAN, MINT])
+    return random.choice([PINK, VIOLET])
+
+
 MOTES = [
     (
-        random.uniform(20, W - 20),
+        x := random.uniform(20, W - 20),
         random.uniform(H * 0.12, H * 0.95),
         random.choice([2.0, 2.6, 3.2]),
-        random.choice([AMBER, PINK, VIOLET, CYAN, MINT]),
-        random.uniform(8, 26),
+        mote_color(x),
+        random.uniform(4, 16),
         random.uniform(0, math.tau),
     )
     for _ in range(34)
 ]
 
-
-TITLE_TOP = 74
+TITLE_TOP = 88
 TITLE_CANVAS_H = 260
 
 
@@ -160,15 +198,19 @@ TITLE_MASK = build_title_mask()
 TITLE_GRAD = build_title_gradient(TITLE_MASK)
 TITLE_GLOW = TITLE_MASK.filter(ImageFilter.GaussianBlur(26))
 
+FOCUS_NX = 0.5
+CAST_END = (W * 0.895, H * 0.235)
+
 
 def wave_y(x, t):
-    """历史 → 此刻 → 未来 的光线：两端起伏，中间汇聚在「此刻」。"""
+    """历史 → 此刻 → 未来 的光线：左侧沉、中间汇聚、右侧缓缓抬升。"""
     nx = x / W
     base = H * 0.815
+    lift = -22 * max(0.0, nx - 0.5) / 0.5
     bend = 14 * math.sin(nx * math.pi * 2.1 + 0.4)
-    dip = -26 * math.exp(-((nx - 0.5) ** 2) / 0.012)
-    flow = 3.0 * math.sin(nx * 12 - t * math.tau * 1.4)
-    return base + bend + dip + flow
+    dip = -26 * math.exp(-((nx - FOCUS_NX) ** 2) / 0.012)
+    flow = 3.0 * math.sin(nx * 12 - t * math.tau)
+    return base + lift + bend + dip + flow
 
 
 def draw_wave(img, t):
@@ -176,34 +218,39 @@ def draw_wave(img, t):
     glow_mask = Image.new("L", (W, H), 0)
     line = Image.new("RGB", (W, H), (0, 0, 0))
     line_mask = Image.new("L", (W, H), 0)
-    gd = ImageDraw.Draw(glow)
     ld = ImageDraw.Draw(line)
     gm = ImageDraw.Draw(glow_mask)
     lm = ImageDraw.Draw(line_mask)
 
     points = [(x, wave_y(x, t)) for x in range(-10, W + 12, 4)]
     for i in range(len(points) - 1):
-        nx = (points[i][0] / W) if points[i][0] > 0 else 0
+        nx = min(1.0, max(0.0, points[i][0] / W))
+        # 两端渐隐：左侧从旧光里浮出，右侧散进未来
+        fade = min(1.0, nx / 0.06, (1.0 - nx) / 0.12)
+        if fade <= 0:
+            continue
         color = lerp(AMBER, PINK, min(1, nx * 2)) if nx < 0.5 else lerp(PINK, CYAN, (nx - 0.5) * 2)
         ld.line([points[i], points[i + 1]], fill=color, width=2)
-        gm.line([points[i], points[i + 1]], fill=150, width=9)
-        lm.line([points[i], points[i + 1]], fill=210, width=2)
+        gm.line([points[i], points[i + 1]], fill=int(150 * fade), width=9)
+        lm.line([points[i], points[i + 1]], fill=int(210 * fade), width=2)
 
     glow_mask = glow_mask.filter(ImageFilter.GaussianBlur(9))
     img.paste(glow, (0, 0), glow_mask)
     img.paste(line, (0, 0), line_mask)
 
-    # 沿光线游走的光点：像被拾起的一束光
-    for offset, radius, color in [(0.0, 5.0, (255, 246, 226)), (-0.06, 2.6, AMBER), (-0.13, 2.0, PINK)]:
+    # 此刻：汇聚处的一呼一吸
+    fx = FOCUS_NX * W
+    fy = wave_y(fx, t)
+    pulse = 0.5 + 0.5 * math.sin(t * math.tau * 2)
+    blit_orb(img, fx, fy, 7.5 + 2.0 * pulse, (255, 238, 242), int(105 + 40 * pulse), halo=3.6)
+
+    # 沿光线游走的光点：被拾起的一束光
+    for offset, radius, color in [(0.0, 4.6, (255, 246, 226)), (-0.06, 2.4, AMBER), (-0.13, 1.9, PINK)]:
         nx = (t + offset) % 1.0
         x = nx * W
         y = wave_y(x, t)
-        halo = Image.new("L", (W, H), 0)
-        hd = ImageDraw.Draw(halo)
-        hd.ellipse([x - radius * 3.2, y - radius * 3.2, x + radius * 3.2, y + radius * 3.2], fill=120)
-        halo = halo.filter(ImageFilter.GaussianBlur(radius * 2.4))
-        img.paste(Image.new("RGB", (W, H), color), (0, 0), halo)
-        ImageDraw.Draw(img).ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
+        fade = min(1.0, nx / 0.04, (1.0 - nx) / 0.08)
+        blit_orb(img, x, y, radius, color, int(180 * fade), halo=3.4)
 
 
 def draw_stars(img, t):
@@ -221,75 +268,139 @@ def draw_stars(img, t):
 
 
 def draw_motes(img, t):
+    """缓慢漂浮的微尘：不写时间，只用冷暖暗示哪一侧是过去、哪一侧是未来。"""
     layer = Image.new("RGB", (W, H), (0, 0, 0))
     mask = Image.new("L", (W, H), 0)
     d = ImageDraw.Draw(layer)
     m = ImageDraw.Draw(mask)
-    for x0, y0, r, color, speed, phase in MOTES:
-        y = (y0 - speed * t) % (H * 0.96) + H * 0.02
-        x = x0 + 8 * math.sin(t * math.tau + phase)
-        alpha = int(90 + 110 * (0.5 + 0.5 * math.sin(t * math.tau * 1.3 + phase)))
+    for x0, y0, r, color, amp, phase in MOTES:
+        x = x0 + 10 * math.sin(t * math.tau + phase)
+        y = y0 + amp * math.sin(t * math.tau + phase * 1.7)
+        alpha = int(70 + 100 * (0.5 + 0.5 * math.sin(t * math.tau + phase * 2.1)))
         d.ellipse([x - r, y - r, x + r, y + r], fill=color)
         m.ellipse([x - r, y - r, x + r, y + r], fill=alpha)
     mask = mask.filter(ImageFilter.GaussianBlur(1.4))
     img.paste(layer, (0, 0), mask)
 
 
-def draw_brand_lines(img, t):
-    d = ImageDraw.Draw(img)
-    breathe = 0.5 + 0.5 * math.sin(t * math.tau)
+GATHER = [
+    (
+        random.uniform(0.0, 0.30) * W,
+        random.uniform(H * 0.90, H * 1.04),
+        random.random(),
+        random.choice([1.0, 2.0]),
+        random.uniform(1.6, 3.0),
+        random.choice([AMBER, CORAL, (255, 170, 120), PINK]),
+    )
+    for _ in range(24)
+]
 
-    # SHIGUANG：字距拉开的小字母
-    text = "SHIGUANG"
-    tracking = 13
-    widths = [d.textlength(ch, font=BRAND_FONT) for ch in text]
-    total = sum(widths) + tracking * (len(text) - 1)
-    x = (W - total) / 2
-    y = 86
-    for ch, w in zip(text, widths):
-        d.text((x, y), ch, font=BRAND_FONT, fill=(196, 194, 206, 255))
-        x += w + tracking
 
-    # 品牌叙事
-    lines = [
-        ("拾，是拾起；光，是光影；拾光，也是时光。", SLOGAN_FONT, (240, 240, 246), 292),
-        ("我们相信，每一张照片都是一束被留下的光。", BODY_FONT, (206, 208, 220), 337),
-        ("拾光，就是替你把散落的光，一片一片捡回来。", BODY_FONT, (206, 208, 220), 366),
-        ("从历史拾起光，向未来写下光", SMALL_FONT, (146, 150, 168), 400 + int(2 * breathe)),
-    ]
-    for text, fnt, color, y in lines:
-        d.text((W / 2, y), text, font=fnt, fill=color, anchor="mm")
+def bezier(p0, p1, p2, u):
+    v = 1 - u
+    return (v * v * p0[0] + 2 * v * u * p1[0] + u * u * p2[0],
+            v * v * p0[1] + 2 * v * u * p1[1] + u * u * p2[1])
 
-    # 时间轴标签
-    for nx, label, color in [(0.17, "历史", (255, 176, 128)), (0.50, "此刻", (198, 176, 255)),
-                             (0.83, "未来", (118, 214, 255))]:
-        x = nx * W
-        y = wave_y(x, t) + 44
-        d.text((x, y), label, font=LABEL_FONT, fill=color, anchor="mm")
+
+def draw_gather(img, t):
+    """过去的光尘从画面左下浮起，被一点点拾到「此刻」。"""
+    fx = FOCUS_NX * W
+    fy = wave_y(fx, t)
+    for x0, y0, phase, speed, radius, color in GATHER:
+        p = (t * speed + phase) % 1.0
+        ctrl = (x0 + (fx - x0) * 0.45, y0 - 170)
+        end = (fx + 12 * math.sin(phase * 7), fy + 9 * math.cos(phase * 5))
+        fade = math.sin(math.pi * p) ** 1.3
+        if fade <= 0.01:
+            continue
+        tail = [bezier((x0, y0), ctrl, end, max(0.0, p - 0.26 * (1 - k / 11)))
+                for k in range(12)]
+        blit_trail(img, tail, color, int(100 * fade), width=2.4, blur=2.4)
+        x, y = bezier((x0, y0), ctrl, end, p)
+        blit_orb(img, x, y, radius, color, int(140 * fade), halo=3.0, blur=1.3)
+
+
+def cast_u(p):
+    return min(1.0, max(0.0, (p - 0.10) / 0.58))
+
+
+def cast_point(t):
+    nx = 0.66
+    start = (nx * W, wave_y(nx * W, t))
+    c1 = (0.74 * W, wave_y(0.74 * W, t) - 80)
+    c2 = (0.86 * W, H * 0.46)
+    return start, c1, c2
+
+
+def draw_cast(img, t):
+    """一粒光从「此刻」的线上被投递出去，划向右上方的未来。"""
+    p = (t + 0.08) % 1.0
+    start, c1, c2 = cast_point(t)
+    u = cast_u(p)
+    if u <= 0:
+        return
+    end = CAST_END
+
+    # 轨迹：从起点到落点的三次贝塞尔，带一条渐弱的尾迹
+    def at(v):
+        v0 = 1 - v
+        return (v0 ** 3 * start[0] + 3 * v0 * v0 * v * c1[0] + 3 * v0 * v * v * c2[0] + v ** 3 * end[0],
+                v0 ** 3 * start[1] + 3 * v0 * v0 * v * c1[1] + 3 * v0 * v * v * c2[1] + v ** 3 * end[1])
+
+    tail_fade = 1.0 if p < 0.95 else max(0.0, (1.0 - p) / 0.05)
+    tail = [at(max(0.0, u - 0.36 * (1 - k / 23))) for k in range(24)]
+    blit_trail(img, tail, (255, 214, 228), int(120 * tail_fade), width=3.0, blur=2.6)
+
+    x, y = at(u)
+    blit_orb(img, x, y, 4.2, (255, 244, 236), int(235 * tail_fade), halo=4.0, blur=1.5)
+
+    # 起手处的一点回响：像把光从掌心送出去
+    if u < 0.2:
+        q = u / 0.2
+        ring = 4 + 10 * q
+        ring_img = Image.new("L", (W, H), 0)
+        rd = ImageDraw.Draw(ring_img)
+        rd.ellipse([start[0] - ring, start[1] - ring, start[0] + ring, start[1] + ring],
+                   outline=int(90 * (1 - q)), width=2)
+        ring_img = ring_img.filter(ImageFilter.GaussianBlur(2.0))
+        img.paste(Image.new("RGB", (W, H), (255, 214, 196)), (0, 0), ring_img)
+
+    # 抵达未来：轻轻散开的一圈光
+    if u >= 1.0 and p < 0.95:
+        q = min(1.0, max(0.0, (p - 0.68) / 0.24))
+        ring = 6 + 34 * q
+        ring_img = Image.new("L", (W, H), 0)
+        rd = ImageDraw.Draw(ring_img)
+        rd.ellipse([end[0] - ring, end[1] - ring, end[0] + ring, end[1] + ring],
+                   outline=int(120 * (1 - q)), width=2)
+        ring_img = ring_img.filter(ImageFilter.GaussianBlur(2.2))
+        img.paste(Image.new("RGB", (W, H), (190, 232, 255)), (0, 0), ring_img)
+        blit_orb(img, end[0], end[1], 3.0, (225, 246, 255), int(190 * (1 - q)), halo=4.2)
+
+
+def build_frame(base, t):
+    img = base.copy()
+
+    # 标题背后的呼吸光
+    pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * math.tau))
+    aura = Image.new("RGB", (W, TITLE_CANVAS_H), (255, 150, 180))
+    aura_mask = TITLE_GLOW.point(lambda v: int(v * (0.22 + 0.16 * pulse)))
+    img.paste(aura, (0, TITLE_TOP - 6), aura_mask)
+
+    draw_stars(img, t)
+    draw_motes(img, t)
+    draw_gather(img, t)
+    draw_wave(img, t)
+    draw_cast(img, t)
+
+    float_y = int(4 * math.sin(t * math.tau))
+    img.paste(TITLE_GRAD, (0, TITLE_TOP + float_y), TITLE_MASK)
+    return img
 
 
 def main():
     base = build_base()
-    frames = []
-    for index in range(FRAMES):
-        t = index / FRAMES
-        img = base.copy()
-
-        # 标题背后的呼吸光
-        pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * math.tau))
-        aura = Image.new("RGB", (W, TITLE_CANVAS_H), (255, 150, 180))
-        aura_mask = TITLE_GLOW.point(lambda v: int(v * (0.22 + 0.16 * pulse)))
-        img.paste(aura, (0, TITLE_TOP - 6), aura_mask)
-
-        draw_stars(img, t)
-        draw_motes(img, t)
-        draw_wave(img, t)
-
-        float_y = int(4 * math.sin(t * math.tau))
-        img.paste(TITLE_GRAD, (0, TITLE_TOP + float_y), TITLE_MASK)
-
-        draw_brand_lines(img, t)
-        frames.append(img)
+    frames = [build_frame(base, index / FRAMES) for index in range(FRAMES)]
 
     os.makedirs("docs/design/assets", exist_ok=True)
     palette_source = frames[0].quantize(colors=192, method=Image.MEDIANCUT, dither=Image.NONE)

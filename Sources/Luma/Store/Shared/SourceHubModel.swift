@@ -28,7 +28,19 @@ final class SourceHubModel: ObservableObject {
         self.store = store
     }
 
-    var state: SourceRegistryState { store.buildSourceRegistryState() }
+    /// 注册表按轻量指纹缓存：侧边栏与菜单每次 body 都读它，
+    /// 不能再为了一次读取重建描述符数组、扫描影院索引。
+    private var cachedRegistry: (signature: String, state: SourceRegistryState)?
+
+    var state: SourceRegistryState {
+        let signature = store.sourceRegistrySignature
+        if let cachedRegistry, cachedRegistry.signature == signature {
+            return cachedRegistry.state
+        }
+        let value = store.buildSourceRegistryState()
+        cachedRegistry = (signature, value)
+        return value
+    }
 
     var currentBrowseSourceID: SourceID? { state.activeBrowseSourceID }
 
@@ -37,7 +49,10 @@ final class SourceHubModel: ObservableObject {
     /// 点击源时唯一的入口。语义由激活策略决定：
     /// 换库策略替换当前图库会话，浏览策略只切右侧文案与浏览上下文。
     func activate(_ sourceID: SourceID) {
-        let policy = state.descriptor(for: sourceID)?.activation
+        // 一次点击只构建一次注册表：描述符同时用于策略与会话，避免重复扫描。
+        let registry = state
+        let descriptor = registry.descriptor(for: sourceID)
+        let policy = descriptor?.activation
             ?? Self.kind(of: sourceID).defaultActivation
         switch policy {
         case .replaceLibrarySession:
@@ -46,7 +61,7 @@ final class SourceHubModel: ObservableObject {
             browse(sourceID)
         }
 
-        if let session = session(for: sourceID) {
+        if let session = session(for: sourceID, descriptor: descriptor) {
             activeSession = session
             Task {
                 await session.activate()
@@ -148,9 +163,15 @@ final class SourceHubModel: ObservableObject {
     }
 
     func session(for sourceID: SourceID) -> (any SourceSession)? {
+        session(for: sourceID, descriptor: state.descriptor(for: sourceID))
+    }
+
+    /// 已经拿到描述符时直接建会话，不再为了一次查找重建整张注册表。
+    private func session(for sourceID: SourceID,
+                         descriptor: SourceDescriptor?) -> (any SourceSession)? {
         if let cached = sessions[sourceID.rawValue] { return cached }
         let session: (any SourceSession)?
-        if let descriptor = state.descriptor(for: sourceID) {
+        if let descriptor {
             session = makeSession(for: descriptor)
         } else if Self.kind(of: sourceID) == .iptv,
                   let playlistID = Self.uuid(in: sourceID, prefix: "tv:"),

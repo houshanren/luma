@@ -11,7 +11,8 @@ package enum AILibraryTools {
         "create_folder", "rename_folder", "delete_folder",
         "set_favorite", "set_hidden", "set_rating", "set_flag", "set_color_label",
         "add_keywords", "remove_keywords",
-        "set_title", "compress_photos", "beautify_photos", "trash_photos", "restore_photos"
+        "set_title", "compress_photos", "beautify_photos", "trash_photos", "restore_photos",
+        "cleanup_tv_channels", "make_smart_album"
     ])
         .union(cinemaWriteToolNames)
         .union(catalogWriteToolNames)
@@ -19,14 +20,16 @@ package enum AILibraryTools {
 
     package static var definitions: [AIRequestTool] {
         [searchPhotos, unifiedSearch, listAlbums, listFolders, listVideos,
-         getPhotoInfo, listKeywords, listPeople, libraryOverview,
+         getPhotoInfo, listKeywords, listPeople, libraryOverview, libraryInsights,
+         listTrips, playTripMemory, libraryHealthReport, resumeWatching, todayDigest,
          navigate, selectPhotos, openPhoto, openSearchResult,
          createAlbums, addPhotosToAlbum, removePhotosFromAlbum,
          renameAlbum, deleteAlbum, moveAlbum, setAlbumCover,
          createFolder, renameFolder, deleteFolder,
          setFavorite, setHidden, setRating, setFlag, setColorLabel,
          addKeywords, removeKeywords,
-         setTitle, compressPhotos, beautifyPhotos, trashPhotos, restorePhotos]
+         setTitle, compressPhotos, beautifyPhotos, trashPhotos, restorePhotos,
+         generateShareCopy, cleanupTVChannels, makeSmartAlbum]
     }
 
     /// 工具总数（界面展示用，避免每次重算 schema）。影院 / 资源 / 网络影院 / 网络电视工具由 provider 单独提供。
@@ -56,6 +59,38 @@ package enum AILibraryTools {
         return false
     }
 
+    /// 写操作判定：内置写工具 + 外部 MCP 工具（可能产生副作用，一律走审批）。
+    package static func isWrite(_ name: String) -> Bool {
+        writeToolNames.contains(name) || name.hasPrefix("mcp__")
+    }
+
+    /// 工具的风险等级：只读 / 可逆写 / 破坏性 / 外部副作用。
+    /// 这是审批 2.0 的唯一分类入口，界面与执行侧不再各自维护名单。
+    package static func risk(for name: String, arguments args: [String: Any] = [:]) -> AIRiskLevel {
+        if name.hasPrefix("mcp__") { return .external }
+        if !writeToolNames.contains(name) {
+            if externalToolNames.contains(name) || name.hasPrefix("play_") {
+                return .external
+            }
+            return .read
+        }
+        if riskyToolNames.contains(name) { return .destructive }
+        if name == "manage_cinema_list" {
+            let action = string(args["action"]) ?? ""
+            if action == "delete" || action == "clear_items" { return .destructive }
+        }
+        if name == "compress_photos" || name == "trash_photos" { return .destructive }
+        if externalToolNames.contains(name) { return .external }
+        return .reversible
+    }
+
+    /// 有外部副作用的工具：会请求站点、打开外链或开始播放。
+    package static let externalToolNames: Set<String> = [
+        "search_catalog", "browse_catalog", "play_catalog_item",
+        "play_cinema", "play_network_cinema", "play_tv_channel",
+        "play_trip_memory", "open_photo", "open_search_result"
+    ]
+
     /// 工具的中文短名：助手运行中用一句话说明「正在做什么」。
     package static func shortTitle(for name: String) -> String {
         switch name {
@@ -65,6 +100,18 @@ package enum AILibraryTools {
             return "检索内容"
         case "get_photo_info", "list_keywords", "list_people", "library_overview":
             return "读取图库信息"
+        case "library_insights":
+            return "分析图库画像"
+        case "list_trips":
+            return "读取旅行"
+        case "play_trip_memory":
+            return "播放回忆影片"
+        case "library_health_report":
+            return "读取图库体检"
+        case "resume_watching":
+            return "汇总未看完"
+        case "today_digest":
+            return "生成今日日报"
         case "list_cinema_items", "cinema_tree", "list_cinema_scopes",
              "list_cinema_series", "list_cinema_lists", "list_cinema_activity",
              "list_catalog_sources", "list_catalog_following", "list_network_cinema_sources",
@@ -95,10 +142,18 @@ package enum AILibraryTools {
              "play_catalog_item", "play_network_cinema",
              "navigate_tv", "play_tv_channel":
             return "调整界面"
-        case "list_tv_sources", "list_tv_channels", "get_tv_guide":
+        case "list_tv_sources", "list_tv_channels", "get_tv_guide", "tv_tonight":
             return "读取电视节目"
+        case "cinema_health_report":
+            return "读取影院报告"
         case "favorite_tv_channel":
             return "收藏频道"
+        case "generate_share_copy":
+            return "写分享文案"
+        case "cleanup_tv_channels":
+            return "清洗电视频道"
+        case "make_smart_album":
+            return "创建智能相簿"
         default:
             if name.hasPrefix("list_") { return "读取列表" }
             return "执行操作"
@@ -187,6 +242,72 @@ package enum AILibraryTools {
             name: "library_overview",
             description: "一次了解当前图库概况：项目 / 照片 / 视频数、收藏 / 隐藏 / 带位置 / 已评分 / 已编辑数量、相簿与文件夹数、人物数、高频关键词，以及当前范围与筛选。回答「有多少」「概览」「统计」类问题先调用它，避免多次检索。",
             parameters: objectSchema([:])
+        )
+    }
+
+    private static var libraryInsights: AIRequestTool {
+        AIRequestTool(
+            name: "library_insights",
+            description: "深入分析当前图库：拍摄年份与月份分布、常用机型与镜头、出现最多的地点、存储占用、视频占比，以及未打关键词 / 未评分 / 没有定位 / 不在任何相簿的覆盖情况。回答「图库有什么特点」「哪年拍得最多」「用什么设备」「去过哪些地方」「还有多少没整理」时用它；只要总量仍用 library_overview。",
+            parameters: objectSchema([
+                "top": integerSchema("每类分布最多返回多少项，默认 8，最大 30", minimum: 1, maximum: 30)
+            ])
+        )
+    }
+
+    private static var listTrips: AIRequestTool {
+        AIRequestTool(
+            name: "list_trips",
+            description: "列出自动识别的旅行：标题、起止日期、天数、地点数、照片数与封面。识别依据是拍摄时间与 GPS 位置，适合回答「我去过几次旅行」「去年去了哪」「最近一次旅行拍了什么」。要直接播放某次旅行的回忆影片，用 play_trip_memory。",
+            parameters: objectSchema([
+                "limit": integerSchema("最多返回多少次旅行，默认 10，最大 50", minimum: 1, maximum: 50),
+                "year": integerSchema("只看这一年的旅行，例如 2024", minimum: 1990, maximum: 2100)
+            ])
+        )
+    }
+
+    private static var playTripMemory: AIRequestTool {
+        AIRequestTool(
+            name: "play_trip_memory",
+            description: "把一次自动识别的旅行播放成回忆影片（幻灯片）。trip 传 list_trips 返回的 id、标题关键词，或 latest 表示最近一次。只播放，不修改任何照片。",
+            parameters: objectSchema([
+                "trip": stringSchema("旅行 id、标题关键词，或 latest"),
+                "style": enumSchema(["classic", "cinematic", "fresh"], "回忆风格，默认 cinematic")
+            ], required: ["trip"])
+        )
+    }
+
+    private static var libraryHealthReport: AIRequestTool {
+        AIRequestTool(
+            name: "library_health_report",
+            description: "读取图库体检结果：可能模糊的照片、相似连拍里可删除的备选、体积过大的视频，以及可释放空间。还没有结果时传 scan=true 会在后台开始体检（进度在左下角任务条），open=true 可直接打开体检页面。适合回答「有没有重复或模糊照片」「清理能省多少空间」「图库哪里有问题」。",
+            parameters: objectSchema([
+                "scan": booleanSchema("没有结果时是否在后台开始一次体检，默认 false"),
+                "open": booleanSchema("是否顺便打开「图库体检」页面，默认 false"),
+                "limit": integerSchema("每类最多返回多少条，默认 10，最大 50", minimum: 1, maximum: 50)
+            ])
+        )
+    }
+
+    private static var resumeWatching: AIRequestTool {
+        AIRequestTool(
+            name: "resume_watching",
+            description: "跨端汇总所有没看完的内容：本地影院、网盘影院、网络影院与网络资源的续看记录，按最近观看排序，并给出可直接播放的 scope / 来源与条目。用户问「继续看什么」「上次看到哪了」「还有哪些没看完」时先用它，再调用 play_cinema / play_network_cinema / play_catalog_item 播放。",
+            parameters: objectSchema([
+                "limit": integerSchema("最多返回多少条，默认 10，最大 50", minimum: 1, maximum: 50)
+            ])
+        )
+    }
+
+    private static var todayDigest: AIRequestTool {
+        AIRequestTool(
+            name: "today_digest",
+            description: "今日日报：一次返回网络资源今天新增的条目、追更人物的更新数量、本地与网络影院/资源的续看，以及收藏电视频道今晚的节目。用户问「今天有什么新内容」「今晚看什么」「做个今日推荐」时优先用它，再按需播放或加入稍后看。",
+            parameters: objectSchema([
+                "limit": integerSchema("每个分区最多返回多少条，默认 8，最大 30", minimum: 1, maximum: 30),
+                "include_tv": booleanSchema("是否包含电视节目，默认 true"),
+                "include_continue": booleanSchema("是否包含续看记录，默认 true")
+            ])
         )
     }
 
@@ -539,6 +660,37 @@ package enum AILibraryTools {
             name: "restore_photos",
             description: "把「最近删除」中的项目恢复回图库。仅本地图库可用。",
             parameters: objectSchema(["photo_ids": photoIDsSchema], required: ["photo_ids"])
+        )
+    }
+
+    private static var generateShareCopy: AIRequestTool {
+        AIRequestTool(
+            name: "generate_share_copy",
+            description: "为选中的照片生成 3 条中文分享文案（朋友圈 / 小红书 / 极简）。只读：不修改照片，也不直接发布到任何平台。模型不可用时会退回标签模板。",
+            parameters: objectSchema([
+                "photo_ids": photoIDsSchema
+            ], required: ["photo_ids"])
+        )
+    }
+
+    private static var cleanupTVChannels: AIRequestTool {
+        AIRequestTool(
+            name: "cleanup_tv_channels",
+            description: "清洗网络电视的频道表：规范台名（去掉高清 / 4K / 线路后缀，央视统一成「CCTV-1 综合」）并归入央视 / 卫视 / 体育等分组。只改台名与分组，不动流地址；想还原重新刷新电视源即可。",
+            parameters: objectSchema([
+                "source": stringSchema("只清洗这个源（名称或 id）；省略时优先当前聚焦源，否则清洗全部启用的源")
+            ])
+        )
+    }
+
+    private static var makeSmartAlbum: AIRequestTool {
+        AIRequestTool(
+            name: "make_smart_album",
+            description: "用一句自然语言创建智能相簿，例如「去年海边且收藏过的照片」。模型会把描述翻译成相簿规则并直接保存。",
+            parameters: objectSchema([
+                "description": stringSchema("自然语言条件，例如「2024 年在杭州拍的视频」"),
+                "name": stringSchema("相簿名称；省略时由条件生成")
+            ], required: ["description"])
         )
     }
 

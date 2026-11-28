@@ -20,6 +20,9 @@ struct PhotoViewerView: View {
     @State var placeholder: NSImage?
     @State var zoom: CGFloat = 1
     @State var offset: CGSize = .zero
+    /// 刚打开 / 刚换图后的一小段时间内不接管滚轮缩放：
+    /// 从网格双击打开时滚动的惯性事件还没走完，会把刚「适应」的画面直接缩掉。
+    @State var zoomScrollBlockedUntil: Date = .distantPast
     /// 舞台尺寸：双指滚动拖动画面时用来限制边界。
     @State var stageSize: CGSize = .zero
     @State var baseOffset: CGSize = .zero
@@ -111,6 +114,11 @@ struct PhotoViewerView: View {
         }
         .task(id: loadKey) {
             await load()
+        }
+        // 换照片（含打开查看器）时回到「适应窗口」：沿用上一张的放大倍数与拖动位移，
+        // 新图会一上来就超出窗口、看起来像没自适应。
+        .onChange(of: photo?.id) { _, _ in
+            resetZoom()
         }
         .task(id: photo?.cacheKey) {
             await loadBackdrop()

@@ -712,6 +712,7 @@ private struct ResourceSourceRow: View {
         } else {
             switch health {
             case .online: color = .green; text = "在线"
+            case .needsLogin: color = .orange; text = "需登录"
             case .limited: color = .yellow; text = "需验证"
             case .offline: color = .red; text = "离线"
             case .checking: color = .gray; text = "检测中"

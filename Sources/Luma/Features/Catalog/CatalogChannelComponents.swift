@@ -117,6 +117,101 @@ struct CatalogChip: View {
     }
 }
 
+/// 把悬停档案卡贴在格子旁边，而不是正好压在格子上：右侧放得下就放右边，放不下翻到左边。
+/// 卡片高度随简介行数变化，先量一次再按格子垂直居中，并夹在容器内。
+struct CatalogHoverCardBeside<Card: View>: View {
+    let rect: CGRect
+    let container: CGSize
+    let card: Card
+
+    init(rect: CGRect, container: CGSize, @ViewBuilder card: () -> Card) {
+        self.rect = rect
+        self.container = container
+        self.card = card()
+    }
+
+    @State private var cardHeight: CGFloat = 300
+
+    private static var width: CGFloat { 340 }
+    private static var gap: CGFloat { 12 }
+    private static var margin: CGFloat { 8 }
+
+    var body: some View {
+        let fitsRight = container.width - rect.maxX >= Self.width + Self.gap + Self.margin
+        let x = fitsRight ? rect.maxX + Self.gap
+                          : max(rect.minX - Self.width - Self.gap, Self.margin)
+        let y = min(max(rect.midY - cardHeight / 2, Self.margin),
+                    max(container.height - cardHeight - Self.margin, Self.margin))
+        card
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { cardHeight = $0 }
+            .offset(x: x, y: y)
+    }
+}
+
+/// 标签墙的一级分组胶囊：图标 + 名称 + 数量；选中用强调色。
+/// 用圆角矩形 + 更大字号，和下方胶囊状的二级标签区分开，几百个标签铺开时也能看清层级。
+/// 组内有命中星图的名字时，名字后面点一颗小星图标记。
+struct CatalogTagBucketChip: View {
+    let title: String
+    let symbol: String
+    let count: Int
+    let active: Bool
+    var atlasMatched: Int = 0
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .opacity(active ? 0.95 : 0.72)
+                Text(title)
+                    .font(.system(size: 12.5, weight: active ? .semibold : .medium))
+                    .lineLimit(1)
+                Text("\(count)")
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+                    .opacity(active ? 0.88 : 0.55)
+                if atlasMatched > 0 {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(active ? Color.white.opacity(0.9) : LumaBrand.violet)
+                }
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .foregroundStyle(active ? Color.white
+                                    : Color.primary.opacity(hovering ? 0.96 : 0.82))
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(active
+                          ? AnyShapeStyle(LinearGradient(
+                                colors: [Color.accentColor,
+                                         Color.accentColor.opacity(0.82)],
+                                startPoint: .top, endPoint: .bottom))
+                          : AnyShapeStyle(Color.primary.opacity(hovering ? 0.10 : 0.06)))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(active ? Color.white.opacity(0.22)
+                                         : Color.primary.opacity(0.08),
+                                  lineWidth: 0.7)
+            }
+            .shadow(color: active ? Color.accentColor.opacity(0.28) : .clear,
+                    radius: 6, y: 2)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(atlasMatched > 0
+              ? "\(title)（\(count) 个标签，\(atlasMatched) 个已匹配星图）"
+              : "\(title)（\(count) 个标签）")
+    }
+}
+
 /// 热门标签面板的一级分组：标题 + 标签数，选中项用强调色，下方只显示这一组的标签。
 struct CatalogTagGroupChip: View {
     let title: String
@@ -455,6 +550,112 @@ struct CatalogToolbarBackButton: View {
     }
 }
 
+/// 图集详情网格的尺寸口径：默认一行 6 张，缩放时在 4…9 张之间变化。
+/// 顶栏滑杆与正文网格共用这套换算，保证「看到的列数」和滑杆读数一致。
+enum CatalogGalleryGridMetrics {
+    static let defaultThumbSize: Double = 190
+    static let sizeRange: ClosedRange<Double> = 120...320
+
+    static func columnCount(for size: Double) -> Int {
+        let clamped = min(sizeRange.upperBound, max(sizeRange.lowerBound, size))
+        let count = Int((6 * defaultThumbSize / clamped).rounded())
+        return min(9, max(4, count))
+    }
+}
+
+/// 图集详情的顶栏控件：显示形式菜单 + 缩略图缩放。
+/// 与普通图库顶栏同一套磨砂胶囊，正文里不再重复放一条控制条。
+struct CatalogGalleryToolbarControls: View {
+    /// 与详情页网格共用同一份偏好：改这里，图片立刻跟着变。
+    @AppStorage("catalog.galleryAspect") private var aspectRaw = ThumbnailAspect.actual.rawValue
+    @AppStorage("catalog.galleryThumbSize") private var thumbSize = CatalogGalleryGridMetrics.defaultThumbSize
+
+    private var aspect: ThumbnailAspect {
+        ThumbnailAspect(rawValue: aspectRaw) ?? .actual
+    }
+
+    private var columnCount: Int {
+        CatalogGalleryGridMetrics.columnCount(for: thumbSize)
+    }
+
+    var body: some View {
+        GalleryToolbarPill {
+            layoutMenu
+            divider
+            Button {
+                zoom(by: 0.82)
+            } label: {
+                GalleryToolbarIconLabel(systemName: "minus")
+            }
+            .buttonStyle(.plain)
+            .disabled(thumbSize <= CatalogGalleryGridMetrics.sizeRange.lowerBound)
+            .help("缩小缩略图")
+            .accessibilityLabel("缩小缩略图")
+
+            Slider(value: $thumbSize, in: CatalogGalleryGridMetrics.sizeRange, step: 10)
+                .frame(width: 74)
+                .controlSize(.mini)
+                .help("每行 \(columnCount) 张（拖动调节，也可以双指捏合）")
+                .accessibilityLabel("缩略图大小")
+
+            Button {
+                zoom(by: 1.22)
+            } label: {
+                GalleryToolbarIconLabel(systemName: "plus")
+            }
+            .buttonStyle(.plain)
+            .disabled(thumbSize >= CatalogGalleryGridMetrics.sizeRange.upperBound)
+            .help("放大缩略图")
+            .accessibilityLabel("放大缩略图")
+        }
+    }
+
+    private var layoutMenu: some View {
+        Menu {
+            Section("显示形式") {
+                ForEach(ThumbnailAspect.allCases) { item in
+                    Button {
+                        guard item != aspect else { return }
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            aspectRaw = item.rawValue
+                        }
+                    } label: {
+                        if aspect == item {
+                            Label(item.title, systemImage: "checkmark")
+                        } else {
+                            Label(item.title, systemImage: item.icon)
+                        }
+                    }
+                }
+            }
+        } label: {
+            GalleryToolbarIconLabel(systemName: aspect.icon,
+                                    active: aspect != .actual)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("显示形式：\(aspect.title)。可选正方形、完整宽高比、瀑布流、列表")
+        .accessibilityLabel("显示形式")
+        .accessibilityValue(aspect.title)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 0.5, height: 14)
+            .padding(.horizontal, 2)
+    }
+
+    private func zoom(by factor: Double) {
+        withAnimation(.easeOut(duration: 0.16)) {
+            thumbSize = min(CatalogGalleryGridMetrics.sizeRange.upperBound,
+                            max(CatalogGalleryGridMetrics.sizeRange.lowerBound,
+                                thumbSize * factor))
+        }
+    }
+}
+
 /// 中区信息：当前分类可点开菜单直接跳转（与左侧菜单同一份分类），右侧是刷新。
 struct CatalogToolbarConsole: View {
     @Environment(CatalogBrowserModel.self) private var catalog
@@ -602,6 +803,20 @@ struct CatalogToolbarConsole: View {
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+
+                // 纯图集详情：顶栏不提供播放入口，只标出这是多少张的整套图片。
+                // 综合站同时带视频的条目仍然保留播放入口。
+                if let detail = catalog.detail, detail.item.id == item.id,
+                   detail.episodes.isEmpty, !detail.articleImages.isEmpty {
+                    divider
+                    HStack(spacing: 4) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("图集 · \(detail.articleImages.count) 张")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
                 }
 
                 if let episode = firstEpisode(of: item) {
@@ -846,7 +1061,10 @@ struct CatalogToolbarConsole: View {
             ForEach(catalog.categories) { category in
                 if let children = category.children, !children.isEmpty {
                     Menu(category.title) {
-                        Button("全部") { open(category) }
+                        // 分组节点没有自己的列表页，只列二级频道。
+                        if !category.isGroupCategory {
+                            Button("全部") { open(category) }
+                        }
                         ForEach(children) { child in
                             Button(child.title) { catalog.openCategory(child) }
                         }
@@ -953,6 +1171,10 @@ struct CatalogPosterCell: View {
     var isMarkedWatched: Bool = false
     /// ⌘ 多选中的条目：画品牌色描边 + 勾选角标。
     var isSelected: Bool = false
+    /// 键盘游标停在这一格：画一圈品牌色外框，方向键移动时跟着走。
+    var isCursor: Bool = false
+    /// 实体卡片墙里命中星图的人 / 品牌档案：命中时左上角挂「星图」角标，悬停出档案卡。
+    var atlasEntry: CatalogRosterEntry? = nil
     var onOpen: () -> Void
     var onOpenInBrowser: () -> Void = {}
     var onSaveVideo: () -> Void = {}
@@ -992,6 +1214,16 @@ struct CatalogPosterCell: View {
                 .help(item.title)
         }
         .contentShape(Rectangle())
+        .overlay {
+            if isCursor {
+                RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius + 4,
+                                 style: .continuous)
+                    .strokeBorder(LumaBrand.violet, lineWidth: 1.8)
+                    .padding(-5)
+                    .shadow(color: LumaBrand.violet.opacity(0.35), radius: 8)
+                    .allowsHitTesting(false)
+            }
+        }
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.16)) { isHovering = hovering }
             onHoverChange?(hovering)
@@ -1015,9 +1247,29 @@ struct CatalogPosterCell: View {
         .contextMenu {
             CatalogPlaylistMenu(source: source, item: item)
             Button("在浏览器中打开原始页") { onOpenInBrowser() }
-            Button(isSaving ? "正在保存…" : "保存视频到图库") { onSaveVideo() }
-                .disabled(isSaving)
+            // 合集卡片本身没有图可存：点开是它名下的套图列表。
+            if !item.isCollectionCard {
+                Button(isSaving
+                       ? "正在保存…"
+                       : (isGallery ? "整本保存到图库" : "保存视频到图库")) { onSaveVideo() }
+                    .disabled(isSaving)
+            }
         }
+    }
+
+    /// 条目按自己的媒体类型展示：综合站里视频条目用播放卡片，图集条目用套图卡片。
+    var isGallery: Bool { item.isGallery(in: source) }
+
+    /// 图集角标：单本图集写「套图 · N 张」，专题 / 人物这类合集写「合集 · N 套图」。
+    var galleryBadgeTitle: String {
+        if item.isCollectionCard {
+            let sets = item.remark.filter(\.isNumber)
+            return sets.isEmpty ? "合集" : "合集 · \(sets) 套图"
+        }
+        let pages = item.remark
+            .replacingOccurrences(of: "P", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return pages.isEmpty ? "套图" : "套图 · \(pages) 张"
     }
 
     // MARK: - 角标
@@ -1025,6 +1277,24 @@ struct CatalogPosterCell: View {
     /// 左上角角标栈：预览、合集、稍后看、观看状态依次往下排，互不遮挡。
     var leadingBadges: some View {
         VStack(alignment: .leading, spacing: 5) {
+            if atlasEntry != nil {
+                // 实体卡片墙（出镜人物 / 创作者）里命中星图的卡片：悬停会出档案。
+                HStack(spacing: 3) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 7, weight: .bold))
+                    Text("星图")
+                        .font(.system(size: 8.5, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(LumaBrand.violet.opacity(0.86),
+                            in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(.white.opacity(0.3), lineWidth: 0.5)
+                }
+            }
             if previewURL != nil {
                 HStack(spacing: 3) {
                     Image(systemName: "speaker.slash.fill")
@@ -1064,8 +1334,25 @@ struct CatalogPosterCell: View {
             if isFavorite {
                 CatalogMiniBadge(symbol: "bookmark.fill", title: "稍后看", tint: LumaBrand.cyan)
             }
-            // 合集索引本身没有播放进度，不做未看 / 已看标记。
-            if !isCollectionSet { watchBadge }
+            // 图集没有观看进度：换成「套图 · N 张」，一眼看出这是整本图集；
+            // 专题 / 人物合集换成「合集 · N 套图」，图标也换成堆叠样式。
+            if isGallery {
+                CatalogMiniBadge(symbol: item.isCollectionCard
+                                        ? "square.stack.3d.up.fill"
+                                        : "photo.on.rectangle.angled",
+                                 title: galleryBadgeTitle,
+                                 tint: item.isCollectionCard ? LumaBrand.violet
+                                                             : LumaBrand.pink)
+            } else {
+                // 综合站里明确标成视频的条目：卡片上直接写「视频」，不用点开才知道。
+                if item.mediaKind == .video {
+                    CatalogMiniBadge(symbol: "play.fill", title: "视频", tint: LumaBrand.amber)
+                }
+                // 合集索引本身没有播放进度，不做未看 / 已看标记。
+                if !isCollectionSet {
+                    watchBadge
+                }
+            }
         }
         .padding(11)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1163,7 +1450,9 @@ struct CatalogPosterCell: View {
                     // 文字与角标画在裁切外层，贴在四角时才不会被圆角吃掉一截。
                     ZStack(alignment: .topLeading) {
                         CatalogArtworkImage(source: source, urlString: item.coverURL,
-                                            cornerRadius: LumaPosterMetrics.cornerRadius)
+                                            cornerRadius: LumaPosterMetrics.cornerRadius,
+                                            placeholderSymbol: isGallery
+                                                ? "photo.on.rectangle.angled" : "play.rectangle")
                             // 已看过的条目压暗，和「已看」角标一起把二刷列表的噪音降下去。
                             .opacity(isWatched && !isHovering ? 0.62 : 1)
 
@@ -1276,7 +1565,9 @@ struct CatalogPosterCell: View {
                         .overlay(Circle().strokeBorder(.white.opacity(0.3), lineWidth: 0.6))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    Image(systemName: "play.fill")
+                    Image(systemName: item.isCollectionCard
+                                        ? "square.stack.3d.up.fill"
+                                        : (isGallery ? "photo.on.rectangle.angled" : "play.fill"))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.black.opacity(0.82))
                         .frame(width: 36, height: 36)
@@ -1299,6 +1590,15 @@ struct CatalogPosterCell: View {
                 if isSelected {
                     RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius, style: .continuous)
                         .strokeBorder(Color.accentColor, lineWidth: 2)
+                }
+            }
+            .overlay {
+                // 合集卡片（专题 / 人物）套一圈虚线紫框：和单本图集区分开，像一叠待翻的文件夹。
+                if item.isCollectionCard {
+                    RoundedRectangle(cornerRadius: LumaPosterMetrics.cornerRadius,
+                                     style: .continuous)
+                        .strokeBorder(LumaBrand.violet.opacity(isHovering ? 1 : 0.75),
+                                      style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 }
             }
             .shadow(color: isFresh ? LumaBrand.coral.opacity(freshPulse ? 0.34 : 0.12)
@@ -1359,6 +1659,8 @@ struct CatalogPosterCell: View {
     }
 
     var infoText: String? {
+        // 图集左上的「套图 · N 张」已经标清张数，底部不再重复「N 张原图」。
+        if isGallery { return nil }
         switch (remarkParts.first(where: { !$0.contains("分") }), durationText) {
         case let (info?, duration?): return "\(info) · \(duration)"
         case let (info?, nil): return info
@@ -1645,6 +1947,10 @@ struct CatalogArtworkImage: View {
     /// 预览大图时用 fit（完整显示），网格封面用 fill（铺满裁切）。
     var fit: Bool = false
     var quality: Quality = .thumbnail
+    /// 没有封面时的占位符号：视频源用播放键，图集源用图片图标。
+    var placeholderSymbol: String = "play.rectangle"
+    /// 解码完成后的原始像素尺寸：图集「完整宽高比」用它把格子撑成真实比例，不补黑边。
+    var onImageSize: ((CGSize) -> Void)? = nil
 
     @State private var image: NSImage?
 
@@ -1658,12 +1964,16 @@ struct CatalogArtworkImage: View {
 
     init(source: CatalogSource, urlString: String,
          cornerRadius: CGFloat = 10, fit: Bool = false,
-         quality: Quality = .thumbnail) {
+         quality: Quality = .thumbnail,
+         placeholderSymbol: String = "play.rectangle",
+         onImageSize: ((CGSize) -> Void)? = nil) {
         self.source = source
         self.urlString = urlString
         self.cornerRadius = cornerRadius
         self.fit = fit
         self.quality = quality
+        self.placeholderSymbol = placeholderSymbol
+        self.onImageSize = onImageSize
         // 同一会话里切来切去直接命中内存，第一帧就是封面，不再闪占位图。
         guard !urlString.isEmpty else {
             _image = State(initialValue: nil)
@@ -1700,34 +2010,575 @@ struct CatalogArtworkImage: View {
                         }
                 }
             } else {
-                Image(systemName: "play.rectangle")
+                Image(systemName: placeholderSymbol)
                     .font(.system(size: 17))
                     .foregroundStyle(.white.opacity(0.18))
             }
         }
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .onAppear {
+            // init 里直接命中内存时也要回报一次；否则「完整宽高比」格子会停在默认比例。
+            if let image { onImageSize?(image.size) }
+        }
         .task(id: urlString) {
             guard !urlString.isEmpty else { return }
             // 1) 缩略图：内存 → 磁盘/网络。网格到这一步就够，不再等大图。
             if let cached = CatalogArtworkMemory.shared.image(for: quickKey) {
                 image = cached
+                onImageSize?(cached.size)
             } else if let quick = await CatalogArtworkCache.shared.image(source: source,
                                                                          urlString: urlString,
                                                                          quick: true) {
                 CatalogArtworkMemory.shared.store(quick, for: quickKey)
                 withAnimation(.easeOut(duration: 0.16)) { image = quick }
+                onImageSize?(quick.size)
             }
             // 2) 详情页才补全尺寸；网格保持缩略图，省一次 900px 解码与替换。
             guard quality == .full else { return }
             if let cached = CatalogArtworkMemory.shared.image(for: fullKey) {
                 image = cached
+                onImageSize?(cached.size)
             } else if let full = await CatalogArtworkCache.shared.image(source: source,
                                                                         urlString: urlString,
                                                                         quick: false) {
                 CatalogArtworkMemory.shared.store(full, for: fullKey)
                 withAnimation(.easeOut(duration: 0.16)) { image = full }
+                onImageSize?(full.size)
             }
+        }
+    }
+}
+
+// MARK: - 星图名册（女优 / 片商）
+
+/// 名册格子的位置：面板据此把悬停档案贴在当前格子旁边。
+private struct CatalogRosterTileAnchorKey: PreferenceKey {
+    static var defaultValue: [String: Anchor<CGRect>] = [:]
+
+    static func reduce(value: inout [String: Anchor<CGRect>],
+                       nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// 星图开启后，女优 / 片商二级不再铺一排英文胶囊：
+/// 换成平铺的头像名册，命中资料库的显示中文名与头像，未命中的保留站点名字；
+/// 悬停浮出一张星图档案浮窗（出生 / 身高 / 三围 / 标签 / 简介），点名字仍按该人筛选。
+/// 档案卡由面板统一叠一层并关掉命中测试，不会挡住或吞掉筛选点击。
+struct CatalogAtlasRosterPanel: View {
+    let kind: CatalogRosterKind
+    let categories: [CatalogCategory]
+    let activeID: String?
+    let onOpen: (CatalogCategory) -> Void
+    let onOpenAtlasPerson: (Int64) -> Void
+
+    @State private var entries: [CatalogRosterEntry] = []
+    /// 几百个模特 / 片商时先收着铺，点「显示全部」再展开，页面不至于被名册淹没。
+    @State private var showsAll = false
+    /// 悬停档案由面板统一渲染：卡片浮在名册之上但不吃鼠标事件，筛选点击照常落到格子上。
+    @State private var hoveredID: String?
+    @State private var hoverTask: Task<Void, Never>?
+    /// 方向键游标：不用点选，←/→/↑/↓ 换人，回车 / 空格直接按这个人筛选。
+    @State private var cursorID: String?
+    @State private var gridWidth: CGFloat = 0
+
+    private static let collapsedLimit = 80
+
+    /// 条目集合变化（换一级 / 换源）时重新匹配一次资料库。
+    private var signature: String {
+        (kind == .people ? "people|" : "studios|")
+            + categories.map(\.id).joined(separator: ",")
+    }
+
+    private var total: Int {
+        entries.isEmpty ? categories.count : entries.count
+    }
+
+    private var matchedCount: Int {
+        entries.filter(\.isMatched).count
+    }
+
+    private var visibleEntries: [CatalogRosterEntry] {
+        entries.count > Self.collapsedLimit && !showsAll
+            ? Array(entries.prefix(Self.collapsedLimit))
+            : entries
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            header
+            if entries.isEmpty {
+                // 首次匹配还没回来：先铺胶囊，避免面板先空一下再长出名册。
+                CatalogFlowLayout(spacing: 6, lineSpacing: 7) {
+                    ForEach(categories) { sub in
+                        CatalogDirectoryChip(title: sub.title,
+                                             active: activeID == sub.id) {
+                            onOpen(sub)
+                        }
+                    }
+                }
+            } else {
+                grid
+                if entries.count > Self.collapsedLimit {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.18)) { showsAll.toggle() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(showsAll ? "收起" : "显示全部 \(entries.count) \(kind == .people ? "位" : "个")")
+                                .font(.system(size: 10, weight: .semibold))
+                            Image(systemName: showsAll ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundStyle(LumaBrand.violet)
+                        .padding(.horizontal, 10)
+                        .frame(height: 24)
+                        .background(LumaBrand.violet.opacity(0.10),
+                                    in: Capsule(style: .continuous))
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .strokeBorder(LumaBrand.violet.opacity(0.22), lineWidth: 0.7)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(LinearGradient(colors: [LumaBrand.violet.opacity(0.075),
+                                              Color.primary.opacity(0.025)],
+                                     startPoint: .topLeading,
+                                     endPoint: .bottomTrailing))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(LumaBrand.violet.opacity(0.16), lineWidth: 0.8)
+        }
+        // 悬停档案：整块面板只画一张卡，跟着鼠标所在格子走；
+        // 不做 NSPopover，避免弹窗吞掉下一次点击而耽误筛选。
+        .overlayPreferenceValue(CatalogRosterTileAnchorKey.self) { anchors in
+            GeometryReader { proxy in
+                if let id = hoveredID,
+                   let entry = entries.first(where: { $0.id == id }),
+                   let anchor = anchors[id] {
+                    // 贴在格子旁边，不压住要挑的格子。
+                    CatalogHoverCardBeside(rect: proxy[anchor],
+                                           container: proxy.size) {
+                        CatalogRosterInfoCard(entry: entry, kind: kind)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .task(id: signature) { await load() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LumaBrand.violet)
+            Text(kind == .people ? "星图 · 女优" : "星图 · 片商")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(0.82))
+            Text("\(total) \(kind == .people ? "位" : "个")")
+                .font(.system(size: 9.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+            if matchedCount > 0 {
+                Text("已匹配 \(matchedCount)")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(LumaBrand.violet)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1.5)
+                    .background(LumaBrand.violet.opacity(0.12),
+                                in: Capsule(style: .continuous))
+            }
+            Spacer(minLength: 8)
+            Text("悬停看档案 · 点选筛选")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+    }
+
+    /// 平铺名册：不再横向翻页，所有人一次铺开，未命中的也和命中的人并排显示。
+    private var grid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 84, maximum: 112),
+                                     spacing: 2, alignment: .top)],
+                  alignment: .leading,
+                  spacing: 3) {
+            ForEach(visibleEntries) { entry in
+                CatalogAtlasRosterTile(
+                    entry: entry,
+                    kind: kind,
+                    active: activeID == entry.id,
+                    isCursor: cursorID == entry.id,
+                    onOpen: {
+                        openEntry(entry.id)
+                    },
+                    onAtlas: entry.atlasPersonID.map { id in
+                        { onOpenAtlasPerson(id) }
+                    },
+                    onHover: { inside in
+                        updateHover(entry, inside: inside)
+                    }
+                )
+                .anchorPreference(key: CatalogRosterTileAnchorKey.self, value: .bounds) {
+                    [entry.id: $0]
+                }
+            }
+        }
+        .padding(.top, 2)
+        .reportGridWidth()
+        .onPreferenceChange(GridWidthKey.self) { gridWidth = $0 }
+        .gridArrowCursor($cursorID,
+                         ids: visibleEntries.map(\.id),
+                         columns: adaptiveColumnCount(width: gridWidth,
+                                                     minimum: 84, maximum: 112, spacing: 2)) { id in
+            openEntry(id)
+        }
+    }
+
+    private func openEntry(_ id: String) {
+        guard let category = categories.first(where: { $0.id == id }) else { return }
+        onOpen(category)
+    }
+
+    /// 悬停停留一小会儿才出档案，快速扫过名册时不会一路弹卡。
+    private func updateHover(_ entry: CatalogRosterEntry, inside: Bool) {
+        hoverTask?.cancel()
+        if inside {
+            // 只出档案，不把键盘游标挪到悬停格上：
+            // 光标一动整块面板会滚动跟随，鼠标再触发悬停就会来回抖动。
+            hoverTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 420_000_000)
+                guard !Task.isCancelled else { return }
+                hoveredID = entry.id
+            }
+        } else if hoveredID == entry.id {
+            hoveredID = nil
+        }
+    }
+
+    /// 匹配、取头像与拼档案都交给统一入口，主线程只拿结果。
+    /// 匹配不上的也保留一条空档案，前台照样铺出来。
+    private func load() async {
+        guard AtlasCatalogPaths.isLoaded else {
+            entries = []
+            return
+        }
+        let loaded = await CatalogAtlasMatcher.entries(kind: kind, children: categories)
+        guard !Task.isCancelled else { return }
+        entries = loaded
+    }
+}
+
+private struct CatalogAtlasRosterTile: View {
+    let entry: CatalogRosterEntry
+    let kind: CatalogRosterKind
+    let active: Bool
+    /// 键盘游标：方向键停在这一格时画一圈亮边，回车 / 空格即筛选。
+    let isCursor: Bool
+    let onOpen: () -> Void
+    let onAtlas: (() -> Void)?
+    /// 悬浮交给面板统一处理：卡片不挂在格子上，避免弹窗遮挡与吞点击。
+    let onHover: (Bool) -> Void
+
+    @State private var hovering = false
+
+    private var accent: Color {
+        kind == .people ? LumaBrand.coral : LumaBrand.cyan
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Button(action: onOpen) { tile }
+                .buttonStyle(.plain)
+
+            // 命中资料库的人多给一个入口：点 ⟡ 直接去星图看完整档案。
+            if let onAtlas, hovering || active {
+                Button(action: onAtlas) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 15, height: 15)
+                        .background(LumaBrand.violet, in: Circle())
+                        .overlay {
+                            Circle().strokeBorder(.white.opacity(0.5), lineWidth: 0.7)
+                        }
+                }
+                .buttonStyle(.plain)
+                .offset(x: 3, y: -2)
+                .help("在星图中查看 \(entry.title)")
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.14)) { hovering = inside }
+            onHover(inside)
+        }
+        .animation(.easeOut(duration: 0.14), value: active)
+    }
+
+    private var tile: some View {
+        VStack(spacing: 4) {
+            CatalogAvatarView(name: entry.title,
+                              base64: entry.avatarBase64,
+                              size: 50,
+                              ringColor: active ? accent : accent.opacity(hovering ? 0.6 : 0.24))
+                .scaleEffect(hovering ? 1.06 : 1)
+                .shadow(color: accent.opacity(hovering ? 0.45 : 0.12),
+                        radius: hovering ? 9 : 4, y: 2)
+                .overlay(alignment: .bottomTrailing) {
+                    // 未收录的人给一个空心小点，和命中的星图头像区分开。
+                    if !entry.isMatched {
+                        Circle()
+                            .fill(Color.primary.opacity(0.03))
+                            .overlay {
+                                Circle().strokeBorder(Color.primary.opacity(0.22),
+                                                      lineWidth: 0.7)
+                            }
+                            .frame(width: 7, height: 7)
+                    }
+                }
+
+            Text(entry.title)
+                .font(.system(size: 10, weight: active || isCursor ? .semibold : .medium))
+                .foregroundStyle(active || isCursor
+                                 ? accent
+                                 : Color.primary.opacity(hovering ? 0.95 : 0.76))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(width: 78)
+        .padding(.vertical, 6)
+        .background {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(accent.opacity(active ? 0.12 : (hovering || isCursor ? 0.07 : 0)))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(accent.opacity(active ? 0.35 : 0), lineWidth: 0.8)
+        }
+        .overlay {
+            if isCursor {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(accent, lineWidth: 1.6)
+                    .shadow(color: accent.opacity(0.4), radius: 6)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+}
+
+/// 悬停时浮出的星图档案：类似影院剧集详情，深色玻璃 + 品牌色打光 + 星空微光。
+/// 字段全部取自资料库；匹配不上的只显示「暂未收录」，不会编造作品数。
+/// 名册格子和实体卡片墙（出镜人物 / 创作者）共用这张卡。
+struct CatalogRosterInfoCard: View {
+    let entry: CatalogRosterEntry
+    let kind: CatalogRosterKind
+
+    private var accent: Color {
+        kind == .people ? LumaBrand.coral : LumaBrand.cyan
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            header
+            if entry.isMatched {
+                if !entry.facts.isEmpty { facts }
+                if !entry.tags.isEmpty { tagRow }
+                if let summary = entry.summary,
+                   !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    HStack(alignment: .top, spacing: 8) {
+                        Capsule(style: .continuous)
+                            .fill(accent.opacity(0.55))
+                            .frame(width: 2)
+                        Text(summary)
+                            .font(.system(size: 12.5))
+                            .lineSpacing(3.5)
+                            .foregroundStyle(.white.opacity(0.76))
+                            .lineLimit(6)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                // 卡本身不接收点击，只提示「完整档案里可以按名字去各平台搜」。
+                CatalogPersonSocialHints(name: entry.title)
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(kind == .people
+                         ? "资料来自拾光星图 · 点 ⟡ 打开完整档案"
+                         : "资料来自拾光星图")
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(.white.opacity(0.4))
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("星图暂未收录")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text("点头像仍可按「\(entry.title)」筛选站点内容；加载更完整的星图资料库后，这里会显示出生、身高、三围与简介。")
+                        .font(.system(size: 12))
+                        .lineSpacing(3)
+                        .foregroundStyle(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 340, alignment: .leading)
+        .background { cardBackground }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(accent.opacity(0.4), lineWidth: 0.9)
+        }
+        .shadow(color: .black.opacity(0.45), radius: 26, y: 12)
+        .shadow(color: accent.opacity(0.18), radius: 18, y: 4)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            CatalogAvatarView(name: entry.title,
+                              base64: entry.avatarBase64,
+                              size: 58,
+                              ringColor: accent.opacity(0.85))
+                .overlay {
+                    // 一圈品牌色渐变环：深色卡上把头像和背景分开一点。
+                    Circle()
+                        .strokeBorder(AngularGradient(colors: [accent,
+                                                               LumaBrand.violet,
+                                                               accent],
+                                                      center: .center),
+                                      lineWidth: 1.2)
+                        .padding(-2)
+                }
+                .shadow(color: accent.opacity(0.5), radius: 12, y: 3)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if let subtitle = entry.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+                HStack(spacing: 5) {
+                    badge(kind == .people ? "女优" : "片商", tint: accent)
+                    if let region = entry.region {
+                        badge(region, tint: .white.opacity(0.6))
+                    }
+                    if entry.isMatched {
+                        badge("星图收录", tint: LumaBrand.violet)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var facts: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
+                            GridItem(.flexible(), spacing: 10)],
+                  alignment: .leading,
+                  spacing: 8) {
+            ForEach(entry.facts) { fact in
+                VStack(alignment: .leading, spacing: 1.5) {
+                    HStack(spacing: 3) {
+                        Image(systemName: factSymbol(fact.label))
+                            .font(.system(size: 8, weight: .semibold))
+                        Text(fact.label)
+                            .font(.system(size: 10))
+                    }
+                    .foregroundStyle(.white.opacity(0.42))
+                    Text(fact.value)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    /// 字段前的小图标：让两列资料一眼能扫，不用逐字读标签。
+    private func factSymbol(_ label: String) -> String {
+        switch label {
+        case "出生", "年龄": return "birthday.cake.fill"
+        case "身高": return "ruler.fill"
+        case "三围", "罩杯": return "figure.stand"
+        case "别名": return "person.2.fill"
+        case "地区": return "mappin.and.ellipse"
+        case "类型": return "square.grid.2x2.fill"
+        default: return "circle.fill"
+        }
+    }
+
+    private var tagRow: some View {
+        CatalogFlowLayout(spacing: 5, lineSpacing: 5) {
+            ForEach(entry.tags, id: \.self) { tag in
+                Text(tag)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(accent.opacity(0.95))
+                    .padding(.horizontal, 7)
+                    .frame(height: 21)
+                    .background(accent.opacity(0.12),
+                                in: Capsule(style: .continuous))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(accent.opacity(0.22), lineWidth: 0.6)
+                    }
+            }
+        }
+    }
+
+    private func badge(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(tint.opacity(0.14), in: Capsule(style: .continuous))
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(LinearGradient(colors: [Color(red: 0.10, green: 0.10, blue: 0.14),
+                                          Color(red: 0.16, green: 0.15, blue: 0.22)],
+                                 startPoint: .topLeading,
+                                 endPoint: .bottomTrailing))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(RadialGradient(colors: [accent.opacity(0.24), .clear],
+                                         center: .topLeading,
+                                         startRadius: 0,
+                                         endRadius: 230))
+            }
+            .overlay(stars)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// 几颗固定位置的微光星点：给深色卡片一点「星图」的质感，不抢正文。
+    private var stars: some View {
+        GeometryReader { proxy in
+            ZStack {
+                ForEach(0..<8, id: \.self) { index in
+                    Circle()
+                        .fill(.white.opacity(index % 3 == 0 ? 0.3 : 0.12))
+                        .frame(width: index % 2 == 0 ? 1.8 : 1)
+                        .position(x: proxy.size.width * CGFloat((index * 37 + 11) % 100) / 100,
+                                  y: proxy.size.height * CGFloat((index * 61 + 7) % 100) / 100)
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 }

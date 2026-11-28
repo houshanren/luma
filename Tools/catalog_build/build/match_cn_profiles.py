@@ -21,7 +21,7 @@ import sqlite3
 import unicodedata
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DB = os.path.join(ROOT, "Resources", "Catalog", "catalog.sqlite")
+DB = os.environ.get("LUMA_CATALOG_DB") or os.path.expanduser("~/Downloads/catalog.sqlite")
 RAW = os.path.join(ROOT, "Tools", "catalog_build", "raw")
 
 GENERIC_WORDS = {

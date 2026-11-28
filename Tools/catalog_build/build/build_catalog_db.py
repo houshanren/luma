@@ -24,7 +24,7 @@
 - jp_profiles_graphis.json            GRAPHIS 月度模特（身高 / 三围 / 罩杯 / 趣味，只补已有）
 - r18_actresses.json / r18_videos.json  R18.dev 女优档案与日本影像作品
 
-输出：Resources/Catalog/catalog.sqlite（提交进仓库，打包时拷进 App）。
+输出：~/Downloads/catalog.sqlite（可用 LUMA_CATALOG_DB 指定别的路径；不再提交进仓库）。
 """
 
 from __future__ import annotations
@@ -55,8 +55,9 @@ except ImportError:  # 没装 Pillow 时跳过厂牌字母头像
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 RAW = os.path.join(ROOT, "Tools", "catalog_build", "raw")
-OUT_DIR = os.path.join(ROOT, "Resources", "Catalog")
-OUT = os.path.join(OUT_DIR, "catalog.sqlite")
+# 星图资料库现在放在 ~/Downloads，不再提交进仓库；可用 LUMA_CATALOG_DB 覆盖。
+OUT = os.environ.get("LUMA_CATALOG_DB") or os.path.expanduser("~/Downloads/catalog.sqlite")
+OUT_DIR = os.path.dirname(OUT)
 NORMALIZER = os.path.join(ROOT, "Tools", "catalog_build", "t2s.swift")
 BUILD_DATE = date.today().isoformat()
 
@@ -1191,7 +1192,7 @@ def web_org_keys():
 
     for name in WEB_ORG_EXTRA:
         add(name)
-    for file in ("cn_studios_yituwan.json", "kkkhai_studios.json"):
+    for file in ("cn_studios_yituwan.json", "kkkhai_studios.json", "site_studios.json"):
         path = os.path.join(RAW, file)
         if not os.path.exists(path):
             continue
@@ -1241,6 +1242,8 @@ def cn_web_profiles():
               "cn_profiles_guoxuezy.json", "cn_profiles_yanmishe.json",
               "cn_profiles_coserji.json", "cn_profiles_madouplus.json",
               "cn_profiles_xsnvshen.json",
+              "cn_profiles_xiurenlu.json",
+              "cn_profiles_mms.json",
               "jp_profiles_graphis.json",
               "cn_profiles_manual.json", "cn_profiles_manual2.json",
               "cn_profiles_manual3.json")]
@@ -2470,7 +2473,7 @@ def build_actresses(studio_keys=None):
     #    / GitHub 日本女优总索引。
     for file in ("fukuri_people.json", "kkkhai_models.json", "kkkhai_tag_people.json",
                  "kkkhai_lianzu_people.json", "coscd_people.json", "coscd_people_extra.json",
-                 "mms_people.json", "jav_actress_index.json"):
+                 "mms_people.json", "jav_actress_index.json", "site_people.json"):
         path = os.path.join(RAW, file)
         if not os.path.exists(path):
             continue
@@ -2903,7 +2906,7 @@ def merge_studio_variants(studios):
                     target["names"].append(name)
             if target.get("region") == "china" and other.get("region") not in (None, "china"):
                 target["region"] = other["region"]
-            for field in ("work_count", "summary", "source_url", "website"):
+            for field in ("work_count", "summary", "source_url", "website", "kind"):
                 if target.get(field) is None and other.get(field) is not None:
                     target[field] = other[field]
             if other.get("work_count") is not None:
@@ -2958,8 +2961,124 @@ def merge_studio_variants(studios):
     return [studio for studio in result if studio.get("name")]
 
 
+# 站点标签反推出来的「机构」里混着拍照题材词，不是真实厂牌。
+STUDIO_JUNK_NAMES = {
+    "拍照姿势", "牛仔裤拍照", "比基尼", "车模", "公园拍照", "拍照技巧", "COS",
+    "海边拍照", "草地拍照", "咖啡馆拍照", "居家写真", "街边拍照", "银杏拍照",
+    "饭拍", "黄金乳房", "美少女@", "别人家的", "模特合辑", "色情", "吃瓜",
+    "黑料吃瓜", "网红馆", "街拍", "性爱网", "情趣K歌房", "成人抖音",
+    "内购无水印", "私购流出", "onlyfans外流", "岁母狗无限高潮",
+}
+
+PHOTO_SOURCE_HINTS = ("yituwan", "kkkhai", "site:JLiji", "site:Tuzac", "site:咔咔西三",
+                      "site:爱美图集", "site:91图图", "site:女神网", "site:91porna",
+                      "site:XSZAV", "site:爱妹子", "site:JavCl", "site:JavGG")
+
+
+def derive_studio_summary(studio):
+    """没有人工档案时，用机构名 / 作品数 / 来源生成一条只陈述事实的简介。"""
+    name = studio.get("name") or ""
+    region = studio.get("region") or ""
+    kind = studio.get("kind") or ""
+    count = studio.get("work_count") or 0
+    sources = " ".join(sorted(studio.get("sources") or []))
+    if region == "china":
+        photo = kind in ("photo", "studio") and (
+            count >= 20 or any(hint in sources for hint in PHOTO_SOURCE_HINTS))
+        if photo:
+            if re.search(r"(丝|袜|足|leg|hose)", name, re.I):
+                topic = "丝袜、美腿与足模"
+            elif "街" in name:
+                topic = "街拍与日常穿搭"
+            elif re.search(r"(摄影|映画|影像|画报|视觉|写真)", name):
+                topic = "人像摄影与私房写真"
+            else:
+                topic = "私房、制服与人像写真"
+            text = f"国内写真机构，题材以{topic}为主，作品按编号套图 / 期号形式发行。"
+            if count >= 20:
+                text += f"站内已收录约 {count:,} 套。"
+            return text
+        if kind == "platform":
+            return "华语成人内容平台。"
+        if kind in ("studio", None):
+            return "华语成人内容品牌 / 创作者，作品以中文短片、自拍内容为主。"
+        return None
+    if region == "japan":
+        if count >= 50:
+            return f"日本 AV 片商，站内收录约 {count:,} 部作品。"
+        return "日本 AV 片商 / 厂牌。"
+    if region == "korea":
+        return (f"韩国写真 / 影像机构，站内收录约 {count:,} 套作品。"
+                if count >= 20 else "韩国写真 / 影像机构。")
+    if region == "taiwan":
+        return (f"台湾写真 / 影像机构，站内收录约 {count:,} 套作品。"
+                if count >= 20 else "台湾写真 / 影像机构。")
+    if region == "hongkong":
+        return "香港成人影像厂牌。"
+    if region == "western":
+        return ("欧美成人片商，站内收录约 {:,} 部作品。".format(count)
+                if count >= 20 else "欧美成人片商 / 厂牌。")
+    return None
+
+
+def apply_profile_regions(studios, profiles):
+    """档案里的地区 / 类型是人工核对的，覆盖采集站（javrate 等）的误标。
+
+    采集站会把「麻豆传媒 / 蜜桃传媒」这类华语厂牌标成日本，合并时又按
+    「非 china 覆盖 china」的规则把地区改掉，这里以档案为准改回来。
+    """
+    keyed = {}
+    for row in profiles:
+        region = row.get("region")
+        kind = row.get("kind")
+        website = row.get("website")
+        for name in [row.get("name"), *row.get("aliases", [])]:
+            if not name:
+                continue
+            keyed[merge_key(name.translate(JP_VARIANTS))] = (region, kind, website)
+    fixed = 0
+    for studio in studios:
+        if "厂牌档案" not in (studio.get("sources") or set()):
+            continue
+        for name in [studio["name"], *studio.get("names", [])]:
+            hit = keyed.get(merge_key(name.translate(JP_VARIANTS)))
+            if not hit:
+                continue
+            region, kind, website = hit
+            if region and studio.get("region") != region:
+                studio["region"] = region
+                fixed += 1
+            if kind and not studio.get("kind"):
+                studio["kind"] = kind
+            if website and not studio.get("website"):
+                studio["website"] = website
+            break
+    return fixed
+
+
 def build_studios():
     records = []
+
+    # 人工核对的国内厂牌档案：简介 / 别名 / 官网。放在最前面，先定标准写法。
+    profiles_path = os.path.join(RAW, "studio_profiles.json")
+    profile_rows = load_json(profiles_path) if os.path.exists(profiles_path) else []
+    profile_count = 0
+    if profile_rows:
+        for row in profile_rows:
+            name = clean_studio_name((row.get("name") or "").strip())
+            if not name:
+                continue
+            records.append({
+                "name": name,
+                "names": [alias for alias in row.get("aliases", []) if alias and alias != name],
+                "region": row.get("region") or classify_studio(name),
+                "kind": row.get("kind"),
+                "summary": row.get("summary"),
+                "website": row.get("website"),
+                "source_url": row.get("source_url"),
+                "sources": {"厂牌档案"},
+            })
+            profile_count += 1
 
     # 先登记标准写法与别名，后面的记录遇到别名会并进来。
     for name, aliases in STUDIO_ALIASES.items():
@@ -3064,6 +3183,26 @@ def build_studios():
                 "sources": {row.get("source", "yituwan")},
             })
 
+    # 站点「片商 / 机构」分类反哺：麻豆系厂牌、图集机构（JVID / Zishy / XR Uncensored…）。
+    # 数据来自 extract_site_taxonomy.py，只收带汉字 / 小写字母 / 多词长名的机构，已过滤代号。
+    extra_path = os.path.join(RAW, "site_studios.json")
+    if os.path.exists(extra_path):
+        for row in load_json(extra_path):
+            raw_name = (row.get("name") or "").strip()
+            if not raw_name:
+                continue
+            name, aliases, region = split_studio_names(raw_name)
+            name = clean_studio_name(name)
+            if not name:
+                continue
+            records.append({
+                "name": name,
+                "names": aliases,
+                "region": region or row.get("region") or "china",
+                "source_url": row.get("source_url"),
+                "sources": {row.get("source", "site")},
+            })
+
     # R18 片商：只登记最终落库作品 ≥ 30 部的，避免几千个小厂淹没机构页。
     for name, count in sorted(r18_maker_counts().items(), key=lambda item: -item[1]):
         if count < 30:
@@ -3104,7 +3243,7 @@ def build_studios():
             target["region"] = record["region"]
         elif target.get("region") == "china" and record.get("region") not in (None, "china"):
             target["region"] = record["region"]
-        for field in ("work_count", "summary", "source_url", "website"):
+        for field in ("work_count", "summary", "source_url", "website", "kind"):
             if target.get(field) is None and record.get(field) is not None:
                 target[field] = record[field]
         if record.get("work_count") is not None:
@@ -3118,6 +3257,9 @@ def build_studios():
         print(f"  kkkhai 机构资料新增 {added} 个")
 
     result = merge_studio_variants(list(merged.values()))
+    region_fixed = apply_profile_regions(result, profile_rows)
+    if region_fixed:
+        print(f"  厂牌档案校正地区 {region_fixed} 个")
     logos_path = os.path.join(RAW, "studio_logos.json")
     if os.path.exists(logos_path):
         logos = load_json(logos_path)
@@ -3126,16 +3268,34 @@ def build_studios():
             for name, info in logos.items()
             if isinstance(info, dict) and info.get("logo_url")
         }
+        website_keys = {
+            merge_key(name.translate(JP_VARIANTS)): info.get("website")
+            for name, info in logos.items()
+            if isinstance(info, dict) and info.get("website")
+        }
         matched = 0
         for studio in result:
-            if studio.get("logo_url"):
-                continue
-            key = merge_key(studio["name"].translate(JP_VARIANTS))
-            logo = logo_keys.get(key)
-            if logo:
-                studio["logo_url"] = logo
-                matched += 1
+            for candidate in [studio["name"], *studio.get("names", [])]:
+                key = merge_key(candidate.translate(JP_VARIANTS))
+                if not studio.get("logo_url") and logo_keys.get(key):
+                    studio["logo_url"] = logo_keys[key]
+                    matched += 1
+                if not studio.get("website") and website_keys.get(key):
+                    studio["website"] = website_keys[key]
         print(f"  厂牌品牌图 {matched}/{len(result)} 个")
+    removed = [studio for studio in result if studio["name"] in STUDIO_JUNK_NAMES]
+    result = [studio for studio in result if studio["name"] not in STUDIO_JUNK_NAMES]
+    filled = 0
+    for studio in result:
+        if studio.get("summary"):
+            continue
+        text = derive_studio_summary(studio)
+        if text:
+            studio["summary"] = text
+            filled += 1
+    covered = sum(1 for studio in result if studio.get("summary"))
+    print(f"  厂牌档案 {profile_count} 条，简介补齐 {filled} 个"
+          f"（覆盖 {covered}/{len(result)}），清理非机构 {len(removed)} 个")
     return result
 
 
@@ -3156,6 +3316,22 @@ def load_avatars():
     valid = sum(1 for value in AVATARS.values() if value)
     if valid:
         print(f"  头像 base64 {valid} 张")
+
+
+STUDIO_LOGOS_B64: dict[str, str] = {}
+
+
+def load_studio_logos():
+    """raw/studio_logo_images.json：{厂牌名: base64}，厂牌真实 logo（128×128）。"""
+    global STUDIO_LOGOS_B64
+    path = os.path.join(RAW, "studio_logo_images.json")
+    data = load_json(path) if os.path.exists(path) else {}
+    STUDIO_LOGOS_B64 = {
+        merge_key(str(name).translate(JP_VARIANTS)): value
+        for name, value in data.items() if value
+    }
+    if STUDIO_LOGOS_B64:
+        print(f"  厂牌 logo {len(STUDIO_LOGOS_B64)} 张")
 
 
 def studio_initials(name: str) -> str:
@@ -4098,6 +4274,7 @@ def write_enrichment(connection, link_rows, studio_ids=None):
 def write_database(actresses, studios, link_rows, coser_tag_count):
     os.makedirs(OUT_DIR, exist_ok=True)
     load_avatars()
+    load_studio_logos()
     if os.path.exists(OUT):
         os.remove(OUT)
     connection = sqlite3.connect(OUT)
@@ -4144,7 +4321,13 @@ def write_database(actresses, studios, link_rows, coser_tag_count):
     studio_avatar_rows = []
     studio_rows = []
     for rid, s in enumerate(studios, start=1):
-        b64 = studio_avatar(s["name"])
+        b64 = None
+        for candidate in [s["name"], *s.get("names", [])]:
+            b64 = STUDIO_LOGOS_B64.get(merge_key(candidate.translate(JP_VARIANTS)))
+            if b64:
+                break
+        if not b64:
+            b64 = studio_avatar(s["name"])
         if b64:
             studio_avatar_rows.append((rid, b64))
         studio_rows.append((

@@ -67,7 +67,7 @@ struct LocalPeopleView: View {
             insight = nil
         }
         .task(id: pairSignature) {
-            pairs = store.peoplePairs()
+            pairs = await store.peoplePairsAsync()
             if let pair = activePair,
                !people.contains(where: { $0.id == pair.a || $0.id == pair.b }) {
                 activePair = nil
@@ -434,7 +434,9 @@ struct LocalPeopleView: View {
             if heroAvatar == nil {
                 heroAvatar = await PersonAvatarRegistry.load(request)
             }
-            insight = store.localPersonInsight(for: person)
+            let loaded = await store.localPersonInsightAsync(for: person)
+            guard !Task.isCancelled, store.selectedLocalPersonID == person.id else { return }
+            insight = loaded
         }
     }
 

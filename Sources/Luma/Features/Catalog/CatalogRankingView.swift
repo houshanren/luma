@@ -4,6 +4,7 @@ import SwiftUI
 /// 顶部是维度切换与数据概览，下面是三甲展台、各源冠军、完整名次与双栏数据。
 struct CatalogRankingView: View {
     @Environment(CatalogBrowserModel.self) private var catalog
+    @Environment(LibraryStore.self) private var store
 
     /// 可选的来源范围：网络影院只统计影视源；网络资源总览不传，等于只看资源站。
     var sourceScope: Set<UUID>? = nil
@@ -16,8 +17,13 @@ struct CatalogRankingView: View {
 
     @State private var sourceFilter: UUID?
 
+    /// 网络资源按「全部 / 视频 / 图集」筛选；网络影院没有图集，不参与这条筛选。
+    private var usesMediaFilter: Bool { domain == .networkResource }
+
     private var entries: [CatalogSpotlightItem] {
-        catalog.currentSpotlight(in: domain).filter { inScope($0.sourceID) }
+        catalog.currentSpotlight(in: domain).filter {
+            inScope($0.sourceID) && (!usesMediaFilter || catalog.matchesMediaFilter(sourceID: $0.sourceID))
+        }
     }
 
     private var isLoading: Bool {
@@ -32,13 +38,19 @@ struct CatalogRankingView: View {
 
     /// 今天与近 7 天的记录量：直接从本机更新日历算，不发请求。
     private var todayCount: Int {
-        catalog.todaySpotlight.filter { inScope($0.sourceID) }.count
+        catalog.todaySpotlight.filter {
+            inScope($0.sourceID) && (!usesMediaFilter || catalog.matchesMediaFilter(sourceID: $0.sourceID))
+        }.count
     }
     private var weekCount: Int {
         let calendar = Calendar.current
         let start = calendar.date(byAdding: .day, value: -6,
                                   to: calendar.startOfDay(for: Date())) ?? Date()
-        return catalog.calendarItems.filter { inScope($0.sourceID) && $0.firstSeen >= start }.count
+        return catalog.calendarItems.filter {
+            inScope($0.sourceID)
+                && (!usesMediaFilter || catalog.matchesMediaFilter(sourceID: $0.sourceID))
+                && $0.firstSeen >= start
+        }.count
     }
 
     private func inScope(_ sourceID: UUID) -> Bool {
@@ -49,7 +61,8 @@ struct CatalogRankingView: View {
         if let onOpen {
             onOpen(sourceID, item)
         } else {
-            catalog.playRemote(sourceID: sourceID, item: item)
+            // 图集进频道页内联详情看图，视频直接起播。
+            store.openCatalogItem(sourceID: sourceID, item: item)
         }
     }
 
@@ -82,6 +95,7 @@ struct CatalogRankingView: View {
             // 读数已经在窗口标题栏里，内容区只留维度与操作。
             HStack(alignment: .center, spacing: 12) {
                 Spacer(minLength: 12)
+                if usesMediaFilter { CatalogMediaFilterChips() }
                 modePicker
                 refreshButton
                 randomButton
@@ -102,6 +116,7 @@ struct CatalogRankingView: View {
 
                     Spacer(minLength: 12)
 
+                    if usesMediaFilter { CatalogMediaFilterChips() }
                     modePicker
                     refreshButton
                     randomButton
@@ -273,6 +288,15 @@ struct CatalogRankingView: View {
                         if let rating {
                             ratingBadge(rating, compact: true)
                         }
+                        if catalog.isGallery(sourceID: entry.sourceID, item: entry.item) {
+                            Text("图集")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2.5)
+                                .background(Color.accentColor.opacity(0.85),
+                                            in: Capsule(style: .continuous))
+                        }
                         Text(source.name)
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.92))
@@ -357,7 +381,8 @@ struct CatalogRankingView: View {
                     }
                     .overlay(alignment: .topLeading) {
                         HStack(spacing: 3) {
-                            Image(systemName: "crown.fill")
+                            Image(systemName: catalog.isGallery(sourceID: entry.sourceID, item: entry.item)
+                                  ? "photo.stack.fill" : "crown.fill")
                                 .font(.system(size: 7.5, weight: .bold))
                             Text(source.name)
                                 .font(.system(size: 8.5, weight: .semibold))
@@ -403,7 +428,10 @@ struct CatalogRankingView: View {
                                        coverURL: item.element.item.coverURL,
                                        remark: item.element.item.remark,
                                        rating: ratingText(item.element.item.remark),
-                                       rank: item.offset + 1) {
+                                       rank: item.offset + 1,
+                                       typeBadge: catalog.isGallery(sourceID: item.element.sourceID,
+                                                                    item: item.element.item)
+                                           ? "图集" : nil) {
                             open(item.element.sourceID, item.element.item)
                         }
                     }
@@ -642,6 +670,10 @@ struct CatalogRankingView: View {
                 Text("正在汇总各源…")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
+            } else if usesMediaFilter, catalog.mediaFilter != .all {
+                LumaEmptyState(symbol: catalog.mediaFilter.symbol,
+                               title: "这个维度暂时没有\(catalog.mediaFilter.title)内容",
+                               message: "切换到「全部」看看，或确认对应类型的站点已经启用。")
             } else {
                 LumaEmptyState(symbol: catalog.spotlightMode.symbol,
                                title: catalog.spotlightMode == .todayNew ? "今天还没有记录到新内容" : "这个维度暂时没有可用内容",
@@ -663,6 +695,8 @@ private struct CatalogRankRow: View {
     let remark: String
     let rating: String?
     let rank: Int
+    /// 「图集」这类类型徽标：视频条目为 nil。
+    var typeBadge: String? = nil
     let action: () -> Void
 
     @State private var hovering = false
@@ -705,6 +739,15 @@ private struct CatalogRankRow: View {
                         Text(source.name)
                             .font(.system(size: 9.5))
                             .foregroundStyle(.tertiary)
+                        if let typeBadge {
+                            Text(typeBadge)
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(Color.accentColor)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Color.accentColor.opacity(0.12),
+                                            in: Capsule(style: .continuous))
+                        }
                         if !remark.isEmpty {
                             Text("·")
                                 .font(.system(size: 9.5))

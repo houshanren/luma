@@ -4,6 +4,8 @@ import SwiftUI
 /// 总览卡片的拼图底板：1～4 张照片铺满卡片。
 private struct TimelineMosaic: View {
     let photos: [PhotoItem]
+    /// 卡片实际尺寸（pt）：决定解码档位，大卡不再用 220pt 的封面图放大到糊。
+    var pixelSide: CGFloat = 220
 
     private let gap: CGFloat = 3
 
@@ -44,7 +46,7 @@ private struct TimelineMosaic: View {
     }
 
     private func cell(_ photo: PhotoItem) -> some View {
-        PhotoThumbnailView(photo: photo)
+        PhotoThumbnailView(photo: photo, purpose: .cover(pixelSide))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -58,6 +60,8 @@ private struct TimelineCard: View {
     let height: CGFloat
     /// 月视图里的「某日」卡片：日期小标签贴在左上角，不随卡片放大。
     var compactTitle = false
+    /// 卡片封面解码档位（pt）。
+    var thumbnailSide: CGFloat = 220
     let action: () -> Void
 
     @Environment(AppSettings.self) private var settings
@@ -114,7 +118,7 @@ private struct TimelineCard: View {
         // 只把拼图放进 Button；压暗层与日期角标放在 Button 外层叠加，
         // 否则 macOS 的按钮只绘制第一个子视图，标签会整条消失。
         Button(action: action) {
-            TimelineMosaic(photos: photos)
+            TimelineMosaic(photos: photos, pixelSide: thumbnailSide)
         }
         .buttonStyle(.plain)
         .frame(width: width, height: height)
@@ -268,8 +272,15 @@ private struct MonthDay: Identifiable {
     let photos: [PhotoItem]
 }
 
-/// 「月」分组：按月分段，段内用「首日大卡 + 右侧三张」的拼图展示每一天；
-/// 点击某天会切回「所有照片」并定位到那一天。
+/// 月拼贴里的一行：把连续几天按「当天照片数」的权重凑成一行。
+private struct DayCollageRow: Identifiable {
+    let id: String
+    let days: [MonthDay]
+}
+
+/// 「月」分组：按月分段，段内把每一天拼贴成大小不一的卡片——
+/// 照片多的一天占更宽的大卡，照片少的两三天并排或堆叠，像系统「照片」的月视图一样
+/// 每行都是不同组合；点击某天会切回「所有照片」并定位到那一天。
 struct MonthOverviewView: View {
     @Environment(LibraryStore.self) private var store
     let width: CGFloat
@@ -286,8 +297,21 @@ struct MonthOverviewView: View {
         return min(480, max(140, cardWidth * 0.72 * zoom))
     }
     private var gap: CGFloat { TimelineMetrics.gap }
-    /// 宽屏时每月用编辑部式拼图：首日大卡 + 右侧三张堆叠；窄屏退回等宽网格。
+    /// 宽屏时用拼贴排版；窄屏退回等宽网格，避免每行只剩一两张时卡片被拉得过大。
     private var usesMosaic: Bool { contentWidth >= 560 }
+
+    /// 一行按几个「单位」排：窗口越宽一行放越多天，卡片尺寸仍可控。
+    private var unitsPerRow: Int {
+        min(6, max(4, Int((contentWidth / 280).rounded())))
+    }
+    /// 一个单位的宽度（一行排满 `unitsPerRow` 个最小卡片的宽度）。
+    private var unitWidth: CGFloat {
+        (contentWidth - gap * CGFloat(unitsPerRow - 1)) / CGFloat(unitsPerRow)
+    }
+    /// 缩放档位：和网格缩放滑杆联动，拼贴卡片跟着整体放大 / 缩小。
+    private var mosaicZoom: CGFloat {
+        min(2.0, max(0.55, CGFloat(store.thumbSize) / 132))
+    }
 
     private var gridItems: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: gap), count: columns)
@@ -338,41 +362,51 @@ struct MonthOverviewView: View {
         }
     }
 
-    /// 直连模式没有逐天数据：每个月一张卡片，样本取该月最新 4 张。
+    /// 直连模式同样按「天」拼贴：每个月的 Section 出现时才查这一个月的逐天分组，
+    /// 数据到达前先用该月大卡占位，到达后替换成拼贴（不会整页等待）。
+    @ViewBuilder
     private var directMonthGrid: some View {
-        LazyVGrid(columns: gridItems, alignment: .leading, spacing: gap) {
-            ForEach(store.monthGroups) { month in
-                TimelineCard(photos: Array(month.samples.prefix(4)),
-                             title: month.title,
-                             subtitle: "\(month.count.formatted()) 个项目",
-                             width: cardWidth,
-                             height: cardHeight,
-                             compactTitle: true) {
-                    if let first = month.samples.first {
-                        store.openAllPhotos(at: first.id)
+        ForEach(store.monthGroups) { month in
+            Section {
+                Group {
+                    if let days = store.directMonthDays(monthID: month.id), !days.isEmpty {
+                        monthBody(days.map {
+                            MonthDay(id: $0.id, title: $0.title, count: $0.count, photos: $0.photos)
+                        })
+                    } else {
+                        monthPlaceholderCard(month)
                     }
                 }
-                .id(month.id)
-                .frame(maxWidth: .infinity)
+                .task { store.ensureDirectMonthDays(monthID: month.id) }
+            } header: {
+                SectionHeaderView(title: month.title, count: month.count)
+            }
+            .id(month.id)
+        }
+    }
+
+    /// 逐天数据还没到时的占位：整月一张大卡。
+    private func monthPlaceholderCard(_ month: PhotoMonthGroup) -> some View {
+        TimelineCard(photos: Array(month.samples.prefix(4)),
+                     title: month.title,
+                     subtitle: "\(month.count.formatted()) 个项目",
+                     width: contentWidth,
+                     height: min(360, max(180, contentWidth * 0.3 * mosaicZoom)),
+                     compactTitle: true) {
+            if let first = month.samples.first {
+                store.openAllPhotos(at: first.id)
             }
         }
         .padding(.horizontal, TimelineMetrics.horizontal)
-        .padding(.top, 16)
         .padding(.bottom, 26)
     }
 
     @ViewBuilder
     private func monthBody(_ days: [MonthDay]) -> some View {
-        if usesMosaic, days.count >= 4 {
+        if usesMosaic {
             VStack(spacing: gap) {
-                mosaicHero(Array(days.prefix(4)))
-                if days.count > 4 {
-                    LazyVGrid(columns: gridItems, alignment: .leading, spacing: gap) {
-                        ForEach(Array(days.dropFirst(4))) { day in
-                            dayCard(day, width: cardWidth, height: cardHeight)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
+                ForEach(collageRows(days)) { row in
+                    collageRow(row)
                 }
             }
             .padding(.horizontal, TimelineMetrics.horizontal)
@@ -389,31 +423,101 @@ struct MonthOverviewView: View {
         }
     }
 
-    /// 首日大卡占左侧约 62%，右侧三天等分堆叠，和系统「照片」的月拼图一致。
-    private func mosaicHero(_ days: [MonthDay]) -> some View {
-        let zoom = min(2.0, max(0.55, CGFloat(store.thumbSize) / 132))
-        let heroWidth = max(200, (contentWidth - gap) * 0.62)
-        let stackWidth = max(120, contentWidth - gap - heroWidth)
-        let heroHeight = min(560, max(240, heroWidth * 0.52 * zoom))
-        let stackCardHeight = max(76, (heroHeight - gap * 2) / 3)
+    // MARK: - 拼贴
+
+    /// 当天在拼贴里占几个单位：照片越多，卡片越宽（12 张以上占 3 格）。
+    private func collageWeight(_ day: MonthDay) -> Int {
+        if day.count >= 12 { return 3 }
+        if day.count >= 4 { return 2 }
+        return 1
+    }
+
+    /// 把连续若干天凑成一行：按权重累加到 `unitsPerRow` 换行，日期顺序保持不变。
+    private func collageRows(_ days: [MonthDay]) -> [DayCollageRow] {
+        let target = unitsPerRow
+        var rows: [DayCollageRow] = []
+        var current: [MonthDay] = []
+        var units = 0
+        func flush() {
+            guard let first = current.first else { return }
+            rows.append(DayCollageRow(id: first.id, days: current))
+            current.removeAll(keepingCapacity: true)
+            units = 0
+        }
+        for day in days {
+            let weight = collageWeight(day)
+            if !current.isEmpty, units + weight > target { flush() }
+            current.append(day)
+            units += weight
+            if units >= target { flush() }
+        }
+        flush()
+        return rows
+    }
+
+    /// 大卡 + 右侧两张堆叠：首日照片多、后两天各一张时启用（系统「照片」的经典组合）。
+    private func isHeroStack(_ row: DayCollageRow) -> Bool {
+        row.days.count == 3
+            && collageWeight(row.days[0]) >= 2
+            && collageWeight(row.days[1]) == 1
+            && collageWeight(row.days[2]) == 1
+    }
+
+    /// 各行高度不同，拼起来才是「拼贴」而不是等距网格。
+    private func collageRowHeight(_ row: DayCollageRow, unit: CGFloat) -> CGFloat {
+        let height: CGFloat
+        if isHeroStack(row) {
+            height = unit * 1.30
+        } else {
+            switch row.days.count {
+            case 1: height = unit * 2.00
+            case 2: height = unit * 1.35
+            case 3: height = unit * 1.15
+            case 4: height = unit * 0.95
+            default: height = unit * 0.82
+            }
+        }
+        return min(620, max(120, height)) * mosaicZoom
+    }
+
+    private func collageRow(_ row: DayCollageRow) -> some View {
+        let unit = unitWidth
+        let height = collageRowHeight(row, unit: unit)
         return HStack(alignment: .top, spacing: gap) {
-            dayCard(days[0], width: heroWidth, height: heroHeight)
-            VStack(spacing: gap) {
-                ForEach(Array(days[1...3])) { day in
-                    dayCard(day, width: stackWidth, height: stackCardHeight)
+            if isHeroStack(row) {
+                let available = contentWidth - gap
+                let stackWidth = max(140, available * 0.36)
+                let heroWidth = available - stackWidth
+                let stackHeight = max(60, (height - gap) / 2)
+                dayCard(row.days[0], width: heroWidth, height: height)
+                VStack(spacing: gap) {
+                    dayCard(row.days[1], width: stackWidth, height: stackHeight)
+                    dayCard(row.days[2], width: stackWidth, height: stackHeight)
+                }
+            } else if row.days.count == 1 {
+                dayCard(row.days[0], width: contentWidth, height: height)
+            } else {
+                let available = contentWidth - gap * CGFloat(row.days.count - 1)
+                let total = CGFloat(row.days.reduce(0) { $0 + collageWeight($1) })
+                ForEach(row.days) { day in
+                    dayCard(day,
+                            width: available * CGFloat(collageWeight(day)) / total,
+                            height: height)
                 }
             }
         }
     }
 
     private func dayCard(_ day: MonthDay, width: CGFloat, height: CGFloat) -> some View {
-        // 月份已由分区标题给出，卡片角标只显示「日」，并放大字号。
-        return TimelineCard(photos: Array(day.photos.prefix(4)),
+        // 一天一张卡、只展示当天的一张代表照片（系统「照片」的月视图也是这样分开展示）；
+        // 月份已由分区标题给出，卡片角标只显示「日」。
+        return TimelineCard(photos: Array(day.photos.prefix(1)),
                             title: day.title,
                             subtitle: "\(day.count) 张",
                             width: width,
                             height: height,
-                            compactTitle: true) {
+                            compactTitle: true,
+                            thumbnailSide: max(260, min(width, height) * 1.2)) {
             if let first = day.photos.first {
                 store.openAllPhotos(at: first.id)
             }

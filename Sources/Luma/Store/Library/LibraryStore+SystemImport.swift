@@ -10,7 +10,8 @@ import LumaContentCore
 /// - 系统侧：PhotoKit 写入文件 + 拍摄时间 / 位置；
 /// - 拾光侧：在 `Luma.sqlite` 里补一份标题（第二份元数据）。
 extension LibraryStore {
-    func runSystemLibraryImport(entries: [(url: URL, folders: [String])], options: ImportOptions) {
+    func runSystemLibraryImport(entries: [(url: URL, folders: [String])], options: ImportOptions,
+                                restoreSidebarItem: SidebarItem? = nil) {
         guard !entries.isEmpty else { return }
         importProgress = ImportProgress(total: entries.count,
                                         completed: 0,
@@ -237,6 +238,11 @@ extension LibraryStore {
                 self.loadSystemLibrary(at: URL(fileURLWithPath: path),
                                        informOnFailure: false,
                                        forceRefresh: true)
+            }
+
+            // 同普通导入：图集保存属于后台动作，完成后回到用户原来的页面。
+            if let restoreSidebarItem, self.sidebarItem != restoreSidebarItem {
+                self.navigate(to: restoreSidebarItem)
             }
         })
     }

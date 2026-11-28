@@ -10,6 +10,7 @@ extension SearchSourceKind {
         case .networkCinema: return Color(red: 0.96, green: 0.45, blue: 0.58)
         case .television: return Color(red: 0.36, green: 0.85, blue: 0.96)
         case .catalog: return Color(red: 0.72, green: 0.55, blue: 0.98)
+        case .atlas: return Color(red: 0.88, green: 0.72, blue: 0.36)
         }
     }
 }
@@ -128,7 +129,7 @@ struct SearchScopeBar: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 26)
-            .padding(.vertical, 11)
+            .padding(.vertical, 7)
         }
         .background(.ultraThinMaterial)
         .overlay(alignment: .bottom) {
@@ -154,20 +155,21 @@ struct SearchScopeBar: View {
                 } else if count > 0 {
                     Text(count.formatted())
                         .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(active ? Color.white.opacity(0.82) : Color.secondary)
+                        .foregroundStyle(active ? Color.white.opacity(0.85)
+                                                : Color.primary.opacity(0.55))
                 }
             }
-            .foregroundStyle(active ? Color.white : Color.primary.opacity(0.82))
-            .padding(.horizontal, 11)
-            .frame(height: 28)
+            .foregroundStyle(active ? Color.white : Color.primary.opacity(0.9))
+            .padding(.horizontal, 10)
+            .frame(height: 26)
             .background {
                 Capsule(style: .continuous)
                     .fill(active ? AnyShapeStyle(tint)
-                                 : AnyShapeStyle(Color.primary.opacity(0.055)))
+                                 : AnyShapeStyle(Color.primary.opacity(0.09)))
             }
             .overlay {
                 Capsule(style: .continuous)
-                    .strokeBorder(active ? Color.clear : Color.primary.opacity(0.07),
+                    .strokeBorder(active ? Color.clear : Color.primary.opacity(0.12),
                                   lineWidth: 0.6)
             }
             .contentShape(Capsule())
@@ -187,6 +189,8 @@ struct SearchContent<PhotoGrid: View>: View {
     let onOpen: (SearchHit) -> Void
     /// 全部来源都为空时展示的提示（宿主可自定义）。
     var emptyView: AnyView? = nil
+
+    @Environment(LibraryStore.self) private var store
 
     /// 结果布局与顶部的切换器共用同一个 UserDefaults 键：改一处，两处同步。
     /// 默认「画廊」：搜索结果以封面大图为主，比紧凑列表更容易一眼认出内容。
@@ -393,11 +397,22 @@ struct SearchContent<PhotoGrid: View>: View {
     /// 一旦还有场景 / 地点 / 人物 / 相簿 / 文件夹，照片墙只会显示图片视频，
     /// 把这几类结果整个吞掉（界面看上去「一条都没有」），改用结果行全部列出。
     private func showsLibraryGrid(_ section: SearchSection) -> Bool {
-        guard isShowingPhotos, isShowingLibraryGrid(section) else { return false }
+        guard isShowingPhotos, isShowingLibraryGrid(section), hostGridMatchesQuery else {
+            return false
+        }
         if center.activeKind == .photo || center.activeKind == .video { return true }
         return section.kindCounts.allSatisfy {
             $0.value == 0 || $0.key == .photo || $0.key == .video
         }
+    }
+
+    /// 宿主照片墙只有在「图库自己也在搜同一个词」时才代表这轮结果。
+    /// 从全局搜索跳进来时 store 仍停在整库窗口，直接复用会白等「正在读取系统图库」。
+    private var hostGridMatchesQuery: Bool {
+        let keyword = center.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return false }
+        let hostKeyword = store.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return hostKeyword == keyword && store.searchScope != .currentView
     }
 
     private func filteredHits(_ section: SearchSection) -> [SearchHit] {
@@ -406,7 +421,7 @@ struct SearchContent<PhotoGrid: View>: View {
         // 当前结果里已经没有这个值时就忽略，否则整类结果会被一个不存在的条件清空
         // （胶囊上有计数，列表却是空的）。
         if let origin = center.activeOrigin,
-           section.origins.contains(where: { $0.title == origin }) {
+           section.origins(under: center.activeKind).contains(where: { $0.title == origin }) {
             hits = hits.filter { $0.origin == origin }
         }
         if let category = center.activeCategory,
@@ -414,7 +429,7 @@ struct SearchContent<PhotoGrid: View>: View {
             hits = hits.filter { $0.category == category }
         }
         guard let kind = center.activeKind else { return hits }
-        if kind == .photo, section.source == .library, isShowingLibraryGrid(section) {
+        if kind == .photo, section.source == .library, showsLibraryGrid(section) {
             // 图片与视频由宿主的网格展示，这里不再重复列行。
             return hits.filter { $0.kind != .photo && $0.kind != .video }
         }
@@ -422,9 +437,10 @@ struct SearchContent<PhotoGrid: View>: View {
     }
 
     /// 「源」筛选：网盘 / 影院范围 / 电视播放列表 / 资源站点，只有多于一个源时出现。
+    /// 与类型条联动：选中「图集 / 视频」后只列出该类型下有命中的站点。
     @ViewBuilder
     private func originBar(_ section: SearchSection) -> some View {
-        let origins = section.origins
+        let origins = section.origins(under: center.activeKind)
         if origins.count > 1 {
             filterStrip(title: "源",
                         options: origins,
@@ -432,10 +448,30 @@ struct SearchContent<PhotoGrid: View>: View {
                         tint: section.source.tint,
                         allLabel: "全部源",
                         allCount: nil) { origin in
-                center.activeOrigin = origin
-                // 换源后原来的分类多半已经不存在，直接回到全部分类。
-                center.activeCategory = nil
+                selectOrigin(origin, section: section)
             }
+        }
+    }
+
+    /// 切换来源：同步收敛类型筛选，避免出现「选了某站点 + 该站点没有的类型」导致空列表。
+    private func selectOrigin(_ origin: String?, section: SearchSection) {
+        center.activeOrigin = origin
+        // 换源后原来的分类多半已经不存在，直接回到全部分类。
+        center.activeCategory = nil
+        if let kind = center.activeKind,
+           (section.kindCounts(under: origin)[kind] ?? 0) == 0 {
+            center.activeKind = nil
+        }
+    }
+
+    /// 切换类型：来源条会随之收窄，当前来源在该类型下没有命中时回到「全部源」。
+    private func selectKind(_ kind: SearchHitKind?, section: SearchSection) {
+        center.activeKind = kind
+        // 类型变了，原分类在当前结果里可能已经没有命中。
+        center.activeCategory = nil
+        if let origin = center.activeOrigin,
+           !section.origins(under: kind).contains(where: { $0.title == origin }) {
+            center.activeOrigin = nil
         }
     }
 
@@ -465,9 +501,9 @@ struct SearchContent<PhotoGrid: View>: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(.system(size: 9.5, weight: .bold))
-                    .tracking(1.6)
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(.secondary)
                 kindChip(allLabel,
                          count: allCount ?? options.reduce(0) { $0 + $1.count },
                          active: active == nil,
@@ -486,34 +522,38 @@ struct SearchContent<PhotoGrid: View>: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 26)
-            .padding(.bottom, 9)
+            .padding(.bottom, 6)
         }
     }
 
     /// 图库的固定类型条：即使某一类本次没有命中，也保留入口与 0 计数。
+    /// 顺序按查询优先级排：先返回的类别在前，场景放最后。
     private var libraryKinds: [SearchHitKind] {
-        [.photo, .video, .album, .folder, .person, .scene, .place]
+        [.person, .place, .folder, .album, .video, .photo, .scene]
     }
 
     private func libraryKindBar(_ section: SearchSection) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // 类型计数跟随当前选中的来源：选了某个库，就只看这个库的分布。
+        let counts = section.kindCounts(under: center.activeOrigin)
+        let allCount = counts.values.reduce(0, +)
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                kindChip("全部", count: section.total, active: center.activeKind == nil,
+                kindChip("全部", count: allCount, active: center.activeKind == nil,
                          tint: section.source.tint) {
-                    withAnimation(.snappy(duration: 0.18)) { center.activeKind = nil }
+                    withAnimation(.snappy(duration: 0.18)) { selectKind(nil, section: section) }
                 }
                 ForEach(libraryKinds, id: \.self) { kind in
                     kindChip(kind.title,
-                             count: section.kindCounts[kind] ?? 0,
+                             count: counts[kind] ?? 0,
                              active: center.activeKind == kind,
                              tint: section.source.tint) {
-                        withAnimation(.snappy(duration: 0.18)) { center.activeKind = kind }
+                        withAnimation(.snappy(duration: 0.18)) { selectKind(kind, section: section) }
                     }
                 }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 26)
-            .padding(.vertical, 11)
+            .padding(.vertical, 6)
         }
     }
 
@@ -523,46 +563,53 @@ struct SearchContent<PhotoGrid: View>: View {
     }
 
     private func televisionKindBar(_ section: SearchSection) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // 类型计数跟随当前选中的播放列表。
+        let counts = section.kindCounts(under: center.activeOrigin)
+        let allCount = counts.values.reduce(0, +)
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                kindChip("全部", count: section.total, active: center.activeKind == nil,
+                kindChip("全部", count: allCount, active: center.activeKind == nil,
                          tint: section.source.tint) {
-                    withAnimation(.snappy(duration: 0.18)) { center.activeKind = nil }
+                    withAnimation(.snappy(duration: 0.18)) { selectKind(nil, section: section) }
                 }
                 ForEach(televisionKinds, id: \.self) { kind in
                     kindChip(kind.title,
-                             count: section.kindCounts[kind] ?? 0,
+                             count: counts[kind] ?? 0,
                              active: center.activeKind == kind,
                              tint: section.source.tint) {
-                        withAnimation(.snappy(duration: 0.18)) { center.activeKind = kind }
+                        withAnimation(.snappy(duration: 0.18)) { selectKind(kind, section: section) }
                     }
                 }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 26)
-            .padding(.vertical, 11)
+            .padding(.vertical, 6)
         }
     }
 
     private func kindBar(_ section: SearchSection) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // 与来源条联动：选中「图集 / 视频」会收窄来源条；选中来源会收窄类型与计数。
+        let counts = section.kindCounts(under: center.activeOrigin)
+        let kinds = section.kinds(under: center.activeOrigin)
+        let allCount = counts.values.reduce(0, +)
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                kindChip("全部", count: section.total, active: center.activeKind == nil,
+                kindChip("全部", count: allCount, active: center.activeKind == nil,
                          tint: section.source.tint) {
-                    withAnimation(.snappy(duration: 0.18)) { center.activeKind = nil }
+                    withAnimation(.snappy(duration: 0.18)) { selectKind(nil, section: section) }
                 }
-                ForEach(section.orderedKinds, id: \.self) { kind in
+                ForEach(kinds, id: \.self) { kind in
                     kindChip(kind.title,
-                             count: section.kindCounts[kind] ?? 0,
+                             count: counts[kind] ?? 0,
                              active: center.activeKind == kind,
                              tint: section.source.tint) {
-                        withAnimation(.snappy(duration: 0.18)) { center.activeKind = kind }
+                        withAnimation(.snappy(duration: 0.18)) { selectKind(kind, section: section) }
                     }
                 }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 26)
-            .padding(.vertical, 11)
+            .padding(.vertical, 6)
         }
     }
 
@@ -571,21 +618,21 @@ struct SearchContent<PhotoGrid: View>: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Text(title)
-                    .font(.system(size: 10.5, weight: active ? .semibold : .medium))
+                    .font(.system(size: 11.5, weight: active ? .semibold : .medium))
                 Text(count.formatted())
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(active ? tint : Color.secondary)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(active ? tint : Color.primary.opacity(0.55))
             }
-            .foregroundStyle(active ? tint : Color.primary.opacity(0.72))
-            .padding(.horizontal, 10)
-            .frame(height: 24)
+            .foregroundStyle(active ? tint : Color.primary.opacity(0.9))
+            .padding(.horizontal, 11)
+            .frame(height: 26)
             .background {
                 Capsule(style: .continuous)
-                    .fill(active ? tint.opacity(0.14) : Color.primary.opacity(0.045))
+                    .fill(active ? tint.opacity(0.14) : Color.primary.opacity(0.075))
             }
             .overlay {
                 Capsule(style: .continuous)
-                    .strokeBorder(active ? tint.opacity(0.45) : Color.primary.opacity(0.07),
+                    .strokeBorder(active ? tint.opacity(0.5) : Color.primary.opacity(0.11),
                                   lineWidth: 0.6)
             }
             .contentShape(Capsule())
@@ -724,7 +771,8 @@ struct SearchHitRow: View {
 
     private var trailingSymbol: String {
         switch hit.kind {
-        case .movie, .series, .channel, .program: return "play.fill"
+        case .movie, .series, .channel, .program, .catalogVideo: return "play.fill"
+        case .catalogGallery: return "photo.stack.fill"
         default: return "chevron.right"
         }
     }
@@ -784,6 +832,14 @@ struct SearchHitRow: View {
             } else {
                 iconPlate("safari.fill")
             }
+        case .atlasPerson(let id, let name):
+            CatalogAvatarView(name: name,
+                              base64: CatalogAvatarStore.personBase64(id),
+                              size: 34)
+        case .atlasCover(let url):
+            AtlasRemoteImage(urlString: url)
+                .frame(width: 42, height: 58)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
     }
 
@@ -872,6 +928,15 @@ struct SearchHitCard: View {
                         .background(.ultraThinMaterial, in: Circle())
                         .opacity(hovering && isPlayable ? 1 : 0)
                         .scaleEffect(hovering && isPlayable ? 1 : 0.6)
+                }
+                .overlay {
+                    if hovering && isGallery {
+                        Image(systemName: "photo.stack.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 34, height: 34)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
                 }
 
             VStack(alignment: .leading, spacing: 1.5) {
@@ -966,6 +1031,12 @@ struct SearchHitCard: View {
                     .background(.ultraThinMaterial, in: Circle())
                     .opacity(hovering ? 1 : 0)
                     .scaleEffect(hovering ? 1 : 0.6)
+            } else if isGallery, hovering {
+                Image(systemName: "photo.stack.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: Circle())
             }
         }
         .overlay {
@@ -980,12 +1051,15 @@ struct SearchHitCard: View {
 
     private var isPlayable: Bool {
         switch hit.kind {
-        case .movie, .series, .channel, .program, .video, .cloudVideo, .catalogItem:
+        case .movie, .series, .channel, .program, .video, .cloudVideo, .catalogVideo:
             return true
         default:
             return false
         }
     }
+
+    /// 图集：悬停浮出叠图图标，提示点开是整套图片而不是播放。
+    private var isGallery: Bool { hit.kind == .catalogGallery }
 
     private var playSymbol: String { "play.fill" }
 
@@ -1076,6 +1150,15 @@ struct SearchCardVisual: View {
             } else {
                 bigIcon("safari.fill")
             }
+
+        case .atlasPerson(let id, let name):
+            CatalogAvatarView(name: name,
+                              base64: CatalogAvatarStore.personBase64(id),
+                              size: avatarSide)
+
+        case .atlasCover(let url):
+            AtlasRemoteImage(urlString: url)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

@@ -456,8 +456,8 @@ extension VideoPlayerStage {
                 tapLayer
             }
 
-            // 起播海报在出画面后淡出，等待反馈只保留紧凑缓冲胶囊。
-            waitingLayer
+            // 起播等待层：信息优先，出画面后淡出。
+            waitingLayer()
                 .animation(.easeOut(duration: 0.25), value: model.isItemReady)
 
             if let failure = activeFailure {
@@ -531,7 +531,15 @@ extension VideoPlayerStage {
             handlePlaybackFailure(failure)
         }
         .onChange(of: model.isItemReady) { _, ready in
-            if ready { rememberTVLiveLineIfReady(generation: loadGeneration) }
+            if ready {
+                rememberTVLiveLineIfReady(generation: loadGeneration)
+                adoptNaturalVideoSize()
+                // 部分流要等首帧前才给出 presentationSize：稍后再校正一次。
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    adoptNaturalVideoSize()
+                }
+            }
         }
         .onChange(of: settings.preservePitchAtSpeed) { _, enabled in
             model.preservesPitch = enabled
@@ -587,6 +595,8 @@ extension VideoPlayerStage {
         model.preservesPitch = settings.preservePitchAtSpeed
         playbackSession.prefersMultiAudio = settings.instantAudioSwitch
         // 起播底图：本地视频的缩略图先垫一层模糊背景，网络源没有就退回渐变。
+        waitingStage = .preparing
+        loadingFrame = nil
         loadingThumbnail = fileExistsThumbnail()
         // 网络资源：用当前这一集的封面做起播底图；单集没有封面时才退回条目封面。
         if loadingThumbnail == nil,
@@ -642,6 +652,7 @@ extension VideoPlayerStage {
         }
         // 先停掉上一个视频：新视频的 URL / 探测还是要等一会，
         // 期间旧音频继续播会让"画面已经是别的照片，声音还在"。
+        loadLocalPosterFrame()
         model.stop()
         playbackSession.stop()
         cloudResourceLoader?.invalidate()
@@ -722,6 +733,14 @@ extension VideoPlayerStage {
             return image
         }
         guard let sourceURL else { return nil }
+        // 电视回看：playseek 地址在影子播放器里会被夹到分段起点，取到的帧与目标
+        // 时间对不上，只会白等一次超时；直接让 ffmpeg 按时间点抽帧，出图快得多。
+        if tvPlaybackChannel?.isCatchUp == true, !sourceURL.isFileURL {
+            return await VideoScrubThumbnails.sourceImage(source: sourceURL,
+                                                          headers: sourceHeaders,
+                                                          seconds: seconds,
+                                                          duration: duration)
+        }
         // 网络 HLS：分片常伪装成 .jpeg，ImageGenerator 取不到帧，改由影子播放器取。
         if !sourceURL.isFileURL,
            let image = await VideoScrubThumbnails.playerImage(source: sourceURL,
@@ -749,6 +768,13 @@ extension VideoPlayerStage {
             // 正在重建流：新会话还没装好，先记下最新目标，就绪后再追过去。
             if playbackSession.isRestartingStream {
                 playbackSession.queueRestart(target)
+                return true
+            }
+            // 回看直连 HLS：AVPlayer 的可 seek 窗口往往只有当前几秒，
+            // 拖到窗口外会被夹回直播边缘。改由 ffmpeg 从目标时间重建流。
+            if playbackSession.streamSession == nil,
+               tvPlaybackChannel?.isCatchUp == true {
+                seekCatchupByRestarting(at: target)
                 return true
             }
             guard playbackSession.streamSession != nil else { return false }

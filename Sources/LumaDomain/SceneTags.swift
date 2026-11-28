@@ -77,7 +77,8 @@ package enum SceneCatalog {
             "person", "people", "human", "portrait", "selfie", "face", "crowd", "baby", "child"
         ], tags: [
             "人物", "自拍", "合影", "情侣", "全家福", "儿童", "婴儿", "老人", "人群",
-            "单人肖像", "微笑", "婚纱", "运动人物", "脸部特写", "上半身", "全身", "背影", "侧脸"
+            "单人肖像", "微笑", "婚纱", "运动人物", "脸部特写", "上半身", "全身", "背影", "侧脸",
+            "亲子互动", "抱孩子", "家庭日常", "牵手"
         ]),
         SceneCategory(id: "animals", title: "动物", icon: "pawprint", labels: [
             "animal", "dog", "puppy", "cat", "kitten", "bird", "fish", "horse", "cattle",
@@ -90,7 +91,7 @@ package enum SceneCatalog {
         SceneCategory(id: "pets", title: "宠物", icon: "cat", labels: [
             "cat", "kitten", "adult_cat", "dog", "puppy", "bulldog", "sheepdog", "rabbit",
             "hamster", "parrot", "pet"
-        ], tags: ["猫", "狗", "兔子", "仓鼠", "鹦鹉"]),
+        ], tags: ["猫", "狗", "兔子", "仓鼠", "鹦鹉", "宠物互动", "遛狗"]),
         SceneCategory(id: "farm", title: "畜牧农场", icon: "hare", labels: [
             "cow", "cattle", "sheep", "goat", "pig", "horse", "chicken", "rooster", "duck",
             "donkey", "llama", "farm"
@@ -115,7 +116,8 @@ package enum SceneCatalog {
             "garden", "park"
         ], tags: [
             "海边", "湖泊", "河流", "瀑布", "山脉", "森林", "草原", "沙漠", "雪景", "花园",
-            "公园", "星空", "日落", "日出", "天空", "云朵", "彩虹", "雾", "雨", "乡村"
+            "公园", "星空", "日落", "日出", "天空", "云朵", "彩虹", "雾", "雨", "乡村",
+            "沙滩", "花海", "秋色", "田园"
         ]),
         SceneCategory(id: "food", title: "食物", icon: "fork.knife", labels: [
             "food", "meal", "dish", "cuisine", "dessert", "cake", "bread", "fruit",
@@ -123,24 +125,27 @@ package enum SceneCatalog {
         ], tags: [
             "美食", "中餐", "火锅", "烧烤", "寿司", "披萨", "汉堡", "面条", "米饭", "饺子",
             "汤", "海鲜", "甜点", "蛋糕", "面包", "水果", "蔬菜", "沙拉", "冰淇淋",
-            "咖啡", "茶", "饮料", "酒", "早餐", "零食"
+            "咖啡", "茶", "饮料", "酒", "早餐", "零食", "夜宵", "奶茶", "地方菜"
         ]),
         SceneCategory(id: "architecture", title: "建筑", icon: "building.2", labels: [
             "building", "architecture", "house", "bridge", "tower", "skyscraper", "church",
             "temple", "castle", "city", "urban", "street"
         ], tags: [
-            "建筑", "房屋", "桥梁", "寺庙", "教堂", "城堡", "塔", "城市", "街道", "古镇", "乡村"
+            "建筑", "房屋", "桥梁", "寺庙", "教堂", "城堡", "塔", "城市", "街道", "古镇", "乡村",
+            "城墙", "宫殿", "园林", "广场"
         ]),
         SceneCategory(id: "transport", title: "交通", icon: "car.fill", labels: [
             "vehicle", "car", "automobile", "bicycle", "bike", "motorcycle", "train",
             "airplane", "aircraft", "boat", "ship", "truck", "bus", "road", "traffic"
-        ], tags: ["自行车", "汽车", "摩托车", "飞机", "公交车", "火车", "船"]),
+        ], tags: ["自行车", "汽车", "摩托车", "飞机", "公交车", "火车", "船",
+                  "高铁", "公路", "加油站", "停车场", "自驾"]),
         SceneCategory(id: "indoor", title: "室内", icon: "sofa", labels: [
             "indoor", "room", "interior", "furniture", "table", "chair", "sofa", "bedroom",
             "bathroom", "kitchen", "office", "classroom", "store", "shop"
         ], tags: [
             "室内", "咖啡馆", "餐厅", "厨房", "卧室", "客厅", "办公室", "教室", "商场",
-            "超市", "机场", "车站", "地铁", "酒店", "博物馆", "图书馆"
+            "超市", "机场", "车站", "地铁", "酒店", "博物馆", "图书馆",
+            "学校", "医院", "夜市", "民宿", "健身房"
         ]),
         SceneCategory(id: "documents", title: "文档", icon: "doc.text", labels: [
             "document", "text", "paper", "book", "receipt", "whiteboard", "chart",
@@ -171,7 +176,8 @@ package enum SceneCatalog {
                       labels: ["qrcode", "barcode"], tags: ["二维码", "条码"]),
         SceneCategory(id: "landmarks", title: "名胜古迹", icon: "building.columns",
                       labels: ["monument", "castle", "statue", "palace", "fountain", "ruins", "temple"],
-                      tags: ["寺庙", "教堂", "城堡", "塔", "古镇"],
+                      tags: ["寺庙", "教堂", "城堡", "塔", "古镇",
+                             "古迹", "遗址", "城墙", "宫殿", "园林", "广场"],
                       keywords: [
                           "景区", "古镇", "古城", "长城", "故宫", "天坛", "颐和园", "布达拉宫",
                           "兵马俑", "摩崖", "石刻", "石碑", "碑文", "题刻", "文物保护单位",
@@ -179,14 +185,16 @@ package enum SceneCatalog {
                       ]),
         SceneCategory(id: "night", title: "夜景", icon: "moon.stars", labels: [
             "night", "dark", "lights", "fireworks", "illumination", "dusk"
-        ], tags: ["夜景", "星空", "低光照片"]),
+        ], tags: ["夜景", "星空", "低光照片", "烟花"]),
         SceneCategory(id: "activities", title: "活动", icon: "figure.run", labels: [
             "sport", "sports", "concert", "party", "celebration", "festival", "game",
             "performance", "dance", "wedding", "parade", "ceremony"
         ], tags: [
             "运动", "跑步", "骑行", "游泳", "登山", "露营", "野餐", "钓鱼", "滑雪",
             "派对", "节日庆祝", "毕业典礼", "旅游", "购物", "阅读", "做饭", "绘画",
-            "舞蹈", "会议", "演讲", "演唱会现场", "婚礼现场"
+            "舞蹈", "会议", "演讲", "演唱会现场", "婚礼现场",
+            "戏水", "冲浪", "潜水", "水上乐园", "泳池", "生日", "纪念日",
+            "音乐节", "展览", "烟花", "庙会", "团建"
         ]),
         SceneCategory(id: "style", title: "照片风格", icon: "camera.filters", labels: [],
                       tags: [

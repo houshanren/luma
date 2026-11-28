@@ -1,7 +1,7 @@
 # R18.dev dump 管线与可挖掘字段（2026-11）
 
 > 对象：`Tools/catalog_build/import/import_r18_dump.py` + `Tools/catalog_build/refresh_catalog.sh`
-> 产物：`raw/r18/r18.sqlite`（本地缓存）、`raw/r18_actresses.json`、`raw/r18_videos.json` → `Resources/Catalog/catalog.sqlite`
+> 产物：`raw/r18/r18.sqlite`（本地缓存）、`raw/r18_actresses.json`、`raw/r18_videos.json` → `~/Downloads/catalog.sqlite`
 > 相关：[资料库数据体检与补全方案](catalog-data-enrichment-2026-11.md) · [拾光屋架构 §4.4](../architecture/shiguang-house-2026-11.md)
 
 ## 1. 一句话
@@ -98,7 +98,7 @@ R18.dev 每周二更新一份 CC0 的 PostgreSQL 全量 dump（gzip ≈278MB / �
 | 1. 联网抓取 | 关闭（加 `--fetch`） | 22 个 `fetch_*.py` 逐个跑，单步失败只警告，日志 `raw/.pipeline_fetch_*.log` |
 | 2. 本地归一 | 开启 | `build_coscd_*` / `build_kkkhai_*` / `build_mms_people` / `build_extra_names` / `build_javbus_map` / `fix_xsnvshen_region`，日志 `raw/.pipeline_derive.log` |
 | 3. R18 导出 | 开启（`--skip-r18` 跳过） | `import_r18_dump.py` → 女优 / 作品 JSON |
-| 4. 建库 | 开启 | `build_catalog_db.py` → `Resources/Catalog/catalog.sqlite` |
+| 4. 建库 | 开启 | `build_catalog_db.py` → `~/Downloads/catalog.sqlite` |
 | 5. 头像 | 关闭（加 `--avatars`） | `fetch_avatars.py` 补齐后自动再建一次库 |
 | 6. 打包 | 关闭（加 `--app`） | `./build.sh debug` |
 

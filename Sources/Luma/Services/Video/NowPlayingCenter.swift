@@ -1,6 +1,6 @@
 import Foundation
 import AppKit
-import Combine
+import Observation
 import MediaPlayer
 import PlaybackCore
 
@@ -11,10 +11,11 @@ final class NowPlayingCenter {
     static let shared = NowPlayingCenter()
 
     private weak var model: VideoPlayerModel?
-    private var cancellables: Set<AnyCancellable> = []
     private var commandTokens: [(command: MPRemoteCommand, token: Any)] = []
     private var onNext: (() -> Void)?
     private var onPrevious: (() -> Void)?
+    /// 播放时间写系统信息中心的节流时间戳（原来由 Combine 的 throttle 负责）。
+    private var lastTimeSync = Date.distantPast
 
     private var title = ""
     private var subtitle: String?
@@ -48,7 +49,6 @@ final class NowPlayingCenter {
 
     func deactivate() {
         guard activated else { return }
-        cancellables.removeAll()
         for item in commandTokens {
             item.command.removeTarget(item.token)
         }
@@ -75,19 +75,42 @@ final class NowPlayingCenter {
     }
 
     private func bind() {
+        guard model != nil else { return }
+        trackPlaybackState()
+        trackPlaybackTime()
+    }
+
+    /// 播放 / 暂停与时长：变化后立即刷一次系统信息。
+    private func trackPlaybackState() {
         guard let model else { return }
-        model.$currentTime
-            .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
-            .sink { [weak self] _ in self?.updateInfo() }
-            .store(in: &cancellables)
-        model.$isPlaying
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.updateInfo() }
-            .store(in: &cancellables)
-        model.$duration
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.updateInfo() }
-            .store(in: &cancellables)
+        withObservationTracking {
+            _ = model.isPlaying
+            _ = model.duration
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.activated else { return }
+                self.updateInfo()
+                self.trackPlaybackState()
+            }
+        }
+    }
+
+    /// 播放时间：节流到 1 秒一次，避免每 250ms 就写一次系统「正在播放」。
+    private func trackPlaybackTime() {
+        guard let model else { return }
+        withObservationTracking {
+            _ = model.currentTime
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.activated else { return }
+                let now = Date()
+                if now.timeIntervalSince(self.lastTimeSync) >= 1 {
+                    self.lastTimeSync = now
+                    self.updateInfo()
+                }
+                self.trackPlaybackTime()
+            }
+        }
     }
 
     private func updateInfo() {

@@ -25,7 +25,7 @@ package extension SystemIndex {
             if query.favoriteAdds.isEmpty && query.favoriteRemoves.isEmpty {
                 clauses.append("\(active) AND a.ZFAVORITE = 1")
             } else {
-                clauses.append("\(active) AND ((a.ZFAVORITE = 1 AND a.ZUUID NOT IN (\(favoriteRemoves))) OR a.ZUUID IN (\(favoriteAdds)))")
+                clauses.append("\(active) AND \(directFavoriteClause(adds: favoriteAdds, removes: favoriteRemoves))")
             }
         case .videos:
             clauses.append("\(active) AND a.ZKIND = 1")
@@ -69,12 +69,15 @@ package extension SystemIndex {
         case .bursts:
             // 按组展示代表照片：多成员组取键照片（ZAVALANCHEPICKTYPE & 16），
             // 单成员组没有键照片标记、自身即代表（与官方「照片」及索引模式口径一致）。
-            // 子查询沿连拍索引只扫一两千行，毫秒级。
+            // 子查询必须显式走连拍索引：否则 GROUP BY 会退化成扫整张 ZASSET
+            // （百万级库实测 55 秒，加上索引后 0.02 秒）。
+            let hint = direct?.hasAvalancheIndex == true
+                ? "INDEXED BY Z_Asset_byAvalancheUUIDIndex" : ""
             clauses.append("""
                 \(active) AND a.ZAVALANCHEUUID IS NOT NULL AND a.ZAVALANCHEUUID <> '' AND (
                   (a.ZAVALANCHEPICKTYPE & 16) <> 0
                   OR a.ZAVALANCHEUUID IN (
-                    SELECT s.ZAVALANCHEUUID FROM ZASSET s
+                    SELECT s.ZAVALANCHEUUID FROM ZASSET s \(hint)
                     WHERE s.ZAVALANCHEUUID IS NOT NULL AND s.ZAVALANCHEUUID <> ''
                       AND s.ZTRASHEDSTATE = 0 AND s.ZHIDDEN = 0
                     GROUP BY s.ZAVALANCHEUUID HAVING COUNT(*) = 1))
@@ -91,8 +94,19 @@ package extension SystemIndex {
             clauses.append("\(active) AND a.ZADJUSTMENTTIMESTAMP IS NOT NULL")
         case .recentlyViewed:
             let cutoff = (query.viewedCutoff ?? Self.directViewedCutoff).timeIntervalSince1970
-            // 同样直接比较原始列，才能命中 Z_AdditionalAssetAttributes_forRecentlyViewed。
-            clauses.append("\(active) AND aa.ZLASTVIEWEDDATE >= \(cutoff - 978307200)")
+            // 从「最近查看」自己的索引驱动，再回主表：沿日期索引逐行回表判断
+            // `ZLASTVIEWEDDATE` 会扫掉大半个库（本机实测 6.8 秒），换成子查询后 0.14 秒。
+            // 老库没有这条索引时保留原来的 JOIN 条件。
+            if direct?.hasRecentlyViewedIndex == true {
+                clauses.append("""
+                    \(active) AND a.Z_PK IN (
+                      SELECT r.ZASSET FROM ZADDITIONALASSETATTRIBUTES r
+                        INDEXED BY Z_AdditionalAssetAttributes_forRecentlyViewed
+                      WHERE r.ZLASTVIEWEDDATE >= \(cutoff - 978307200))
+                    """)
+            } else {
+                clauses.append("\(active) AND aa.ZLASTVIEWEDDATE >= \(cutoff - 978307200)")
+            }
         case .duplicates:
             clauses.append("\(active) AND a.ZDUPLICATEASSETVISIBILITYSTATE > 0")
         case .recentlySaved:
@@ -150,7 +164,7 @@ package extension SystemIndex {
             if favoriteAdds.isEmpty && favoriteRemoves.isEmpty {
                 clauses.append("a.ZFAVORITE = 1")
             } else {
-                clauses.append("((a.ZFAVORITE = 1 AND a.ZUUID NOT IN (\(favoriteRemoves))) OR a.ZUUID IN (\(favoriteAdds)))")
+                clauses.append(directFavoriteClause(adds: favoriteAdds, removes: favoriteRemoves))
             }
         case .edited: clauses.append("a.ZADJUSTMENTTIMESTAMP IS NOT NULL")
         case .photos: clauses.append("a.ZKIND = 0")
@@ -177,7 +191,7 @@ package extension SystemIndex {
             if favoriteAdds.isEmpty && favoriteRemoves.isEmpty {
                 clauses.append("a.ZFAVORITE = 1")
             } else {
-                clauses.append("((a.ZFAVORITE = 1 AND a.ZUUID NOT IN (\(favoriteRemoves))) OR a.ZUUID IN (\(favoriteAdds)))")
+                clauses.append(directFavoriteClause(adds: favoriteAdds, removes: favoriteRemoves))
             }
         }
         if query.onlyVideos { clauses.append("a.ZKIND = 1") }
@@ -189,26 +203,73 @@ package extension SystemIndex {
             clauses.append("a.ZUUID IN (\(inList(keywordIDs)))")
         }
         if let includeIDs = query.includeIDs {
-            clauses.append("a.ZUUID IN (\(inList(includeIDs)))")
+            // 换算成主键再下推：直接比较 ZUUID（TEXT）会退化成扫全库，
+            // 本机 155 个 RAW 实测 61 秒，换主键后 1.4 秒。
+            clauses.append(directIncludeClause(includeIDs))
         }
         for token in query.tokens where !token.isEmpty {
-            let value = "%\(token.lowercased())%"
             // 地名（如「上海」）只存在于 `ZREVERSELOCATIONDATA` 的二进制归档里，SQL 无法比对；
             // 由上层按已解码的地点名换算出命中资产，作为该 token 的 OR 条件并入。
             let placeIDs = query.tokenPlaceIDs?[token] ?? []
-            let placeClause = placeIDs.isEmpty ? "" : " OR a.ZUUID IN (\(inList(placeIDs)))"
+            let placeClause = placeIDs.isEmpty ? "" : "a.ZUUID IN (\(inList(placeIDs)))"
             // 关键词 / AI 标签 / OCR 命中同样由上层换算成资产 UUID，作为 OR 条件并入。
             let keywordIDs = query.tokenKeywordIDs?[token] ?? []
-            let keywordClause = keywordIDs.isEmpty ? "" : " OR a.ZUUID IN (\(inList(keywordIDs)))"
-            clauses.append("""
-                (lower(a.ZFILENAME) LIKE ? OR lower(COALESCE(aa.ZORIGINALFILENAME, '')) LIKE ?
-                 OR lower(COALESCE(aa.ZTITLE, '')) LIKE ?
-                 OR lower(COALESCE(\(directExtendedPrefix)ZCAMERAMAKE, '') || ' ' || COALESCE(\(directExtendedPrefix)ZCAMERAMODEL, '') || ' '
-                          || COALESCE(\(directExtendedPrefix)ZLENSMODEL, '')) LIKE ?\(placeClause)\(keywordClause))
-                """)
-            binds.append(contentsOf: [value, value, value, value])
+            let keywordClause = keywordIDs.isEmpty ? "" : "a.ZUUID IN (\(inList(keywordIDs)))"
+            // 文本条件：全文索引就绪时下推主键集合（FTS5 trigram 等价于原来的四列 LIKE，
+            // 本机实测 124 秒 → 0.3 秒）；索引还没建好时退回全表 LIKE。
+            var textClause: String?
+            var textBinds: [Any?] = []
+            let ftsReady = searchIndex?.isReady ?? false
+            if ftsReady, let fts = searchIndex {
+                let pks = fts.primaryKeys(matching: [token])
+                if !pks.isEmpty {
+                    textClause = "a.Z_PK IN (\(pks.map(String.init).joined(separator: ",")))"
+                }
+            } else if searchIndex != nil, searchIndexStrict {
+                // 索引正在后台建立：主界面先返回空集，界面显示「正在建立搜索索引」。
+                // 不能退回全表 LIKE——137 万行要两分钟，正是用户要求避免的「卡」。
+                // 建好后 store 会刷新网格，搜索结果自动出现。
+                textClause = "0"
+            } else {
+                // 没有索引（无法建立）或跨图库搜索这类离线入口：退回全表 LIKE。
+                let value = "%\(token.lowercased())%"
+                textClause = """
+                    (lower(a.ZFILENAME) LIKE ? OR lower(COALESCE(aa.ZORIGINALFILENAME, '')) LIKE ?
+                     OR lower(COALESCE(aa.ZTITLE, '')) LIKE ?
+                     OR lower(COALESCE(\(directExtendedPrefix)ZCAMERAMAKE, '') || ' ' || COALESCE(\(directExtendedPrefix)ZCAMERAMODEL, '') || ' '
+                              || COALESCE(\(directExtendedPrefix)ZLENSMODEL, '')) LIKE ?)
+                    """
+                textBinds = [value, value, value, value]
+            }
+            var parts: [String] = []
+            if let textClause { parts.append(textClause) }
+            if !placeClause.isEmpty { parts.append(placeClause) }
+            if !keywordClause.isEmpty { parts.append(keywordClause) }
+            clauses.append("(" + (parts.isEmpty ? "0" : parts.joined(separator: " OR ")) + ")")
+            binds.append(contentsOf: textBinds)
         }
         return (clauses.joined(separator: " AND "), binds, directFrom)
+    }
+
+    /// 收藏条件（含拾光里的收藏 / 取消收藏叠加）。
+    /// 不能写成 `(ZFAVORITE = 1 AND ZUUID NOT IN (...)) OR ZUUID IN (...)`：
+    /// 那个 OR 会让 SQLite 放弃 Apple 的「收藏」部分索引、退化成扫整库
+    /// （本机 137 万张实测一条计数要 50 秒，收藏汇总就永远停在「正在汇总收藏…」）。
+    /// 改成「收藏集合 − 取消项 ∪ 叠加项」的 UNION 子查询后，两支各走索引，整页几十毫秒。
+    func directFavoriteClause(adds: String, removes: String) -> String {
+        var branches: [String] = []
+        if removes.isEmpty {
+            branches.append("SELECT f.Z_PK FROM ZASSET f WHERE f.ZFAVORITE = 1")
+        } else {
+            branches.append("""
+                SELECT f.Z_PK FROM ZASSET f WHERE f.ZFAVORITE = 1
+                  AND f.Z_PK NOT IN (SELECT r.Z_PK FROM ZASSET r WHERE r.ZUUID IN (\(removes)))
+                """)
+        }
+        if !adds.isEmpty {
+            branches.append("SELECT p.Z_PK FROM ZASSET p WHERE p.ZUUID IN (\(adds))")
+        }
+        return "a.Z_PK IN (\(branches.joined(separator: " UNION ")))"
     }
 
     func directPageCursor(queryKey: String, offset: Int) -> (value: Double, pk: Int64)? {
@@ -626,7 +687,7 @@ package extension SystemIndex {
 
     // MARK: - 年 / 月总览
 
-    /// 年总览：计数来自后台快照（按月的真实聚合），每 4 张样本也是一次日期范围查询。
+    /// 年总览：计数来自后台快照（按月的真实聚合），每 4 张样本按年份批量取。
     func directYearBuckets(_ query: SystemQuery, sampleLimit: Int) -> [PhotoPeriodBucket] {
         guard let snapshot = directCounts,
               let months = directOverviewMonthCounts(query, snapshot: snapshot) else { return [] }
@@ -639,12 +700,13 @@ package extension SystemIndex {
         let usesSamples = directOverviewUsesSamples(query)
         let samples = usesSamples ? (snapshot.yearSamples ?? [:]) : [:]
         let covers = usesSamples ? (snapshot.yearCovers ?? [:]) : [:]
+        let idsByKey = sampleIDs(keys: keys, covers: covers, samples: samples)
+        let byID = directOverviewPhotosByID(idsByKey)
         let calendar = Calendar.current
         return keys.compactMap { key in
             guard let year = Int(key) else { return nil }
             let date = calendar.date(from: DateComponents(year: year, month: 1, day: 1)) ?? .distantPast
-            let ids = directOverviewSampleIDs(cover: covers[key], samples: samples[key] ?? [])
-            let photos = directOverviewPhotos(ids, limit: sampleLimit)
+            let photos = (idsByKey[key] ?? []).prefix(sampleLimit).compactMap { byID[$0] }
             return PhotoPeriodBucket(id: key,
                                      title: DateText.yearFormatter.string(from: date),
                                      count: yearCounts[key] ?? 0,
@@ -663,19 +725,144 @@ package extension SystemIndex {
         let usesSamples = directOverviewUsesSamples(query)
         let samples = usesSamples ? (snapshot.monthSamples ?? [:]) : [:]
         let covers = usesSamples ? (snapshot.monthCovers ?? [:]) : [:]
+        let idsByKey = sampleIDs(keys: keys, covers: covers, samples: samples)
+        let byID = directOverviewPhotosByID(idsByKey)
         let calendar = Calendar.current
         return keys.compactMap { key in
             let parts = key.split(separator: "-")
             guard parts.count == 2, let year = Int(parts[0]), let month = Int(parts[1]) else { return nil }
             let date = calendar.date(from: DateComponents(year: year, month: month, day: 1)) ?? .distantPast
-            let ids = directOverviewSampleIDs(cover: covers[key], samples: samples[key] ?? [])
-            let photos = directOverviewPhotos(ids, limit: sampleLimit)
+            let photos = (idsByKey[key] ?? []).prefix(sampleLimit).compactMap { byID[$0] }
             return PhotoMonthGroup(id: key,
                                    title: DateText.monthFormatter.string(from: date),
                                    count: months[key] ?? 0,
                                    days: [],
                                    samples: photos)
         }
+    }
+
+    /// 每个周期要展示的样本 UUID：官方关键照片排最前，其余按快照顺序补齐。
+    private func sampleIDs(keys: [String],
+                           covers: [String: String],
+                           samples: [String: [String]]) -> [String: [UUID]] {
+        var result: [String: [UUID]] = [:]
+        result.reserveCapacity(keys.count)
+        for key in keys {
+            let ids = directOverviewSampleIDs(cover: covers[key], samples: samples[key] ?? [])
+            result[key] = ids.compactMap { UUID(uuidString: $0) }
+        }
+        return result
+    }
+
+    /// 年 / 月总览的样本合并成一条查询取回。
+    /// 421 个月逐个 `directPhotos(ids:)` 要走 421 次库（还都排在同一条连接的锁后面），
+    /// 合并成一次 `WHERE ZUUID IN (...)` 后整个总览只剩一条查询。
+    private func directOverviewPhotosByID(_ idsByKey: [String: [UUID]]) -> [UUID: PhotoItem] {
+        let wanted = Array(Set(idsByKey.values.flatMap { $0 }))
+        guard !wanted.isEmpty else { return [:] }
+        var result: [UUID: PhotoItem] = [:]
+        // 一条 SQL 塞上千个 UUID 会让语句过长，按 400 个一批。
+        var index = 0
+        while index < wanted.count {
+            let slice = wanted[index ..< min(index + 400, wanted.count)]
+            index += 400
+            let list = inList(slice.map(\.uuidString))
+            guard let rows = try? database.query("""
+                SELECT \(directSelect) \(directFrom) WHERE a.ZUUID IN (\(list))
+                """) else { continue }
+            for row in rows {
+                guard let item = directPhoto(from: row) else { continue }
+                result[item.id] = item
+            }
+        }
+        return result
+    }
+
+    /// 直连模式按需取「某个月的逐天分组」：只查这一个月的时间区间，每天取最多 `sampleLimit` 张样本。
+    ///
+    /// 两段式：先用窄查询（只取主键 / 天键 / 当天总数）在日期索引上做窗口聚合，
+    /// 再按主键批量补回样本详情。之前的实现把 `directSelect`（两个 LEFT JOIN、六十多列）
+    /// 直接塞进窗口函数，一个月五万张时要对上万行各做两次联接再整体排序：
+    /// 本机 137 万张实测一个月 86 秒，而且会一直占着这条 SQLite 连接的锁，
+    /// 期间翻页、侧边栏计数全部被堵死。两段式后同一个月约 0.3 秒。
+    func directDayBuckets(_ query: SystemQuery, year: Int, month: Int,
+                          sampleLimit: Int = 4) -> [PhotoDayBucket] {
+        guard direct != nil else { return [] }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        guard let start = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
+              let end = calendar.date(byAdding: .month, value: 1, to: start) else { return [] }
+        let (whereSQL, binds, _) = directWhere(query)
+        let direction = query.ascending ? "ASC" : "DESC"
+        let day = "strftime('%Y-%m-%d', (a.ZDATECREATED + 978307200), 'unixepoch', 'localtime')"
+        // 条件引用了关联表（最近查看 / 导入 / 相机）时才带上联接；
+        // 月总览的常规入口只用 ZASSET 自己的列，绝大多数情况走纯日期索引。
+        let needsJoins = whereSQL.contains("aa.") || whereSQL.contains("e.")
+        let from = needsJoins
+            ? directFrom.replacingOccurrences(of: "FROM ZASSET a",
+                                              with: "FROM ZASSET a INDEXED BY Z_Asset_byDateCreatedIndex")
+            : "FROM ZASSET a INDEXED BY Z_Asset_byDateCreatedIndex"
+        let sql = """
+            SELECT pk, day_key, day_count, rn FROM (
+                SELECT a.Z_PK AS pk,
+                       \(day) AS day_key,
+                       COUNT(*) OVER (PARTITION BY \(day)) AS day_count,
+                       ROW_NUMBER() OVER (PARTITION BY \(day)
+                                          ORDER BY a.ZDATECREATED \(direction), a.Z_PK \(direction)) AS rn
+                \(from)
+                WHERE \(whereSQL)
+                  AND a.ZDATECREATED >= \(start.timeIntervalSinceReferenceDate)
+                  AND a.ZDATECREATED < \(end.timeIntervalSinceReferenceDate)
+            ) WHERE rn <= \(max(1, sampleLimit))
+            ORDER BY day_key \(direction), rn ASC
+            """
+        var rows = try? database.query(sql, binds)
+        if rows == nil {
+            // 旧图库可能没有日期索引：去掉提示再试一次，保证仍能出图。
+            rows = try? database.query(
+                sql.replacingOccurrences(of: " INDEXED BY Z_Asset_byDateCreatedIndex", with: ""), binds)
+        }
+        guard let rows, !rows.isEmpty else { return [] }
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        var samplePKs: [String: [Int64]] = [:]
+        var allPKs: [Int64] = []
+        for row in rows {
+            guard let key = row["day_key"]?.string, let pk = row["pk"]?.int64 else { continue }
+            if counts[key] == nil {
+                order.append(key)
+                counts[key] = row["day_count"]?.int ?? 0
+            }
+            samplePKs[key, default: []].append(pk)
+            allPKs.append(pk)
+        }
+        // 样本详情按主键批量补一次：最多 31 天 × sampleLimit 行。
+        let byPK = directPhotosByPK(allPKs)
+        return order.compactMap { key in
+            let items = (samplePKs[key] ?? []).compactMap { byPK[$0] }
+            guard let first = items.first else { return nil }
+            let dayPart = Int(key.split(separator: "-").last ?? "") ?? 1
+            return PhotoDayBucket(id: key,
+                                  title: "\(dayPart)日",
+                                  count: counts[key] ?? items.count,
+                                  photos: items,
+                                  capturedAt: first.capturedAt)
+        }
+    }
+
+    /// 按主键批量取详情（月总览样本只有几十行，一次主键查询足够）。
+    func directPhotosByPK(_ pks: [Int64]) -> [Int64: PhotoItem] {
+        guard !pks.isEmpty else { return [:] }
+        let list = pks.map(String.init).joined(separator: ",")
+        guard let rows = try? database.query("""
+            SELECT \(directSelect) \(directFrom) WHERE a.Z_PK IN (\(list))
+            """) else { return [:] }
+        var result: [Int64: PhotoItem] = [:]
+        for row in rows {
+            guard let pk = row["pk"]?.int64, let item = directPhoto(from: row) else { continue }
+            result[pk] = item
+        }
+        return result
     }
 
     /// 快照里的按月计数能否直接用于当前查询；带搜索 / 时间范围等条件时返回 nil，避免显示错误数字。
@@ -719,12 +906,5 @@ package extension SystemIndex {
     func directOverviewSampleIDs(cover: String?, samples: [String]) -> [String] {
         guard let cover, !cover.isEmpty else { return samples }
         return [cover] + samples.filter { $0 != cover }
-    }
-
-    func directOverviewPhotos(_ ids: [String], limit: Int) -> [PhotoItem] {
-        guard limit > 0, !ids.isEmpty else { return [] }
-        let wanted = ids.prefix(limit).compactMap(UUID.init(uuidString:))
-        guard !wanted.isEmpty else { return [] }
-        return directPhotos(ids: wanted)
     }
 }

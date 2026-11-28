@@ -84,6 +84,8 @@ struct CinemaCollectionSheet: View {
             .keyboardShortcut(.cancelAction)
         }
         .task {
+            // 本地 AI 合集用负数 ID，没有 TMDB 条目可查。
+            guard collectionID > 0 else { return }
             info = await store.cinemaCollectionInfo(collectionID: collectionID)
         }
     }
@@ -170,8 +172,11 @@ struct CinemaCollectionSheet: View {
                 collectionSectionTitle("合集简介")
                 if let overview = info?.overview, !overview.isEmpty {
                     CinemaSynopsis(text: overview)
+                } else if let summary = store.cinemaCollectionSummary(collectionID: collectionID) {
+                    // 本地 AI 合集：TMDB 没有归属，用整理时生成的一句简介补上。
+                    CinemaSynopsis(text: summary)
                 } else {
-                    Text("TMDB 没有提供合集简介。")
+                    Text("暂时没有合集简介。")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .padding(16)

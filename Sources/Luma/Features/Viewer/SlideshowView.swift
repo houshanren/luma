@@ -19,9 +19,17 @@ struct SlideshowView: View {
 
     private let timer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
 
-    private var items: [PhotoItem] { store.visiblePhotos }
+    /// 幻灯片播放列表：从地图 / 图集等外部上下文打开时，按那份列表轮播。
+    private var items: [PhotoItem] {
+        store.viewerContextPhotos.isEmpty ? store.visiblePhotos : store.viewerContextPhotos
+    }
 
     private var current: PhotoItem? {
+        // 图集 / 地图等外部上下文优先按那份列表播放，不能被图库分页窗口抢走。
+        if !store.viewerContextPhotos.isEmpty {
+            guard items.indices.contains(index) else { return nil }
+            return items[index]
+        }
         if store.isPagedScope { return pagedCurrent }
         guard items.indices.contains(index) else { return nil }
         return items[index]
@@ -56,7 +64,12 @@ struct SlideshowView: View {
             .padding(18)
         }
         .onAppear {
-            if store.isSystemPagedScope {
+            if !store.viewerContextPhotos.isEmpty {
+                if let target = store.selection.first,
+                   let start = items.firstIndex(where: { $0.id == target }) {
+                    index = start
+                }
+            } else if store.isSystemPagedScope {
                 pagedCurrent = store.selection.first.flatMap { store.anyPhoto(id: $0) }
                     ?? store.systemWindowPhotos.first
             } else if store.isPagedScope {
@@ -202,6 +215,29 @@ struct SlideshowView: View {
     }
 
     private func advance(_ delta: Int) {
+        // 外部上下文（图集 / 地图 / 卡片墙）按传入的那份列表轮播。
+        if !store.viewerContextPhotos.isEmpty {
+            guard !items.isEmpty else { return }
+            // 图集：整套播完就结束，不回到第一张。
+            if items.indices.contains(index),
+               store.catalogGalleryContext(for: items[index].id) != nil {
+                let next = index + delta
+                guard items.indices.contains(next) else {
+                    isPlaying = false
+                    return
+                }
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    index = next
+                }
+                progress = 0
+                return
+            }
+            withAnimation(.easeInOut(duration: 0.28)) {
+                index = (index + delta + items.count) % items.count
+            }
+            progress = 0
+            return
+        }
         if store.isSystemPagedScope, let id = current?.id,
            let query = store.systemPagedQuery, let systemIndex = store.systemIndex {
             guard let next = systemIndex.neighbor(of: id, delta: delta > 0 ? 1 : -1, in: query) else {
@@ -240,11 +276,17 @@ struct SlideshowView: View {
         currentID = photo.id
         image = nil
         Task { @MainActor in
-            let loaded: NSImage? = await Task.detached(priority: .userInitiated) {
-                target.isVideo
-                    ? ImageLoader.thumbnail(for: target)
-                    : ImageLoader.displayImage(for: target, maxPixel: 3000)
-            }.value
+            let loaded: NSImage?
+            if store.catalogGalleryContext(for: target.id) != nil {
+                // 网络图集：走站点取图缓存，和查看器共用同一份图片。
+                loaded = await store.catalogGalleryDisplayImage(for: target.id)
+            } else {
+                loaded = await Task.detached(priority: .userInitiated) {
+                    target.isVideo
+                        ? ImageLoader.thumbnail(for: target)
+                        : ImageLoader.displayImage(for: target, maxPixel: 3000)
+                }.value
+            }
             guard currentID == target.id else { return }
             image = loaded
             progress = 0

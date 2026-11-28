@@ -5,6 +5,8 @@ package enum CatalogSourceHealth: String, Codable, Hashable {
     case unknown
     case checking
     case online
+    /// 站点能连上，但需要登录态才能看到内容（Cookie 缺失 / 已失效）。
+    case needsLogin
     case limited
     case offline
 
@@ -13,6 +15,7 @@ package enum CatalogSourceHealth: String, Codable, Hashable {
         case .unknown: return "未检测"
         case .checking: return "检测中"
         case .online: return "在线"
+        case .needsLogin: return "需登录"
         case .limited: return "需验证"
         case .offline: return "离线"
         }
@@ -203,6 +206,8 @@ package struct CatalogSmartPlaylist: Codable, Hashable, Identifiable {
 /// 内置资料库不再作为可见入口：它只作为内部数据，供搜索、片源详情匹配与人物档案使用。
 package enum CatalogHubTab: String, CaseIterable, Identifiable, Hashable {
     case browse
+    /// 图集：把各图集站的套图集中陈列（瀑布墙 / 影院两种看法）。
+    case galleries
     case ranking
     case calendar
     case history
@@ -214,6 +219,7 @@ package enum CatalogHubTab: String, CaseIterable, Identifiable, Hashable {
     package var title: String {
         switch self {
         case .browse: return "资源"
+        case .galleries: return "图集"
         case .following: return "关注"
         case .ranking: return "榜单"
         case .history: return "足迹"
@@ -225,11 +231,37 @@ package enum CatalogHubTab: String, CaseIterable, Identifiable, Hashable {
     package var symbol: String {
         switch self {
         case .browse: return "square.grid.2x2.fill"
+        case .galleries: return "photo.stack.fill"
         case .following: return "star.circle.fill"
         case .ranking: return "chart.bar.fill"
         case .history: return "clock.arrow.circlepath"
         case .playlists: return "rectangle.stack.fill"
         case .calendar: return "calendar"
+        }
+    }
+}
+
+/// 榜单 / 日历 / 足迹 / 片单共用的媒体类型筛选：网络资源里的视频站与图集站从此可以分开看。
+package enum CatalogMediaFilter: String, CaseIterable, Identifiable, Codable, Hashable {
+    case all
+    case video
+    case gallery
+
+    package var id: String { rawValue }
+
+    package var title: String {
+        switch self {
+        case .all: return "全部"
+        case .video: return "视频"
+        case .gallery: return "图集"
+        }
+    }
+
+    package var symbol: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .video: return "play.rectangle.fill"
+        case .gallery: return "photo.stack.fill"
         }
     }
 }

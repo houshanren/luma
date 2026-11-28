@@ -774,7 +774,6 @@ struct PhotoHighlightCard: View {
             isHovering = hovering
         }
         .animation(settings.motion.hover, value: isHovering)
-        .help(photo.displayTitle)
     }
 
     private var caption: String {

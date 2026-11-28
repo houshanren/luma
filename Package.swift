@@ -70,7 +70,8 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("NetFS"),
-                .linkedFramework("Photos")
+                .linkedFramework("Photos"),
+                .linkedFramework("Speech")
             ]
         ),
         // 命令行工具链（无 Xcode）不提供 XCTest，这里用可执行 target 做断言检查。
@@ -95,6 +96,12 @@ let package = Package(
             dependencies: ["TestSupport", "LumaDomain", "LumaPersistence"],
             path: "Tests/LumaDataChecks",
             linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
+        // AI 验收台：工具路由 60 例、假完成 30 例、单轮工具 schema 体积；不依赖模型与 API Key。
+        .executableTarget(
+            name: "LumaAIChecks",
+            dependencies: ["TestSupport", "LumaAI", "LumaDomain"],
+            path: "Tests/LumaAIChecks"
         )
     ]
 )

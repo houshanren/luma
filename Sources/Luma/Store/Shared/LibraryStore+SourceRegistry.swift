@@ -8,6 +8,34 @@ extension LibraryStore {
     /// 应用级源目录：注册表状态统一由 `sourceHub` 提供（含排序 / 启用覆盖）。
     var sourceRegistryState: SourceRegistryState { sourceHub.state }
 
+    /// 源目录的轻量指纹：侧边栏每次 body 都会读注册表，只有这里列出的输入变化才需要重建。
+    /// 用字符串比较换掉「每次访问都新建描述符数组 + 过滤影院索引」。
+    var sourceRegistrySignature: String {
+        var parts: [String] = [String(describing: sidebarItem), isNativeContainer ? "native" : "managed"]
+        for source in catalogModel.sources {
+            parts.append("c:\(source.id.uuidString)|\(source.name)|\(source.isEnabled)")
+            parts.append("ck:\(String(describing: source.kind))|\(String(describing: source.domain))")
+        }
+        for mount in cloudMounts {
+            parts.append("m:\(mount.id.uuidString)|\(mount.name)|\(mount.kind.title)")
+        }
+        for library in systemLibraries {
+            parts.append("l:\(library.path)|\(library.name)")
+        }
+        parts.append("cinema:\(hasCinemaEntries(for: .local) ? "1" : "0")")
+        for mount in cloudMounts {
+            parts.append("cm:\(mount.id.uuidString):\(hasCinemaEntries(for: .mount(mount.id)) ? "1" : "0")")
+        }
+        return parts.joined(separator: "\u{1F}")
+    }
+
+    /// 影院索引里是否还有未忽略的条目：只做存在性判断，避免为了显示一个源行过滤整份索引。
+    func hasCinemaEntries(for scope: CinemaScope) -> Bool {
+        guard let entries = cinemaIndexes[scope], !entries.isEmpty else { return false }
+        guard let ignored = cinemaIgnoredIDs[scope], !ignored.isEmpty else { return true }
+        return entries.keys.contains { !ignored.contains($0) }
+    }
+
     /// 从当前各模块状态构建原始源目录；只有 `SourceHubModel` 会调用它。
     func buildSourceRegistryState() -> SourceRegistryState {
         var sources: [SourceDescriptor] = []
@@ -78,7 +106,7 @@ extension LibraryStore {
             )
         }
 
-        if !cinemaEntries(for: .local).isEmpty {
+        if hasCinemaEntries(for: .local) {
             sources.append(
                 SourceDescriptor(
                     id: .localCinema,
@@ -94,7 +122,7 @@ extension LibraryStore {
         }
 
         for (index, mount) in cloudMounts.enumerated()
-        where !cinemaEntries(for: .mount(mount.id)).isEmpty {
+        where hasCinemaEntries(for: .mount(mount.id)) {
             sources.append(
                 SourceDescriptor(
                     id: .mountCinema(mount.id),

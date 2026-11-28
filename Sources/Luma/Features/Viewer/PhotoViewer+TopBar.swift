@@ -14,6 +14,12 @@ extension PhotoViewerView {
         embedded && settings.videoControlPlacement == .topIntegrated && (photo?.isVideo ?? false)
     }
 
+    /// 进度条悬停抽帧预览：图库视频关闭，避免抽帧与播放解码抢资源导致拖动卡顿。
+    var allowsScrubPreview: Bool {
+        guard let current = store.viewerPhoto else { return true }
+        return !store.isLibraryVideoPlayback(current)
+    }
+
     /// 顶栏播放舱：上行是拍摄信息与序号，下行是进度与时间。
     /// 宽度固定、高度压到两行最紧凑的一档：翻页时胶囊尺寸不变，画面也不会被工具栏遮住太多。
     /// 直播没有可拖动的时间轴，顶栏只保留一行换台信息，避免内容顶出胶囊。
@@ -48,7 +54,8 @@ extension PhotoViewerView {
                         VideoToolbarProgress(model: videoModel,
                                              session: viewer.playbackSession,
                                              showsRemaining: $videoShowsRemainingTime,
-                                             chapterFractions: toolbarChapterFractions)
+                                             chapterFractions: toolbarChapterFractions,
+                                             previewEnabled: allowsScrubPreview)
                             .frame(maxWidth: .infinity)
                         VideoInlineVolume(model: videoModel)
                     }
@@ -78,7 +85,8 @@ extension PhotoViewerView {
                         VideoToolbarProgress(model: videoModel,
                                              session: viewer.playbackSession,
                                              showsRemaining: $videoShowsRemainingTime,
-                                             chapterFractions: toolbarChapterFractions)
+                                             chapterFractions: toolbarChapterFractions,
+                                             previewEnabled: allowsScrubPreview)
                             .frame(maxWidth: .infinity)
                         VideoInlineVolume(model: videoModel)
                     }
@@ -96,7 +104,8 @@ extension PhotoViewerView {
                     VideoToolbarProgress(model: videoModel,
                                          session: viewer.playbackSession,
                                          showsRemaining: $videoShowsRemainingTime,
-                                         chapterFractions: toolbarChapterFractions)
+                                         chapterFractions: toolbarChapterFractions,
+                                         previewEnabled: allowsScrubPreview)
                         .frame(maxWidth: .infinity)
                     // 音量收在进度右端：移入图标向左展开一条可拖动的小轨道，不占常驻宽度。
                     VideoInlineVolume(model: videoModel)

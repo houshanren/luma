@@ -13,7 +13,6 @@ struct CloudMountDetailView: View {
     /// 网盘里只常用「影院」：媒体类型 / 更多项目 / 场景 / 相簿全部默认收起。
     @State private var collapsed: Set<String> = ["media", "more", "scenes", "albums"]
     @State private var hoveredSection: String?
-    @State private var hoveredScope: String?
     @State private var expandedFolders: Set<String> = []
     @State private var hoveredFolder: String?
     @State private var hoveredCinema = false
@@ -528,19 +527,11 @@ struct CloudMountDetailView: View {
                 && cloud.overview == nil
                 && store.cloudSelectedFolderPath == nil
                 && cloud.scope == scope,
-            isHovered: hoveredScope == scope.key,
             helpText: helpText ?? scope.title,
             action: {
                 leaveCinemaIfNeeded()
                 store.setCloudScope(scope)
             }
         )
-        .onHover { hovering in
-            if hovering {
-                hoveredScope = scope.key
-            } else if hoveredScope == scope.key {
-                hoveredScope = nil
-            }
-        }
     }
 }

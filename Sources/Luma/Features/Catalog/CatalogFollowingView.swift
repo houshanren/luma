@@ -592,6 +592,14 @@ private struct FollowCategoryCard: View {
                             .font(.system(size: 9.5))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
+                        if source?.kind.isGallerySite == true {
+                            Text("图集")
+                                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                                .foregroundStyle(tint)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(tint.opacity(0.16), in: Capsule(style: .continuous))
+                        }
                     }
                 }
                 Spacer(minLength: 4)

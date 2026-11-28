@@ -573,7 +573,7 @@ extension GalleryView {
 
     var assistantButton: some View {
         Button {
-            store.showAIAssistant = true
+            store.toggleAIWorkspace()
         } label: {
             GalleryToolbarIconLabel(systemName: "sparkles", active: true)
         }

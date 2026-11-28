@@ -43,6 +43,12 @@ package struct SystemDirectSource: Sendable {
     package let hasUniformTypeIdentifier: Bool
     /// ZASSET 是否有空间媒体列（旧版图库没有 ZSPATIALTYPE）。
     package let hasSpatialType: Bool
+    /// ZASSET 是否有连拍索引（`Z_Asset_byAvalancheUUIDIndex`）。
+    /// 没有它时连拍的子查询会退化成整表扫描（百万级库实测 55 秒），必须走别的路径。
+    package let hasAvalancheIndex: Bool
+    /// 附加属性表是否有「最近查看」索引（`Z_AdditionalAssetAttributes_forRecentlyViewed`）。
+    /// 有它时最近查看可以按查看时间驱动，否则只能沿日期索引逐行回表。
+    package let hasRecentlyViewedIndex: Bool
     package init(
         derivativesRoot: String? = nil,
         hasExtended: Bool,
@@ -55,7 +61,9 @@ package struct SystemDirectSource: Sendable {
         hasHighlightKeyAssets: Bool,
         hasAestheticScore: Bool,
         hasUniformTypeIdentifier: Bool,
-        hasSpatialType: Bool
+        hasSpatialType: Bool,
+        hasAvalancheIndex: Bool = false,
+        hasRecentlyViewedIndex: Bool = false
     ) {
         self.derivativesRoot = derivativesRoot
         self.hasExtended = hasExtended
@@ -69,6 +77,8 @@ package struct SystemDirectSource: Sendable {
         self.hasAestheticScore = hasAestheticScore
         self.hasUniformTypeIdentifier = hasUniformTypeIdentifier
         self.hasSpatialType = hasSpatialType
+        self.hasAvalancheIndex = hasAvalancheIndex
+        self.hasRecentlyViewedIndex = hasRecentlyViewedIndex
     }
 }
 
@@ -230,7 +240,8 @@ package extension SystemIndex {
     // MARK: - 打开
 
     /// 直连打开系统图库：只读 Photos.sqlite，不建索引。
-    static func openDirect(libraryURL: URL) -> SystemIndex? {
+    /// `withSearchIndex` 为 false 时不挂全文索引（多图库总览只取封面，不需要）。
+    static func openDirect(libraryURL: URL, withSearchIndex: Bool = true) -> SystemIndex? {
         let dbURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
         guard FileManager.default.fileExists(atPath: dbURL.path) else {
             NSLog("LumaDirect: Photos.sqlite missing at %@", dbURL.path)
@@ -256,6 +267,8 @@ package extension SystemIndex {
         let hasDerivatives = FileManager.default.fileExists(atPath: derivatives)
         let assetIndexes = Set((try? db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ZASSET'"))?
             .compactMap { $0["name"]?.string } ?? [])
+        let additionalIndexes = Set((try? db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ZADDITIONALASSETATTRIBUTES'"))?
+            .compactMap { $0["name"]?.string } ?? [])
         let source = SystemDirectSource(
             derivativesRoot: hasDerivatives ? derivatives : nil,
             hasExtended: extended,
@@ -270,7 +283,9 @@ package extension SystemIndex {
                 && assetIndexes.contains("ZASSET_ZMONTHHIGHLIGHTBEINGKEYASSETPRIVATE_INDEX"),
             hasAestheticScore: assetColumns.contains("ZOVERALLAESTHETICSCORE"),
             hasUniformTypeIdentifier: assetColumns.contains("ZUNIFORMTYPEIDENTIFIER"),
-            hasSpatialType: assetColumns.contains("ZSPATIALTYPE"))
+            hasSpatialType: assetColumns.contains("ZSPATIALTYPE"),
+            hasAvalancheIndex: assetIndexes.contains("Z_Asset_byAvalancheUUIDIndex"),
+            hasRecentlyViewedIndex: additionalIndexes.contains("Z_AdditionalAssetAttributes_forRecentlyViewed"))
         let total = ((try? db.query("SELECT SUM(ZCACHEDCOUNT) AS c FROM ZMOMENT WHERE ZSTARTDATE IS NOT NULL"))
             .flatMap { $0.first?["c"]?.int })
             // 兜底：极老的库没有 ZMOMENT 缓存计数时才退回整表计数（百万级要几秒）。
@@ -285,7 +300,21 @@ package extension SystemIndex {
         index.loadDirectCountsSnapshot()
         index.startDirectCountWarmup()
         index.startDirectGeoWarmup()
+        // 全文搜索索引：命中时搜索走 FTS5（任意词 0.3 秒），未就绪时后台分批建，
+        // 不影响翻页与侧栏计数。索引文件与 Photos.sqlite 分离，读写互不阻塞。
+        if withSearchIndex {
+            index.searchIndex = SearchIndex(libraryURL: libraryURL, photosPath: dbURL.path)
+        }
         return index
+    }
+
+    /// 后台建立全文搜索索引。已就绪时立即返回；未就绪时低优先级分批建，不阻塞界面，
+    /// 整库建完约 4～6 分钟（用户明确要求「慢一点没关系，不要卡主界面」）。
+    package func startSearchIndexWarmup() {
+        guard let searchIndex, !searchIndex.isReady else { return }
+        Task.detached(priority: .background) {
+            await searchIndex.buildIfNeeded()
+        }
     }
 
     /// 探测相簿与资产的关联表（不同系统版本表名不同）。
@@ -399,13 +428,28 @@ package extension SystemIndex {
                 snapshot = value
                 await publish(value)
             }
-            // 截屏 / 导入 / 最近查看 / 存储统计这几项没有可用的轻量索引：
-            // 已有历史快照时沿用上次结果，只更新指纹；否则每次图库变动后的启动
-            // 都要把 26GB 主表扫一遍（实测几十秒到几分钟），期间翻页 / 相簿全被拖慢。
-            if var value = snapshot {
-                if previous == nil,
-                   var slow = Self.computeDirectCounts(libraryURL: self.libraryURL, direct: direct) {
-                    // 第一次打开这个图库（还没有任何历史快照）：只跑一次全库精确扫描补齐。
+            // 已编辑 / 最近查看 / 值得重看 / 总大小 / 导入项目，以及截屏 / 录屏 / 最近保存 / 带定位：
+            // 以前只在「第一次打开这个图库」时用一次 26GB 主表全表扫描补齐（实测 2 分 16 秒，
+            // 期间外接盘带宽被占满，翻页与缩略图一起卡）。现在分两段只读 Apple 自己的索引，
+            // 合计十来秒，不再碰主表；旧图库缺索引时才退回一次性全表扫描。
+            var leftoversFilled = previous != nil
+            if var value = snapshot, previous == nil {
+                if Self.hasDirectIndexedCountIndexes(libraryURL: self.libraryURL) {
+                    if let indexed = Self.computeDirectIndexedCounts(libraryURL: self.libraryURL,
+                                                                     counts: value) {
+                        value = indexed
+                        leftoversFilled = true
+                        snapshot = value
+                        await publish(value)
+                    }
+                    if let scanned = Self.computeDirectScanCounts(libraryURL: self.libraryURL,
+                                                                  counts: value) {
+                        value = scanned
+                        snapshot = value
+                        await publish(value)
+                    }
+                } else if var slow = Self.computeDirectCounts(libraryURL: self.libraryURL, direct: direct) {
+                    // 很旧的图库缺少上面这些索引：退回一次性全表扫描，并保留已算好的快照部分。
                     slow.monthCounts = value.monthCounts
                     slow.monthVideos = value.monthVideos
                     slow.monthFavorites = value.monthFavorites
@@ -414,13 +458,17 @@ package extension SystemIndex {
                     slow.monthCovers = value.monthCovers
                     slow.yearCovers = value.yearCovers
                     slow.covers = value.covers
-                    slow.fingerprint = fingerprint
-                    await publish(slow)
-                } else {
-                    value.fingerprint = fingerprint
+                    value = slow
+                    leftoversFilled = true
                     snapshot = value
                     await publish(value)
                 }
+            }
+            if var value = snapshot {
+                // 只有补齐过这几项才写指纹：否则下次启动会带着一批 0 直接跳过预热。
+                if leftoversFilled { value.fingerprint = fingerprint }
+                snapshot = value
+                await publish(value)
             }
             await MainActor.run { self.directCountsWarmupTask = nil }
         }
@@ -561,6 +609,135 @@ package extension SystemIndex {
         }
         return counts
     }
+
+    // MARK: - 索引版精确计数
+
+    /// 补齐「全表扫描」才算得出来的那几项时需要的 Apple 索引。
+    /// 缺任意一条（很旧的图库）就退回 `computeDirectCounts` 的一次性全表扫描。
+    static let directIndexedCountIndexes = [
+        "Z_Asset_forAllPhotosFilteredBySavedAssetType",
+        "Z_Asset_forPlacesAlbum",
+        "Z_Asset_forRecentlyEdited",
+        "Z_Asset_byDateCreatedIndex",
+        "Z_AdditionalAssetAttributes_forRecentlyViewed",
+        "Z_AdditionalAssetAttributes_byImportedByBundleIdentifierIndex",
+        "Z_AdditionalAssetAttributes_byOriginalFileSize"
+    ]
+
+    static func hasDirectIndexedCountIndexes(libraryURL: URL) -> Bool {
+        let dbURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
+        guard let db = try? SQLiteDatabase(path: dbURL.path, readonly: true),
+              let rows = try? db.query("SELECT name FROM sqlite_master WHERE type = 'index'") else {
+            return false
+        }
+        let names = Set(rows.compactMap { $0["name"]?.string })
+        return directIndexedCountIndexes.allSatisfy { names.contains($0) }
+    }
+
+    /// 第一段（约 6 秒，全部只读索引）：已编辑 / 最近查看 / 值得重看 / 总大小 / 导入项目。
+    ///
+    /// 这几项原先只在「第一次打开图库」时用一次全表扫描补齐，本机 137 万张实测 2 分 16 秒，
+    /// 期间 26GB 主表被顺序读一遍，外接盘带宽被吃满、翻页与缩略图跟着一起卡。
+    /// Apple 为「照片」自己的智能相簿建了对应索引，逐项计数只碰索引页，成本与主表大小无关。
+    static func computeDirectIndexedCounts(libraryURL: URL,
+                                           counts: SystemDirectCounts) -> SystemDirectCounts? {
+        let dbURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
+        guard let db = try? SQLiteDatabase(path: dbURL.path, readonly: true) else { return nil }
+        var counts = counts
+        func count(_ sql: String, _ binds: [Any?] = []) -> Int? {
+            try? db.query(sql, binds).first?["c"]?.int
+        }
+        if let value = count("""
+            SELECT COUNT(*) AS c FROM ZASSET INDEXED BY Z_Asset_forRecentlyEdited
+            WHERE ZADJUSTMENTTIMESTAMP IS NOT NULL
+            """) {
+            counts.edited = value
+        }
+        let viewedCutoff = Self.directViewedCutoff.timeIntervalSince1970 - 978307200
+        if let value = count("""
+            SELECT COUNT(*) AS c FROM ZADDITIONALASSETATTRIBUTES
+            INDEXED BY Z_AdditionalAssetAttributes_forRecentlyViewed
+            WHERE ZLASTVIEWEDDATE >= ?
+            """, [viewedCutoff]) {
+            counts.recentlyViewed = value
+        }
+        // 导入项目：`byImportedByBundleIdentifierIndex` 只收录有导入来源的行。
+        if let value = count("""
+            SELECT COUNT(*) AS c FROM ZADDITIONALASSETATTRIBUTES
+            INDEXED BY Z_AdditionalAssetAttributes_byImportedByBundleIdentifierIndex
+            WHERE ZIMPORTEDBYBUNDLEIDENTIFIER IS NOT NULL
+              AND ZIMPORTEDBYBUNDLEIDENTIFIER NOT IN ('com.apple.Photos', 'com.apple.mobileslideshow')
+            """) {
+            counts.imports = value
+        }
+        // 存储统计：文件大小有自己的覆盖索引，求和不必回主表。
+        if let value = count("""
+            SELECT SUM(ZORIGINALFILESIZE) AS c FROM ZADDITIONALASSETATTRIBUTES
+            INDEXED BY Z_AdditionalAssetAttributes_byOriginalFileSize
+            """) {
+            counts.totalBytes = Int64(value)
+        }
+        // 值得重看 = 够老的总数 − 其中「一年内又看过」的部分。
+        // 老照片总数直接在日期索引上数（不碰主表），再减去最近查看集合里落在老照片中的那些。
+        let captureCutoff = Date().addingTimeInterval(-LibraryHealthTuning.revisitCaptureAge)
+            .timeIntervalSince1970 - 978307200
+        let revisitViewCutoff = Date().addingTimeInterval(-LibraryHealthTuning.revisitViewAge)
+            .timeIntervalSince1970 - 978307200
+        if let old = count("""
+            SELECT COUNT(*) AS c FROM ZASSET INDEXED BY Z_Asset_byDateCreatedIndex
+            WHERE ZDATECREATED <= ?
+            """, [captureCutoff]) {
+            let overlap = count("""
+                SELECT COUNT(*) AS c FROM ZASSET a WHERE a.Z_PK IN (
+                    SELECT aa.ZASSET FROM ZADDITIONALASSETATTRIBUTES aa
+                    INDEXED BY Z_AdditionalAssetAttributes_forRecentlyViewed
+                    WHERE aa.ZLASTVIEWEDDATE >= ?)
+                  AND a.ZDATECREATED <= ?
+                """, [revisitViewCutoff, captureCutoff]) ?? 0
+            counts.revisit = max(0, old - overlap - counts.trash - counts.hidden)
+        }
+        return counts
+    }
+
+    /// 第二段（约 12 秒，两条覆盖索引扫描）：截屏 / 录屏 / 最近保存 / 带定位。
+    /// 这几项没有更小的部分索引可用，只能沿覆盖索引流式扫一遍；
+    /// 但覆盖索引只有几十 GB 主表的零头，且不触发主表随机回扫。
+    static func computeDirectScanCounts(libraryURL: URL,
+                                        counts: SystemDirectCounts) -> SystemDirectCounts? {
+        let dbURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
+        guard let db = try? SQLiteDatabase(path: dbURL.path, readonly: true) else { return nil }
+        var counts = counts
+        let savedCutoff = Self.directSavedCutoff.timeIntervalSince1970 - 978307200
+        if let row = try? db.query("""
+            SELECT SUM(CASE WHEN ZKIND = 0 AND (ZISDETECTEDSCREENSHOT = 1 OR ZKINDSUBTYPE IN (6, 10))
+                            THEN 1 ELSE 0 END) AS shots,
+                   SUM(CASE WHEN ZKIND = 1 AND (ZISDETECTEDSCREENSHOT = 1 OR ZKINDSUBTYPE = 103)
+                            THEN 1 ELSE 0 END) AS recs,
+                   SUM(CASE WHEN ZADDEDDATE >= ? THEN 1 ELSE 0 END) AS recent
+            FROM ZASSET INDEXED BY Z_Asset_forAllPhotosFilteredBySavedAssetType
+            WHERE ZTRASHEDSTATE = 0 AND ZHIDDEN = 0
+            """, [savedCutoff]).first {
+            counts.screenshots = row["shots"]?.int ?? counts.screenshots
+            counts.screenRecordings = row["recs"]?.int ?? counts.screenRecordings
+            counts.recentlySaved = row["recent"]?.int ?? counts.recentlySaved
+        }
+        // 带定位：地点相簿的覆盖索引自带经纬度，流式跳过没有 GPS 的行。
+        if let value = try? db.query("""
+            SELECT COUNT(*) AS c FROM ZASSET INDEXED BY Z_Asset_forPlacesAlbum
+            WHERE ZTRASHEDSTATE = 0 AND ZHIDDEN = 0 AND \(Self.directLocationClauseWithoutAlias)
+            """).first?["c"]?.int {
+            counts.located = value
+        }
+        return counts
+    }
+
+    /// `directLocationClause` 的免别名版本（覆盖索引查询里只用到一张表）。
+    static let directLocationClauseWithoutAlias = """
+        ZLATITUDE IS NOT NULL AND ZLONGITUDE IS NOT NULL
+        AND ABS(ZLATITUDE) <= 90 AND ABS(ZLONGITUDE) <= 180
+        AND NOT (ZLATITUDE = 0 AND ZLONGITUDE = 0)
+        AND NOT (ZLATITUDE = -180.0 AND ZLONGITUDE = -180.0)
+        """
 
     static func computeDirectCounts(libraryURL: URL, direct: SystemDirectSource) -> SystemDirectCounts? {
         let dbURL = libraryURL.appendingPathComponent("database/Photos.sqlite")
@@ -944,26 +1121,38 @@ package extension SystemIndex {
                 return ("Z_Asset_forVideosAlbum", ["a.ZPLAYBACKSTYLE = 4"])
             case .edited:
                 return ("Z_Asset_forRecentlyEdited", [])
-            case .favorites where query.favoriteAdds.isEmpty && query.favoriteRemoves.isEmpty:
-                return ("Z_Asset_forFavoritesAlbum", [])
+            case .favorites:
+                // 有拾光叠加项时收藏条件是一个 UNION 子查询：
+                // 交给 SQLite 按子查询结果驱动，强行走日期索引会退化成扫整库。
+                return query.favoriteAdds.isEmpty && query.favoriteRemoves.isEmpty
+                    ? ("Z_Asset_forFavoritesAlbum", [])
+                    : (nil, [])
             default:
                 break
             }
         }
         switch query.scope {
         case .favorites:
-            // 拾光里单独收藏 / 取消收藏的叠加项让条件变成 OR，部分索引无法命中，退回日期索引保证正确。
             if query.favoriteAdds.isEmpty && query.favoriteRemoves.isEmpty {
                 return ("Z_Asset_forFavoritesAlbum", [])
             }
-            return (dateIndex, [])
+            // 叠加项写成 UNION 子查询后，让 SQLite 从子查询结果驱动，不再强行按日期索引扫整库。
+            return (nil, [])
         case .videos:
             // 该部分索引以 ZPLAYBACKSTYLE = 4 为条件；实测与本库 ZKIND = 1 的集合完全一致。
             return ("Z_Asset_forVideosAlbum", ["a.ZPLAYBACKSTYLE = 4"])
-        case .screenshots, .screenRecordings:
+        case .screenshots:
             // 这个覆盖索引带 ZKIND / ZISDETECTEDSCREENSHOT，按拍摄时间顺序流式过滤，
             // 不命中时连主表都不用回查（截屏没有单独的部分索引）。
             return ("Z_Asset_forAllPhotosFilteredBySavedAssetType", [])
+        case .screenRecordings:
+            // 录屏只占该覆盖索引里极少一部分，强制走它反而要把整个索引扫完再排序
+            // （本机实测 4.6 秒）；交给 SQLite 自选（按 ZKIND 索引过滤）只要 1.2 秒，
+            // PhotoKit 集合就绪后更是直接按主键集合取页。
+            return (nil, [])
+        case .recentlyViewed:
+            // 由附加属性表的「最近查看」索引驱动；强制日期索引会让它退化成逐行回表。
+            return (nil, [])
         case .portraits:
             return ("Z_Asset_forPortraitAlbum", ["a.ZDEPTHTYPE <> 0"])
         case .selfies:
@@ -979,6 +1168,8 @@ package extension SystemIndex {
             return (dateIndex, [])
         case .bursts:
             // 连拍集合很小，直接命中 ZAVALANCHEUUID 索引，避免退化成扫全库后显示全部照片。
+            // 老库没有这条索引时退回日期索引（否则 INDEXED BY 会让整条查询直接失败）。
+            guard direct?.hasAvalancheIndex == true else { return (dateIndex, []) }
             return ("Z_Asset_byAvalancheUUIDIndex",
                     ["a.ZAVALANCHEUUID IS NOT NULL", "a.ZAVALANCHEUUID <> ''"])
         case .spatial:
@@ -1030,8 +1221,10 @@ package extension SystemIndex {
     }
 
     /// 成员集合（相簿 / 文件夹 / 人物）小于这个规模时，从成员表驱动查询。
-    /// 再大就让日期索引流式取页：成员驱动要按日期排一次全部成员，几千行以上反而更慢。
-    static let directMemberDrivenLimit = 5_000
+    /// 成员驱动先取成员主键再回主表取一页；日期索引路径要沿整库日期索引逐行回表过滤删除 / 隐藏，
+    /// 相簿越靠库中段越慢。本机 137 万张的库实测：
+    /// 8.8 万张的相簿成员驱动 0.04 秒、日期索引 60 秒（差 1500 倍），所以阈值放到 30 万。
+    static let directMemberDrivenLimit = 300_000
 
     func directMemberLimit(for query: SystemQuery) -> Int? {
         switch query.scope {
@@ -1117,7 +1310,25 @@ package extension SystemIndex {
                                  extraConditions: [],
                                  orderSQL: "m.manualorder ASC, a.Z_PK ASC")
         }
-        if directMemberLimit(for: query) != nil, let member = directMemberDrivenFrom(query) {
+        // 按拍摄时间浏览相簿，且相簿自己的成员顺序正好就是拍摄时间顺序时，
+        // 直接沿联接表的顺序索引分页：每页只回主表取一页，
+        // 2.2 万张的相簿实测 1.2 秒 → 50 毫秒（打开相簿立刻出首屏）。
+        if query.sortKey == .capturedAt, case .album(let id) = query.scope,
+           let from = directManualAlbumFrom() {
+            let (whereSQL, binds, _) = directWhere(query, omitMemberSet: true)
+            // 只有「未删除 / 未隐藏」这一条条件才走顺序索引：带筛选 / 搜索时流式取页停不下来。
+            if whereSQL == "(a.ZTRASHEDSTATE = 0 AND a.ZHIDDEN = 0)",
+               directAlbumOrderIsByDate(id, count: directAlbumAssetCount(id)) {
+                let direction = query.ascending ? "ASC" : "DESC"
+                return DirectSQLPlan(from: from,
+                                     whereSQL: whereSQL,
+                                     binds: [id] + binds,
+                                     extraConditions: [],
+                                     orderSQL: "m.manualorder \(direction), a.Z_PK \(direction)")
+            }
+        }
+        let memberLimit = directMemberLimit(for: query)
+        if memberLimit != nil, let member = directMemberDrivenFrom(query) {
             let (whereSQL, binds, _) = directWhere(query, omitMemberSet: true)
             return DirectSQLPlan(from: member.from,
                                  whereSQL: whereSQL,
@@ -1125,6 +1336,11 @@ package extension SystemIndex {
                                  extraConditions: [])
         }
         let (whereSQL, binds, from) = directWhere(query)
+        // 集合由外部（PhotoKit 智能相簿）给出时，条件已经是 `Z_PK IN (...)`：
+        // 这时套任何专用索引都会退化成扫整张索引再过滤（RAW 实测 2.6 秒 vs 1.4 秒）。
+        if query.includeIDs != nil {
+            return DirectSQLPlan(from: from, whereSQL: whereSQL, binds: binds, extraConditions: [])
+        }
         let plan = directIndexPlan(for: query, dateIndex: dateIndex)
         let hintedFrom = plan.index.map {
             from.replacingOccurrences(of: "FROM ZASSET a", with: "FROM ZASSET a INDEXED BY \($0)")
@@ -1314,13 +1530,37 @@ package extension SystemIndex {
     func directSQLSummary(_ query: SystemQuery) -> PhotoQuerySummary {
         // 这里不走 `directSQLPlan`：它为了分页会先探成员集合，而成员数量又回到 `directSummary`，
         // 带搜索词时会互相递归。计数只关心 WHERE，直接用基础 FROM 即可。
+        // 纯文本搜索（无范围 / 筛选 / 时间区间）时命中数直接由全文索引给出：
+        // 带主键集合再 COUNT 一次虽然也快，但索引里已经存好了这个数。
+        if !query.tokens.isEmpty, let fts = searchIndex {
+            if fts.isReady {
+                if query.scope == .all, query.filter == .all,
+                   query.startDate == nil, query.endDate == nil {
+                    return PhotoQuerySummary(total: fts.matchCount(terms: query.tokens), videos: 0)
+                }
+            } else if searchIndexStrict {
+                // 索引还没建好：主界面直接给 0，网格显示「正在建立搜索索引」，
+                // 不能在这里跑全表 LIKE（137 万行两分钟，会卡住整个查询）。
+                return PhotoQuerySummary(total: 0, videos: 0)
+            }
+        }
         let (whereSQL, binds, from) = directWhere(query)
-        let sql = """
-            SELECT COUNT(*) AS c,
-                   SUM(CASE WHEN a.ZKIND = 1 THEN 1 ELSE 0 END) AS v
-            \(from) WHERE \(whereSQL)
-            """
-        guard let row = try? database.query(sql, binds).first else {
+        // 带时间区间时必须显式指定日期索引：否则 SQLite 会挑 ZTRASHEDSTATE 的索引整库扫一遍
+        // （实测一个五万张的月份 76 秒，命中日期索引后 0.05 秒）。
+        let hasRange = query.startDate != nil || query.endDate != nil
+        let hinted = hasRange
+            ? from.replacingOccurrences(of: "FROM ZASSET a",
+                                        with: "FROM ZASSET a INDEXED BY Z_Asset_byDateCreatedIndex")
+            : from
+        func run(_ source: String) -> [[String: SQLiteValue]]? {
+            try? database.query("""
+                SELECT COUNT(*) AS c,
+                       SUM(CASE WHEN a.ZKIND = 1 THEN 1 ELSE 0 END) AS v
+                \(source) WHERE \(whereSQL)
+                """, binds)
+        }
+        let rows = run(hinted) ?? (hinted == from ? nil : run(from))
+        guard let row = rows?.first else {
             return PhotoQuerySummary(total: 10_001, videos: 0)
         }
         return PhotoQuerySummary(total: row["c"]?.int ?? 0, videos: row["v"]?.int ?? 0)
@@ -1373,6 +1613,45 @@ package extension SystemIndex {
         counts.earliest = snapshot.earliest.map { Date(timeIntervalSince1970: $0) }
         counts.latest = snapshot.latest.map { Date(timeIntervalSince1970: $0) }
         return counts
+    }
+
+    /// 外部给的 UUID 集合（PhotoKit 智能相簿）换算成主键条件。
+    ///
+    /// 不能直接写 `a.ZUUID IN (...)`：UUID 是 TEXT，沿日期索引逐行比较的成本极高
+    /// （本机 155 个 RAW 实测 61 秒）。换算成 `a.Z_PK IN (...)` 后同一查询约 1.4 秒，
+    /// 而且换算本身只走 `Z_Asset_byUuidIndex`，约 0.1 秒，结果按集合指纹缓存。
+    func directIncludeClause(_ ids: [String]) -> String {
+        guard !ids.isEmpty else { return "0" }
+        let pks = directPrimaryKeys(for: ids)
+        guard !pks.isEmpty else { return "0" }
+        return "a.Z_PK IN (\(pks.map(String.init).joined(separator: ",")))"
+    }
+
+    /// UUID → ZASSET 主键。集合来自 PhotoKit，短时间内不会变，按「数量 + 首尾」缓存一次。
+    private func directPrimaryKeys(for ids: [String]) -> [Int64] {
+        let key = "\(ids.count)#\(ids.first ?? "")#\(ids.last ?? "")"
+        directIncludeLock.lock()
+        if let cached = directIncludePKCache, cached.key == key {
+            let pks = cached.pks
+            directIncludeLock.unlock()
+            return pks
+        }
+        directIncludeLock.unlock()
+        var result: [Int64] = []
+        result.reserveCapacity(ids.count)
+        var index = 0
+        while index < ids.count {
+            let slice = ids[index ..< min(index + 400, ids.count)]
+            index += 400
+            guard let rows = try? database.query(
+                "SELECT Z_PK AS pk FROM ZASSET WHERE ZUUID IN (\(inList(Array(slice))))"
+            ) else { continue }
+            result.append(contentsOf: rows.compactMap { $0["pk"]?.int64 })
+        }
+        directIncludeLock.lock()
+        directIncludePKCache = (key, result)
+        directIncludeLock.unlock()
+        return result
     }
 
     func directPhoto(id: UUID) -> PhotoItem? {

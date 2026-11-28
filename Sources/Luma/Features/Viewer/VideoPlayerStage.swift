@@ -13,9 +13,9 @@ struct VideoPlayerStage: View {
     @Environment(ViewerModel.self) var viewer
     let photo: PhotoItem
     /// 播放状态由查看器持有：顶栏融合模式下，窗口工具栏要用同一份状态渲染播放控件。
-    @ObservedObject var model: VideoPlayerModel
+    let model: VideoPlayerModel
     /// 音轨 / 字幕状态：与窗口顶栏共享同一份。
-    @ObservedObject var ui: VideoPlaybackUI
+    let ui: VideoPlaybackUI
     /// 手动旋转角度同样提到查看器，顶栏按钮与画面共用。
     @Binding var quarterTurns: Int
     /// 保存当前帧需要读取查看器里的照片与旋转状态，由查看器提供。
@@ -40,6 +40,11 @@ struct VideoPlayerStage: View {
     @State var isPreparing = true
     /// 起播阶段的底图：本地视频直接读缩略图做模糊背景，网络源没有就退回渐变。
     @State var loadingThumbnail: NSImage?
+    /// 本地 / SMB 起播点真实帧：拿得到就优先于缩略图，质量足够铺满。
+    @State var loadingFrame: NSImage?
+    @State var posterFrameTask: Task<Void, Never>?
+    /// 起播进行到哪一步：等待层据此显示阶段文案。
+    @State var waitingStage: VideoWaitingStage = .preparing
     @State var failureMessage: String?
     /// 云端直链获取失败的具体原因（授权、文件 ID、接口错误等）。
     @State var streamFailure: String?
@@ -144,6 +149,18 @@ struct VideoPlayerStage: View {
     /// 当前画面是不是电视频道（直播或回看）。
     var tvPlaybackChannel: TVChannel? {
         store.tvPlaybackChannel(for: photo.id)
+    }
+
+    /// 文件就在本机磁盘（拾光图库、系统「照片」本地原件、外接目录），且不是网络卷。
+    /// 按设计这类源起播几乎瞬时：不取首帧、不显示等待层，也不弹缓冲提示，直接出画面。
+    var isLocalVideo: Bool {
+        guard photo.isVideo,
+              !photo.isCloud,
+              store.catalogPlaybackContext(for: photo.id) == nil,
+              tvPlaybackChannel == nil else { return false }
+        let url = LibraryPaths.sourceURL(for: photo)
+        guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else { return false }
+        return !VideoSupport.isNetworkVolume(url)
     }
 
     /// 只有直播才启用遥控语义（换台 / 频道带）；回看走点播的进度条。
@@ -293,6 +310,8 @@ struct VideoPlayerStage: View {
         VideoScrubPreviewCenter.shared.fallbackProvider = nil
         VideoScrubPreviewCenter.shared.end()
         loadGeneration &+= 1
+        posterFrameTask?.cancel()
+        posterFrameTask = nil
         tvAttemptKey = nil
         hideControlsTask?.cancel()
         model.seekRouter = nil
@@ -313,23 +332,84 @@ struct VideoPlayerStage: View {
         return NSImage(contentsOf: url)
     }
 
-    /// 等待层：第一帧出来之前用海报垫底，出画面后淡出；
+    /// 等待层：信息优先，只有分辨率合格的素材才铺满；出画面后淡出。
     /// 出画面之后的卡顿只用紧凑缓冲胶囊，不整页遮挡。
     @ViewBuilder
-    var waitingLayer: some View {
+    func waitingLayer() -> some View {
         if activeFailure == nil {
-            if !model.isItemReady {
-                VideoPosterBackdrop(image: loadingThumbnail)
+            // 本地视频起播几乎瞬时：不垫首帧、不显示等待层，直接出画面。
+            if !model.isItemReady, !isLocalVideo {
+                VideoWaitingLayer(info: waitingInfo())
                     .transition(.opacity)
             }
-            // 起播等待只覆盖「还没出画面」：装片完成后的音轨校验不该在画面上继续转圈。
-            // 重建流期间由 isStalled（isReloading）接管，给一枚轻量反馈即可。
-            let preparingFirstFrame = isPreparing && !model.isItemReady
-            VideoBufferingOverlay(active: model.isStalled || preparingFirstFrame,
-                                  label: preparingFirstFrame ? "载入中" : "缓冲中",
-                                  immediate: !model.isItemReady,
-                                  prominent: !model.isItemReady)
+            // 本地视频的卡顿 / 重建流也不加缓冲提示，避免在画面上叠任何东西。
+            if !isLocalVideo {
+                VideoBufferingOverlay(active: model.isItemReady && (model.isStalled || isRestartingStream),
+                                      label: "缓冲中",
+                                      immediate: false,
+                                      prominent: false)
+            }
         }
+    }
+
+    /// 按来源拼出等待层要展示的标题 / 副标题 / 徽标与可用素材。
+    func waitingInfo() -> VideoWaitingInfo {
+        var title = (photo.originalName as NSString).deletingPathExtension
+        if title.isEmpty { title = photo.filename }
+        var subtitle: String?
+        var badges: [String] = []
+
+        if let context = store.catalogPlaybackContext(for: photo.id) {
+            title = context.item.title
+            subtitle = context.episode.title
+            if !context.source.name.isEmpty { badges.append(context.source.name) }
+        } else if let channel = tvPlaybackChannel {
+            title = channel.name
+            if let program = store.tvModel.currentProgram(for: channel) {
+                subtitle = program.title
+            }
+            badges.append(channel.isCatchUp ? "回看" : "直播")
+            if let quality = channel.qualityLabel, !quality.isEmpty { badges.append(quality) }
+            let line = store.tvLineIndex(for: photo.id) + 1
+            let total = store.tvLineCount(for: photo.id)
+            if total > 1 { badges.append("线路 \(line)/\(total)") }
+        } else if photo.isCloud {
+            if let mount = store.cloudMount(for: photo.cloudMountID) {
+                subtitle = mount.name
+            }
+            badges.append("网盘")
+        }
+
+        let width = max(photo.pixelWidth, Int(videoSize.width))
+        let height = max(photo.pixelHeight, Int(videoSize.height))
+        if let resolution = Self.resolutionBadge(width: width, height: height) {
+            badges.append(resolution)
+        }
+        if probeColor.isDolbyVision {
+            badges.append("Dolby Vision")
+        } else if probeIsHDR {
+            badges.append("HDR")
+        }
+        if probeIsHEVC || (photo.videoCodec?.lowercased() == "hevc" && !probeIsHEVC) {
+            badges.append("HEVC")
+        }
+        if probeAudioCount > 1 { badges.append("\(probeAudioCount) 音轨") }
+        if ui.isBurningSubtitle { badges.append("字幕烧录") }
+
+        return VideoWaitingInfo(title: title,
+                                subtitle: subtitle,
+                                stage: waitingStage,
+                                badges: badges,
+                                image: loadingFrame ?? loadingThumbnail)
+    }
+
+    static func resolutionBadge(width: Int, height: Int) -> String? {
+        guard width > 0, height > 0 else { return nil }
+        let shortEdge = min(width, height)
+        if shortEdge >= 2000 { return "4K" }
+        if shortEdge >= 1000 { return "1080P" }
+        if shortEdge >= 700 { return "720P" }
+        return nil
     }
 
     /// 当前时间点应显示的字幕（已套用字幕偏移），带 ASS 样式时会按样式渲染。

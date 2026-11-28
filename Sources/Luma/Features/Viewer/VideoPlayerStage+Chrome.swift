@@ -75,8 +75,17 @@ extension VideoPlayerStage {
         return formatPlayerTime(model.duration)
     }
 
+    /// 进度条的抽帧预览。图库视频返回 nil：抽帧会和播放解码抢 CPU / GPU，
+    /// 拖动进度条时会明显卡顿，宁可不显示预览。
+    var scrubPreviewProvider: ((Double) async -> NSImage?)? {
+        guard !store.isLibraryVideoPlayback(photo) else { return nil }
+        return { fraction in await scrubThumbnail(fraction: fraction) }
+    }
+
     func controls(stage: CGSize) -> some View {
-        VStack {
+        // 音量滑杆需要 Binding：`model` 已是 @Observable，这里转发一层 @Bindable。
+        @Bindable var model = model
+        return VStack {
             Spacer()
             VStack(spacing: 6) {
                 ZStack {
@@ -100,9 +109,7 @@ extension VideoPlayerStage {
                                   knobBorder: .black.opacity(0.35),
                                   duration: model.duration,
                                   chapterFractions: chapterFractions,
-                                  thumbnailPreview: { fraction in
-                                      await scrubThumbnail(fraction: fraction)
-                                  }) { value in
+                                  thumbnailPreview: scrubPreviewProvider) { value in
                         scrubPlayback(to: value * model.duration)
                     } onCommit: { value in
                         seekPlayback(to: value * model.duration)
@@ -272,13 +279,31 @@ extension VideoPlayerStage {
     /// 显示层布局：比例预设决定裁剪框，显示方式决定框内画面尺寸，平移只在画面超出裁剪框时生效。
     func framingLayout(in stage: CGSize) -> VideoFramingLayout {
         let natural = videoSize.width > 0 && videoSize.height > 0 ? videoSize : stage
-        return VideoFramingGeometry.layout(stage: stage,
-                                           naturalSize: natural,
-                                           quarterTurns: quarterTurns,
-                                           mode: settings.videoFramingMode,
-                                           preset: settings.videoAspectPreset,
-                                           pan: CGSize(width: settings.videoPanX,
-                                                       height: settings.videoPanY))
+        let layout = VideoFramingGeometry.layout(stage: stage,
+                                                 naturalSize: natural,
+                                                 quarterTurns: quarterTurns,
+                                                 mode: settings.videoFramingMode,
+                                                 preset: settings.videoAspectPreset,
+                                                 pan: CGSize(width: settings.videoPanX,
+                                                             height: settings.videoPanY))
+        // 适应模式且没有旋转：让播放层直接铺满裁剪框，由 AVPlayerLayer 的 resizeAspect
+        // 按真实视频比例留边。不依赖探测到的片源尺寸，元数据缺失或不准时也能正确适应。
+        if settings.videoFramingMode == .fit, quarterTurns % 4 == 0 {
+            return VideoFramingLayout(boxSize: layout.boxSize,
+                                      preRotationContentSize: layout.boxSize,
+                                      panOffset: .zero)
+        }
+        return layout
+    }
+
+    /// 从播放器条目读真实画面尺寸（已含旋转矩阵）：探测拿不到尺寸时用它兜底。
+    func adoptNaturalVideoSize() {
+        guard let item = model.player.currentItem else { return }
+        let size = item.presentationSize
+        guard size.width > 1, size.height > 1 else { return }
+        if abs(size.width - videoSize.width) > 1 || abs(size.height - videoSize.height) > 1 {
+            videoSize = size
+        }
     }
 
     func refreshVideoNeighbors() {

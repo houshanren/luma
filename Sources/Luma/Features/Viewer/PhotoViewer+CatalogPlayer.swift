@@ -47,7 +47,6 @@ extension PhotoViewerView {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
-                .help(context.item.title)
 
             // 来源站点：颜色圆点常驻，名称在常规宽度以上出现。
             HStack(spacing: 3) {
@@ -77,7 +76,6 @@ extension PhotoViewerView {
                         .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5)
                 }
                 .fixedSize()
-                .help(context.episode.title)
 
             if regular, let rating {
                 HStack(spacing: 2) {

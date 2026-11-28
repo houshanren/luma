@@ -30,6 +30,7 @@ struct ShortcutSettingsView: View {
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
         }
+        .scrollIndicators(.never)
         .background {
             LinearGradient(colors: [LumaBrand.violet.opacity(scheme == .dark ? 0.10 : 0.05),
                                     LumaBrand.cyan.opacity(scheme == .dark ? 0.06 : 0.03)],
@@ -255,6 +256,8 @@ struct ShortcutSettingsView: View {
                 ("⌘D", "复制照片"),
                 ("⌘⌫", "移到最近删除"),
                 ("⌘P", "打印"),
+                ("⌘J", "AI 助手侧边栏"),
+                ("⇧⌘J", "AI 助手大窗"),
                 ("⌘/", "打开快捷键面板")
             ]
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in

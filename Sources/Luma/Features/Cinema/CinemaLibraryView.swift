@@ -49,6 +49,10 @@ struct CinemaLibraryView: View {
     @State var expandedCardStrips: Set<String> = []
     /// 卡片模式当前主卡选中的影片 / 剧集：nil 时回落到第一项。
     @State var cardHeroKey: String?
+    /// 海报墙的键盘游标：用 `s:` / `m:` 前缀区分剧集与影片，方向键换卡，回车即打开。
+    @State var wallCursorKey: String?
+    /// 海报墙可用宽度：按它换算一行几格，方向键才知道「上下一行」跨多少。
+    @State var wallGridWidth: CGFloat = 0
 
     init(mountID: UUID? = nil) {
         self.mountID = mountID
@@ -285,6 +289,23 @@ struct CinemaLibraryView: View {
             }
             .overlay(alignment: .trailing) {
                 wallLetterRail(proxy)
+            }
+            // 海报墙方向键：←/→ 换一张、↑/↓ 换一行，回车打开；列表 / 书架模式没有条目，不接管键盘。
+            .reportGridWidth()
+            .onPreferenceChange(GridWidthKey.self) { wallGridWidth = $0 }
+            .gridArrowCursor($wallCursorKey,
+                             ids: wallCursorKeys,
+                             columns: adaptiveColumnCount(width: wallGridWidth - 52,
+                                                          minimum: wallDensity.minimumColumnWidth,
+                                                          maximum: .infinity,
+                                                          spacing: 16)) { key in
+                openWallCursor(key)
+            }
+            .onChange(of: wallCursorKey) { _, key in
+                guard let target = wallScrollTarget(key) else { return }
+                withAnimation(.easeOut(duration: 0.16)) {
+                    proxy.scrollTo(target, anchor: .center)
+                }
             }
         .task(id: scope) {
             // 换片源时收掉详情，避免显示上一个来源的剧集 / 影片。

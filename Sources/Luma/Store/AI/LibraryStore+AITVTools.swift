@@ -1,5 +1,13 @@
 import Foundation
 
+/// 「今晚节目」的聚合结果：日报与 tv_tonight 共用。
+struct TVTonightResult {
+    var rows: [[String: Any]] = []
+    var missing: [String] = []
+    var epgReady = false
+    var date = Date()
+}
+
 // MARK: - 执行
 
 extension LibraryStore {
@@ -104,6 +112,107 @@ extension LibraryStore {
                             ? "「\(channel.name)」这天还没有节目单"
                             : "「\(channel.name)」\(items.count) 档节目",
                        photoIDs: [])
+    }
+
+    func tvTonightTool(_ args: [String: Any]) async -> AIToolExecution {
+        guard await tvEnsureChannelsLoaded() else {
+            return failure("电视源正在加载或没有可用频道；可在「网络电视 · 源库」检查电视源是否启用")
+        }
+        let names = AILibraryTools.stringArray(args["channels"])
+        let dayOffset = min(3, max(0, AILibraryTools.integer(args["day_offset"], fallback: 0)))
+        let limit = min(20, max(1, AILibraryTools.integer(args["limit"], fallback: 4)))
+        let result = await tvTonightRows(channelNames: names,
+                                         dayOffset: dayOffset,
+                                         limitPerChannel: limit,
+                                         waitForEPG: true)
+        var payload: [String: Any] = [
+            "date": Self.tvDayFormatter.string(from: result.date),
+            "epg_ready": result.epgReady,
+            "channels": result.rows
+        ]
+        if !result.missing.isEmpty { payload["missing"] = result.missing }
+        guard !result.rows.isEmpty else {
+            return success(payload,
+                           summary: result.epgReady
+                                ? "这些频道今晚暂无节目"
+                                : "节目单还没加载，可稍后重试或先在电视页打开一次",
+                           photoIDs: [])
+        }
+        return success(payload,
+                       summary: "\(result.rows.count) 个频道的节目",
+                       photoIDs: [])
+    }
+
+    /// 聚合若干频道从当前时刻起的节目。`waitForEPG=false` 只读已下载的节目单，供日报使用。
+    func tvTonightRows(channelNames: [String],
+                       dayOffset: Int,
+                       limitPerChannel: Int,
+                       waitForEPG: Bool) async -> TVTonightResult {
+        let date = Calendar.current.date(byAdding: .day, value: dayOffset, to: Date()) ?? Date()
+        tvModel.loadEPGIfNeeded()
+
+        var channels: [TVChannel] = []
+        var missing: [String] = []
+        if channelNames.isEmpty {
+            let favorites = tvModel.channels.filter { tvModel.favoriteIDs.contains($0.id) }
+            if favorites.isEmpty {
+                channels = Array(tvModel.channels
+                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    .prefix(6))
+            } else {
+                channels = Array(favorites.prefix(6))
+            }
+        } else {
+            for raw in channelNames {
+                if let channel = tvResolveChannel(raw, sourceRaw: nil) {
+                    channels.append(channel)
+                } else {
+                    missing.append(raw)
+                }
+            }
+            channels = Array(channels.prefix(8))
+        }
+
+        var rows: [[String: Any]] = []
+        let now = Date()
+        for channel in channels {
+            if Task.isCancelled { break }
+            let programs = waitForEPG
+                ? await tvPrograms(on: date, for: channel)
+                : tvModel.programs(on: date, for: channel)
+            let upcoming = programs
+                .filter { dayOffset > 0 || $0.end >= now }
+                .sorted { $0.start < $1.start }
+            if upcoming.isEmpty {
+                // 节目单完全没加载时，后面的频道也不必逐个等待下载。
+                if waitForEPG, programs.isEmpty { break }
+                continue
+            }
+            var row: [String: Any] = [
+                "channel": channel.name,
+                "source": tvModel.playlistName(for: channel.playlistID),
+                "favorite": tvModel.favoriteIDs.contains(channel.id),
+                "programs": upcoming.prefix(limitPerChannel).map { program -> [String: Any] in
+                    var item: [String: Any] = [
+                        "title": program.title,
+                        "start": Self.tvTimeFormatter.string(from: program.start),
+                        "end": Self.tvTimeFormatter.string(from: program.end),
+                        "live": program.isLive
+                    ]
+                    if let subtitle = program.subtitle, !subtitle.isEmpty {
+                        item["subtitle"] = subtitle
+                    }
+                    return item
+                }
+            ]
+            if channel.catchUpSource != nil { row["catch_up"] = true }
+            rows.append(row)
+        }
+
+        return TVTonightResult(rows: rows,
+                               missing: missing,
+                               epgReady: tvModel.epgUpdatedAt != nil,
+                               date: date)
     }
 
     func playTVChannelTool(_ args: [String: Any]) async -> AIToolExecution {

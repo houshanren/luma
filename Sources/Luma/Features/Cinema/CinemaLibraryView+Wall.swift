@@ -23,10 +23,8 @@ extension CinemaLibraryView {
             if !series.isEmpty {
                 wallSection("电视剧", count: series.count) {
                     ForEach(Array(series.enumerated()), id: \.element.id) { index, item in
-                        CinemaSeriesCard(series: item, fillWidth: true) {
-                            detailTarget = .series(item)
-                        }
-                        .onAppear { prefetchSeriesArtwork(series, around: index) }
+                        wallSeriesCard(item)
+                            .onAppear { prefetchSeriesArtwork(series, around: index) }
                     }
                 }
             }
@@ -45,9 +43,7 @@ extension CinemaLibraryView {
                 wallSection("未识别 · 可右键重新刮削",
                             count: unmatchedSeries.count + unmatchedMovies.count) {
                     ForEach(unmatchedSeries) { item in
-                        CinemaSeriesCard(series: item, fillWidth: true) {
-                            detailTarget = .series(item)
-                        }
+                        wallSeriesCard(item)
                     }
                     ForEach(unmatchedMovies) { entry in
                         posterCard(entry, fillWidth: true)
@@ -78,9 +74,7 @@ extension CinemaLibraryView {
                 } else if !unmatchedSeries.isEmpty {
                     wallSection("未识别 · 可右键重新刮削", count: unmatchedSeries.count) {
                         ForEach(unmatchedSeries) { item in
-                            CinemaSeriesCard(series: item, fillWidth: true) {
-                                detailTarget = .series(item)
-                            }
+                            wallSeriesCard(item)
                         }
                     }
                 } else if !unmatched.isEmpty {
@@ -91,10 +85,8 @@ extension CinemaLibraryView {
             } else {
                 wallSection("全部剧集", count: series.count) {
                     ForEach(Array(series.enumerated()), id: \.element.id) { index, item in
-                        CinemaSeriesCard(series: item, fillWidth: true) {
-                            detailTarget = .series(item)
-                        }
-                        .onAppear { prefetchSeriesArtwork(series, around: index) }
+                        wallSeriesCard(item)
+                            .onAppear { prefetchSeriesArtwork(series, around: index) }
                     }
                 }
             }
@@ -118,10 +110,76 @@ extension CinemaLibraryView {
         CinemaPosterCard(entry: entry,
                          versionCount: aggregate.versionCounts[store.cinemaVersionKey(for: entry)] ?? 0,
                          fillWidth: fillWidth,
+                         isCursor: isWallCursor(entry),
                          onOpen: { openDetail(entry) },
                          onPlay: { store.openCinema(entry, queue: aggregate.allEntries) },
                          onDetail: { openDetail(entry) })
             .id(entry.id)
+    }
+
+    func wallSeriesCard(_ item: CinemaSeries) -> some View {
+        CinemaSeriesCard(series: item,
+                         fillWidth: true,
+                         isCursor: isWallCursor(item)) {
+            detailTarget = .series(item)
+        }
+        .id(item.id)
+    }
+
+    // MARK: 海报墙键盘游标
+
+    func isWallCursor(_ entry: CinemaEntry) -> Bool {
+        store.cinemaViewMode == .wall && wallCursorKey == "m:\(entry.id.uuidString)"
+    }
+
+    func isWallCursor(_ item: CinemaSeries) -> Bool {
+        store.cinemaViewMode == .wall && wallCursorKey == "s:\(item.id)"
+    }
+
+    /// 海报墙的视觉顺序：和 `wallContent` 的分段顺序保持一致，
+    /// 方向键才能按「一行一行」走，而不是在剧集 / 影片之间乱跳。
+    var wallCursorKeys: [String] {
+        guard store.cinemaViewMode == .wall, store.cinemaTab != .folder else { return [] }
+        switch store.cinemaTab {
+        case .all:
+            var keys = series.map { "s:\($0.id)" } + movies.map { "m:\($0.id.uuidString)" }
+            if !isFilteringCinema {
+                keys += unmatchedSeries.map { "s:\($0.id)" }
+                keys += unmatchedMovies.map { "m:\($0.id.uuidString)" }
+            }
+            return keys
+        case .movies:
+            return movies.map { "m:\($0.id.uuidString)" }
+        case .shows:
+            return (series.isEmpty ? unmatchedSeries : series).map { "s:\($0.id)" }
+        case .folder:
+            return []
+        }
+    }
+
+    /// 回车 / 空格：打开游标所在的影片详情或剧集详情。
+    func openWallCursor(_ key: String) {
+        if key.hasPrefix("s:") {
+            let id = String(key.dropFirst(2))
+            if let item = (series + unmatchedSeries).first(where: { $0.id == id }) {
+                detailTarget = .series(item)
+            }
+        } else if key.hasPrefix("m:"),
+                  let uuid = UUID(uuidString: String(key.dropFirst(2))),
+                  let entry = (movies + unmatchedMovies).first(where: { $0.id == uuid }) {
+            openDetail(entry)
+        }
+    }
+
+    /// 滚到游标所在的卡片：剧集用字符串 id，影片用 UUID，沿用卡片原本的 `.id`。
+    func wallScrollTarget(_ key: String?) -> AnyHashable? {
+        guard let key else { return nil }
+        if key.hasPrefix("s:") { return AnyHashable(String(key.dropFirst(2))) }
+        if key.hasPrefix("m:"),
+           let uuid = UUID(uuidString: String(key.dropFirst(2))) {
+            return AnyHashable(uuid)
+        }
+        return nil
     }
 
     func wallSection<Content: View>(_ title: String,

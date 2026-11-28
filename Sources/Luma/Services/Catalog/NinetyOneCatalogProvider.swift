@@ -142,12 +142,15 @@ struct NinetyOneCatalogProvider: CatalogProvider {
     }
 
     func coverData(source: CatalogSource, urlString: String) async throws -> Data {
-        guard let url = URL(string: CatalogHTML.fixURL(urlString, base: source.baseURL)) else {
+        guard let raw = URL(string: CatalogHTML.fixURL(urlString,
+                                                       base: try rootURL(source).absoluteString))
+        else {
             throw CatalogError.parse("封面地址无效")
         }
+        let url = CatalogAddressRouter.rewriteSiteURL(raw, source: source)
         let data = try await CatalogHTTP.fetchData(url: url, headers: [
             "User-Agent": source.userAgent,
-            "Referer": source.referer,
+            "Referer": CatalogAddressRouter.currentSource(source).referer,
             "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"
         ])
         guard !data.isEmpty else { throw CatalogError.parse("封面为空") }
@@ -204,7 +207,8 @@ struct NinetyOneCatalogProvider: CatalogProvider {
     // MARK: - 请求
 
     private func rootURL(_ source: CatalogSource) throws -> URL {
-        var base = source.baseURL
+        var base = CatalogAddressCache.base(kind: source.kind, host: source.host)
+            ?? source.baseURL
         while base.hasSuffix("/") { base.removeLast() }
         guard let url = URL(string: base) else {
             throw CatalogError.invalidConfig("站点地址无效")

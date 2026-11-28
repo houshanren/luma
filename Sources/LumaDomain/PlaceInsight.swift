@@ -81,6 +81,10 @@ package struct PlaceInsight {
     package var companions: [PhotoCompanion] = []
     package var highlights: [PhotoItem] = []
     package var palettePhotos: [PhotoItem] = []
+    /// 视觉标签 + 同框人物融合出的活动分布。
+    package var activities: [TrajectoryFusion.Activity] = []
+    /// 「同一天 + 同一地点 + 同一活动」的轨迹片段，按时间倒序。
+    package var trajectoryDays: [TrajectoryFusion.Day] = []
     /// 每年四季张数（春、夏、秋、冬），用于「全部」页的年份条。
     package var yearSeasons: [Int: [Int]] = [:]
 
@@ -155,6 +159,9 @@ package struct PlaceInsight {
         if let companion = companions.first {
             parts.append("常与 \(companion.name) 同框")
         }
+        if let activity = activities.first, activity.count >= 2 {
+            parts.append("画面里最常见的是\(activity.title)（\(activity.count) 张）")
+        }
         guard !parts.isEmpty else { return "这里还没有足够的影像来描绘这段旅程。" }
         return parts.joined(separator: "；") + "。"
     }
@@ -163,7 +170,9 @@ package struct PlaceInsight {
 
     package static func make(place: PlaceCluster,
                      photos: [PhotoItem],
-                     companions: [PhotoCompanion]) -> PlaceInsight {
+                     companions: [PhotoCompanion],
+                     labelsByPhoto: [UUID: Set<String>] = [:],
+                     peopleByPhoto: [UUID: [String]] = [:]) -> PlaceInsight {
         let sorted = photos
             .filter { $0.deletedAt == nil && !$0.isHidden }
             .sorted { $0.capturedAt > $1.capturedAt }
@@ -181,6 +190,11 @@ package struct PlaceInsight {
         insight.highlights = PhotoInsightSamples.highlights(sorted)
         insight.palettePhotos = PhotoInsightSamples.paletteSamples(sorted, highlights: insight.highlights)
         insight.buildTimeline(sorted)
+        insight.activities = TrajectoryFusion.activities(labelsByPhoto: labelsByPhoto,
+                                                         peopleByPhoto: peopleByPhoto)
+        insight.trajectoryDays = TrajectoryFusion.days(photos: sorted,
+                                                       labelsByPhoto: labelsByPhoto,
+                                                       peopleByPhoto: peopleByPhoto)
         return insight
     }
 
@@ -274,6 +288,8 @@ package struct PlaceInsight {
         companions: [PhotoCompanion] = [],
         highlights: [PhotoItem] = [],
         palettePhotos: [PhotoItem] = [],
+        activities: [TrajectoryFusion.Activity] = [],
+        trajectoryDays: [TrajectoryFusion.Day] = [],
         yearSeasons: [Int: [Int]] = [:]
     ) {
         self.title = title
@@ -292,6 +308,8 @@ package struct PlaceInsight {
         self.companions = companions
         self.highlights = highlights
         self.palettePhotos = palettePhotos
+        self.activities = activities
+        self.trajectoryDays = trajectoryDays
         self.yearSeasons = yearSeasons
     }
 }

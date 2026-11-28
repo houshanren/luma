@@ -215,9 +215,17 @@ extension LibraryStore {
                 }
             )
         }
+        // 一开始就带总数：任务卡立刻显示 0 / N 与百分比，而不是转圈等第一张结果。
+        if let jobID {
+            updateSourceJob(jobID,
+                            completed: 0,
+                            total: targets.count,
+                            message: "准备识别 \(targets.count) 项")
+        }
         cloudModel.tasks.adopt(.cloudAnalysis, Task { [weak self] in
             guard let self else { return }
             var done = 0
+            let startedAt = Date()
             for photo in targets {
                 if Task.isCancelled { break }
                 if let image = await self.cloudThumbnail(for: photo),
@@ -256,7 +264,10 @@ extension LibraryStore {
                     self.updateSourceJob(jobID,
                                          completed: done,
                                          total: targets.count,
-                                         message: "已识别 \(done) / \(targets.count)")
+                                         message: self.analysisJobMessage(done: done,
+                                                                          total: targets.count,
+                                                                          filename: photo.filename,
+                                                                          startedAt: startedAt))
                 }
             }
             let analysed = self.cloudModel.analysis.count

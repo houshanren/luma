@@ -6,14 +6,17 @@ package struct AIToolExecution {
     package let json: String
     package let summary: String?
     package let photoIDs: [UUID]
+    package let artifacts: [AIArtifact]
     package init(
         json: String,
         summary: String?,
-        photoIDs: [UUID]
+        photoIDs: [UUID],
+        artifacts: [AIArtifact] = []
     ) {
         self.json = json
         self.summary = summary
         self.photoIDs = photoIDs
+        self.artifacts = artifacts
     }
 }
 
@@ -60,6 +63,11 @@ package final class AIToolRegistry {
 
     package func register(_ provider: AIToolProvider) {
         providers.append(provider)
+    }
+
+    /// 重新加载连接器时先撤掉旧 provider，避免同名工具越积越多。
+    package func removeProvider(named name: String) {
+        providers.removeAll { $0.name == name }
     }
 
     package func execute(_ call: AIToolCall, args: [String: Any]) async -> AIToolExecution? {

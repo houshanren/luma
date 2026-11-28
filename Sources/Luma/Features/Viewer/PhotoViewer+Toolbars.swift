@@ -252,7 +252,7 @@ enum TVDeckFormat {
 /// 松手才真正落位；不再是舱底那条 1.5pt 只能看的细线。
 /// 总时长优先用播放器解析出的片长，解析不出时用节目单时长兜底，避免读数停在 00:00。
 struct TVCatchupProgressBar: View {
-    @ObservedObject var model: VideoPlayerModel
+    let model: VideoPlayerModel
     let epgDuration: Double
 
     @State private var hostWindow: NSWindow?

@@ -6,8 +6,8 @@ package extension AILibraryTools {
     static let tvWriteToolNames: Set<String> = ["favorite_tv_channel"]
 
     static var tvToolDefinitions: [AIRequestTool] {
-        [listTVSources, listTVChannels, getTVGuide, playTVChannel,
-         favoriteTVChannel, navigateTV]
+        [listTVSources, listTVChannels, getTVGuide, tvTonight,
+         playTVChannel, favoriteTVChannel, navigateTV]
     }
 
     private static var listTVSources: AIRequestTool {
@@ -41,6 +41,19 @@ package extension AILibraryTools {
                 "day_offset": integerSchema("相对今天的天数偏移，-3…3，默认 0", minimum: -3, maximum: 3),
                 "limit": integerSchema("最多返回多少个节目，默认 60，最大 200", minimum: 1, maximum: 200)
             ], required: ["channel"])
+        )
+    }
+
+    private static var tvTonight: AIRequestTool {
+        AIRequestTool(
+            name: "tv_tonight",
+            description: "今晚节目聚合：默认看收藏频道，也可以传 channels 指定频道；返回每个频道从现在开始的若干档节目与是否正在直播。回答「今晚看什么」「收藏的频道在播什么」时用它；只看单个频道用 get_tv_guide。",
+            parameters: objectSchema([
+                "channels": arraySchema(["type": "string"],
+                                        description: "频道名称或 id 列表，可省略则用收藏频道"),
+                "day_offset": integerSchema("相对今天的天数偏移，0…3，默认 0", minimum: 0, maximum: 3),
+                "limit": integerSchema("每个频道最多返回几个节目，默认 4，最大 20", minimum: 1, maximum: 20)
+            ])
         )
     }
 

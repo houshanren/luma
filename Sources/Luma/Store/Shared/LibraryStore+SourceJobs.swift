@@ -96,14 +96,25 @@ extension LibraryStore {
         sourceJobHistory = list
     }
 
+    /// 历史落盘的串行队列：任务结束的瞬间不再在主线程做 JSON 编码 + 同步写库。
+    private static let sourceJobHistoryQueue = DispatchQueue(label: "luma.sourceJobHistory",
+                                                             qos: .utility)
+
     func persistSourceJobHistory() {
         if sourceJobHistory.count > 200 {
             sourceJobHistory = Array(sourceJobHistory.sorted { $0.updatedAt > $1.updatedAt }.prefix(200))
         }
-        guard let metadataStore,
-              let data = try? JSONEncoder().encode(sourceJobHistory),
-              let json = String(data: data, encoding: .utf8) else { return }
-        metadataStore.setSetting(Self.sourceJobHistoryKey, json)
+        guard metadataStore != nil else { return }
+        let snapshot = sourceJobHistory
+        // 常量字面量：Sendable 闭包里不再读主线程隔离的 static，写完回主线程交给存储层。
+        let key = "source_job_history"
+        Self.sourceJobHistoryQueue.async { [weak self] in
+            guard let data = try? JSONEncoder().encode(snapshot),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            Task { @MainActor in
+                self?.metadataStore?.setSettingAsync(key, json)
+            }
+        }
     }
 
     /// 任务结束即归档：内存里的任务中心只保留本次运行，历史落盘保证重启后仍可回看。

@@ -286,7 +286,10 @@ enum ImportService {
         writeJPEG(quick, to: LibraryPaths.quickThumbnailURL(for: photo), quality: 0.75)
     }
 
-    static func makeImageThumbnail(url: URL, destination: URL, maxPixel: Int = 1200, rotation: Int = 0) {
+    /// 从原图生成一张本地缩略图并写盘，返回实际写入的图像（调用方可以顺手复用，不必再读一遍刚写的文件）。
+    @discardableResult
+    static func makeImageThumbnail(url: URL, destination: URL, maxPixel: Int = 1200, rotation: Int = 0,
+                                   quality: CGFloat = 0.9) -> CGImage? {
         var thumbnail: CGImage?
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
             let options: [CFString: Any] = [
@@ -301,11 +304,12 @@ enum ImportService {
         if thumbnail == nil, RawFormats.isRaw(url) {
             thumbnail = RawFormats.decode(url: url, maxPixel: CGFloat(maxPixel))
         }
-        guard let thumbnail else { return }
+        guard let thumbnail else { return nil }
         let image = ImageTransform.rotate(thumbnail, degrees: rotation) ?? thumbnail
         try? FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
-        writeJPEG(image, to: destination, quality: 0.9)
+        writeJPEG(image, to: destination, quality: quality)
+        return image
     }
 
     static func makeVideoThumbnail(url: URL, destination: URL) {

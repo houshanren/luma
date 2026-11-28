@@ -122,11 +122,75 @@ func runMetadataChecks() {
     }
 }
 
+func runTrajectoryChecks() {
+    let calendar = Calendar.current
+    var components = DateComponents()
+    components.year = 2024
+    components.month = 7
+    components.day = 1
+    components.hour = 10
+    let day1 = calendar.date(from: components)!
+    let day1Late = day1.addingTimeInterval(2 * 3600)
+    components.day = 2
+    let day2 = calendar.date(from: components)!
+
+    func photo(_ name: String, at date: Date, poi: String?) -> PhotoItem {
+        PhotoItem(filename: "\(name).jpg",
+                  originalName: "\(name).jpg",
+                  capturedAt: date,
+                  pixelWidth: 100,
+                  pixelHeight: 100,
+                  fileSize: 1024,
+                  placePOI: poi)
+    }
+
+    let a = photo("a", at: day1, poi: "海边")
+    let b = photo("b", at: day1Late, poi: "海边")
+    let c = photo("c", at: day2, poi: "火锅店")
+    let d = photo("d", at: day2, poi: nil)
+    let labels: [UUID: Set<String>] = [
+        a.id: ["戏水", "沙滩", "海边"],
+        b.id: ["亲子互动", "儿童"],
+        c.id: ["火锅", "美食"],
+        d.id: ["山脉"]
+    ]
+    let people: [UUID: [String]] = [a.id: ["小明"], b.id: ["小明"]]
+
+    // 规则优先级：生日压过美食；一张图只取第一个命中的活动。
+    let birthday = TrajectoryFusion.activity(for: ["生日", "蛋糕", "美食"])
+    expectEqual(birthday?.title ?? "", "生日庆祝", "生日优先于美食")
+    expectEqual(TrajectoryFusion.activity(for: ["山脉"])?.title ?? "", "", "风景标签不单独成为活动")
+
+    let activities = TrajectoryFusion.activities(labelsByPhoto: labels, peopleByPhoto: people)
+    expectEqual(activities.count, 3, "三张有活动的照片聚成三个活动")
+    let beach = activities.first { $0.title == "海边戏水" }
+    expectEqual(beach?.count ?? -1, 1, "海边戏水计一张")
+    let family = activities.first { $0.title == "亲子时光" }
+    expectEqual(family?.companions.first?.name ?? "", "小明", "亲子活动挂上同框人物")
+    expectEqual(family?.companions.first?.count ?? -1, 1, "同一张照片的人物只记一次")
+
+    let days = TrajectoryFusion.days(photos: [a, b, c, d],
+                                     labelsByPhoto: labels,
+                                     peopleByPhoto: people,
+                                     calendar: calendar)
+    expectEqual(days.count, 2, "按天与地点聚成两段")
+    let firstDay = days.first { calendar.isDate($0.date, inSameDayAs: day1) }
+    expectEqual(firstDay?.place ?? "", "海边", "地点取 POI")
+    expectEqual(firstDay?.photoCount ?? -1, 2, "同一天同一地点合并计数")
+    expectEqual(firstDay?.activity ?? "", "亲子时光", "同分时按规则优先级取亲子时光")
+    expectEqual(firstDay?.companions.first ?? "", "小明", "轨迹片段保留同框人物")
+    let secondDay = days.first { calendar.isDate($0.date, inSameDayAs: day2) }
+    expectEqual(secondDay?.place ?? "", "火锅店", "第二天的地点")
+    expectEqual(secondDay?.activity ?? "", "美食", "美食活动命中")
+    expectEqual(secondDay?.photoCount ?? -1, 1, "没有活动的照片不进入轨迹片段")
+}
+
 runFormatChecks()
 runCoordinateChecks()
 runPlaceClusterChecks()
 runPathChecks()
 runSQLiteChecks()
 runMetadataChecks()
+runTrajectoryChecks()
 
 CheckRecorder.shared.finish()

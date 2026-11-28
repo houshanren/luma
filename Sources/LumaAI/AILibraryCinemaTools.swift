@@ -14,7 +14,8 @@ package extension AILibraryTools {
     ]
 
     static var cinemaToolDefinitions: [AIRequestTool] {
-        [listCinemaItems, listCinemaScopes, cinemaTree,
+        [listCinemaItems, listCinemaScopes, cinemaHealthReport,
+         cinemaTree,
          searchCinemaCandidates, applyCinemaMatch, scrapeCinema, matchCinema,
          searchCinemaLibrary, listCinemaSeries, listCinemaActivity, listCinemaLists,
          navigateCinema, playCinema,
@@ -67,6 +68,16 @@ package extension AILibraryTools {
             name: "list_cinema_scopes",
             description: "列出所有影院作用域：本地图库与每个网络存储，含 scope id、名称、视频数与已识别 / 未识别数。整理某个网盘前先调用它，把 scope id 传给其他影院工具。",
             parameters: objectSchema([:])
+        )
+    }
+
+    private static var cinemaHealthReport: AIRequestTool {
+        AIRequestTool(
+            name: "cinema_health_report",
+            description: "影院体检：按作用域统计视频数、已匹配 / 未匹配、缺海报、电影与剧集集数，并列出未识别视频样本和最近的刮削任务。用户问「影院整理得怎么样」「还有多少没识别」「哪些缺海报」时用它，再决定是否批量刮削。",
+            parameters: objectSchema([
+                "limit": integerSchema("每个影院最多返回多少条未识别样本，默认 5，最大 30", minimum: 1, maximum: 30)
+            ])
         )
     }
 

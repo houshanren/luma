@@ -31,9 +31,19 @@ open Luma.app
   3. 手动走一遍被改动的界面路径。
 - 纯逻辑（布局、档位等）改动需跑 `swift run LumaCoreChecks`；内容契约 / 数据层改动分别跑 `swift run LumaContentChecks` / `swift run LumaDataChecks`。断言失败会以非零码退出。命令行工具链没有 XCTest，新增纯逻辑优先放进对应库（`Sources/LumaCore` 等），断言写进 `Tests/<target>/Checks<领域>.swift` 并在该 target 的 `main.swift` 注册；写法见 `docs/development.md` §19。
 - 界面性能回归用 `python3 Tools/dev/ui_perf.py`（应用内基准，输出 FPS / 慢帧 / 缩略图 p95）；需要 Instruments 时间线时用 `Tools/dev/ui_trace.sh`（要求完整 Xcode 与 `xctrace`）。
+- **测试集 / 产品截图 / 视频性能**统一走 `Tools/testkit/testkit.py`：`dataset` 生成固定样片与 mock 源，`screens` 调应用内 `TestKitHarness` 逐页截真实界面，`perf` 出视频性能基线，`regression` 串起校验与三组 Swift 断言。产物写 `~/Movies/LumaTestKit`，不提交。截图页面清单在 `Tools/testkit/screens/screens.json`，与 `TestKitHarness.screens` 必须同步。
 - 临时脚本放 `/tmp`，不要提交。
 - 若出现 `error: input file '...' was modified during the build`，说明有另一个构建/编辑进程在同时改动文件；等待数秒后重试，**不要**删除 `.build` 或中断他人构建。
 - 需要连通性调试时可临时起本地服务（如 WebDAV 模拟），但不要向仓库添加测试服务器代码。
+
+### 发布包：双架构与内置能力（必须保持一致）
+
+- 默认出通用二进制：`ARCHS="arm64 x86_64"`，逐架构 `swift build --triple <arch>-apple-macosx14.0` 后 `lipo -create`；只在本机调试时才用 `ARCHS=arm64 ./build.sh release`。
+- 系统要求：macOS 14.0 或更高；Apple 芯片与 Intel 芯片共用同一份包。
+- 已内置，用户无需另行安装：
+  - FFmpeg / ffprobe：Apple 芯片在 `Contents/Resources/bin` + `lib`（ffmpeg-full + libplacebo + MoltenVK，支持杜比视界 RPU 映射）；Intel 芯片在 `bin-x86_64`（静态包，含 zscale，不含 libplacebo，杜比视界 P5 退回普通映射）。运行时由 `VideoSupport` 按 `#if arch(x86_64)` 选目录，**不要**跨架构回退。
+  - 本地模型：YOLO11n、地点库等；SigLIP2 由用户在设置里按需下载。
+- `Resources/Install-README.txt` 已入库，`PACKAGE=1` / `NOTARIZE=1` 会自动附到 zip 顶层；改动打包方式或内置能力时，同步更新这份文件与 `README.md` 的「下载与系统要求」。
 
 ---
 
@@ -136,6 +146,10 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 | `Features/Sidebar/CloudMountDetailView.swift` | 打开中网盘的「媒体类型 / 场景 / 更多项目」入口与各自的收起状态 | 网络请求、筛选算法 |
 | `LumaDomain/PhotoQuery.swift` | 可下推的范围/筛选/排序描述与 `SidebarItem` 映射 | SQL、IO |
 | `LumaPersistence/MetadataStore+Query.swift` | `PhotoQuery` → SQL：count / page / index / neighbor / 索引提示 | UI、业务规则 |
+| `Services/App/TestKitHarness.swift` | 测试集演示库导入、mock 网盘 / 网络影院 / 电视源接入、按 `LUMA_TESTKIT_SCREEN` 逐页导航并截图，写 `index.json` / `captures.md` | 正常启动路径、业务规则、直接改数据库 |
+| `Tools/testkit/testkit.py` | 测试集生成（图片 / 视频 / 网盘 / 影院 / 资源 / 电视）、mock 源启动、截图驱动、视频性能、校验与回归入口 | 把产物写进仓库、在脚本里硬编码凭据 |
+| `Tools/testkit/fixtures/generate_images.swift` | 带 EXIF / GPS 的照片、截屏、全景 / 模糊 / 重复样本、影院海报生成 | 网络请求、写图库数据库 |
+| `Tools/testkit/screens/screens.json` | 产品截图页面清单：id / 标题 / 建议图注；与 `TestKitHarness.screens` 同步 | 设计稿或占位图引用 |
 | `Sources/LumaCore/` | 无 UI 依赖的纯算法：网格布局、缩略图档位、美化建议（`BeautyAdvisor`）、足迹站点与连续巡航编排（`FootprintPlayback`）、票据 / 证件文字判定（`DocumentText`）、地标就近匹配（`LandmarkCatalog`） | 任何 AppKit/SwiftUI/模型 IO |
 | `Sources/LumaDomain/` | 独立 target：可序列化模型、查询描述、派生 DTO、格式与坐标判定（`Models` / `PhotoQuery` / `VideoFormats` / `PlaceSupport`） | IO、SQL、AppKit/SwiftUI、Store/Services 引用 |
 | `Sources/LumaPersistence/` | 独立 target：SQLite 封装、图库元数据、系统图库索引、电视 / 资源站库表与路径入口 | Store/Services/UI、App 的 `Diagnostics`（日志走 `PersistenceLog` 注入） |
@@ -510,6 +524,7 @@ SwiftUI View ──读取 @Published / 调用方法──▶ LibraryStore ──
 - [ ] 胶囊 / 卡片使用 `LumaSurfaces` 的 token 与组件（见 §18），没有手写描边宽度、内边距与胶囊组合
 - [ ] 新增快捷键已同步快捷键面板与 README
 - [ ] README / AGENTS 与实际实现一致（功能、限制、文件职责）
+- [ ] 打包相关改动（架构 / 内置 ffmpeg / 系统要求）已同步 `Resources/Install-README.txt` 与 README「下载与系统要求」
 - [ ] 无新增编译警告（尤其未使用变量、Sendable 捕获）
 - [ ] 未提交临时脚本、调试输出、密钥或大文件
 

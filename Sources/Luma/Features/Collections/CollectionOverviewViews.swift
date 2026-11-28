@@ -13,6 +13,10 @@ struct SystemFolderOverviewView: View {
     var folderID: Int64? = nil
 
     @State private var hoveredKey: String?
+    /// 相簿墙一次批量取好封面：196 本相簿逐个查询实测要好几秒。
+    @State private var albumCovers: [Int64: [PhotoItem]] = [:]
+    /// 每个文件夹子树里的相簿：文件夹封面从这些相簿的批量封面里拼出来。
+    @State private var folderAlbumIDs: [Int64: [Int64]] = [:]
 
     /// 卡片墙每行列数：默认尺寸下 5 个，与「所有相簿」一致。
     var entries: [SystemSidebarEntry] {
@@ -113,6 +117,31 @@ struct SystemFolderOverviewView: View {
             }
         }
         .animation(settings.motion.layout, value: store.albumDisplayStyle)
+        .task(id: coverBatchKey) {
+            let limit = coverLimit
+            let folderMap = store.systemAlbumIDsByFolder(childFolders.map(\.id))
+            folderAlbumIDs = folderMap
+            var ids = childAlbums.map(\.id)
+            for (_, albums) in folderMap { ids.append(contentsOf: albums) }
+            let unique = Array(Set(ids))
+            guard !unique.isEmpty else {
+                albumCovers = [:]
+                return
+            }
+            // 切换显示样式时保留已经取到的封面，只清掉张数不够的那部分。
+            albumCovers = albumCovers.filter { $0.value.count >= limit }
+            _ = await store.systemAlbumPreviewPhotosBatch(unique, limit: limit) { partial in
+                albumCovers.merge(partial) { _, new in new }
+            }
+        }
+    }
+
+    /// 网格样式只展示 1 张封面，列表 / 拼贴需要 4 张。
+    var coverLimit: Int { store.albumDisplayStyle == .grid ? 1 : 4 }
+
+    /// 结构变化或显示样式变化才重取。
+    var coverBatchKey: String {
+        "\(store.systemStructureRevision)#\(folderID.map(String.init) ?? "root")#\(String(describing: store.albumDisplayStyle))"
     }
 
     // MARK: - 头部
@@ -164,23 +193,16 @@ struct SystemFolderOverviewView: View {
 
     // MARK: - 封面
 
-    /// 文件夹的四宫格封面（异步）：从自身与更深层相簿里取最多 4 张；限制递归深度。
-    /// 相簿墙可能有上万个相簿，封面查询必须离开 body 主线程，否则打开文件夹就卡住。
-    func folderPhotosAsync(_ id: Int64, limit: Int = 4, depth: Int = 0) async -> [PhotoItem] {
-        guard limit > 0, depth < 4 else { return [] }
+    /// 文件夹封面由子树相簿的批量封面拼出来，不再逐层递归查库。
+    func folderCoverPhotos(_ child: SystemFolderInfo, limit: Int) -> [PhotoItem] {
+        guard limit > 0 else { return [] }
         var result: [PhotoItem] = []
-        for entry in store.systemChildren(of: id) {
-            guard result.count < limit else { break }
-            let photos: [PhotoItem]
-            switch entry {
-            case .album(let album):
-                photos = await store.systemAlbumPreviewPhotosAsync(album.id, limit: limit)
-            case .folder(let child):
-                photos = await folderPhotosAsync(child.id, limit: limit, depth: depth + 1)
+        var seen: Set<UUID> = []
+        for albumID in folderAlbumIDs[child.id] ?? [] {
+            for photo in albumCovers[albumID] ?? [] where result.count < limit {
+                if seen.insert(photo.id).inserted { result.append(photo) }
             }
-            for photo in photos where result.count < limit {
-                if !result.contains(where: { $0.id == photo.id }) { result.append(photo) }
-            }
+            if result.count >= limit { break }
         }
         return result
     }
@@ -188,40 +210,33 @@ struct SystemFolderOverviewView: View {
     // MARK: - 卡片
 
     func folderCard(_ child: SystemFolderInfo, width: CGFloat) -> some View {
-        let key = "folder-\(child.id)"
-        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
-            await folderPhotosAsync(child.id)
-        } content: { photos in
-            cardBody(key: key,
-                     title: child.name,
-                     cover: photos.first,
-                     photos: photos,
-                     placeholder: .folder,
-                     width: width) {
-                store.navigate(to: .systemFolder(child.id))
-            } contextMenu: {
-                Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
-                Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
-            }
+        let photos = folderCoverPhotos(child, limit: coverLimit)
+        return cardBody(key: "folder-\(child.id)",
+                        title: child.name,
+                        cover: photos.first,
+                        photos: photos,
+                        placeholder: .folder,
+                        width: width) {
+            store.navigate(to: .systemFolder(child.id))
+        } contextMenu: {
+            Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+            Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
         }
         .accessibilityLabel("文件夹 \(child.name)")
     }
 
     func albumCard(_ album: SystemAlbumInfo, width: CGFloat) -> some View {
-        let key = "album-\(album.id)"
-        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
-            await store.systemAlbumPreviewPhotosAsync(album.id, limit: 1)
-        } content: { photos in
-            cardBody(key: key,
-                     title: album.name,
-                     cover: photos.first,
-                     placeholder: .album,
-                     width: width) {
-                store.navigate(to: .systemAlbum(album.id))
-            } contextMenu: {
-                Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
-                Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
-            }
+        let photos = Array((albumCovers[album.id] ?? []).prefix(coverLimit))
+        return cardBody(key: "album-\(album.id)",
+                        title: album.name,
+                        cover: photos.first,
+                        photos: photos,
+                        placeholder: .album,
+                        width: width) {
+            store.navigate(to: .systemAlbum(album.id))
+        } contextMenu: {
+            Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+            Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
         }
         .accessibilityLabel("相簿 \(album.name)")
     }
@@ -242,81 +257,61 @@ struct SystemFolderOverviewView: View {
     }
 
     func folderListRow(_ child: SystemFolderInfo, thumb: CGFloat) -> some View {
-        let key = "folder-row-\(child.id)"
-        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
-            await folderPhotosAsync(child.id, limit: 1)
-        } content: { photos in
-            AlbumOverviewRow(title: child.name,
-                             subtitle: folderAlbumCount(child.id).formatted(),
-                             cover: photos.first,
-                             placeholder: .folder,
-                             side: thumb,
-                             action: { store.navigate(to: .systemFolder(child.id)) },
-                             menu: {
-                                 Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
-                                 Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
-                             })
-        }
-        .accessibilityLabel("文件夹 \(child.name)")
+        AlbumOverviewRow(title: child.name,
+                         subtitle: folderAlbumCount(child.id).formatted(),
+                         cover: folderCoverPhotos(child, limit: 1).first,
+                         placeholder: .folder,
+                         side: thumb,
+                         action: { store.navigate(to: .systemFolder(child.id)) },
+                         menu: {
+                             Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                             Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+                         })
+            .accessibilityLabel("文件夹 \(child.name)")
     }
 
     func albumListRow(_ album: SystemAlbumInfo, thumb: CGFloat) -> some View {
-        let key = "album-row-\(album.id)"
-        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
-            await store.systemAlbumPreviewPhotosAsync(album.id, limit: 1)
-        } content: { photos in
-            AlbumOverviewRow(title: album.name,
-                             subtitle: store.systemAlbumPhotoCount(album.id).formatted(),
-                             cover: photos.first,
-                             placeholder: .album,
-                             side: thumb,
-                             action: { store.navigate(to: .systemAlbum(album.id)) },
-                             menu: {
-                                 Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
-                                 Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
-                             })
-        }
-        .accessibilityLabel("相簿 \(album.name)")
+        AlbumOverviewRow(title: album.name,
+                         subtitle: store.systemAlbumPhotoCount(album.id).formatted(),
+                         cover: (albumCovers[album.id] ?? []).first,
+                         placeholder: .album,
+                         side: thumb,
+                         action: { store.navigate(to: .systemAlbum(album.id)) },
+                         menu: {
+                             Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                             Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+                         })
+            .accessibilityLabel("相簿 \(album.name)")
     }
 
     func folderCollageTile(_ child: SystemFolderInfo, side: CGFloat) -> some View {
-        let key = "folder-tile-\(child.id)"
-        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
-            await folderPhotosAsync(child.id)
-        } content: { photos in
-            AlbumOverviewTile(title: child.name,
-                              subtitle: "\(folderAlbumCount(child.id)) 个相簿",
-                              photos: photos,
-                              placeholder: .folder,
-                              side: side,
-                              isFolder: true,
-                              action: { store.navigate(to: .systemFolder(child.id)) },
-                              menu: {
-                                  Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
-                                  Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
-                              })
-        }
-        .accessibilityLabel("文件夹 \(child.name)")
+        AlbumOverviewTile(title: child.name,
+                          subtitle: "\(folderAlbumCount(child.id)) 个相簿",
+                          photos: folderCoverPhotos(child, limit: 4),
+                          placeholder: .folder,
+                          side: side,
+                          isFolder: true,
+                          action: { store.navigate(to: .systemFolder(child.id)) },
+                          menu: {
+                              Button("打开文件夹") { store.navigate(to: .systemFolder(child.id)) }
+                              Button("拷贝到拾光（含子文件夹）") { store.importSystemFolderToLibrary(child.id) }
+                          })
+            .accessibilityLabel("文件夹 \(child.name)")
     }
 
     func albumCollageTile(_ album: SystemAlbumInfo, side: CGFloat) -> some View {
-        let key = "album-tile-\(album.id)"
-        return SystemCoverLoader(key: "\(key)#\(store.systemStructureRevision)") {
-            await store.systemAlbumPreviewPhotosAsync(album.id, limit: 4)
-        } content: { photos in
-            AlbumOverviewTile(title: album.name,
-                              subtitle: "\(store.systemAlbumPhotoCount(album.id)) 项",
-                              photos: photos,
-                              placeholder: .album,
-                              side: side,
-                              isFolder: false,
-                              action: { store.navigate(to: .systemAlbum(album.id)) },
-                              menu: {
-                                  Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
-                                  Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
-                              })
-        }
-        .accessibilityLabel("相簿 \(album.name)")
+        AlbumOverviewTile(title: album.name,
+                          subtitle: "\(store.systemAlbumPhotoCount(album.id)) 项",
+                          photos: Array((albumCovers[album.id] ?? []).prefix(4)),
+                          placeholder: .album,
+                          side: side,
+                          isFolder: false,
+                          action: { store.navigate(to: .systemAlbum(album.id)) },
+                          menu: {
+                              Button("打开相簿") { store.navigate(to: .systemAlbum(album.id)) }
+                              Button("拷贝到拾光") { store.importSystemAlbumToLibrary(album.id) }
+                          })
+            .accessibilityLabel("相簿 \(album.name)")
     }
 
     func cardBody<MenuContent: View>(key: String,
@@ -360,39 +355,14 @@ struct SystemFolderOverviewView: View {
     }
 }
 
-/// 封面异步加载器：先渲染占位，后台取到封面后再替换。
-/// 相簿墙可能有上万个相簿，如果在 body 里同步查 `Photos.sqlite`，打开文件夹就会卡住。
-struct SystemCoverLoader<Content: View>: View {
-    let key: String
-    let load: () async -> [PhotoItem]
-    let content: ([PhotoItem]) -> Content
-
-    @State private var photos: [PhotoItem] = []
-
-    init(key: String,
-         load: @escaping () async -> [PhotoItem],
-         @ViewBuilder content: @escaping ([PhotoItem]) -> Content) {
-        self.key = key
-        self.load = load
-        self.content = content
-    }
-
-    var body: some View {
-        content(photos)
-            .task(id: key) {
-                let loaded = await load()
-                guard !Task.isCancelled else { return }
-                photos = loaded
-            }
-    }
-}
-
 /// 媒体类型总览：卡片墙展示各分类的数量与封面（侧边栏「媒体类型」分区头点开）。
 struct MediaTypesOverviewView: View {
     @Environment(LibraryStore.self) private var store
+    /// 汇总在后台算：索引聚合与整库遍历不能放在 body 里同步跑。
+    @State private var summary = MediaTypeSummary()
+    @State private var isLoadingSummary = false
 
     var body: some View {
-        let summary = store.mediaTypeSummary
         let system = store.isSystemScope
         let keys = (system ? MediaTypeKey.allCases : MediaTypeKey.localCases)
             .filter { (summary.counts[$0] ?? 0) > 0 }
@@ -406,22 +376,38 @@ struct MediaTypesOverviewView: View {
                                       item: key.item(system: system))
             },
             emptyIcon: "square.grid.2x2",
-            emptyTitle: "还没有媒体类型",
-            emptyMessage: system
-                ? "系统「照片」图库里还没有可分类的项目。"
-                : "导入照片后会自动按类型归类。"
+            emptyTitle: isLoadingSummary ? "正在统计媒体类型…" : "还没有媒体类型",
+            emptyMessage: isLoadingSummary
+                ? "正在后台统计，马上就好。"
+                : (system
+                    ? "系统「照片」图库里还没有可分类的项目。"
+                    : "导入照片后会自动按类型归类。")
         )
+        .task(id: store.mediaTypeSummaryToken) {
+            if let cached = store.cachedMediaTypeSummary {
+                summary = cached
+                isLoadingSummary = false
+                return
+            }
+            isLoadingSummary = true
+            let loaded = await store.loadMediaTypeSummary()
+            guard !Task.isCancelled else { return }
+            summary = loaded
+            isLoadingSummary = false
+        }
     }
 }
 
 /// 场景总览：卡片墙展示端侧识别出的场景分类（本地图库用落库结果，系统图库用内存结果）。
 struct ScenesOverviewView: View {
     @Environment(LibraryStore.self) private var store
+    /// 汇总在后台算：识别结果可能上万条，逐条比对不能放在 body 里同步跑。
+    @State private var summary = SceneSummary()
+    @State private var isLoadingSummary = false
 
     var body: some View {
-        let summary = store.sceneSummary
-        let categories = SceneCatalog.categories.filter { (summary.counts[$0.id] ?? 0) > 0 }
         let system = store.isSystemScope
+        let categories = SceneCatalog.categories.filter { (summary.counts[$0.id] ?? 0) > 0 }
         let analyzed = system ? store.systemAnalyzedCount : store.analyzedCount
         let analyzing = system ? store.isAnalyzingSystemContent : store.isAnalyzingIntelligence
         CategoryOverviewView(
@@ -434,9 +420,15 @@ struct ScenesOverviewView: View {
                                       item: system ? .systemScene(category.id) : .scene(category.id))
             },
             emptyIcon: "sparkles",
-            emptyTitle: analyzed == 0 ? "还没有识别照片内容" : "未识别到常见场景",
-            emptyMessage: "识别场景与照片中的文字，全部在本机完成。",
-            emptyActionTitle: analyzing ? nil : (system ? "识别照片内容…" : "分析照片内容…"),
+            emptyTitle: analyzed == 0
+                ? "还没有识别照片内容"
+                : (isLoadingSummary ? "正在汇总场景…" : "未识别到常见场景"),
+            emptyMessage: isLoadingSummary
+                ? "识别结果较多，正在后台汇总，马上就好。"
+                : "识别场景与照片中的文字，全部在本机完成。",
+            emptyActionTitle: (analyzing || isLoadingSummary)
+                ? nil
+                : (system ? "识别照片内容…" : "分析照片内容…"),
             emptyAction: {
                 if system {
                     store.analyzeSystemContent()
@@ -445,6 +437,18 @@ struct ScenesOverviewView: View {
                 }
             }
         )
+        .task(id: store.sceneSummaryToken) {
+            if let cached = store.cachedSceneSummary {
+                summary = cached
+                isLoadingSummary = false
+                return
+            }
+            isLoadingSummary = true
+            let loaded = await store.loadSceneSummary()
+            guard !Task.isCancelled else { return }
+            summary = loaded
+            isLoadingSummary = false
+        }
     }
 }
 
@@ -564,8 +568,6 @@ struct MoreItemsOverviewView: View {
     var system: Bool
 
     @Environment(LibraryStore.self) private var store
-    @Environment(AppSettings.self) private var settings
-    @State private var hoveredKey: String?
 
     struct Entry: Identifiable {
         let id: String
@@ -675,9 +677,23 @@ struct MoreItemsOverviewView: View {
     }
 
     func card(_ entry: Entry, width: CGFloat) -> some View {
-        let key = entry.id
-        let cover = store.moreItemsCover(for: entry.item)
-        return VStack(alignment: .leading, spacing: 8) {
+        MoreItemsCoverCard(entry: entry, width: width)
+    }
+}
+
+/// 「更多项目」卡片：封面按需异步取。
+/// 十几个入口逐个在 body 里同步查 `Photos.sqlite` 会明显拖慢首帧，这里改成每张卡片各自 `.task`。
+private struct MoreItemsCoverCard: View {
+    let entry: MoreItemsOverviewView.Entry
+    let width: CGFloat
+
+    @Environment(LibraryStore.self) private var store
+    @Environment(AppSettings.self) private var settings
+    @State private var cover: PhotoItem?
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
             // 与媒体类型 / 场景一致：优先展示该入口的第一张照片缩略图，没有照片时退回图标。
             AlbumCoverImage(photo: cover, side: width, style: .icon(entry.icon))
                 .frame(width: width, height: max(120, width * 0.7))
@@ -686,9 +702,9 @@ struct MoreItemsOverviewView: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
                 }
-                .shadow(color: .black.opacity(hoveredKey == key ? 0.18 : 0), radius: 14, y: 6)
-                .scaleEffect(hoveredKey == key && settings.hoverLift ? settings.motion.hoverScale : 1)
-                .animation(settings.motion.hover, value: hoveredKey)
+                .shadow(color: .black.opacity(hovering ? 0.18 : 0), radius: 14, y: 6)
+                .scaleEffect(hovering && settings.hoverLift ? settings.motion.hoverScale : 1)
+                .animation(settings.motion.hover, value: hovering)
 
             HStack(spacing: 5) {
                 Image(systemName: entry.icon)
@@ -703,14 +719,15 @@ struct MoreItemsOverviewView: View {
         }
         .frame(width: width, alignment: .leading)
         .contentShape(Rectangle())
-        .onHover { hovering in
-            hoveredKey = hovering ? key : (hoveredKey == key ? nil : hoveredKey)
-        }
+        .onHover { hovering = $0 }
         .onTapGesture {
             store.navigate(to: entry.item)
         }
         .help(entry.title)
         .accessibilityLabel(entry.title)
+        .task(id: entry.id) {
+            cover = await store.moreItemsCoverAsync(for: entry.item)
+        }
     }
 }
 

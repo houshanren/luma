@@ -7,13 +7,15 @@ struct LumaApp: App {
     @State private var store: LibraryStore
     @State private var settings = AppSettings.shared
     /// 照片网格组件（LumaUI）的宿主：组件不依赖 Store / 设置，由这里统一桥接。
-    @StateObject private var gridBridge: LibraryPhotoGridBridge
+    @State private var gridBridge: LibraryPhotoGridBridge
     /// 侧边栏可见性：菜单与工具栏按钮共用，收起后仍能重新打开。
     @StateObject private var sidebarChrome = SidebarChrome()
     /// 多图库聚合读数：图库总览页与窗口标题共用同一份数据。
     @StateObject private var libraryAggregate = LibraryAggregateModel()
     /// 菜单栏「关于拾光」走独立品牌窗口，与设置里的关于共用同一套动效。
     @Environment(\.openWindow) private var openWindow
+    /// 星图资料库路径（空 = 未加载）：菜单项与「星图」入口都看它。
+    @AppStorage(AtlasCatalogPaths.defaultsKey) private var atlasCatalogPath = ""
     /// 模块开关随当前图库保存：关掉的模块不再出现在「接入…」菜单里。
     private var cloudModule: Bool { settings.moduleCloud }
     private var catalogModule: Bool { settings.moduleCatalog }
@@ -24,6 +26,8 @@ struct LumaApp: App {
         // 数据层日志出口：Persistence 不依赖 App，由组合根把 Diagnostics 注入进去。
         PersistenceLog.sink = { Diagnostics.record($0) }
         // 领域层的模型资源定位：Domain 不依赖模型安装目录，由组合根注入解析器。
+        // 已安装模型目录优先于 App 包，因此标签 / 词表升级要在启动时同步到该目录。
+        ModelRegistry.syncBundledTagAssetsIfNeeded()
         PhotoTagCatalog.resourceResolver = { LumaModelResources.file($0) }
         // 回忆影片的取图出口：功能 target 不依赖 ImageLoader，由组合根注入。
         MemoryFrameLoader.load = { photo, maxPixel in
@@ -50,9 +54,15 @@ struct LumaApp: App {
         }
         _store = State(wrappedValue: store)
         // 网格组件只认 PhotoGridHost：桥接一次，整棵视图树共用同一份。
-        _gridBridge = StateObject(wrappedValue: LibraryPhotoGridBridge(store: store,
+        _gridBridge = State(wrappedValue: LibraryPhotoGridBridge(store: store,
                                                                       settings: AppSettings.shared,
                                                                       selection: store.selectionModel))
+        // 本地模型上次已经装好并开着：启动时把本机服务拉起来，再把地址 / 模型名接进助手配置。
+        // 放在 App 初始化里而不是某个设置页：用户没打开设置也要能直接用。
+        Task { @MainActor in
+            await LocalLLMRuntime.shared.refresh()
+            store.applyLocalModelConfigIfReady()
+        }
     }
 
     private var favoriteCommandTitle: String {
@@ -99,14 +109,15 @@ struct LumaApp: App {
         Window("拾光", id: "main") {
             RootView()
                 .environment(store)
-                .environmentObject(store.chrome)
+                .environment(store.chrome)
                 .environment(settings)
-                .environmentObject(gridBridge.host)
+                .environment(gridBridge.host)
                 .environment(store.selectionModel)
                 .environment(store.viewerModel)
                 .environment(store.cloudModel)
                 .environment(store.catalogModel)
                 .environment(store.tvModel)
+                .environment(AtlasStore.shared)
                 .environmentObject(sidebarChrome)
                 .environmentObject(libraryAggregate)
                 .frame(minWidth: 1080, minHeight: 660)
@@ -115,671 +126,10 @@ struct LumaApp: App {
                      height: LumaAppDelegate.preferredWindowSize.height)
         .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(replacing: .appInfo) {
-                Button("关于拾光") {
-                    openWindow(id: "about")
-                }
-            }
-            CommandGroup(replacing: .undoRedo) {
-                Button(store.undoActionName.map { "撤销\($0)" } ?? "撤销") {
-                    store.performUndoCommand()
-                }
-                .keyboardShortcut("z", modifiers: [.command])
-
-                Button(store.redoActionName.map { "重做\($0)" } ?? "重做") {
-                    store.performRedoCommand()
-                }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-            }
-            CommandGroup(replacing: .newItem) {
-                Button("新建相簿") {
-                    // 原生「照片」图库下写回系统相簿，其它范围照旧建拾光相簿。
-                    store.presentNewAlbumCommand()
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-
-                Button("新建智能相簿…") {
-                    store.presentSmartAlbumEditor()
-                }
-                .keyboardShortcut("n", modifiers: [.command, .option, .shift])
-            }
-            CommandGroup(after: .newItem) {
-                Button(store.isImporting ? "查看导入…" : "导入照片…") {
-                    store.presentImportPanel()
-                }
-                .keyboardShortcut("i", modifiers: [.command])
-
-                Button("从「照片」导入…") {
-                    store.presentPhotoPicker()
-                }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-                .disabled(store.isNativeContainer)
-
-                Button("新建图库…") {
-                    store.beginNewLibraryFlow()
-                }
-                .keyboardShortcut("n", modifiers: [.command, .option])
-
-                // 接入：统一收进二级菜单，按「图库 / 存储 / 资源 / 影院 / 电视」列出来源。
-                Menu("接入") {
-                    Button("其他图库…") {
-                        store.presentLibraryContainerPanel()
-                    }
-                    .keyboardShortcut("o", modifiers: [.command])
-
-                    if cloudModule {
-                        Button("网络存储…") {
-                            store.presentCloudWizard()
-                        }
-                    }
-
-                    if catalogModule {
-                        Button("网络资源…") {
-                            store.presentCatalogWizard()
-                        }
-                    }
-
-                    // 网络影院：独立于「网络存储 › 影院」，打开的是聚合影视源的跨源海报墙。
-                    if cinemaModule {
-                        Button("网络影院…") {
-                            store.navigate(to: .networkCinema)
-                            store.presentCatalogWizard(domain: .networkCinema)
-                        }
-                    }
-
-                    // 网络电视：先打开开关，再进接入面板（默认不接入任何源，可粘贴 M3U 或导入文件）。
-                    if televisionModule {
-                        Button("网络电视…") {
-                            store.tvModel.setEnabled(true)
-                            store.tvModel.showWizard = true
-                        }
-                    }
-                }
-
-                Button("切换图库…") {
-                    store.presentLibraryPicker()
-                }
-                .keyboardShortcut("o", modifiers: [.command, .option])
-
-                Button("断开当前图库…") {
-                    guard let url = LibraryPaths.containerLibraryURL else { return }
-                    store.confirmDisconnectLibrary(
-                        path: url.path,
-                        name: url.deletingPathExtension().lastPathComponent)
-                }
-                .disabled(!store.hasContainerLibrary)
-                .help("退出当前图库并回到「创建或打开图库」；图库文件与照片保留")
-
-                Button("在「照片」中打开图库") {
-                    store.openContainerInPhotos()
-                }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-                .disabled(!store.hasContainerLibrary)
-
-                Button("重新读取「照片」图库") {
-                    store.reloadSystemLibrary()
-                }
-                .disabled(store.systemLibraryPath == nil)
-
-                Button(store.currentSystemScopeImportTitle) {
-                    store.importCurrentSystemScopeToLibrary()
-                }
-                .disabled(!store.canImportCurrentSystemScope || store.isNativeContainer)
-
-                Button("导出所选…") {
-                    store.presentBatchExport()
-                }
-                .keyboardShortcut("e", modifiers: [.command])
-                .disabled(!store.commandPolicy.isEnabled(.exportSelection))
-
-                Button("压缩所选…") {
-                    store.presentCompression(for: store.selection)
-                }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
-                .disabled(!store.commandPolicy.isEnabled(.compressSelection))
-
-                Button("选择全部") {
-                    store.selectAll()
-                }
-                .keyboardShortcut("a", modifiers: [.command, .option])
-                .disabled(store.visibleCount == 0)
-            }
-            CommandMenu("照片") {
-                Button(store.navigationParent.map { "返回「\($0.title)」" } ?? "返回上一级") {
-                    store.navigateUp()
-                }
-                .keyboardShortcut("[", modifiers: [.command])
-                .disabled(!store.canNavigateUp)
-
-                Divider()
-
-                // 堆叠浏览形态：与工具栏的堆叠菜单保持同一份状态。
-                Menu("堆叠") {
-                    ForEach(StackMode.allCases) { mode in
-                        Button {
-                            store.stackMode = mode
-                        } label: {
-                            if store.stackMode == mode {
-                                Label(mode.title, systemImage: "checkmark")
-                            } else {
-                                Text(mode.title)
-                            }
-                        }
-                    }
-                    if !store.expandedStackIDs.isEmpty {
-                        Divider()
-                        Button("收起全部堆叠") {
-                            store.collapseAllStacks()
-                        }
-                    }
-                }
-
-                Button("打开所选") {
-                    if let id = store.commandTargetIDs.first {
-                        store.openViewer(id)
-                    }
-                }
-                .disabled(store.commandTargetIDs.isEmpty)
-
-                // 内容条目：网络影院详情打开时，命令菜单与详情页共用同一份 CommandPolicy。
-                if let entry = store.networkCinemaDetail {
-                    Divider()
-                    Button(store.catalog.isFavorite(sourceID: entry.source.id, itemID: entry.item.id)
-                           ? "从稍后看移除"
-                           : "加入稍后看") {
-                        store.toggleNetworkCinemaWatchlist()
-                    }
-                    .disabled(!store.commandPolicy.isEnabled(.watchlist))
-                    Button("打开影视源站点") {
-                        store.openNetworkCinemaSourceSite()
-                    }
-                    .disabled(!store.commandPolicy.isEnabled(.openSourceSite))
-                }
-
-                Button("编辑…") {
-                    store.openEditorFromCommand()
-                }
-                .keyboardShortcut("e", modifiers: [.command, .option])
-                .disabled(!canEditCommand)
-
-                Button("复制编辑点") {
-                    if let id = store.commandTargetIDs.first {
-                        store.copyEdits(id)
-                    }
-                }
-                .keyboardShortcut("c", modifiers: [.command, .option])
-                .disabled(!store.commandTargetIDs.contains { store.photo(id: $0)?.editRecipe != nil })
-
-                Button("粘贴编辑点") {
-                    if let id = store.commandTargetIDs.first {
-                        store.pasteEdits(id)
-                    }
-                }
-                .keyboardShortcut("v", modifiers: [.command, .option])
-                .disabled(store.copiedEditRecipe == nil
-                          || store.commandTargetIDs.isEmpty
-                          || store.isReadOnlyScope)
-
-                Button("向右旋转") {
-                    store.rotateCommand(clockwise: true)
-                }
-                .keyboardShortcut("r", modifiers: [.command])
-                .disabled(!canRotateCommand)
-
-                Button("向左旋转") {
-                    store.rotateCommand(clockwise: false)
-                }
-                .keyboardShortcut("r", modifiers: [.command, .option])
-                .disabled(!canRotateCommand)
-
-                Divider()
-
-                Button("复制照片") {
-                    store.duplicateCommand()
-                }
-                .keyboardShortcut("d", modifiers: [.command])
-                .disabled(!store.commandPolicy.isEnabled(.duplicate))
-
-                Button("粘贴") {
-                    store.pasteFromPasteboard()
-                }
-                .keyboardShortcut("v", modifiers: [.command])
-                .disabled(!store.commandPolicy.isEnabled(.paste))
-
-                Button("打印…") {
-                    store.printCommand()
-                }
-                .keyboardShortcut("p", modifiers: [.command])
-                .disabled(!store.commandPolicy.isEnabled(.printSelection))
-
-                Button("设为桌面背景") {
-                    if let id = store.commandTargetIDs.first {
-                        store.setAsDesktopBackground(id)
-                    }
-                }
-                .disabled(store.commandTargetIDs.first.flatMap { store.anyPhoto(id: $0) }?.isVideo ?? true)
-
-                Button("幻灯片播放") {
-                    store.presentSlideshow()
-                }
-                .keyboardShortcut("p", modifiers: [.command, .option])
-                .disabled(store.visibleCount == 0 || store.editorID != nil || store.showSlideshow)
-
-                Divider()
-
-                Button(favoriteCommandTitle) {
-                    store.toggleFavoriteCurrent()
-                }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(!store.commandPolicy.isEnabled(.favorite))
-
-                Button(hideCommandTitle) {
-                    store.toggleHiddenCommand()
-                }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
-                .disabled(store.commandTargetIDs.isEmpty || (store.isReadOnlyScope && !store.canEditNativeOverlay))
-
-                Button("添加关键词…") {
-                    if store.selection.isEmpty, let id = store.viewerID {
-                        store.selection = [id]
-                    }
-                    store.showKeywordManager = true
-                }
-                .keyboardShortcut("k", modifiers: [.command])
-                .disabled(store.commandTargetIDs.isEmpty || (store.isReadOnlyScope && !store.canEditNativeOverlay))
-
-                Menu("评分") {
-                    Button("无评分") { store.setRatingCurrent(0) }
-                        .keyboardShortcut("0", modifiers: [.option])
-                    Divider()
-                    ForEach(1...5, id: \.self) { value in
-                        Button("\(value) 星") { store.setRatingCurrent(value) }
-                            .keyboardShortcut(KeyEquivalent(Character("\(value)")), modifiers: [.option])
-                    }
-                }
-                .disabled(!canEditMetadataCommand)
-
-                Menu("旗标") {
-                    Button("留用") { store.setFlagCurrent(.pick) }
-                        .keyboardShortcut("p", modifiers: [.option])
-                    Button("排除") { store.setFlagCurrent(.reject) }
-                        .keyboardShortcut("x", modifiers: [.option])
-                    Divider()
-                    Button("清除旗标") { store.setFlagCurrent(.none) }
-                }
-                .disabled(!canEditMetadataCommand)
-
-                Menu("色标") {
-                    Button("红色") { store.setColorLabelCurrent(.red) }
-                        .keyboardShortcut("6", modifiers: [.option])
-                    Button("黄色") { store.setColorLabelCurrent(.yellow) }
-                        .keyboardShortcut("7", modifiers: [.option])
-                    Button("绿色") { store.setColorLabelCurrent(.green) }
-                        .keyboardShortcut("8", modifiers: [.option])
-                    Button("蓝色") { store.setColorLabelCurrent(.blue) }
-                        .keyboardShortcut("9", modifiers: [.option])
-                    Divider()
-                    Button("清除色标") { store.setColorLabelCurrent(.none) }
-                }
-                .disabled(!canEditMetadataCommand)
-
-                Button("批量更改…") {
-                    store.presentBatchChange()
-                }
-                .keyboardShortcut("b", modifiers: [.command, .option])
-                .disabled(!store.commandPolicy.isEnabled(.batchChange))
-
-                Divider()
-
-                Button("复制") {
-                    store.copySelectionToPasteboard()
-                }
-                .disabled(!store.commandPolicy.isEnabled(.copy))
-
-                Button("在访达中显示") {
-                    store.revealCommandTargetsInFinder()
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(store.commandTargetIDs.isEmpty
-                          || (store.isCloudScope && !store.isCurrentCloudSMB))
-
-                Divider()
-
-                Button("移到最近删除") {
-                    store.confirmDelete(store.commandTargetIDs)
-                }
-                .disabled(!store.commandPolicy.isEnabled(.deleteToTrash))
-
-                Button("永久删除…") {
-                    store.confirmPermanentDelete(store.commandTargetIDs)
-                }
-                .disabled(!store.commandPolicy.isEnabled(.deletePermanently))
-
-                if store.sidebarItem == .trash {
-                    Button("恢复") {
-                        store.restore(store.commandTargetIDs)
-                    }
-                    .disabled(store.commandTargetIDs.isEmpty)
-                }
-
-                Divider()
-
-                Button("图库体检") {
-                    if store.isCloudScope {
-                        store.setCloudScope(.health)
-                    } else if store.isSystemScope {
-                        store.navigate(to: .systemHealth)
-                    } else {
-                        store.navigate(to: .health)
-                    }
-                }
-
-                Button("值得重看") {
-                    if store.isCloudScope {
-                        store.setCloudScope(.revisit)
-                    } else {
-                        store.navigate(to: store.isSystemScope ? .systemRevisit : .revisit)
-                    }
-                }
-            }
-            // 视频相关的操作统一收在这里：播放控制、画面调整与文件操作都只针对当前查看器里的视频。
-            CommandMenu("视频") {
-                Button("播放 / 暂停") {
-                    store.toggleVideoPlaybackCommand()
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Button("上一个视频") {
-                    store.viewerStepVideo(-1)
-                }
-                .keyboardShortcut(.upArrow, modifiers: [.command])
-                .disabled(!store.videoCanStepBackward)
-
-                Button("下一个视频") {
-                    store.viewerStepVideo(1)
-                }
-                .keyboardShortcut(.downArrow, modifiers: [.command])
-                .disabled(!store.videoCanStepForward)
-
-                Divider()
-
-                Button("快退 10 秒") {
-                    store.seekVideoCommand(by: -10)
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Button("快进 10 秒") {
-                    store.seekVideoCommand(by: 10)
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Button("上一帧") {
-                    store.stepVideoFrameCommand(by: -1)
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Button("下一帧") {
-                    store.stepVideoFrameCommand(by: 1)
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Divider()
-
-                Menu("播放速度") {
-                    ForEach([0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0], id: \.self) { value in
-                        Button {
-                            store.setVideoSpeedCommand(value)
-                        } label: {
-                            if store.videoSpeed == value {
-                                Label(Self.videoSpeedLabel(value), systemImage: "checkmark")
-                            } else {
-                                Text(Self.videoSpeedLabel(value))
-                            }
-                        }
-                    }
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Toggle("循环播放", isOn: Binding(
-                    get: { store.videoIsLooping },
-                    set: { _ in store.toggleVideoLoopCommand() }
-                ))
-                .disabled(!store.canControlVideoPlayback)
-
-                Toggle("填充画面", isOn: Binding(
-                    get: { store.videoUsesFill },
-                    set: { _ in store.toggleVideoGravityCommand() }
-                ))
-                .disabled(!store.canControlVideoPlayback)
-
-                Button("旋转 90°") {
-                    store.rotateVideoDisplayCommand()
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Toggle("画中画", isOn: Binding(
-                    get: { store.videoPipActive },
-                    set: { _ in store.toggleVideoPipCommand() }
-                ))
-                .disabled(!store.canControlVideoPlayback || !store.videoPipAvailable)
-
-                Divider()
-
-                Toggle("静音", isOn: Binding(
-                    get: { store.videoIsMuted },
-                    set: { _ in store.toggleVideoMuteCommand() }
-                ))
-                .disabled(!store.canControlVideoPlayback)
-
-                Menu("音量") {
-                    Button("25%") { store.setVideoVolumeCommand(0.25) }
-                    Button("50%") { store.setVideoVolumeCommand(0.5) }
-                    Button("100%") { store.setVideoVolumeCommand(1) }
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Menu("音轨") {
-                    if store.videoAudioChoices.isEmpty {
-                        Button("暂无可切换音轨") {}
-                            .disabled(true)
-                    } else {
-                        // 菜单式 Toggle：系统自己画勾，自绘 Image 在 NSMenu 里会被丢掉。
-                        ForEach(store.videoAudioChoices) { choice in
-                            let title = choice.title.isEmpty ? "音轨 \(choice.index + 1)" : choice.title
-                            Toggle(isOn: Binding(
-                                get: { choice.index == store.videoSelectedAudioIndex },
-                                set: { isOn in
-                                    if isOn { store.selectVideoAudioCommand(choice.index) }
-                                }
-                            )) {
-                                Text(title)
-                            }
-                        }
-                    }
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Menu("字幕") {
-                    Button("载入字幕文件…") {
-                        store.pickVideoSubtitleCommand()
-                    }
-
-                    if store.videoHasSubtitle {
-                        Button("关闭字幕") {
-                            store.clearVideoSubtitleCommand()
-                        }
-                        Divider()
-                        Button("字幕延后 0.5 秒") {
-                            store.adjustVideoSubtitleOffsetCommand(by: 0.5)
-                        }
-                        Button("字幕提前 0.5 秒") {
-                            store.adjustVideoSubtitleOffsetCommand(by: -0.5)
-                        }
-                        Button("重置偏移") {
-                            store.resetVideoSubtitleOffsetCommand()
-                        }
-                    }
-
-                    if !store.videoLegibleOptions.isEmpty {
-                        Divider()
-                        ForEach(store.videoLegibleOptions.indices, id: \.self) { index in
-                            let option = store.videoLegibleOptions[index]
-                            Button {
-                                store.selectVideoLegibleCommand(option)
-                            } label: {
-                                if store.isVideoLegibleSelected(option) {
-                                    Label(option.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(option.displayName)
-                                }
-                            }
-                        }
-                        if store.videoHasEmbeddedSubtitle {
-                            Button("关闭内嵌字幕") {
-                                store.selectVideoLegibleCommand(nil)
-                            }
-                        }
-                    }
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Divider()
-
-                Button("保存当前帧…") {
-                    store.saveVideoFrameCommand()
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Button("全屏播放") {
-                    store.toggleVideoFullScreenCommand()
-                }
-                .disabled(!store.canControlVideoPlayback)
-
-                Divider()
-
-                Button("导出视频…") {
-                    store.presentBatchExport()
-                }
-                .disabled(!canExportVideoCommand)
-
-                Button("在访达中显示") {
-                    store.revealCommandTargetsInFinder()
-                }
-                .disabled(store.commandTargetIDs.isEmpty
-                          || (store.isCloudScope && !store.isCurrentCloudSMB))
-            }
-            CommandGroup(after: .toolbar) {
-                Button("搜索") {
-                    store.focusSearchField()
-                }
-                .keyboardShortcut("f", modifiers: [.command])
-
-                Button("键盘快捷键…") {
-                    store.showShortcutHelp = true
-                }
-                .keyboardShortcut("/", modifiers: [.command])
-
-                Button("智能助手…") {
-                    store.showAIAssistant = true
-                }
-
-                Button("智能美化…") {
-                    store.showBeautyPanel = true
-                }
-                .disabled(!store.canScanBeauty)
-
-                Divider()
-
-                Picker("分组方式", selection: $store.grouping) {
-                    ForEach(GridGrouping.allCases) { grouping in
-                        Text(grouping.title).tag(grouping)
-                    }
-                }
-                .pickerStyle(.inline)
-                .disabled(!store.isTimelineScope)
-
-                Divider()
-
-                Menu("排序") {
-                    ForEach(SortKey.allCases) { key in
-                        Button {
-                            store.applySort(key)
-                        } label: {
-                            Label(store.sortKey == key
-                                  ? "\(key.title) · \(store.sortAscending ? "升序 ↑" : "降序 ↓")"
-                                  : key.title,
-                                  systemImage: store.sortKey == key ? "checkmark" : key.icon)
-                        }
-                    }
-                    Divider()
-                    Button(store.sortAscending ? "改为降序 ↓" : "改为升序 ↑") {
-                        store.sortAscending.toggle()
-                    }
-                }
-                .disabled(!store.isGridScopeForCommands)
-
-                Menu("相簿显示方式") {
-                    ForEach(AlbumDisplayStyle.allCases) { style in
-                        Toggle(isOn: Binding(
-                            get: { store.albumDisplayStyle == style },
-                            set: { isOn in
-                                guard isOn else { return }
-                                store.albumDisplayStyle = style
-                            }
-                        )) {
-                            Label(style.title, systemImage: style.icon)
-                        }
-                    }
-                }
-                .disabled(!store.isAlbumOverviewScope)
-
-                Menu("元数据") {
-                    Toggle("标题", isOn: Bindable(settings).metadata.title)
-                    Toggle("拍摄日期", isOn: Bindable(settings).metadata.capturedDate)
-                    Toggle("关键词", isOn: Bindable(settings).metadata.keywords)
-                    Toggle("已编辑", isOn: Bindable(settings).metadata.edited)
-                    Toggle("文件类型", isOn: Bindable(settings).metadata.fileType)
-                    Toggle("个人收藏", isOn: Bindable(settings).metadata.favorite)
-                    Toggle("位置", isOn: Bindable(settings).metadata.location)
-                    Toggle("相机", isOn: Bindable(settings).metadata.camera)
-                    Toggle("分辨率", isOn: Bindable(settings).metadata.resolution)
-                    Toggle("文件大小", isOn: Bindable(settings).metadata.fileSize)
-                    Toggle("来源", isOn: Bindable(settings).metadata.source)
-                    Toggle("视频时长", isOn: Bindable(settings).metadata.duration)
-                }
-
-                Divider()
-
-                Button("显示/隐藏信息面板") {
-                    store.showInfoPanel.toggle()
-                }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
-                .disabled(store.viewerID == nil)
-
-                Toggle("显示底部缩略图", isOn: Bindable(settings).viewerFilmstrip)
-                    .keyboardShortcut("t", modifiers: [.command, .option])
-                    .disabled(store.viewerID == nil)
-
-                Button(sidebarChrome.isVisible ? "隐藏边栏" : "显示边栏") {
-                    sidebarChrome.isVisible.toggle()
-                }
-                .keyboardShortcut("s", modifiers: [.control, .command])
-
-                Button("放大缩略图") {
-                    withAnimation { store.zoomStep(1) }
-                }
-                .keyboardShortcut("=", modifiers: [.command])
-
-                Button("缩小缩略图") {
-                    withAnimation { store.zoomStep(-1) }
-                }
-                .keyboardShortcut("-", modifiers: [.command])
-
-                Button("恢复默认缩略图大小") {
-                    withAnimation { store.resetZoom() }
-                }
-                .keyboardShortcut("0", modifiers: [.command])
-            }
+            appCommandGroups
+            photoCommandMenu
+            videoCommandMenu
+            viewCommandGroup
         }
 
         Window("导入", id: "import") {
@@ -821,6 +171,751 @@ struct LumaApp: App {
                 .environment(store.selectionModel)
                 .environment(store.viewerModel)
                 .environment(store.cloudModel)
+        }
+    }
+}
+
+
+// MARK: - 菜单命令
+
+extension LumaApp {
+    /// 应用级命令：关于、撤销 / 重做、新建、导入、接入、导出与选择全部。
+    @CommandsBuilder
+    var appCommandGroups: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("关于拾光") {
+                openWindow(id: "about")
+            }
+        }
+        CommandGroup(replacing: .undoRedo) {
+            Button(store.undoActionName.map { "撤销\($0)" } ?? "撤销") {
+                store.performUndoCommand()
+            }
+            .keyboardShortcut("z", modifiers: [.command])
+
+            Button(store.redoActionName.map { "重做\($0)" } ?? "重做") {
+                store.performRedoCommand()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
+        CommandGroup(replacing: .newItem) {
+            Button("新建相簿") {
+                // 原生「照片」图库下写回系统相簿，其它范围照旧建拾光相簿。
+                store.presentNewAlbumCommand()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+
+            Button("新建智能相簿…") {
+                store.presentSmartAlbumEditor()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option, .shift])
+        }
+        CommandGroup(after: .newItem) {
+            Button(store.isImporting ? "查看导入…" : "导入照片…") {
+                store.presentImportPanel()
+            }
+            .keyboardShortcut("i", modifiers: [.command])
+
+            Button("从「照片」导入…") {
+                store.presentPhotoPicker()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(store.isNativeContainer)
+
+            Button("新建图库…") {
+                store.beginNewLibraryFlow()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+
+            // 接入：统一收进二级菜单，按「图库 / 存储 / 资源 / 影院 / 电视」列出来源。
+            Menu("接入") {
+                Button("其他图库…") {
+                    store.presentLibraryContainerPanel()
+                }
+                .keyboardShortcut("o", modifiers: [.command])
+
+                if cloudModule {
+                    Button("网络存储…") {
+                        store.presentCloudWizard()
+                    }
+                }
+
+                if catalogModule {
+                    Button("网络资源…") {
+                        store.presentCatalogWizard()
+                    }
+                }
+
+                // 网络影院：独立于「网络存储 › 影院」，打开的是聚合影视源的跨源海报墙。
+                if cinemaModule {
+                    Button("网络影院…") {
+                        store.navigate(to: .networkCinema)
+                        store.presentCatalogWizard(domain: .networkCinema)
+                    }
+                }
+
+                // 网络电视：先打开开关，再进接入面板（默认不接入任何源，可粘贴 M3U 或导入文件）。
+                if televisionModule {
+                    Button("网络电视…") {
+                        store.tvModel.setEnabled(true)
+                        store.tvModel.showWizard = true
+                    }
+                }
+            }
+
+            Button("切换图库…") {
+                store.presentLibraryPicker()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .option])
+
+            Button("断开当前图库…") {
+                guard let url = LibraryPaths.containerLibraryURL else { return }
+                store.confirmDisconnectLibrary(
+                    path: url.path,
+                    name: url.deletingPathExtension().lastPathComponent)
+            }
+            .disabled(!store.hasContainerLibrary)
+            .help("退出当前图库并回到「创建或打开图库」；图库文件与照片保留")
+
+            Button("在「照片」中打开图库") {
+                store.openContainerInPhotos()
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+            .disabled(!store.hasContainerLibrary)
+
+            Button("重新读取「照片」图库") {
+                store.reloadSystemLibrary()
+            }
+            .disabled(store.systemLibraryPath == nil)
+
+            Button(store.currentSystemScopeImportTitle) {
+                store.importCurrentSystemScopeToLibrary()
+            }
+            .disabled(!store.canImportCurrentSystemScope || store.isNativeContainer)
+
+            Button("导出所选…") {
+                store.presentBatchExport()
+            }
+            .keyboardShortcut("e", modifiers: [.command])
+            .disabled(!store.commandPolicy.isEnabled(.exportSelection))
+
+            Button("压缩所选…") {
+                store.presentCompression(for: store.selection)
+            }
+            .keyboardShortcut("k", modifiers: [.command, .shift])
+            .disabled(!store.commandPolicy.isEnabled(.compressSelection))
+
+            Button("选择全部") {
+                store.selectAll()
+            }
+            .keyboardShortcut("a", modifiers: [.command, .option])
+            .disabled(store.visibleCount == 0)
+
+            Divider()
+
+            // 星图资料库不随安装包内置：在「文件 › 星图」里手动选一份 catalog.sqlite，入口才会出现。
+            Menu("星图") {
+                Button(atlasCatalogPath.isEmpty ? "加载星图资料库…" : "更换星图资料库…") {
+                    AtlasCatalogLibrary.shared.presentPicker()
+                    guard AtlasCatalogLibrary.shared.isLoaded else { return }
+                    AtlasStore.shared.reload()
+                    store.navigate(to: .atlas)
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+
+                if !atlasCatalogPath.isEmpty {
+                    Button("在访达中显示资料库") {
+                        AtlasCatalogLibrary.shared.revealInFinder()
+                    }
+                    Button("卸载星图资料库") {
+                        AtlasCatalogLibrary.shared.unload()
+                        AtlasStore.shared.reload()
+                        if store.sidebarItem == .atlas {
+                            store.navigate(to: .library)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 「照片」菜单：浏览、编辑、整理、导出与删除。
+    @CommandsBuilder
+    var photoCommandMenu: some Commands {
+        CommandMenu("照片") {
+            Button(store.navigationParent.map { "返回「\($0.title)」" } ?? "返回上一级") {
+                store.navigateUp()
+            }
+            .keyboardShortcut("[", modifiers: [.command])
+            .disabled(!store.canNavigateUp)
+
+            Divider()
+
+            // 堆叠浏览形态：与工具栏的堆叠菜单保持同一份状态。
+            Menu("堆叠") {
+                ForEach(StackMode.allCases) { mode in
+                    Button {
+                        store.stackMode = mode
+                    } label: {
+                        if store.stackMode == mode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Text(mode.title)
+                        }
+                    }
+                }
+                if !store.expandedStackIDs.isEmpty {
+                    Divider()
+                    Button("收起全部堆叠") {
+                        store.collapseAllStacks()
+                    }
+                }
+            }
+
+            Button("打开所选") {
+                if let id = store.commandTargetIDs.first {
+                    store.openViewer(id)
+                }
+            }
+            .disabled(store.commandTargetIDs.isEmpty)
+
+            // 内容条目：网络影院详情打开时，命令菜单与详情页共用同一份 CommandPolicy。
+            if let entry = store.networkCinemaDetail {
+                Divider()
+                Button(store.catalog.isFavorite(sourceID: entry.source.id, itemID: entry.item.id)
+                       ? "从稍后看移除"
+                       : "加入稍后看") {
+                    store.toggleNetworkCinemaWatchlist()
+                }
+                .disabled(!store.commandPolicy.isEnabled(.watchlist))
+                Button("打开影视源站点") {
+                    store.openNetworkCinemaSourceSite()
+                }
+                .disabled(!store.commandPolicy.isEnabled(.openSourceSite))
+            }
+
+            Button("编辑…") {
+                store.openEditorFromCommand()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .option])
+            .disabled(!canEditCommand)
+
+            Button("复制编辑点") {
+                if let id = store.commandTargetIDs.first {
+                    store.copyEdits(id)
+                }
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(!store.commandTargetIDs.contains { store.photo(id: $0)?.editRecipe != nil })
+
+            Button("粘贴编辑点") {
+                if let id = store.commandTargetIDs.first {
+                    store.pasteEdits(id)
+                }
+            }
+            .keyboardShortcut("v", modifiers: [.command, .option])
+            .disabled(store.copiedEditRecipe == nil
+                      || store.commandTargetIDs.isEmpty
+                      || store.isReadOnlyScope)
+
+            Button("向右旋转") {
+                store.rotateCommand(clockwise: true)
+            }
+            .keyboardShortcut("r", modifiers: [.command])
+            .disabled(!canRotateCommand)
+
+            Button("向左旋转") {
+                store.rotateCommand(clockwise: false)
+            }
+            .keyboardShortcut("r", modifiers: [.command, .option])
+            .disabled(!canRotateCommand)
+
+            Divider()
+
+            Button("复制照片") {
+                store.duplicateCommand()
+            }
+            .keyboardShortcut("d", modifiers: [.command])
+            .disabled(!store.commandPolicy.isEnabled(.duplicate))
+
+            // 粘贴 Cookie 窗口打开时让出 ⌘V：否则这条菜单项会吞掉按键，
+            // Cookie 输入框里无法粘贴。
+            if store.catalogModel.cookiePromptSource == nil {
+                Button("粘贴") {
+                    store.pasteFromPasteboard()
+                }
+                .keyboardShortcut("v", modifiers: [.command])
+                .disabled(!store.commandPolicy.isEnabled(.paste))
+            }
+
+            Button("打印…") {
+                store.printCommand()
+            }
+            .keyboardShortcut("p", modifiers: [.command])
+            .disabled(!store.commandPolicy.isEnabled(.printSelection))
+
+            Button("设为桌面背景") {
+                if let id = store.commandTargetIDs.first {
+                    store.setAsDesktopBackground(id)
+                }
+            }
+            .disabled(store.commandTargetIDs.first.flatMap { store.anyPhoto(id: $0) }?.isVideo ?? true)
+
+            Button("幻灯片播放") {
+                store.presentSlideshow()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .option])
+            .disabled(store.visibleCount == 0 || store.editorID != nil || store.showSlideshow)
+
+            Divider()
+
+            Button(favoriteCommandTitle) {
+                store.toggleFavoriteCurrent()
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(!store.commandPolicy.isEnabled(.favorite))
+
+            Button(hideCommandTitle) {
+                store.toggleHiddenCommand()
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
+            .disabled(store.commandTargetIDs.isEmpty || (store.isReadOnlyScope && !store.canEditNativeOverlay))
+
+            Button("添加关键词…") {
+                if store.selection.isEmpty, let id = store.viewerID {
+                    store.selection = [id]
+                }
+                store.showKeywordManager = true
+            }
+            .keyboardShortcut("k", modifiers: [.command])
+            .disabled(store.commandTargetIDs.isEmpty || (store.isReadOnlyScope && !store.canEditNativeOverlay))
+
+            Menu("评分") {
+                Button("无评分") { store.setRatingCurrent(0) }
+                    .keyboardShortcut("0", modifiers: [.option])
+                Divider()
+                ForEach(1...5, id: \.self) { value in
+                    Button("\(value) 星") { store.setRatingCurrent(value) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(value)")), modifiers: [.option])
+                }
+            }
+            .disabled(!canEditMetadataCommand)
+
+            Menu("旗标") {
+                Button("留用") { store.setFlagCurrent(.pick) }
+                    .keyboardShortcut("p", modifiers: [.option])
+                Button("排除") { store.setFlagCurrent(.reject) }
+                    .keyboardShortcut("x", modifiers: [.option])
+                Divider()
+                Button("清除旗标") { store.setFlagCurrent(.none) }
+            }
+            .disabled(!canEditMetadataCommand)
+
+            Menu("色标") {
+                Button("红色") { store.setColorLabelCurrent(.red) }
+                    .keyboardShortcut("6", modifiers: [.option])
+                Button("黄色") { store.setColorLabelCurrent(.yellow) }
+                    .keyboardShortcut("7", modifiers: [.option])
+                Button("绿色") { store.setColorLabelCurrent(.green) }
+                    .keyboardShortcut("8", modifiers: [.option])
+                Button("蓝色") { store.setColorLabelCurrent(.blue) }
+                    .keyboardShortcut("9", modifiers: [.option])
+                Divider()
+                Button("清除色标") { store.setColorLabelCurrent(.none) }
+            }
+            .disabled(!canEditMetadataCommand)
+
+            Button("批量更改…") {
+                store.presentBatchChange()
+            }
+            .keyboardShortcut("b", modifiers: [.command, .option])
+            .disabled(!store.commandPolicy.isEnabled(.batchChange))
+
+            Divider()
+
+            Button("复制") {
+                store.copySelectionToPasteboard()
+            }
+            .disabled(!store.commandPolicy.isEnabled(.copy))
+
+            Button("在访达中显示") {
+                store.revealCommandTargetsInFinder()
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(store.commandTargetIDs.isEmpty
+                      || (store.isCloudScope && !store.isCurrentCloudSMB))
+
+            Divider()
+
+            Button("移到最近删除") {
+                store.confirmDelete(store.commandTargetIDs)
+            }
+            .disabled(!store.commandPolicy.isEnabled(.deleteToTrash))
+
+            Button("永久删除…") {
+                store.confirmPermanentDelete(store.commandTargetIDs)
+            }
+            .disabled(!store.commandPolicy.isEnabled(.deletePermanently))
+
+            if store.sidebarItem == .trash {
+                Button("恢复") {
+                    store.restore(store.commandTargetIDs)
+                }
+                .disabled(store.commandTargetIDs.isEmpty)
+            }
+
+            Divider()
+
+            Button("图库体检") {
+                if store.isCloudScope {
+                    store.setCloudScope(.health)
+                } else if store.isSystemScope {
+                    store.navigate(to: .systemHealth)
+                } else {
+                    store.navigate(to: .health)
+                }
+            }
+
+            Button("值得重看") {
+                if store.isCloudScope {
+                    store.setCloudScope(.revisit)
+                } else {
+                    store.navigate(to: store.isSystemScope ? .systemRevisit : .revisit)
+                }
+            }
+        }
+    }
+
+    /// 「视频」菜单：播放控制、画面、音轨、字幕与导出。
+    @CommandsBuilder
+    var videoCommandMenu: some Commands {
+        // 视频相关的操作统一收在这里：播放控制、画面调整与文件操作都只针对当前查看器里的视频。
+        CommandMenu("视频") {
+            Button("播放 / 暂停") {
+                store.toggleVideoPlaybackCommand()
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Button("上一个视频") {
+                store.viewerStepVideo(-1)
+            }
+            .keyboardShortcut(.upArrow, modifiers: [.command])
+            .disabled(!store.videoCanStepBackward)
+
+            Button("下一个视频") {
+                store.viewerStepVideo(1)
+            }
+            .keyboardShortcut(.downArrow, modifiers: [.command])
+            .disabled(!store.videoCanStepForward)
+
+            Divider()
+
+            Button("快退 10 秒") {
+                store.seekVideoCommand(by: -10)
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Button("快进 10 秒") {
+                store.seekVideoCommand(by: 10)
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Button("上一帧") {
+                store.stepVideoFrameCommand(by: -1)
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Button("下一帧") {
+                store.stepVideoFrameCommand(by: 1)
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Divider()
+
+            Menu("播放速度") {
+                ForEach([0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0], id: \.self) { value in
+                    Button {
+                        store.setVideoSpeedCommand(value)
+                    } label: {
+                        if store.videoSpeed == value {
+                            Label(Self.videoSpeedLabel(value), systemImage: "checkmark")
+                        } else {
+                            Text(Self.videoSpeedLabel(value))
+                        }
+                    }
+                }
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Toggle("循环播放", isOn: Binding(
+                get: { store.videoIsLooping },
+                set: { _ in store.toggleVideoLoopCommand() }
+            ))
+            .disabled(!store.canControlVideoPlayback)
+
+            Toggle("填充画面", isOn: Binding(
+                get: { store.videoUsesFill },
+                set: { _ in store.toggleVideoGravityCommand() }
+            ))
+            .disabled(!store.canControlVideoPlayback)
+
+            Button("旋转 90°") {
+                store.rotateVideoDisplayCommand()
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Toggle("画中画", isOn: Binding(
+                get: { store.videoPipActive },
+                set: { _ in store.toggleVideoPipCommand() }
+            ))
+            .disabled(!store.canControlVideoPlayback || !store.videoPipAvailable)
+
+            Divider()
+
+            Toggle("静音", isOn: Binding(
+                get: { store.videoIsMuted },
+                set: { _ in store.toggleVideoMuteCommand() }
+            ))
+            .disabled(!store.canControlVideoPlayback)
+
+            Menu("音量") {
+                Button("25%") { store.setVideoVolumeCommand(0.25) }
+                Button("50%") { store.setVideoVolumeCommand(0.5) }
+                Button("100%") { store.setVideoVolumeCommand(1) }
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Menu("音轨") {
+                if store.videoAudioChoices.isEmpty {
+                    Button("暂无可切换音轨") {}
+                        .disabled(true)
+                } else {
+                    // 菜单式 Toggle：系统自己画勾，自绘 Image 在 NSMenu 里会被丢掉。
+                    ForEach(store.videoAudioChoices) { choice in
+                        let title = choice.title.isEmpty ? "音轨 \(choice.index + 1)" : choice.title
+                        Toggle(isOn: Binding(
+                            get: { choice.index == store.videoSelectedAudioIndex },
+                            set: { isOn in
+                                if isOn { store.selectVideoAudioCommand(choice.index) }
+                            }
+                        )) {
+                            Text(title)
+                        }
+                    }
+                }
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Menu("字幕") {
+                Button("载入字幕文件…") {
+                    store.pickVideoSubtitleCommand()
+                }
+
+                if store.videoHasSubtitle {
+                    Button("关闭字幕") {
+                        store.clearVideoSubtitleCommand()
+                    }
+                    Divider()
+                    Button("字幕延后 0.5 秒") {
+                        store.adjustVideoSubtitleOffsetCommand(by: 0.5)
+                    }
+                    Button("字幕提前 0.5 秒") {
+                        store.adjustVideoSubtitleOffsetCommand(by: -0.5)
+                    }
+                    Button("重置偏移") {
+                        store.resetVideoSubtitleOffsetCommand()
+                    }
+                }
+
+                if !store.videoLegibleOptions.isEmpty {
+                    Divider()
+                    ForEach(store.videoLegibleOptions.indices, id: \.self) { index in
+                        let option = store.videoLegibleOptions[index]
+                        Button {
+                            store.selectVideoLegibleCommand(option)
+                        } label: {
+                            if store.isVideoLegibleSelected(option) {
+                                Label(option.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(option.displayName)
+                            }
+                        }
+                    }
+                    if store.videoHasEmbeddedSubtitle {
+                        Button("关闭内嵌字幕") {
+                            store.selectVideoLegibleCommand(nil)
+                        }
+                    }
+                }
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Divider()
+
+            Button("保存当前帧…") {
+                store.saveVideoFrameCommand()
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Button("全屏播放") {
+                store.toggleVideoFullScreenCommand()
+            }
+            .disabled(!store.canControlVideoPlayback)
+
+            Divider()
+
+            Button("导出视频…") {
+                store.presentBatchExport()
+            }
+            .disabled(!canExportVideoCommand)
+
+            Button("在访达中显示") {
+                store.revealCommandTargetsInFinder()
+            }
+            .disabled(store.commandTargetIDs.isEmpty
+                      || (store.isCloudScope && !store.isCurrentCloudSMB))
+        }
+    }
+
+    /// 显示 / 分组 / 排序 / 元数据 / 缩放等视图命令。
+    @CommandsBuilder
+    var viewCommandGroup: some Commands {
+        CommandGroup(after: .toolbar) {
+            Button("搜索") {
+                store.focusSearchField()
+            }
+            .keyboardShortcut("f", modifiers: [.command])
+
+            Button("键盘快捷键…") {
+                store.showShortcutHelp = true
+            }
+            .keyboardShortcut("/", modifiers: [.command])
+
+            Button(store.aiSurfaceMode == .hidden ? "智能助手" : "收起智能助手") {
+                store.toggleAIInspector()
+            }
+            .keyboardShortcut("j", modifiers: [.command])
+
+            Button("智能助手浮窗…") {
+                store.expandAISurface()
+            }
+            .keyboardShortcut("j", modifiers: [.command, .shift])
+
+            Button("智能助手叠放…") {
+                store.overlayAISurface()
+            }
+
+            Button("智能助手工作台…") {
+                store.openAIWorkspacePage()
+            }
+            .keyboardShortcut("j", modifiers: [.command, .option])
+
+            Button("把助手收进并排侧栏") {
+                store.dockAISurface()
+            }
+            .disabled(store.aiSurfaceMode == .docked || store.aiSurfaceMode == .hidden || store.aiSurfaceMode == .workspace)
+
+            Button("任务中心…") {
+                store.showAITaskCenter = true
+            }
+            .disabled(store.aiTaskRecords.isEmpty)
+
+            Button("智能美化…") {
+                store.showBeautyPanel = true
+            }
+            .disabled(!store.canScanBeauty)
+
+            Divider()
+
+            Picker("分组方式", selection: $store.grouping) {
+                ForEach(GridGrouping.allCases) { grouping in
+                    Text(grouping.title).tag(grouping)
+                }
+            }
+            .pickerStyle(.inline)
+            .disabled(!store.isTimelineScope)
+
+            Divider()
+
+            Menu("排序") {
+                ForEach(SortKey.allCases) { key in
+                    Button {
+                        store.applySort(key)
+                    } label: {
+                        Label(store.sortKey == key
+                              ? "\(key.title) · \(store.sortAscending ? "升序 ↑" : "降序 ↓")"
+                              : key.title,
+                              systemImage: store.sortKey == key ? "checkmark" : key.icon)
+                    }
+                }
+                Divider()
+                Button(store.sortAscending ? "改为降序 ↓" : "改为升序 ↑") {
+                    store.sortAscending.toggle()
+                }
+            }
+            .disabled(!store.isGridScopeForCommands)
+
+            Menu("相簿显示方式") {
+                ForEach(AlbumDisplayStyle.allCases) { style in
+                    Toggle(isOn: Binding(
+                        get: { store.albumDisplayStyle == style },
+                        set: { isOn in
+                            guard isOn else { return }
+                            store.albumDisplayStyle = style
+                        }
+                    )) {
+                        Label(style.title, systemImage: style.icon)
+                    }
+                }
+            }
+            .disabled(!store.isAlbumOverviewScope)
+
+            Menu("元数据") {
+                Toggle("标题", isOn: Bindable(settings).metadata.title)
+                Toggle("拍摄日期", isOn: Bindable(settings).metadata.capturedDate)
+                Toggle("关键词", isOn: Bindable(settings).metadata.keywords)
+                Toggle("已编辑", isOn: Bindable(settings).metadata.edited)
+                Toggle("文件类型", isOn: Bindable(settings).metadata.fileType)
+                Toggle("个人收藏", isOn: Bindable(settings).metadata.favorite)
+                Toggle("位置", isOn: Bindable(settings).metadata.location)
+                Toggle("相机", isOn: Bindable(settings).metadata.camera)
+                Toggle("分辨率", isOn: Bindable(settings).metadata.resolution)
+                Toggle("文件大小", isOn: Bindable(settings).metadata.fileSize)
+                Toggle("来源", isOn: Bindable(settings).metadata.source)
+                Toggle("视频时长", isOn: Bindable(settings).metadata.duration)
+            }
+
+            Divider()
+
+            Button("显示/隐藏信息面板") {
+                store.showInfoPanel.toggle()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .disabled(store.viewerID == nil)
+
+            Toggle("显示底部缩略图", isOn: Bindable(settings).viewerFilmstrip)
+                .keyboardShortcut("t", modifiers: [.command, .option])
+                .disabled(store.viewerID == nil)
+
+            Button(sidebarChrome.isVisible ? "隐藏边栏" : "显示边栏") {
+                sidebarChrome.isVisible.toggle()
+            }
+            .keyboardShortcut("s", modifiers: [.control, .command])
+
+            Button("放大缩略图") {
+                withAnimation { store.zoomStep(1) }
+            }
+            .keyboardShortcut("=", modifiers: [.command])
+
+            Button("缩小缩略图") {
+                withAnimation { store.zoomStep(-1) }
+            }
+            .keyboardShortcut("-", modifiers: [.command])
+
+            Button("恢复默认缩略图大小") {
+                withAnimation { store.resetZoom() }
+            }
+            .keyboardShortcut("0", modifiers: [.command])
         }
     }
 }
@@ -873,6 +968,20 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
         return !aiBusy
     }
 
+    /// 本地模型服务跟着 Luma 走：退出时停掉 ollama serve，模型文件保留，下次启动自动拉起。
+    func applicationWillTerminate(_ notification: Notification) {
+        // 重复启动时被丢掉的是「替身」实例：别人正在用的服务不能顺手关掉。
+        let current = ProcessInfo.processInfo.processIdentifier
+        let others = Bundle.main.bundleIdentifier.map { bundleID in
+            NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0.processIdentifier != current }
+        } ?? []
+        guard others.isEmpty else { return }
+        MainActor.assumeIsolated {
+            LocalLLMRuntime.shared.shutdown()
+        }
+    }
+
     /// 重复启动（如再次 `open Luma.app`）时激活已有实例并退出，不产生第二份进程。
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard let bundleID = Bundle.main.bundleIdentifier else { return }
@@ -886,6 +995,9 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Diagnostics.install()
+        // 统一凭据只在启动时读一次：把钥匙串授权框收在一次，登录 Cookie / 网盘 / AI
+        // 后续读写都走内存缓存，不再在保存登录态时单独弹框。
+        LumaKeychainVault.warmUp()
         // 上次退出时窗口可能被拖小了；启动时统一拉回「默认大尺寸」。
         // 窗口由 SwiftUI 创建与还原，稍后再校正一次，避免被状态恢复覆盖。
         DispatchQueue.main.async { Self.enlargeMainWindowIfNeeded() }
@@ -894,6 +1006,11 @@ final class LumaAppDelegate: NSObject, NSApplicationDelegate {
         ControlKeyTextShortcuts.install()
         // 空闲时预热 ffmpeg 的杜比视界运行时，把 Vulkan 初始化挪出「点开视频」的等待。
         FFmpegPrewarm.schedule()
+        // 星图词典（上万条女优 / 片商）首次读库、建索引要一两秒：
+        // 启动时放后台预热，之后打开详情页或人物页不再阻塞主线程。
+        Task.detached(priority: .utility) {
+            CatalogNameParser.prewarm()
+        }
         guard let path = ProcessInfo.processInfo.environment["LUMA_SNAPSHOT"] else { return }
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) {

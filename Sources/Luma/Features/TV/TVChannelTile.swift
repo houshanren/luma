@@ -9,18 +9,22 @@ struct TVChannelTile: View, Equatable {
     let channel: TVChannel
     let number: Int
     let isPlaying: Bool
+    /// 键盘游标停在这一张：画金色外框，方向键移动时跟着走。
+    let isCursor: Bool
     let probeState: TVProbeState
     let isFavorite: Bool
     let currentProgram: TVEPGProgram?
     let showsEPGLoading: Bool
     let sourceName: String
 
-    init(store: LibraryStore, tv: IPTVBrowserModel, channel: TVChannel, number: Int, isPlaying: Bool) {
+    init(store: LibraryStore, tv: IPTVBrowserModel, channel: TVChannel,
+         number: Int, isPlaying: Bool, isCursor: Bool = false) {
         self.store = store
         self.tv = tv
         self.channel = channel
         self.number = number
         self.isPlaying = isPlaying
+        self.isCursor = isCursor
         probeState = tv.probeState(for: channel.id)
         isFavorite = tv.isFavorite(channel)
         let current = tv.currentProgram(for: channel)
@@ -32,6 +36,7 @@ struct TVChannelTile: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.store === rhs.store && lhs.tv === rhs.tv && lhs.channel == rhs.channel
             && lhs.number == rhs.number && lhs.isPlaying == rhs.isPlaying
+            && lhs.isCursor == rhs.isCursor
             && lhs.probeState == rhs.probeState && lhs.isFavorite == rhs.isFavorite
             && lhs.currentProgram == rhs.currentProgram && lhs.showsEPGLoading == rhs.showsEPGLoading
             && lhs.sourceName == rhs.sourceName
@@ -89,6 +94,7 @@ struct TVChannelTile: View, Equatable {
     private var previewKey: String { "\(channel.id)#\(probeState.rawValue)" }
 
     private var borderColor: Color {
+        if isCursor { return TVBrand.gold }
         if isPlaying { return TVBrand.wave }
         if probeState == .unavailable { return TVBrand.signal.opacity(hovered ? 0.85 : 0.55) }
         if hovered { return TVBrand.wave.opacity(0.55) }
@@ -96,6 +102,7 @@ struct TVChannelTile: View, Equatable {
     }
 
     private var borderWidth: CGFloat {
+        if isCursor { return 1.8 }
         if isPlaying { return 1.4 }
         if probeState == .unavailable { return 1.2 }
         return hovered ? 1 : 0.7

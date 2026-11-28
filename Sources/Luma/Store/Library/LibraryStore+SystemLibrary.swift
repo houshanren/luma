@@ -484,10 +484,14 @@ extension LibraryStore {
         systemLibraryLoadedPath = nil
         systemIndex = nil
         systemIndexSignature = ""
+        systemWindowPageCache.removeAll()
+        systemWindowPageCacheOrder.removeAll()
         systemNativeKeywordIndex = nil
         systemNativeKeywordIDMap = [:]
         photoKitLongExposureIDs = nil
         photoKitCinematicIDs = nil
+        photoKitRAWIDs = nil
+        photoKitScreenRecordingIDs = nil
         isPhotoKitMediaTypeLoaded = false
         systemIndexReady = false
         systemCountsCache = nil

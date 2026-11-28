@@ -27,6 +27,8 @@ final class TVTonightCache {
 struct TVTonightView: View {
     @Environment(LibraryStore.self) private var store
     @Environment(IPTVBrowserModel.self) private var tv
+    /// 「今晚看什么」是一次性 AI 任务：单独观察，进度只刷新这一张卡。
+    @ObservedObject private var aiAssist = AIAssistCenter.shared
 
     @State private var rulesShown = false
     /// 赛事角度：当前热播 / 即将开赛 / 历史 / 未来。
@@ -98,6 +100,92 @@ struct TVTonightView: View {
         return "这一页的赛事、黄金时段与综艺都来自节目单；点右侧立即拉取，或在「源库」里补一份 XMLTV 地址。"
     }
 
+    /// AI「今晚看什么」：只用当前节目单里的候选，输出 3 条带理由的推荐。
+    private func aiTonightCard(_ snapshot: TVTonightSnapshot) -> some View {
+        let availability = store.aiAssistAvailability
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        let candidates = snapshot.picks.prefix(16).map { pick in
+            "\(formatter.string(from: pick.program.start))｜\(pick.channel.name)｜\(pick.program.title)｜\(pick.category.title)"
+        }
+        let followed = snapshot.picks
+            .filter { snapshot.followedProgramIDs.contains($0.program.id) }
+            .map(\.program.title)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(TVBrand.gold)
+                Text("AI 今晚看什么")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("\(candidates.count) 档候选")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if aiAssist.tonightLoading {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text("思考中…")
+                            .font(.system(size: 10))
+                    }
+                    .foregroundStyle(.secondary)
+                } else if availability.isReady {
+                    Button(aiAssist.tonightPicks.isEmpty ? "生成推荐" : "换一批") {
+                        Task {
+                            await store.generateTVTonightPicks(candidates: candidates,
+                                                              followed: followed)
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(candidates.isEmpty || aiAssist.isBusy)
+                } else if let hint = availability.hint {
+                    Text(hint)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+
+            if let error = aiAssist.tonightError, !aiAssist.tonightLoading {
+                Text(error)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            } else if !aiAssist.tonightPicks.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(aiAssist.tonightPicks.enumerated()), id: \.offset) { index, line in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("\(index + 1)")
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .foregroundStyle(TVBrand.gold)
+                                .frame(width: 12)
+                            Text(line)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.primary.opacity(0.85))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            } else if candidates.isEmpty {
+                Text("节目单就绪后，这里会按追剧与内容挑 3 档今晚的节目。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("按节目单与追剧订阅挑 3 档并给出理由；只发送节目名与时间，不发送任何图片。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(TVBrand.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(TVBrand.hairline, lineWidth: 0.6)
+        }
+    }
+
     private func page(now: Date) -> some View {
         let snapshot = cache.value(for: cacheKey(now: now)) { buildSnapshot(now: now) }
         return ScrollView {
@@ -105,6 +193,7 @@ struct TVTonightView: View {
                 if tv.epgPrograms.isEmpty {
                     epgNotice
                 }
+                aiTonightCard(snapshot)
                 sportsSection(snapshot, now: now)
                 primeSection(snapshot, followed: snapshot.followedProgramIDs, now: now)
                 showShelf(title: "热播综艺",

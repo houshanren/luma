@@ -1,14 +1,17 @@
 import SwiftUI
+import Observation
 import LumaDomain
 
 /// 网格组件与宿主之间的唯一交互面。
 ///
 /// 组件层（`PhotoCell` / 各类网格 / 框选）只读这里的展示参数并回调这里的动作，
 /// 不直接持有 `LibraryStore`、`AppSettings` 或 `SelectionModel`。
-/// 具体实现由组合根在启动时填好并注入给视图树；值变化时组合根负责
-/// `objectWillChange.send()`，因此这里无需 `@Published`，刷新一次也只多一次广播。
+/// 具体实现由组合根在启动时填好并注入给视图树。这里用 `@Observable`：
+/// 视图按实际读到的属性建立依赖，堆叠数据变化时由桥接重新赋值对应闭包触发刷新，
+/// 不再让一次广播把所有网格消费者一起重算。
 @MainActor
-package final class PhotoGridHost: ObservableObject {
+@Observable
+package final class PhotoGridHost {
     // MARK: 展示参数
 
     /// 网格目标单元格边长（跟随工具栏缩放）。

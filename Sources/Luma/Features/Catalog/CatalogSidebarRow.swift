@@ -21,6 +21,9 @@ struct CatalogSidebarRow: View {
         switch catalog.health[source.id] {
         case .offline:
             return SourceHealth(state: .offline, checkedAt: Date(), message: "站点暂时连不上")
+        case .needsLogin:
+            return SourceHealth(state: .authRequired, checkedAt: Date(),
+                                message: "需要登录后才能浏览完整内容")
         case .limited:
             return SourceHealth(state: .authRequired, checkedAt: Date(), message: "需要完成站点验证")
         default:
@@ -56,7 +59,13 @@ struct CatalogSidebarRow: View {
                 open { $0.openHome() }
             },
             onRetry: { catalog.refresh() },
-            onReauthorize: { store.openCatalogSourceInBrowser(source) },
+            onReauthorize: {
+                if source.kind.mayRequireLogin {
+                    catalog.presentCookiePrompt(for: source)
+                } else {
+                    store.openCatalogSourceInBrowser(source)
+                }
+            },
             dragProvider: {
                 catalogSourceDragProvider(source.id)
             }
@@ -69,14 +78,19 @@ struct CatalogSidebarRow: View {
             }
             Divider()
             Button("上移") { catalog.moveSource(source.id, by: -1) }
-                .disabled(catalog.sources(in: source.domain).first?.id == source.id)
+                .disabled(catalog.sourceSiblings(source.id).first?.id == source.id)
             Button("下移") { catalog.moveSource(source.id, by: 1) }
-                .disabled(catalog.sources(in: source.domain).last?.id == source.id)
+                .disabled(catalog.sourceSiblings(source.id).last?.id == source.id)
             Divider()
             Button(source.isEnabled ? "停用" : "启用") {
                 catalog.setEnabled(source.id, enabled: !source.isEnabled)
             }
             Button("编辑…") { editingSource = source }
+            if source.kind.mayRequireLogin {
+                Button(source.cookieState == .valid ? "更新 Cookie…" : "粘贴 Cookie…") {
+                    catalog.presentCookiePrompt(for: source)
+                }
+            }
             Button("清除海报缓存") {
                 catalog.clearArtwork(source.id)
             }
@@ -107,19 +121,37 @@ struct CatalogSourceCover: View {
     var body: some View {
         // 每个源一个专属色块与图标：一排源扫过去能立刻分辨，而不是同一个橙色方块。
         ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(LinearGradient(colors: [source.kind.sidebarTint,
-                                              source.kind.sidebarTint.opacity(0.62)],
-                                     startPoint: .topLeading,
-                                     endPoint: .bottomTrailing))
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(LinearGradient(colors: [Color.white.opacity(0.34), .clear],
-                                     startPoint: .top, endPoint: .center))
-                .blendMode(.plusLighter)
-            Image(systemName: source.kind.sidebarSymbol)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.96))
-                .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
+            // 图集站：色块后面垫两张错位的照片卡片，和视频站一眼分开。
+            // 错位量收在 20pt 图标列内，三种站点的图标占位完全一致，不会把标题挤歪。
+            if source.kind.isGallerySite {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(source.kind.sidebarTint.opacity(0.45), lineWidth: 1)
+                    .frame(width: 17, height: 17)
+                    .rotationEffect(.degrees(-9))
+                    .offset(x: -2, y: 1)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(source.kind.sidebarTint.opacity(0.35), lineWidth: 1)
+                    .frame(width: 17, height: 17)
+                    .rotationEffect(.degrees(8))
+                    .offset(x: 2, y: 1)
+            }
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(LinearGradient(colors: [source.kind.sidebarTint,
+                                                  source.kind.sidebarTint.opacity(0.62)],
+                                         startPoint: .topLeading,
+                                         endPoint: .bottomTrailing))
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(LinearGradient(colors: [Color.white.opacity(0.34), .clear],
+                                         startPoint: .top, endPoint: .center))
+                    .blendMode(.plusLighter)
+                Image(systemName: source.kind.sidebarSymbol)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.96))
+                    .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
+            }
+            .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
         }
         .frame(width: LumaMetrics.sidebarCoverSize, height: LumaMetrics.sidebarCoverSize)
         .overlay {
@@ -155,6 +187,16 @@ extension CatalogProviderKind {
         case .fofo: return "film.circle.fill"
         case .ikanpp: return "play.tv.fill"
         case .iyf: return "sparkles.tv.fill"
+        case .jliji: return "photo.stack.fill"
+        case .xxss: return "text.below.photo.fill"
+        case .aimeir: return "sparkles.rectangle.stack.fill"
+        case .v2ph: return "camera.macro"
+        case .nshens: return "photo.on.rectangle.angled"
+        case .ninetyOneTutu: return "square.grid.2x2.fill"
+        case .wuso: return "bubble.left.and.bubble.right.fill"
+        case .tuzac: return "tag.fill"
+        case .kkc: return "tag.circle.fill"
+        case .knit: return "sparkles"
         }
     }
 
@@ -177,6 +219,16 @@ extension CatalogProviderKind {
         case .fofo: return .orange
         case .ikanpp: return .purple
         case .iyf: return .mint
+        case .jliji: return .purple
+        case .xxss: return .teal
+        case .aimeir: return .pink
+        case .v2ph: return .indigo
+        case .nshens: return .cyan
+        case .ninetyOneTutu: return .green
+        case .wuso: return .orange
+        case .tuzac: return .mint
+        case .kkc: return .red
+        case .knit: return .pink
         }
     }
 }

@@ -59,6 +59,7 @@ enum AIToolProviders {
                 case "list_tv_sources": return store.listTVSourcesTool()
                 case "list_tv_channels": return await store.listTVChannelsTool(args)
                 case "get_tv_guide": return await store.getTVGuideTool(args)
+                case "tv_tonight": return await store.tvTonightTool(args)
                 case "play_tv_channel": return await store.playTVChannelTool(args)
                 case "favorite_tv_channel": return store.favoriteTVChannelTool(args)
                 case "navigate_tv": return store.navigateTVTool(args)
@@ -79,6 +80,7 @@ enum AIToolProviders {
                 switch call.name {
                 case "list_cinema_items": return store.listCinemaItemsTool(args)
                 case "list_cinema_scopes": return store.listCinemaScopesTool()
+                case "cinema_health_report": return store.cinemaHealthReportTool(args)
                 case "cinema_tree": return store.cinemaTreeTool(args)
                 case "search_cinema_candidates": return await store.searchCinemaCandidatesTool(args)
                 case "apply_cinema_match": return store.applyCinemaMatchTool(args)

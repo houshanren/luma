@@ -1,6 +1,6 @@
 # 资料库数据体检与补全方案（2026-11）
 
-> 范围：`Resources/Catalog/catalog.sqlite` 与 `Tools/catalog_build/raw`，以及可用于补全的外部数据源。
+> 范围：`~/Downloads/catalog.sqlite` 与 `Tools/catalog_build/raw`，以及可用于补全的外部数据源。
 > 说明：本文只讨论数据与采集，不涉及界面设计。
 
 ## 0. 执行清单
